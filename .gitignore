@@ -1,0 +1,4 @@
+node_modules/
+kage.config.json
+.env
+*.log
