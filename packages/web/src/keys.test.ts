@@ -13,7 +13,13 @@ beforeEach(() => {
   sessions.value = [];
   selectedId.value = null;
   confirmingDelete.value = false;
-  applyEvent({ type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+  applyEvent({
+    type: 'snapshot',
+    host: 'my-pc',
+    streamId: 's',
+    projectsRoot: '/p',
+    sessions: demoSessions(NOW),
+  });
   uninstall = installKeys(document);
 });
 afterEach(() => {

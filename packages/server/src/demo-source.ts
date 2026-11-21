@@ -1,10 +1,11 @@
-import { demoSessions, type ServerEvent, type Session } from '@kage/shared';
-import { NotFoundError, type SessionSource } from './source.ts';
+import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
+import { NotFoundError, type SessionSource, type SourceEvent } from './source.ts';
 
 export class DemoSource implements SessionSource {
   private readonly now: number;
   private sessions = new Map<string, Session>();
-  private readonly listeners = new Set<(e: ServerEvent) => void>();
+  private transcripts = new Map<string, DisplayLine[]>();
+  private readonly listeners = new Set<(e: SourceEvent) => void>();
 
   constructor(now: number = Number(process.env.KAGE_DEMO_NOW) || Date.now()) {
     this.now = now;
@@ -13,11 +14,13 @@ export class DemoSource implements SessionSource {
 
   private load(): Session[] {
     const fresh = demoSessions(this.now);
-    this.sessions = new Map(fresh.map((s) => [s.id, s]));
-    return fresh;
+    this.transcripts = new Map(fresh.map((s) => [s.id, s.lines]));
+    const bare = fresh.map((s) => ({ ...s, lines: [] }));
+    this.sessions = new Map(bare.map((s) => [s.id, s]));
+    return bare;
   }
 
-  private emit(e: ServerEvent): void {
+  private emit(e: SourceEvent): void {
     for (const fn of [...this.listeners]) fn(e);
   }
 
@@ -29,8 +32,13 @@ export class DemoSource implements SessionSource {
     return this.sessions.get(id);
   }
 
+  lines(id: string): DisplayLine[] {
+    return (this.transcripts.get(id) ?? []).slice(-200).map((l) => ({ ...l }));
+  }
+
   async remove(id: string): Promise<void> {
     if (!this.sessions.delete(id)) throw new NotFoundError(`No session "${id}"`);
+    this.transcripts.delete(id);
     this.emit({ type: 'session.removed', id });
   }
 
@@ -39,7 +47,7 @@ export class DemoSource implements SessionSource {
     for (const s of this.load()) this.emit({ type: 'session.updated', session: s });
   }
 
-  subscribe(fn: (e: ServerEvent) => void): () => void {
+  subscribe(fn: (e: SourceEvent) => void): () => void {
     this.listeners.add(fn);
     return () => {
       this.listeners.delete(fn);

@@ -1,7 +1,7 @@
-import type { ServerEvent } from '@kage/shared';
+import { demoSessions } from '@kage/shared';
 import { describe, expect, it } from 'vitest';
 import { DemoSource } from './demo-source.ts';
-import { NotFoundError } from './source.ts';
+import { NotFoundError, type SourceEvent } from './source.ts';
 
 describe('DemoSource', () => {
   it('lists six sessions', () => {
@@ -9,7 +9,7 @@ describe('DemoSource', () => {
   });
   it('remove emits session.removed and drops the session', async () => {
     const s = new DemoSource(1_000_000);
-    const events: ServerEvent[] = [];
+    const events: SourceEvent[] = [];
     s.subscribe((e) => events.push(e));
     await s.remove('docs');
     expect(events).toEqual([{ type: 'session.removed', id: 'docs' }]);
@@ -21,7 +21,7 @@ describe('DemoSource', () => {
   });
   it('unsubscribe stops events', async () => {
     const s = new DemoSource(1);
-    const events: ServerEvent[] = [];
+    const events: SourceEvent[] = [];
     const off = s.subscribe((e) => events.push(e));
     off();
     await s.remove('docs');
@@ -30,11 +30,33 @@ describe('DemoSource', () => {
   it('reset restores sessions and emits session.updated for each', async () => {
     const s = new DemoSource(1_000_000);
     await s.remove('docs');
-    const events: ServerEvent[] = [];
+    const events: SourceEvent[] = [];
     s.subscribe((e) => events.push(e));
     s.reset();
     expect(s.list()).toHaveLength(6);
     expect(events).toHaveLength(6);
     expect(events.some((e) => e.type === 'session.updated' && e.session.id === 'docs')).toBe(true);
+  });
+});
+
+describe('DemoSource lines', () => {
+  it('list and get carry no lines', () => {
+    const s = new DemoSource(1_000_000);
+    expect(s.list().every((x) => x.lines.length === 0)).toBe(true);
+    expect(s.get('shop')?.lines).toEqual([]);
+  });
+  it('lines(id) returns the demo transcript', () => {
+    const s = new DemoSource(1_000_000);
+    const shop = demoSessions(1_000_000).find((x) => x.id === 'shop');
+    expect(s.lines('shop')).toHaveLength(9);
+    expect(s.lines('shop')).toEqual(shop?.lines);
+    expect(s.lines('nope')).toEqual([]);
+  });
+  it('reset still restores the transcripts', async () => {
+    const s = new DemoSource(1_000_000);
+    await s.remove('shop');
+    expect(s.lines('shop')).toEqual([]);
+    s.reset();
+    expect(s.lines('shop')).toHaveLength(9);
   });
 });

@@ -38,7 +38,7 @@ afterAll(() => rm(dist, { recursive: true, force: true }));
 let demoResets = 0;
 beforeEach(() => {
   source = new DemoSource(1_000_000);
-  hub = new EventHub(source, 'my-pc');
+  hub = new EventHub(source, 'my-pc', '/p');
   demoResets = 0;
 });
 afterEach(() => hub.close());

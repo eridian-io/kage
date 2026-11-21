@@ -37,11 +37,15 @@ export interface Session {
   external: boolean;
   unpushed: number;
   question?: Question;
+  /** The "now doing" line, e.g. "Running npm test". */
+  now?: string;
+  /** Always [] on the wire; lines travel in `session.lines` events. */
   lines: DisplayLine[];
   ports: Port[];
   files: FileChange[];
 }
 export type ServerEvent =
-  | { type: 'snapshot'; host: string; sessions: Session[] }
+  | { type: 'snapshot'; host: string; streamId: string; projectsRoot: string; sessions: Session[] }
   | { type: 'session.updated'; session: Session }
+  | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset: boolean }
   | { type: 'session.removed'; id: string };

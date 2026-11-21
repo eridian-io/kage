@@ -2,7 +2,12 @@ import type { ServerEvent } from '@kage/shared';
 import { batch } from '@preact/signals';
 import { applyEvent, connection } from './store.ts';
 
-const TYPES: ServerEvent['type'][] = ['snapshot', 'session.updated', 'session.removed'];
+const TYPES: ServerEvent['type'][] = [
+  'snapshot',
+  'session.updated',
+  'session.lines',
+  'session.removed',
+];
 
 /**
  * Opens the server's event stream and keeps it open. On an error the board shows

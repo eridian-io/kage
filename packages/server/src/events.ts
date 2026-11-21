@@ -13,13 +13,20 @@ export const frame = (e: ServerEvent): string => `event: ${e.type}\ndata: ${JSON
 export class EventHub {
   private readonly source: SessionSource;
   private readonly host: string;
+  private readonly projectsRoot: string;
   private readonly heartbeatMs: number;
   private readonly clients = new Set<Client>();
   private unsubscribe: (() => void) | null = null;
 
-  constructor(source: SessionSource, host: string, opts: { heartbeatMs?: number } = {}) {
+  constructor(
+    source: SessionSource,
+    host: string,
+    projectsRoot: string,
+    opts: { heartbeatMs?: number } = {},
+  ) {
     this.source = source;
     this.host = host;
+    this.projectsRoot = projectsRoot;
     this.heartbeatMs = opts.heartbeatMs ?? 30_000;
   }
 
@@ -38,7 +45,16 @@ export class EventHub {
         client = c;
         this.clients.add(c);
         this.ensureSubscribed();
-        this.send(c, frame({ type: 'snapshot', host: this.host, sessions: this.source.list() }));
+        this.send(
+          c,
+          frame({
+            type: 'snapshot',
+            host: this.host,
+            streamId: crypto.randomUUID(),
+            projectsRoot: this.projectsRoot,
+            sessions: this.source.list(),
+          }),
+        );
       },
       cancel: () => {
         if (client) this.drop(client);
@@ -61,7 +77,8 @@ export class EventHub {
 
   private ensureSubscribed(): void {
     this.unsubscribe ??= this.source.subscribe((e) => {
-      const text = frame(e);
+      // Task 3 routes lines to the stream viewing the session; for now every stream gets them.
+      const text = frame(e.type === 'session.lines' ? { ...e, reset: false } : e);
       for (const c of [...this.clients]) this.send(c, text);
     });
   }

@@ -1,8 +1,20 @@
-import { groupOf, type ServerEvent, type Session, sortSessions } from '@kage/shared';
+import {
+  type DisplayLine,
+  groupOf,
+  type ServerEvent,
+  type Session,
+  sortSessions,
+} from '@kage/shared';
 import { batch, computed, type ReadonlySignal, type Signal, signal } from '@preact/signals';
 
 export const host: Signal<string> = signal('');
 export const sessions: Signal<Session[]> = signal([]);
+/** The transcript of each session viewed so far, newest 500 lines. */
+export const linesById: Signal<Map<string, DisplayLine[]>> = signal(new Map());
+/** This stream's id, from the snapshot; null before the first one. */
+export const streamId: Signal<string | null> = signal(null);
+export const projectsRoot: Signal<string> = signal('');
+const MAX_LINES = 500;
 export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
@@ -56,6 +68,8 @@ export function applyEvent(e: ServerEvent): void {
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
+      streamId.value = e.streamId;
+      projectsRoot.value = e.projectsRoot;
       hadSnapshot.value = true;
       sessions.value = e.sessions;
       // A removal missed while disconnected is never announced, so its toast entry goes.
@@ -66,8 +80,17 @@ export function applyEvent(e: ServerEvent): void {
       const list = sessions.value;
       const i = list.findIndex((s) => s.id === e.session.id);
       sessions.value = i < 0 ? [...list, e.session] : list.map((s, j) => (j === i ? e.session : s));
+    } else if (e.type === 'session.lines') {
+      const prev = e.reset ? [] : (linesById.value.get(e.id) ?? []);
+      const next = [...prev, ...e.lines].slice(-MAX_LINES);
+      linesById.value = new Map(linesById.value).set(e.id, next);
     } else {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
+      if (linesById.value.has(e.id)) {
+        const m = new Map(linesById.value);
+        m.delete(e.id);
+        linesById.value = m;
+      }
       const name = deleting.get(e.id);
       if (name !== undefined) {
         deleting.delete(e.id);

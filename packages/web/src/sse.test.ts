@@ -58,7 +58,13 @@ describe('connect', () => {
     expect(FakeEventSource.all).toHaveLength(1);
     expect(latest().url).toBe('/api/events');
     expect(connection.value).toBe('connecting');
-    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
     expect(connection.value).toBe('live');
     expect(host.value).toBe('my-pc');
     expect(sessions.value).toHaveLength(6);
@@ -70,7 +76,13 @@ describe('connect', () => {
   it('review focus 4: reconnects after an error and replaces the sessions on the next snapshot', () => {
     const stop = connect('/api/events', { retryMs: 250 });
     const first = latest();
-    first.emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    first.emit('snapshot', {
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
     expect(connection.value).toBe('live');
 
     first.fail();
@@ -91,7 +103,13 @@ describe('connect', () => {
     expect(FakeEventSource.all).toHaveLength(3);
 
     const fresh = demoSessions(NOW).slice(0, 2);
-    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: fresh });
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: fresh,
+    });
     expect(connection.value).toBe('live');
     expect(sessions.value.map((s) => s.id)).toEqual(['web', 'shop']);
     stop();
@@ -118,7 +136,13 @@ describe('connect', () => {
       expect(FakeEventSource.all).toHaveLength(n + 1);
     };
     for (const ms of [1000, 2000, 4000, 8000, 10_000, 10_000]) waitFor(ms);
-    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
     expect(connection.value).toBe('live');
     waitFor(1000);
     waitFor(2000);

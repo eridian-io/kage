@@ -13,7 +13,7 @@ afterEach(() => vi.useRealTimers());
 describe('EventHub', () => {
   it('sends a snapshot first, then source events', async () => {
     const source = new DemoSource(1_000_000);
-    const hub = new EventHub(source, 'my-pc');
+    const hub = new EventHub(source, 'my-pc', '/p');
     const reader = hub.stream().getReader();
     const first = await read(reader);
     expect(first.startsWith('event: snapshot\ndata: ')).toBe(true);
@@ -21,6 +21,9 @@ describe('EventHub', () => {
     const data = JSON.parse(first.slice('event: snapshot\ndata: '.length));
     expect(data.host).toBe('my-pc');
     expect(data.sessions).toHaveLength(6);
+    expect(data.projectsRoot).toBe('/p');
+    expect(typeof data.streamId).toBe('string');
+    expect(data.sessions.every((s: { lines: unknown[] }) => s.lines.length === 0)).toBe(true);
     await source.remove('docs');
     expect(await read(reader)).toContain('event: session.removed\ndata: ');
     await reader.cancel();
@@ -28,7 +31,7 @@ describe('EventHub', () => {
   });
   it('fans out to every client', async () => {
     const source = new DemoSource(1);
-    const hub = new EventHub(source, 'h');
+    const hub = new EventHub(source, 'h', '/p');
     const a = hub.stream().getReader();
     const b = hub.stream().getReader();
     await read(a);
@@ -42,7 +45,7 @@ describe('EventHub', () => {
   });
   it('sends heartbeat comments', async () => {
     vi.useFakeTimers();
-    const hub = new EventHub(new DemoSource(1), 'h', { heartbeatMs: 20 });
+    const hub = new EventHub(new DemoSource(1), 'h', '/p', { heartbeatMs: 20 });
     const reader = hub.stream().getReader();
     await read(reader);
     await vi.advanceTimersByTimeAsync(25);
@@ -51,7 +54,7 @@ describe('EventHub', () => {
     hub.close();
   });
   it('cancelling drops clientCount to 0', async () => {
-    const hub = new EventHub(new DemoSource(1), 'h');
+    const hub = new EventHub(new DemoSource(1), 'h', '/p');
     const reader = hub.stream().getReader();
     await read(reader);
     expect(hub.clientCount).toBe(1);

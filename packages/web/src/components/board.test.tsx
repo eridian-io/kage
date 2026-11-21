@@ -13,6 +13,7 @@ import {
   endDelete,
   hadSnapshot,
   host,
+  linesById,
   now,
   selectedId,
   sessions,
@@ -37,7 +38,17 @@ function reset(list: Session[] = demoSessions(NOW)) {
   toast.value = null;
   connection.value = 'live';
   now.value = NOW;
-  applyEvent({ type: 'snapshot', host: 'my-pc', sessions: list });
+  linesById.value = new Map();
+  applyEvent({
+    type: 'snapshot',
+    host: 'my-pc',
+    streamId: 's',
+    projectsRoot: '/p',
+    sessions: list.map((s) => ({ ...s, lines: [] })),
+  });
+  for (const s of list) {
+    applyEvent({ type: 'session.lines', id: s.id, lines: s.lines, reset: true });
+  }
 }
 
 const q = <T extends Element = HTMLElement>(c: Element, sel: string) => {
@@ -446,7 +457,13 @@ describe('reconnect bar', () => {
     const bar = q(container, '.k-reconnect');
     expect(bar.textContent).toBe('Connecting to Kage…');
     expect(bar.getAttribute('role')).toBe('status');
-    applyEvent({ type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
     connection.value = 'live';
     await Promise.resolve();
     expect(container.querySelector('.k-reconnect')).toBeNull();
@@ -473,7 +490,13 @@ describe('before the first snapshot', () => {
     expect(q(container, '.k-logo').textContent).toBe('kage');
 
     // An empty first snapshot is a real answer: now it says so.
-    applyEvent({ type: 'snapshot', host: 'my-pc', sessions: [] });
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: [],
+    });
     await Promise.resolve();
     expect(container.textContent).toContain('No sessions yet');
     expect(q(container, '.k-host').textContent).toBe('my-pc · 0 sessions');
@@ -539,6 +562,8 @@ describe('pending delete', () => {
     applyEvent({
       type: 'snapshot',
       host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
       sessions: demoSessions(NOW).filter((x) => x.id !== 'docs'),
     });
     // A later session with the same id is removed by someone else: no toast.

@@ -1,5 +1,6 @@
 import type { LineKind, Session } from '@kage/shared';
 import { useLayoutEffect, useRef } from 'preact/hooks';
+import { linesById } from '../store.ts';
 
 const PREFIX: Record<LineKind, string> = {
   tool: '',
@@ -27,7 +28,7 @@ export function Output({ session }: { session: Session }) {
   };
   return (
     <div class="k-tr" ref={ref} onScroll={onScroll}>
-      {session.lines.map((l, i) => (
+      {(linesById.value.get(session.id) ?? []).map((l, i) => (
         <div class={`ln ln-${l.kind}`} key={i}>
           {PREFIX[l.kind] ?? ''}
           {l.text}

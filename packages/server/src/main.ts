@@ -95,7 +95,7 @@ async function serveCommand(args: string[]): Promise<void> {
   if (process.execArgv.some((a) => a.startsWith('--watch'))) reloadOnChange(assets);
 
   const source = new DemoSource();
-  const hub = new EventHub(source, cfg.name);
+  const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
   const app = createApp({
     source,
     hub,
