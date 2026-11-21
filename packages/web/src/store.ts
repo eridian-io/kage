@@ -31,6 +31,13 @@ export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
 /** The deleted session's name (`project · task`) while the toast shows, else null. */
 export const toast: Signal<string | null> = signal(null);
+/** True while the New task form replaces the button at the top of the left column. */
+export const newTaskOpen: Signal<boolean> = signal(false);
+/**
+ * After a start: select this id as soon as a session.updated (or snapshot) brings it.
+ * keepSelection must not drop it first; the user's own selection meanwhile cancels it.
+ */
+export const selectWhenSeen: Signal<string | null> = signal(null);
 /** Epoch ms, ticked once a minute by the board so ages re-render. */
 export const now: Signal<number> = signal(Date.now());
 
@@ -60,7 +67,17 @@ export function select(id: string | null): void {
     toast.value = null;
     selectedId.value = id;
     confirmingDelete.value = false;
+    selectWhenSeen.value = null;
   });
+}
+
+/**
+ * A start answered 201 with this id. `adopt` usually emits its session.updated before the 201
+ * (F5), so the session is often in the store already: select it at once, else when it arrives.
+ */
+export function selectStarted(id: string): void {
+  if (sorted.value.some((s) => s.id === id)) select(id);
+  else selectWhenSeen.value = id;
 }
 
 function keepSelection(): void {
@@ -139,6 +156,8 @@ export function applyEvent(e: ServerEvent): void {
         toast.value = name;
       }
     }
+    const waiting = selectWhenSeen.value;
+    if (waiting !== null && sorted.value.some((s) => s.id === waiting)) select(waiting);
     keepSelection();
   });
 }

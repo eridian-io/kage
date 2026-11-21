@@ -1,7 +1,7 @@
 import { demoSessions } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { installKeys } from './keys.ts';
-import { applyEvent, confirmingDelete, selectedId, sessions } from './store.ts';
+import { applyEvent, confirmingDelete, newTaskOpen, selectedId, sessions } from './store.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
 let uninstall: () => void = () => {};
@@ -13,6 +13,7 @@ beforeEach(() => {
   sessions.value = [];
   selectedId.value = null;
   confirmingDelete.value = false;
+  newTaskOpen.value = false;
   applyEvent({
     type: 'snapshot',
     host: 'my-pc',
@@ -67,5 +68,32 @@ describe('installKeys', () => {
     uninstall();
     press('j');
     expect(selectedId.value).toBe('web');
+  });
+});
+
+describe('installKeys: the New task form', () => {
+  it('n opens the form, and is ignored while typing', () => {
+    const field = document.createElement('textarea');
+    document.body.append(field);
+    press('n', field);
+    expect(newTaskOpen.value).toBe(false);
+    press('n');
+    expect(newTaskOpen.value).toBe(true);
+    press('N');
+    expect(newTaskOpen.value).toBe(true);
+  });
+
+  it('N with a modifier does nothing', () => {
+    document.dispatchEvent(new KeyboardEvent('keydown', { key: 'n', ctrlKey: true }));
+    expect(newTaskOpen.value).toBe(false);
+  });
+
+  it('while the form is open, j, k and Escape leave the board alone (the form owns its keys)', () => {
+    newTaskOpen.value = true;
+    confirmingDelete.value = true;
+    press('j');
+    expect(selectedId.value).toBe('web');
+    press('Escape');
+    expect(confirmingDelete.value).toBe(true);
   });
 });

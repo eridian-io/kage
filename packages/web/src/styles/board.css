@@ -707,9 +707,102 @@ button {
   max-width: 100%;
 }
 
-/* Not in the target: the board with no sessions. */
+/* Not in the target: the board with no sessions (spec §6.5). */
 .k-empty {
   margin: auto;
-  color: var(--fg-3);
+  max-width: 360px;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  text-align: center;
+  color: var(--fg-2);
   font-size: 13.5px;
+}
+.k-empty-t {
+  font-size: 15px;
+  font-weight: 500;
+  color: var(--fg);
+}
+.k-empty p {
+  margin: 0;
+}
+.k-empty .k-new {
+  margin: 6px 0 0;
+}
+
+/* Not in the target: the New task form (spec §5.2, §6.5), in place of the button. Native
+   controls on the page background with the button outline; focus keeps the global lime ring. */
+.k-nt {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  font-size: 13.5px;
+}
+.k-nt-task,
+.k-nt-l select {
+  width: 100%;
+  border: 1px solid var(--line-strong);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg-strong);
+  font: 13.5px / 1.5 var(--sans);
+}
+.k-nt-task {
+  display: block;
+  padding: 7px 10px;
+  resize: vertical;
+}
+.k-nt-task::placeholder {
+  color: var(--fg-3);
+}
+.k-nt-l {
+  display: grid;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.k-nt-l select {
+  padding: 5px 8px;
+  color: var(--fg);
+}
+.k-nt-task:disabled,
+.k-nt-l select:disabled,
+.k-nt-check input:disabled {
+  opacity: 0.6;
+}
+.k-nt-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg);
+  cursor: pointer;
+}
+.k-nt-check input {
+  margin: 0;
+  accent-color: var(--fg-2);
+}
+.k-nt-hint {
+  margin: 3px 0 0 21px;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.k-nt-row {
+  display: flex;
+  gap: 8px;
+}
+.k-act.k-nt-start,
+.k-act.k-nt-start:hover {
+  color: var(--lime);
+}
+.k-nt-none,
+.k-nt-err {
+  margin: 0;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+.k-nt-none {
+  color: var(--fg-2);
+}
+.k-nt-err {
+  color: var(--fg);
 }

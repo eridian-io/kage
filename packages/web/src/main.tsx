@@ -8,7 +8,15 @@ import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
 import { connect } from './sse.ts';
-import { authRequired, connection, hadSnapshot, host, now, selected } from './store.ts';
+import {
+  authRequired,
+  connection,
+  hadSnapshot,
+  host,
+  newTaskOpen,
+  now,
+  selected,
+} from './store.ts';
 import { installView } from './view.ts';
 
 const MINUTE = 60_000;
@@ -17,6 +25,27 @@ const MINUTE = 60_000;
  * Shown whenever the stream is down, except during the very first attempt: before any snapshot
  * it says "Connecting to Kage…", after one "Reconnecting to <host>…".
  */
+/** The middle column with no sessions (spec §6.5): what Kage does, and the way to start. */
+function Empty() {
+  return (
+    <div class="k-empty">
+      <h2 class="k-empty-t">No sessions yet</h2>
+      <p>Start a task: Kage makes a git worktree and branch for it and runs Claude there.</p>
+      {!newTaskOpen.value && (
+        <button
+          class="k-new"
+          type="button"
+          onClick={() => {
+            newTaskOpen.value = true;
+          }}
+        >
+          ＋ New task
+        </button>
+      )}
+    </div>
+  );
+}
+
 function ReconnectBar() {
   const c = connection.value;
   if (c === 'live' || (c === 'connecting' && !hadSnapshot.value)) return null;
@@ -69,7 +98,7 @@ export function Board() {
               <main class="k-main">
                 <Toast />
                 {/* Before the first snapshot the board knows nothing yet: neutral, not empty. */}
-                {hadSnapshot.value && <div class="k-empty">No sessions yet</div>}
+                {hadSnapshot.value && <Empty />}
               </main>
               <aside class="k-aside" />
             </>

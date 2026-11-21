@@ -1,7 +1,8 @@
 import { formatAge, groupOf, type Session } from '@kage/shared';
 import type { JSX } from 'preact';
-import { now, select, selectedId, sorted } from '../store.ts';
-import { INERT } from './inert.ts';
+import { useEffect, useRef } from 'preact/hooks';
+import { newTaskOpen, now, select, selectedId, sorted } from '../store.ts';
+import { NewTask } from './NewTask.tsx';
 
 function Row({ s }: { s: Session }) {
   const on = s.id === selectedId.value;
@@ -41,6 +42,14 @@ function Row({ s }: { s: Session }) {
 }
 
 export function SessionList() {
+  const open = newTaskOpen.value;
+  const button = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(open);
+  // When the form closes, focus goes back to the button it replaced.
+  useEffect(() => {
+    if (wasOpen.current && !open) button.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
   const items: JSX.Element[] = [];
   let group: string | null = null;
   for (const s of sorted.value) {
@@ -57,9 +66,20 @@ export function SessionList() {
   }
   return (
     <aside class="k-side">
-      <button class="k-new" type="button" {...INERT}>
-        ＋ New task <kbd>N</kbd>
-      </button>
+      {open ? (
+        <NewTask />
+      ) : (
+        <button
+          ref={button}
+          class="k-new"
+          type="button"
+          onClick={() => {
+            newTaskOpen.value = true;
+          }}
+        >
+          ＋ New task <kbd>N</kbd>
+        </button>
+      )}
       {items}
     </aside>
   );

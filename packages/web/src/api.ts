@@ -10,6 +10,11 @@ async function send(path: string, init: RequestInit): Promise<Response> {
   return res;
 }
 
+/** A read, such as GET /api/projects (fetched only when the New task form opens). */
+export function apiGet(path: string): Promise<Response> {
+  return send(path, { method: 'GET' });
+}
+
 export function apiDelete(path: string): Promise<Response> {
   return send(path, { method: 'DELETE', headers: HEADERS });
 }

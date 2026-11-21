@@ -1,4 +1,4 @@
-import { confirmingDelete, selectNext } from './store.ts';
+import { authRequired, confirmingDelete, newTaskOpen, selectNext } from './store.ts';
 
 function typing(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -8,11 +8,17 @@ function typing(target: EventTarget | null): boolean {
   );
 }
 
-/** J/K move the selection and Esc cancels the delete confirmation. Returns the uninstaller. */
+/**
+ * N opens the New task form, J/K move the selection and Esc cancels the delete confirmation.
+ * While the form is open it owns the keyboard (Esc, Enter, its focus trap), so these are off.
+ * Returns the uninstaller.
+ */
 export function installKeys(target: Document = document): () => void {
   const onKey = (e: KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
-    if (e.key === 'j' || e.key === 'J') selectNext(1);
+    if (newTaskOpen.value || authRequired.value) return;
+    if (e.key === 'n' || e.key === 'N') newTaskOpen.value = true;
+    else if (e.key === 'j' || e.key === 'J') selectNext(1);
     else if (e.key === 'k' || e.key === 'K') selectNext(-1);
     else if (e.key === 'Escape') confirmingDelete.value = false;
     else return;

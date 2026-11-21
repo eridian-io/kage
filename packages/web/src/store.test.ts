@@ -1,6 +1,17 @@
 import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyEvent, lineKeyBase, linesById, projectsRoot, sessions, streamId } from './store.ts';
+import {
+  applyEvent,
+  lineKeyBase,
+  linesById,
+  projectsRoot,
+  select,
+  selectedId,
+  selectStarted,
+  selectWhenSeen,
+  sessions,
+  streamId,
+} from './store.ts';
 
 const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
@@ -125,5 +136,60 @@ describe('protocol v3 store', () => {
     applyEvent({ type: 'session.removed', id: 'a' });
     applyEvent({ type: 'session.files', id: 'a', files: [], filesTotal: 5 });
     expect(sessions.value).toEqual([]);
+  });
+});
+
+describe('selecting a started session (Task 9, F5)', () => {
+  const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
+  const fresh = (id: string): Session => ({ ...(demoSessions(NOW)[1] as Session), id });
+  beforeEach(() => {
+    selectWhenSeen.value = null;
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
+    select('web');
+  });
+
+  it('selects at once when the id is already in the store (adopt emits before the 201)', () => {
+    applyEvent({ type: 'session.updated', session: fresh('new') });
+    expect(selectedId.value).toBe('web');
+    selectStarted('new');
+    expect(selectedId.value).toBe('new');
+    expect(selectWhenSeen.value).toBeNull();
+  });
+
+  it('otherwise waits for its session.updated, across keepSelection on other events', () => {
+    selectStarted('new');
+    expect(selectWhenSeen.value).toBe('new');
+    expect(selectedId.value).toBe('web');
+    applyEvent({ type: 'session.updated', session: fresh('other') });
+    applyEvent({ type: 'session.removed', id: 'web' });
+    expect(selectWhenSeen.value).toBe('new');
+    applyEvent({ type: 'session.updated', session: fresh('new') });
+    expect(selectedId.value).toBe('new');
+    expect(selectWhenSeen.value).toBeNull();
+  });
+
+  it('a snapshot that brings it selects it too', () => {
+    selectStarted('new');
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [...demoSessions(NOW), fresh('new')],
+    });
+    expect(selectedId.value).toBe('new');
+  });
+
+  it("the user's own selection meanwhile wins", () => {
+    selectStarted('new');
+    select('shop');
+    applyEvent({ type: 'session.updated', session: fresh('new') });
+    expect(selectedId.value).toBe('shop');
   });
 });
