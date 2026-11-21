@@ -7,16 +7,28 @@ interface View {
   id: string | null;
 }
 
+/** A view post that hangs is given up after this long, so later views are not held back. */
+const VIEW_TIMEOUT_MS = 5000;
+
 /** True while a view post is in flight. */
 let sending = false;
 /** The newest view asked for while a post was in flight; it goes next, older ones are dropped. */
 let queued: View | null = null;
 
+/** One attempt: true when the server took it. */
+function attempt(view: View): Promise<boolean> {
+  return apiPost('/api/view', view, { signal: AbortSignal.timeout(VIEW_TIMEOUT_MS) }).then(
+    (r) => r.ok,
+    () => false,
+  );
+}
+
 function post(view: View): void {
   sending = true;
-  // A failed hint is harmless: the next selection or snapshot sends it again.
-  apiPost('/api/view', view)
-    .catch(() => undefined)
+  // A failed hint is retried once, unless a newer view is waiting: that one goes instead.
+  // After that it is harmless: the next selection or snapshot sends it again.
+  attempt(view)
+    .then((ok) => (ok || queued ? ok : attempt(view)))
     .finally(() => {
       sending = false;
       const next = queued;

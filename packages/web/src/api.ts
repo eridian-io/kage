@@ -5,10 +5,15 @@ export function apiDelete(path: string): Promise<Response> {
   return fetch(path, { method: 'DELETE', headers: HEADERS });
 }
 
-export function apiPost(path: string, body: unknown): Promise<Response> {
+export function apiPost(
+  path: string,
+  body: unknown,
+  init: { signal?: AbortSignal } = {},
+): Promise<Response> {
   return fetch(path, {
     method: 'POST',
     headers: { ...HEADERS, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
+    ...(init.signal ? { signal: init.signal } : {}),
   });
 }

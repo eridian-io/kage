@@ -3,13 +3,26 @@ import { applyEvent, linesById, select, selectedId, sessions, streamId } from '.
 import { installView, sendView } from './view.ts';
 
 const posts = vi.hoisted(() => [] as [string, unknown][]);
-/** While `held`, posts stay pending until their resolver in `pending` is called. */
-const gate = vi.hoisted(() => ({ held: false, pending: [] as ((ok: boolean) => void)[] }));
+/** The signal each post was given. */
+const signals = vi.hoisted(() => [] as (AbortSignal | undefined)[]);
+/**
+ * While `held`, posts stay pending until their resolver in `pending` is called (or their signal
+ * aborts). `statuses` gives the status of the next unheld posts (default 204).
+ */
+const gate = vi.hoisted(() => ({
+  held: false,
+  pending: [] as ((ok: boolean) => void)[],
+  statuses: [] as number[],
+}));
 vi.mock('./api.ts', () => ({
-  apiPost: (path: string, body: unknown) => {
+  apiPost: (path: string, body: unknown, init?: { signal?: AbortSignal }) => {
     posts.push([path, body]);
-    if (!gate.held) return Promise.resolve(new Response(null, { status: 204 }));
+    signals.push(init?.signal);
+    if (!gate.held) {
+      return Promise.resolve(new Response(null, { status: gate.statuses.shift() ?? 204 }));
+    }
     return new Promise<Response>((resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('timeout')));
       gate.pending.push((ok) =>
         ok ? resolve(new Response(null, { status: 204 })) : reject(new Error('offline')),
       );
@@ -46,6 +59,8 @@ beforeEach(async () => {
   for (const r of gate.pending.splice(0)) r(true);
   await flush();
   posts.length = 0;
+  signals.length = 0;
+  gate.statuses = [];
   sessions.value = [];
   selectedId.value = null;
   streamId.value = null;
@@ -123,6 +138,44 @@ describe('view posting', () => {
       { streamId: 's1', id: 'a' },
       { streamId: 's2', id: 'a' },
     ]);
+  });
+});
+
+describe('view posts: timeout and retry', () => {
+  it('every post carries a 5 s timeout signal', () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    snap('s1', ['a']);
+    expect(timeout).toHaveBeenCalledWith(5000);
+    expect(signals.at(-1)).toBeInstanceOf(AbortSignal);
+    timeout.mockRestore();
+  });
+
+  it('a post answered not ok is retried once, then left', async () => {
+    gate.statuses = [503, 503];
+    snap('s1', ['a']);
+    await flush();
+    expect(posts.map((p) => p[1])).toEqual([
+      { streamId: 's1', id: 'a' },
+      { streamId: 's1', id: 'a' },
+    ]);
+    await flush();
+    expect(posts).toHaveLength(2);
+  });
+
+  it('a hung post times out and the newer view goes next, not the retry', async () => {
+    const ac = new AbortController();
+    const timeout = vi.spyOn(AbortSignal, 'timeout').mockReturnValue(ac.signal);
+    gate.held = true;
+    snap('s1', ['a', 'b']);
+    select('b');
+    expect(posts).toHaveLength(1);
+    ac.abort(); // the 5 s timeout
+    await flush();
+    expect(posts.map((p) => p[1])).toEqual([
+      { streamId: 's1', id: 'a' },
+      { streamId: 's1', id: 'b' },
+    ]);
+    timeout.mockRestore();
   });
 });
 
