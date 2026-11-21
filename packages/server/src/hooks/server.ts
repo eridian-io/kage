@@ -1,0 +1,148 @@
+import { chmod, lstat, mkdir, unlink } from 'node:fs/promises';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import { connect } from 'node:net';
+import { dirname } from 'node:path';
+import { type HookEvent, parseHookEvent } from './event.ts';
+
+export type { HookEvent, HookEventName } from './event.ts';
+
+/** Largest accepted body. */
+export const MAX_BODY = 1024 * 1024;
+/** Past this many bytes the connection is cut instead of drained for a 413 answer. */
+const HARD_CAP = 8 * MAX_BODY;
+
+const isPipe = (path: string) => path.startsWith('\\\\.\\pipe\\') || path.startsWith('//./pipe/');
+
+/** True when something accepts connections on the socket. */
+function probe(path: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    const s = connect(path);
+    const done = (alive: boolean) => {
+      s.destroy();
+      resolve(alive);
+    };
+    s.once('connect', () => done(true));
+    s.once('error', () => done(false));
+    s.setTimeout(1000, () => done(false));
+  });
+}
+
+/**
+ * Receives `kage hook` posts on a Unix socket (or a named pipe on Windows):
+ * `POST /hook` with a JSON envelope, at most 1 MB. The socket file is mode 0600.
+ */
+export class HookServer {
+  readonly path: string;
+  #now: () => number;
+  #listeners = new Set<(e: HookEvent) => void>();
+  #server: Server | null = null;
+
+  constructor(path: string, opts: { now?: () => number } = {}) {
+    this.path = path;
+    this.#now = opts.now ?? Date.now;
+  }
+
+  on(fn: (e: HookEvent) => void): () => void {
+    this.#listeners.add(fn);
+    return () => {
+      this.#listeners.delete(fn);
+    };
+  }
+
+  async listen(): Promise<void> {
+    if (this.#server) throw new Error('HookServer is already listening');
+    if (!isPipe(this.path)) await this.#prepareSocketPath();
+    const server = createServer((req, res) => this.#handle(req, res));
+    server.headersTimeout = 5000;
+    server.requestTimeout = 10_000;
+    await new Promise<void>((resolve, reject) => {
+      const onError = (err: NodeJS.ErrnoException) => {
+        reject(err.code === 'EADDRINUSE' ? new Error(`Hook socket ${this.path} is in use.`) : err);
+      };
+      server.once('error', onError);
+      server.listen(this.path, () => {
+        server.off('error', onError);
+        resolve();
+      });
+    });
+    this.#server = server;
+    if (!isPipe(this.path)) await chmod(this.path, 0o600);
+  }
+
+  async close(): Promise<void> {
+    const server = this.#server;
+    if (!server) return;
+    this.#server = null;
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections();
+    });
+  }
+
+  /** Makes the parent directory (0700) and removes a stale socket left by a crash. */
+  async #prepareSocketPath(): Promise<void> {
+    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    let st: Awaited<ReturnType<typeof lstat>>;
+    try {
+      st = await lstat(this.path);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+      throw err;
+    }
+    if (!st.isSocket())
+      throw new Error(`Hook socket path ${this.path} exists and is not a socket.`);
+    if (await probe(this.path)) throw new Error(`Hook socket ${this.path} is in use.`);
+    await unlink(this.path);
+  }
+
+  #handle(req: IncomingMessage, res: ServerResponse): void {
+    const reply = (status: number) => {
+      if (res.headersSent) return;
+      res.writeHead(status, status === 204 ? {} : { 'content-length': 0 });
+      res.end();
+    };
+    req.on('error', () => res.destroy());
+    if (req.url !== '/hook') {
+      req.resume();
+      reply(404);
+      return;
+    }
+    if (req.method !== 'POST') {
+      req.resume();
+      res.setHeader('allow', 'POST');
+      reply(405);
+      return;
+    }
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on('data', (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > HARD_CAP) {
+        req.destroy();
+        res.destroy();
+        return;
+      }
+      if (size <= MAX_BODY) chunks.push(chunk);
+      else chunks.length = 0;
+    });
+    req.on('end', () => {
+      if (size > MAX_BODY) return reply(413);
+      let body: unknown;
+      try {
+        body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+      } catch {
+        return reply(400);
+      }
+      const event = parseHookEvent(body, this.#now());
+      if (!event) return reply(400);
+      reply(204);
+      for (const fn of [...this.#listeners]) {
+        try {
+          fn(event);
+        } catch {
+          // one bad listener must not stop the others
+        }
+      }
+    });
+  }
+}

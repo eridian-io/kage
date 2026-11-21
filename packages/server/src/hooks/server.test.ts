@@ -1,0 +1,293 @@
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { request } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { type HookEvent, parseHookEvent } from './event.ts';
+import { HookServer } from './server.ts';
+
+const FIXTURES = join(import.meta.dirname, '../../test/fixtures/hooks');
+const payload = (file: string) => JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'));
+const isWin = process.platform === 'win32';
+
+function send(
+  socketPath: string,
+  body: string | Buffer,
+  opts: { path?: string; method?: string } = {},
+): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const req = request(
+      {
+        socketPath,
+        path: opts.path ?? '/hook',
+        method: opts.method ?? 'POST',
+        headers: { 'content-type': 'application/json' },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString() }),
+        );
+      },
+    );
+    req.on('error', reject);
+    req.end(body);
+  });
+}
+
+let dir: string;
+let path: string;
+let server: HookServer;
+
+beforeEach(async () => {
+  dir = mkdtempSync(join(tmpdir(), 'kage-hook-'));
+  path = isWin
+    ? `\\\\.\\pipe\\kage-test-${randomBytes(4).toString('hex')}`
+    : join(dir, 'kage.sock');
+  server = new HookServer(path, { now: () => 42 });
+  await server.listen();
+});
+
+afterEach(async () => {
+  await server.close();
+  rmSync(dir, { recursive: true, force: true });
+});
+
+describe('HookServer', () => {
+  it('POST /hook with a fixture delivers a parsed HookEvent', async () => {
+    const got: HookEvent[] = [];
+    server.on((e) => got.push(e));
+    const res = await send(
+      path,
+      JSON.stringify({ event: 'PreToolUse', pane: '%7', payload: payload('pre-tool-use.json') }),
+    );
+    expect(res.status).toBe(204);
+    expect(got).toEqual([
+      {
+        event: 'PreToolUse',
+        pane: '%7',
+        sessionId: '00000000-0000-4000-8000-000000000001',
+        transcriptPath:
+          '/home/dev/.claude/projects/-home-dev-projects-demo/00000000-0000-4000-8000-000000000001.jsonl',
+        cwd: '/home/dev/projects/demo',
+        notification: null,
+        message: null,
+        toolName: 'Edit',
+        toolInput: payload('pre-tool-use.json').tool_input,
+        at: 42,
+      },
+    ]);
+  });
+
+  it('unsubscribes', async () => {
+    const got: HookEvent[] = [];
+    const off = server.on((e) => got.push(e));
+    off();
+    await send(path, JSON.stringify({ event: 'Stop', pane: null, payload: payload('stop.json') }));
+    expect(got).toEqual([]);
+  });
+
+  it('a throwing listener does not stop the others or the response', async () => {
+    const got: HookEvent[] = [];
+    server.on(() => {
+      throw new Error('boom');
+    });
+    server.on((e) => got.push(e));
+    const res = await send(
+      path,
+      JSON.stringify({ event: 'Stop', pane: null, payload: payload('stop.json') }),
+    );
+    expect(res.status).toBe(204);
+    expect(got).toHaveLength(1);
+  });
+
+  it('bodies over 1 MB → 413, and nothing is delivered', async () => {
+    const got: HookEvent[] = [];
+    server.on((e) => got.push(e));
+    const big = JSON.stringify({
+      event: 'Stop',
+      pane: null,
+      payload: { ...payload('stop.json'), pad: 'x'.repeat(1024 * 1024) },
+    });
+    expect((await send(path, big)).status).toBe(413);
+    expect(got).toEqual([]);
+  });
+
+  it('a body of exactly 1 MB is accepted', async () => {
+    const base = JSON.stringify({
+      event: 'Stop',
+      pane: null,
+      payload: { ...payload('stop.json'), pad: '' },
+    });
+    const body = base.replace('"pad":""', `"pad":"${'x'.repeat(1024 * 1024 - base.length)}"`);
+    expect(Buffer.byteLength(body)).toBe(1024 * 1024);
+    expect((await send(path, body)).status).toBe(204);
+  });
+
+  it('other paths → 404', async () => {
+    expect((await send(path, '{}', { path: '/nope' })).status).toBe(404);
+    expect((await send(path, '{}', { path: '/hook/x' })).status).toBe(404);
+  });
+
+  it('other methods on /hook → 405', async () => {
+    expect((await send(path, '', { method: 'GET' })).status).toBe(405);
+  });
+
+  it('malformed JSON or invalid fields → 400', async () => {
+    expect((await send(path, '{not json')).status).toBe(400);
+    expect((await send(path, JSON.stringify({ event: 'Nope', payload: {} }))).status).toBe(400);
+    const bad = { ...payload('stop.json'), session_id: 7 };
+    expect((await send(path, JSON.stringify({ event: 'Stop', payload: bad }))).status).toBe(400);
+  });
+
+  it('close() then listen() again on the same path works', async () => {
+    await server.close();
+    server = new HookServer(path);
+    await server.listen();
+    const res = await send(
+      path,
+      JSON.stringify({ event: 'Stop', pane: null, payload: payload('stop.json') }),
+    );
+    expect(res.status).toBe(204);
+  });
+});
+
+describe.runIf(!isWin)('HookServer on a Unix socket', () => {
+  it('the socket file has mode 0600', () => {
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+  });
+
+  it('replaces a stale socket file left by a crashed server', async () => {
+    const stale = join(dir, 'stale.sock');
+    // A child listens, then is SIGKILLed: the socket file stays behind with nobody on it.
+    const { spawn } = await import('node:child_process');
+    const child = spawn(
+      process.execPath,
+      [
+        '-e',
+        `require('net').createServer().listen(process.argv[1], () => console.log('up'))`,
+        stale,
+      ],
+      { stdio: ['ignore', 'pipe', 'ignore'] },
+    );
+    await new Promise<void>((r) => child.stdout.once('data', () => r()));
+    const exited = new Promise<void>((r) => child.once('exit', () => r()));
+    child.kill('SIGKILL');
+    await exited;
+    expect(statSync(stale).isSocket()).toBe(true);
+    const h = new HookServer(stale);
+    await h.listen();
+    expect((await send(stale, '{}', { path: '/nope' })).status).toBe(404);
+    await h.close();
+  });
+
+  it('never deletes a regular file at the socket path', async () => {
+    const file = join(dir, 'not-a-socket');
+    writeFileSync(file, 'keep me');
+    await expect(new HookServer(file).listen()).rejects.toThrow(/not a socket/);
+    expect(readFileSync(file, 'utf8')).toBe('keep me');
+  });
+
+  it('refuses to take over a socket another server is listening on', async () => {
+    const other = new HookServer(path);
+    await expect(other.listen()).rejects.toThrow(/in use/);
+  });
+
+  it('creates the parent directory with mode 0700', async () => {
+    const nested = join(dir, 'state', 'kage', 'kage.sock');
+    const h = new HookServer(nested);
+    await h.listen();
+    expect(statSync(join(dir, 'state', 'kage')).mode & 0o777).toBe(0o700);
+    await h.close();
+  });
+});
+
+describe('parseHookEvent', () => {
+  const ok = (body: unknown) => parseHookEvent(body, 1);
+
+  it('maps notification_type', () => {
+    const p = payload('notification-permission.json');
+    expect(ok({ event: 'Notification', pane: null, payload: p })?.notification).toBe('permission');
+    expect(
+      ok({ event: 'Notification', pane: null, payload: payload('notification-idle.json') })
+        ?.notification,
+    ).toBe('idle');
+    expect(
+      ok({ event: 'Notification', pane: null, payload: { ...p, notification_type: 'auth_ok' } })
+        ?.notification,
+    ).toBe('other');
+    const { notification_type: _, ...noType } = p;
+    expect(ok({ event: 'Notification', pane: null, payload: noType })?.notification).toBe('other');
+    expect(ok({ event: 'Notification', pane: null, payload: p })?.message).toBe(
+      'Claude needs your permission',
+    );
+  });
+
+  it('notification is null for other events', () => {
+    expect(ok({ event: 'Stop', pane: null, payload: payload('stop.json') })?.notification).toBe(
+      null,
+    );
+  });
+
+  it('accepts all nine events and missing optional fields', () => {
+    for (const event of [
+      'SessionStart',
+      'UserPromptSubmit',
+      'PreToolUse',
+      'PermissionRequest',
+      'PostToolUse',
+      'PostToolUseFailure',
+      'Notification',
+      'Stop',
+      'SessionEnd',
+    ]) {
+      expect(ok({ event, payload: { session_id: 's' } })).toEqual({
+        event,
+        pane: null,
+        sessionId: 's',
+        transcriptPath: null,
+        cwd: null,
+        notification: event === 'Notification' ? 'other' : null,
+        message: null,
+        toolName: null,
+        toolInput: null,
+        at: 1,
+      });
+    }
+  });
+
+  it('keeps tool_input for AskUserQuestion', () => {
+    const p = payload('pre-tool-use-ask-question.json');
+    expect(ok({ event: 'PreToolUse', pane: '%1', payload: p })?.toolInput).toEqual(p.tool_input);
+  });
+
+  it.each([
+    ['not an object', 'x'],
+    ['null', null],
+    ['an array', []],
+    ['unknown event', { event: 'Bogus', payload: { session_id: 's' } }],
+    ['no payload', { event: 'Stop' }],
+    ['payload array', { event: 'Stop', payload: [] }],
+    ['no session_id', { event: 'Stop', payload: {} }],
+    ['empty session_id', { event: 'Stop', payload: { session_id: '' } }],
+    ['numeric cwd', { event: 'Stop', payload: { session_id: 's', cwd: 1 } }],
+    [
+      'numeric transcript_path',
+      { event: 'Stop', payload: { session_id: 's', transcript_path: 1 } },
+    ],
+    ['numeric message', { event: 'Stop', payload: { session_id: 's', message: 1 } }],
+    ['numeric tool_name', { event: 'Stop', payload: { session_id: 's', tool_name: 1 } }],
+    ['string tool_input', { event: 'Stop', payload: { session_id: 's', tool_input: 'x' } }],
+    ['array tool_input', { event: 'Stop', payload: { session_id: 's', tool_input: [] } }],
+    [
+      'numeric notification_type',
+      { event: 'Notification', payload: { session_id: 's', notification_type: 1 } },
+    ],
+    ['numeric pane', { event: 'Stop', pane: 3, payload: { session_id: 's' } }],
+    ['pane not a tmux pane id', { event: 'Stop', pane: 'x; rm', payload: { session_id: 's' } }],
+  ])('rejects %s', (_name, body) => {
+    expect(ok(body)).toBeNull();
+  });
+});
