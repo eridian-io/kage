@@ -25,23 +25,41 @@ function detectTmux(): boolean {
 /** True when `tmux -V` runs (false on Windows or without tmux). */
 export const hasTmux: boolean = detectTmux();
 
-export function tmuxArgs(socket: string | null, args: string[]): string[] {
-  return socket ? ['-L', socket, ...args] : args;
+export interface TmuxTarget {
+  socket: string | null;
+  /** ; only matters when the call starts the server. */
+  configFile?: string;
 }
+
+export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
+  return [
+    ...(t.configFile ? ['-f', t.configFile] : []),
+    ...(t.socket ? ['-L', t.socket] : []),
+    ...args,
+  ];
+}
+
+const MISSING_RE = /no server running|error connecting to|can't find session/i;
+const stderrOf = (e: unknown): string => String((e as { stderr?: unknown }).stderr ?? '');
 
 export class TmuxClient {
   readonly #session: string;
-  readonly #socket: string | null;
+  readonly #target: TmuxTarget;
   readonly #exec: ExecFn;
 
-  constructor(opts: { session: string; socket: string | null; exec?: ExecFn }) {
+  constructor(opts: {
+    session: string;
+    socket: string | null;
+    configFile?: string;
+    exec?: ExecFn;
+  }) {
     this.#session = opts.session;
-    this.#socket = opts.socket;
+    this.#target = { socket: opts.socket, configFile: opts.configFile };
     this.#exec = opts.exec ?? defaultExec;
   }
 
   #run(args: string[]): Promise<{ stdout: string; stderr: string }> {
-    return this.#exec('tmux', tmuxArgs(this.#socket, args));
+    return this.#exec('tmux', tmuxArgs(this.#target, args));
   }
 
   /** Creates the detached session when it is missing. */
@@ -49,11 +67,16 @@ export class TmuxClient {
     try {
       await this.#run(['has-session', '-t', `=${this.#session}`]);
     } catch {
-      await this.#run(['new-session', '-d', '-s', this.#session]);
+      try {
+        await this.#run(['new-session', '-d', '-s', this.#session]);
+      } catch (e) {
+        // A concurrent caller created it between our has-session and new-session.
+        if (!/duplicate session/i.test(stderrOf(e))) throw e;
+      }
     }
   }
 
-  /** The session's windows; [] when the server or the session is missing. */
+  /** The session's windows; [] only when tmux says the server or session is missing, else throws. */
   async listWindows(): Promise<TmuxWindow[]> {
     try {
       const { stdout } = await this.#run([
@@ -64,8 +87,9 @@ export class TmuxClient {
         LIST_WINDOWS_FORMAT,
       ]);
       return parseWindows(stdout);
-    } catch {
-      return [];
+    } catch (e) {
+      if (MISSING_RE.test(stderrOf(e))) return [];
+      throw e;
     }
   }
 

@@ -1,9 +1,10 @@
 import { spawn as nodeSpawn } from 'node:child_process';
-import { tmuxArgs } from './client.ts';
+import { type TmuxTarget, tmuxArgs } from './client.ts';
 
 export type WatchEvent =
   | { type: 'windows-changed' }
   | { type: 'activity'; paneId: string }
+  | { type: 'up' }
   | { type: 'down' };
 
 interface WatchedProcess {
@@ -28,7 +29,9 @@ const BACKOFF_MAX_MS = 30_000;
  */
 export class TmuxWatcher {
   readonly #session: string;
-  readonly #socket: string | null;
+  readonly #target: TmuxTarget;
+  readonly #beforeLaunch: (() => Promise<void>) | undefined;
+  #gen = 0;
   readonly #spawn: SpawnFn;
   readonly #throttleMs: number;
   readonly #listeners = new Set<(e: WatchEvent) => void>();
@@ -41,11 +44,14 @@ export class TmuxWatcher {
   constructor(opts: {
     session: string;
     socket: string | null;
+    configFile?: string;
+    beforeLaunch?: () => Promise<void>;
     spawn?: SpawnFn;
     throttleMs?: number;
   }) {
     this.#session = opts.session;
-    this.#socket = opts.socket;
+    this.#target = { socket: opts.socket, configFile: opts.configFile };
+    this.#beforeLaunch = opts.beforeLaunch;
     this.#spawn = opts.spawn ?? defaultSpawn;
     this.#throttleMs = opts.throttleMs ?? 250;
   }
@@ -65,6 +71,7 @@ export class TmuxWatcher {
 
   stop(): void {
     this.#running = false;
+    this.#gen++;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
     const p = this.#proc;
@@ -77,8 +84,36 @@ export class TmuxWatcher {
     for (const fn of this.#listeners) fn(e);
   }
 
+  #retryLater(): void {
+    const delay = this.#backoff;
+    this.#backoff = Math.min(this.#backoff * 2, BACKOFF_MAX_MS);
+    this.#timer = setTimeout(() => {
+      this.#timer = null;
+      if (this.#running) this.#launch();
+    }, delay);
+  }
+
   #launch(): void {
-    const args = tmuxArgs(this.#socket, ['-C', 'attach', '-t', this.#session]);
+    if (!this.#beforeLaunch) {
+      this.#spawnClient();
+      return;
+    }
+    const gen = this.#gen;
+    this.#beforeLaunch().then(
+      () => {
+        if (this.#running && gen === this.#gen) this.#spawnClient();
+      },
+      () => {
+        if (!this.#running || gen !== this.#gen) return;
+        this.#emit({ type: 'down' });
+        this.#retryLater();
+      },
+    );
+  }
+
+  #spawnClient(): void {
+    let first = true;
+    const args = tmuxArgs(this.#target, ['-C', 'attach', '-t', this.#session]);
     const proc = this.#spawn('tmux', args);
     this.#proc = proc;
     let buf = '';
@@ -87,6 +122,10 @@ export class TmuxWatcher {
       buf += chunk.toString();
       let nl = buf.indexOf('\n');
       while (nl >= 0) {
+        if (first) {
+          first = false;
+          this.#emit({ type: 'up' });
+        }
         this.#line(buf.slice(0, nl).replace(/\r$/, ''));
         buf = buf.slice(nl + 1);
         nl = buf.indexOf('\n');
@@ -99,12 +138,7 @@ export class TmuxWatcher {
       this.#proc = null;
       this.#emit({ type: 'down' });
       if (!this.#running) return;
-      const delay = this.#backoff;
-      this.#backoff = Math.min(this.#backoff * 2, BACKOFF_MAX_MS);
-      this.#timer = setTimeout(() => {
-        this.#timer = null;
-        if (this.#running) this.#launch();
-      }, delay);
+      this.#retryLater();
     };
     proc.on('exit', onEnd);
     proc.on('error', onEnd);

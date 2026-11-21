@@ -16,7 +16,7 @@ class FakeProc extends EventEmitter {
   }
 }
 
-function setup(throttleMs?: number) {
+function setup(throttleMs?: number, extra: { beforeLaunch?: () => Promise<void> } = {}) {
   const procs: FakeProc[] = [];
   const calls: { cmd: string; args: string[] }[] = [];
   const spawn = ((cmd: string, args: string[]) => {
@@ -25,7 +25,7 @@ function setup(throttleMs?: number) {
     procs.push(p);
     return p;
   }) as never;
-  const w = new TmuxWatcher({ session: 'kage', socket: null, spawn, throttleMs });
+  const w = new TmuxWatcher({ session: 'kage', socket: null, spawn, throttleMs, ...extra });
   const events: WatchEvent[] = [];
   w.on((e) => events.push(e));
   return { w, procs, calls, events };
@@ -59,7 +59,7 @@ describe('TmuxWatcher', () => {
       w.start();
       procs[0]?.say(`${line}\n`);
       await flush();
-      expect(events).toEqual([{ type: 'windows-changed' }]);
+      expect(events).toEqual([{ type: 'up' }, { type: 'windows-changed' }]);
       w.stop();
     },
   );
@@ -87,7 +87,7 @@ describe('TmuxWatcher', () => {
     procs[0]?.say('%window-a');
     procs[0]?.say('dd @1\n%begin 1 2 0\n%end 1 2 0\n');
     await flush();
-    expect(events).toEqual([{ type: 'windows-changed' }]);
+    expect(events).toEqual([{ type: 'up' }, { type: 'windows-changed' }]);
     w.stop();
   });
 
@@ -136,5 +136,86 @@ describe('TmuxWatcher', () => {
     b.w.stop();
     await vi.advanceTimersByTimeAsync(60000);
     expect(b.procs).toHaveLength(1);
+  });
+
+  it('emits up on the first line of each launch', async () => {
+    const { w, procs, events } = setup();
+    w.start();
+    await flush();
+    expect(events).toEqual([]);
+    procs[0]?.say('%begin 1 2 0\n%end 1 2 0\n%output %1 x\n');
+    await flush();
+    expect(events.filter((e) => e.type === 'up')).toHaveLength(1);
+    expect(events[0]).toEqual({ type: 'up' });
+    procs[0]?.emit('exit', 1);
+    await vi.advanceTimersByTimeAsync(1000);
+    procs[1]?.say('%begin 1 2 0\n');
+    await flush();
+    expect(events.filter((e) => e.type === 'up')).toHaveLength(2);
+    w.stop();
+  });
+
+  it('awaits beforeLaunch before every spawn', async () => {
+    const order: string[] = [];
+    const procs: FakeProc[] = [];
+    const spawn = (() => {
+      order.push('spawn');
+      const p = new FakeProc();
+      procs.push(p);
+      return p;
+    }) as never;
+    const w = new TmuxWatcher({
+      session: 'kage',
+      socket: null,
+      spawn,
+      beforeLaunch: async () => {
+        order.push('before');
+      },
+    });
+    w.start();
+    expect(order).toEqual(['before']);
+    await flush();
+    expect(order).toEqual(['before', 'spawn']);
+    procs[0]?.emit('exit', 1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(order).toEqual(['before', 'spawn', 'before', 'spawn']);
+    w.stop();
+  });
+
+  it('counts a rejecting beforeLaunch as a failed launch with backoff', async () => {
+    let calls = 0;
+    const { w, procs, events } = setup(undefined, {
+      beforeLaunch: async () => {
+        calls++;
+        if (calls < 3) throw new Error('tmux down');
+      },
+    });
+    w.start();
+    await flush();
+    expect(calls).toBe(1);
+    expect(procs).toHaveLength(0);
+    expect(events).toEqual([{ type: 'down' }]);
+    await vi.advanceTimersByTimeAsync(999);
+    expect(calls).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(calls).toBe(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(calls).toBe(3);
+    expect(procs).toHaveLength(1);
+    w.stop();
+  });
+
+  it('adds -f and -L to the attach command', () => {
+    const calls: string[][] = [];
+    const spawn = ((_c: string, a: string[]) => {
+      calls.push(a);
+      return new FakeProc();
+    }) as never;
+    const w = new TmuxWatcher({ session: 's', socket: 'k', configFile: '/dev/null', spawn });
+    w.start();
+    expect(calls[0]).toEqual(['-f', '/dev/null', '-L', 'k', '-C', 'attach', '-t', 's']);
+    w.stop();
   });
 });

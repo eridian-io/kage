@@ -14,15 +14,16 @@ afterAll(() => {
 });
 
 describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
-  const client = new TmuxClient({ session: 'kage', socket: sock });
-  const tmux = (...a: string[]) => execFileSync('tmux', ['-L', sock, ...a], { encoding: 'utf8' });
+  const client = new TmuxClient({ session: 'kage', socket: sock, configFile: '/dev/null' });
+  const tmux = (...a: string[]) =>
+    execFileSync('tmux', ['-f', '/dev/null', '-L', sock, ...a], { encoding: 'utf8' });
 
   it('lists no windows when there is no server', async () => {
     expect(await client.listWindows()).toEqual([]);
   });
 
   it('ensureSession creates the session, idempotently', async () => {
-    await client.ensureSession();
+    await Promise.all([client.ensureSession(), client.ensureSession(), client.ensureSession()]);
     await client.ensureSession();
     expect((await client.listWindows()).length).toBe(1);
   });
