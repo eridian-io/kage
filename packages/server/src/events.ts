@@ -75,11 +75,14 @@ export class EventHub {
   view(streamId: string, id: string | null): boolean {
     const c = this.clients.get(streamId);
     if (!c) return false;
+    // Read the lines first: if that throws, the stream isn't half-switched. The reset goes out
+    // before the source learns of the view, so lines it emits in response arrive after it.
+    const lines = id === null ? null : this.source.lines(id);
     c.viewing = id;
-    this.syncViewed();
-    if (id !== null) {
-      this.send(c, frame({ type: 'session.lines', id, lines: this.source.lines(id), reset: true }));
+    if (id !== null && lines !== null) {
+      this.send(c, frame({ type: 'session.lines', id, lines, reset: true }));
     }
+    this.syncViewed();
     return true;
   }
 
@@ -127,7 +130,8 @@ export class EventHub {
       // A tab that stops reading must not make the server buffer without limit.
       if ((c.controller.desiredSize ?? 0) < -this.maxQueue) {
         this.drop(c);
-        c.controller.close();
+        // error(), not close(): close() would keep the backlog queued until the tab read it.
+        c.controller.error(new Error('Event stream fell too far behind'));
       }
     } catch {
       this.drop(c);

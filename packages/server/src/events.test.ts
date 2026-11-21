@@ -1,13 +1,52 @@
+import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
-import type { SourceEvent } from './source.ts';
+import { NotFoundError, type SessionSource, type SourceEvent } from './source.ts';
 
 const dec = new TextDecoder();
 const read = async (r: ReadableStreamDefaultReader<Uint8Array>) => {
   const { value } = await r.read();
   return dec.decode(value);
 };
+
+/** A source the tests drive by hand: emit() any event, see every setViewed call. */
+class StubSource implements SessionSource {
+  sessions: Session[] = demoSessions(1);
+  readonly listeners = new Set<(e: SourceEvent) => void>();
+  readonly viewedCalls: string[][] = [];
+  onSetViewed: ((ids: ReadonlySet<string>) => void) | null = null;
+  linesCalls = 0;
+
+  list(): Session[] {
+    return this.sessions.map((s) => ({ ...s, lines: [] }));
+  }
+  get(id: string): Session | undefined {
+    return this.sessions.find((s) => s.id === id);
+  }
+  lines(id: string): DisplayLine[] {
+    this.linesCalls++;
+    return this.get(id)?.lines ?? [];
+  }
+  async remove(id: string): Promise<void> {
+    if (!this.get(id)) throw new NotFoundError(id);
+    this.sessions = this.sessions.filter((s) => s.id !== id);
+    this.emit({ type: 'session.removed', id });
+  }
+  setViewed(ids: ReadonlySet<string>): void {
+    this.viewedCalls.push([...ids].sort());
+    this.onSetViewed?.(ids);
+  }
+  subscribe(fn: (e: SourceEvent) => void): () => void {
+    this.listeners.add(fn);
+    return () => {
+      this.listeners.delete(fn);
+    };
+  }
+  emit(e: SourceEvent): void {
+    for (const fn of [...this.listeners]) fn(e);
+  }
+}
 
 afterEach(() => vi.useRealTimers());
 
@@ -70,8 +109,14 @@ describe('EventHub', () => {
       const snap = JSON.parse((await read(reader)).split('data: ')[1] ?? '');
       return { reader, streamId: snap.streamId as string };
     };
+    const lines = (text: string): SourceEvent => ({
+      type: 'session.lines',
+      id: 'shop',
+      lines: [{ kind: 'out', text }],
+    });
+
     it('sends a view only to its stream, and stops on null', async () => {
-      const source = new DemoSource(1);
+      const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');
       const a = await open(hub);
       const b = await open(hub);
@@ -84,19 +129,13 @@ describe('EventHub', () => {
       expect(ev.lines).toHaveLength(9);
       expect(ev.lines).toEqual(source.lines('shop'));
 
-      const emitLines = (text: string) => {
-        const { listeners } = source as unknown as { listeners: Set<(e: SourceEvent) => void> };
-        for (const l of listeners)
-          l({ type: 'session.lines', id: 'shop', lines: [{ kind: 'out', text }] });
-      };
-      emitLines('x1');
+      source.emit(lines('x1'));
       expect(await read(a.reader)).toContain('"reset":false');
       // A source's reset (a pane snapshot or a new transcript) passes through.
-      const { listeners } = source as unknown as { listeners: Set<(e: SourceEvent) => void> };
-      for (const l of listeners) l({ type: 'session.lines', id: 'shop', lines: [], reset: true });
+      source.emit({ type: 'session.lines', id: 'shop', lines: [], reset: true });
       expect(await read(a.reader)).toContain('"reset":true');
       expect(hub.view(a.streamId, null)).toBe(true);
-      emitLines('x2');
+      source.emit(lines('x2'));
       await source.remove('docs');
       // a got no lines after null: its next frame is the removal
       expect(await read(a.reader)).toContain('session.removed');
@@ -104,25 +143,73 @@ describe('EventHub', () => {
       expect(await read(b.reader)).toContain('session.removed');
       hub.close();
     });
-    it('session.updated reaches all streams', async () => {
-      const source = new DemoSource(1);
+    it('session.updated reaches every stream, viewing or not', async () => {
+      const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');
       const a = await open(hub);
       const b = await open(hub);
       hub.view(a.streamId, 'shop');
       await read(a.reader);
-      await source.remove('docs');
+      const shop = source.get('shop');
+      if (!shop) throw new Error('no shop');
+      const updated: Session = { ...shop, status: 'done', lines: [] };
+      source.emit({ type: 'session.updated', session: updated });
+      for (const r of [a.reader, b.reader]) {
+        const got = await read(r);
+        expect(got.startsWith('event: session.updated\ndata: ')).toBe(true);
+        expect(JSON.parse(got.split('data: ')[1] ?? '')).toEqual({
+          type: 'session.updated',
+          session: updated,
+        });
+      }
+      hub.close();
+    });
+    it('a removed session stops being viewed: its later lines reach nobody', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      hub.view(a.streamId, 'shop');
+      await read(a.reader);
+      source.emit({ type: 'session.removed', id: 'shop' });
       expect(await read(a.reader)).toContain('session.removed');
-      expect(await read(b.reader)).toContain('session.removed');
+      source.emit(lines('late'));
+      source.emit({ type: 'session.removed', id: 'docs' });
+      // the next frame is the second removal, not the late lines
+      expect(await read(a.reader)).toContain('"id":"docs"');
+      hub.close();
+    });
+    it('reads the lines before it starts routing, so the reset comes first', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      // A source that emits as soon as it learns the view (e.g. a fresh pane capture).
+      source.onSetViewed = () => source.emit(lines('fresh'));
+      hub.view(a.streamId, 'shop');
+      const first = JSON.parse((await read(a.reader)).split('data: ')[1] ?? '');
+      expect(first).toMatchObject({ id: 'shop', reset: true });
+      expect(first.lines).toHaveLength(9);
+      const second = JSON.parse((await read(a.reader)).split('data: ')[1] ?? '');
+      expect(second).toMatchObject({ reset: false, lines: [{ text: 'fresh' }] });
+      hub.close();
+    });
+    it('a source whose lines() throws leaves the stream not viewing', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      source.lines = () => {
+        throw new Error('boom');
+      };
+      expect(() => hub.view(a.streamId, 'shop')).toThrow('boom');
+      expect(source.viewedCalls).toEqual([]);
       hub.close();
     });
     it('an unknown stream id is false', () => {
-      const hub = new EventHub(new DemoSource(1), 'h', '/p');
+      const hub = new EventHub(new StubSource(), 'h', '/p');
       expect(hub.view('nope', 'shop')).toBe(false);
       hub.close();
     });
-    it('closes and removes a stream that never reads', async () => {
-      const source = new DemoSource(1);
+    it('errors and removes a stream that never reads, discarding its queue', async () => {
+      const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p', { maxQueue: 3 });
       const slow = await open(hub);
       const quick = await open(hub);
@@ -130,16 +217,14 @@ describe('EventHub', () => {
       for (let i = 0; i < 6; i++) hub.view(slow.streamId, 'shop');
       expect(hub.clientCount).toBe(1);
       expect(hub.view(slow.streamId, 'shop')).toBe(false);
+      // The queued frames are dropped with the stream: the reader sees an error, not a backlog.
+      await expect(slow.reader.read()).rejects.toThrow();
       hub.view(quick.streamId, 'shop');
       expect(await read(quick.reader)).toContain('session.lines');
       hub.close();
     });
     it('tells the source the union of viewed sessions whenever it changes', async () => {
-      const source = new DemoSource(1);
-      const calls: string[][] = [];
-      Object.assign(source, {
-        setViewed: (ids: ReadonlySet<string>) => calls.push([...ids].sort()),
-      });
+      const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');
       const a = await open(hub);
       const b = await open(hub);
@@ -147,22 +232,18 @@ describe('EventHub', () => {
       hub.view(b.streamId, 'shop'); // same union: no call
       hub.view(b.streamId, 'docs');
       hub.view(a.streamId, null);
-      expect(calls).toEqual([['shop'], ['docs', 'shop'], ['docs']]);
+      expect(source.viewedCalls).toEqual([['shop'], ['docs', 'shop'], ['docs']]);
       await b.reader.cancel(); // a dropped stream leaves the union
-      expect(calls.at(-1)).toEqual([]);
+      expect(source.viewedCalls.at(-1)).toEqual([]);
       hub.close();
     });
     it('a removed session leaves the union', async () => {
-      const source = new DemoSource(1);
-      const calls: string[][] = [];
-      Object.assign(source, {
-        setViewed: (ids: ReadonlySet<string>) => calls.push([...ids].sort()),
-      });
+      const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');
       const a = await open(hub);
       hub.view(a.streamId, 'docs');
       await source.remove('docs');
-      expect(calls).toEqual([['docs'], []]);
+      expect(source.viewedCalls).toEqual([['docs'], []]);
       hub.close();
     });
   });
