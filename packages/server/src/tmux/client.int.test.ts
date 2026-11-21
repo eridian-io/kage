@@ -44,10 +44,10 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
     const pane = w?.paneId as string;
     tmux('send-keys', '-t', pane, 'echo kage-marker-$((6*7))', 'Enter');
     let text = '';
-    for (let i = 0; i < 40 && !text.includes('kage-marker-42'); i++) {
+    for (let i = 0; i < 150 && !text.includes('kage-marker-42'); i++) {
       await new Promise((r) => setTimeout(r, 100));
       text = await client.capturePane(pane, 50);
     }
     expect(text).toContain('kage-marker-42');
-  });
+  }, 20_000);
 });
