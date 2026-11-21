@@ -83,15 +83,17 @@ Then open the address it prints. You need Node 24.2 or newer, and Tailscale up (
 Live sessions need Linux or macOS with tmux 3.2 or newer. On Windows, use WSL and clone the repo inside WSL's own file system (for example `~/kage`), not under `/mnt/c`. There is no installer yet: it comes in phase 6, so for now run the command from the checkout. A shell function makes the steps below shorter:
 
 ```sh
-kage() { node /home/dev/kage/packages/server/src/main.ts "$@"; }
+kage() { node "$HOME/kage/packages/server/src/main.ts" "$@"; }
 ```
 
-1. Build the board, once: `pnpm build`.
+Adjust the path to where you cloned the repo.
+
+1. Install and build the board, once: `corepack enable && pnpm install && pnpm build`.
 2. Start Kage on loopback: `KAGE_HOST=127.0.0.1 kage serve`. Without `KAGE_HOST` it listens on your Tailscale address. Open the address it prints, for example `http://127.0.0.1:8080`, in any browser that can reach it.
-3. Start a tmux session named `kage`, and run Claude inside it:
+3. `kage serve` creates the tmux session `kage`. In a second terminal, attach to it (`tmux attach -t kage`, or add a window with `tmux new-window -t kage`) and run Claude there:
 
 ```sh
-tmux new-session -s kage
+tmux attach -t kage
 claude --settings "$(kage hooks-path)" --permission-mode default
 ```
 
