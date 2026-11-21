@@ -32,6 +32,10 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 - **B27** Two hooked claude processes in one window: the first wins. Side-pane activity re-lists the windows.
 - **B28** The web doesn't clamp the files list to its limit. The server owns the bound, so this only matters if the server changes.
 - **B29** The 404 for an unknown project or branch echoes the name without a length cap (cosmetic).
+- **B30** K2's guard is narrow: after a failed `git worktree add`, Kage deletes `kage/<slug>` unless git's message says the branch already existed. A branch someone else creates between the slug check and the `worktree add`, followed by a failure for another reason, would be deleted. Compare the branch's ref before and after instead of reading git's message.
+- **B31** If Kage dies between `git worktree add` and `adopt`, the worktree and branch stay with no record, so the board never shows them. A start-up sweep for `kage/*` worktrees with no record (listed, never deleted by itself) would surface them.
+- **B32** The live e2e specs depend on their order: later tests reuse sessions an earlier one left (for example the follow-up test needs the answered task's done session). A fixture helper that makes its own done session would let each test run alone.
+- **B33** Double-X Stop and the stale-card 409 are unit-tested only. Add live e2e cases: one X does nothing, a second within 2 s stops; a card answered after its question changed gets 409.
 
 ## Phase 2 or 4
 
@@ -47,7 +51,7 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 
 - **B16** Re-check the pane parser against a real capture on each Claude Code version. The fixtures are idealised; the last real check was Claude Code 2.1.330. A manual smoke step per Claude release, or a recorded-capture test.
 - **B17** (done, phase 3) A live e2e for No and Esc on a prompt (R11): today the transcript and pane fallbacks are covered by unit tests and one manual run.
-- **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, so `pnpm test:linux` is reproducible.
+- **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, and pin the apt packages it installs (tmux, git, iproute2 and procps are unpinned), so `pnpm test:linux` is reproducible.
 - **B19** Split `live-source.ts`: it carries tmux events, hooks, transcripts and pane checks. Pull the pane-capture decision out as a pure function first.
 
 - **B11** Small hardening and tidying, each optional: per-encoding or weak ETags (one ETag now covers every encoding); case-insensitive `q=` parsing in Accept-Encoding; pixelmatch `includeAA` in the visual tests; CI `cancel-in-progress` only off `main`; add esbuild to `onlyBuiltDependencies` (the owner's call).
