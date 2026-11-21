@@ -1,12 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { applyEvent, linesById, select, selectedId, sessions, streamId } from './store.ts';
-import { installView } from './view.ts';
+import { installView, sendView } from './view.ts';
 
 const posts = vi.hoisted(() => [] as [string, unknown][]);
+/** While `held`, posts stay pending until their resolver in `pending` is called. */
+const gate = vi.hoisted(() => ({ held: false, pending: [] as ((ok: boolean) => void)[] }));
 vi.mock('./api.ts', () => ({
   apiPost: (path: string, body: unknown) => {
     posts.push([path, body]);
-    return Promise.resolve(new Response(null, { status: 204 }));
+    if (!gate.held) return Promise.resolve(new Response(null, { status: 204 }));
+    return new Promise<Response>((resolve, reject) => {
+      gate.pending.push((ok) =>
+        ok ? resolve(new Response(null, { status: 204 })) : reject(new Error('offline')),
+      );
+    });
   },
   apiDelete: () => Promise.resolve(new Response(null, { status: 204 })),
 }));
@@ -28,8 +35,16 @@ const snap = (id: string, ids: string[]) =>
     })) as never,
   });
 
+const flush = async () => {
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+};
+
 let stop: () => void;
-beforeEach(() => {
+beforeEach(async () => {
+  // Settle whatever the previous test left in flight, then start clean.
+  gate.held = false;
+  for (const r of gate.pending.splice(0)) r(true);
+  await flush();
   posts.length = 0;
   sessions.value = [];
   selectedId.value = null;
@@ -47,17 +62,80 @@ describe('view posting', () => {
     expect(last?.[1]).toEqual({ streamId: 's1', id: selectedId.value });
     expect(selectedId.value).not.toBeNull();
   });
-  it('posts again on a selection change', () => {
+  it('posts again on a selection change', async () => {
     snap('s1', ['a', 'b']);
+    await flush();
     const n = posts.length;
     const other = selectedId.value === 'a' ? 'b' : 'a';
     select(other);
+    await flush();
     expect(posts).toHaveLength(n + 1);
     expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: other });
   });
-  it('posts with the new stream id after a reconnect', () => {
+  it('posts with the new stream id after a reconnect', async () => {
+    snap('s1', ['a']);
+    await flush();
+    snap('s2', ['a']);
+    await flush();
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's2', id: 'a' });
+  });
+
+  it('latest wins: quick selection changes leave the server on the newest one', async () => {
+    gate.held = true;
+    snap('s1', ['a', 'b', 'c']);
+    expect(posts).toHaveLength(1);
+    select('b');
+    select('c');
+    select('a');
+    select('c');
+    // One view post at a time, so the server can't apply an older one after a newer one.
+    expect(posts).toHaveLength(1);
+    gate.pending.shift()?.(true);
+    await flush();
+    // The queued changes collapse into the newest.
+    expect(posts).toHaveLength(2);
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: 'c' });
+    gate.pending.shift()?.(true);
+    await flush();
+    expect(posts).toHaveLength(2);
+  });
+
+  it('latest wins after a failed post too', async () => {
+    gate.held = true;
+    snap('s1', ['a', 'b']);
+    select('b');
+    gate.pending.shift()?.(false);
+    await flush();
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: 'b' });
+    gate.pending.shift()?.(true);
+    await flush();
+    select('a');
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: 'a' });
+  });
+
+  it('a reconnect while a post is in flight sends the new stream next', async () => {
+    gate.held = true;
     snap('s1', ['a']);
     snap('s2', ['a']);
-    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's2', id: 'a' });
+    gate.pending.shift()?.(true);
+    await flush();
+    expect(posts.map((p) => p[1])).toEqual([
+      { streamId: 's1', id: 'a' },
+      { streamId: 's2', id: 'a' },
+    ]);
+  });
+});
+
+describe('sendView', () => {
+  it('posts the values it is given, not the signals', async () => {
+    stop();
+    await flush();
+    posts.length = 0;
+    streamId.value = 'other';
+    selectedId.value = 'zzz';
+    sendView('s9', 'q');
+    await flush();
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's9', id: 'q' });
+    stop = installView();
   });
 });

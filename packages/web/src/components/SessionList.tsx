@@ -28,7 +28,14 @@ function Row({ s }: { s: Session }) {
         <span class="pj">{s.project} /</span> {s.task}
       </span>
       <span class="tm">{formatAge(now.value - s.statusSince)}</span>
-      {s.status === 'needs-you' && <span class="w">waiting for your reply</span>}
+      {s.status === 'needs-you' ? (
+        <span class="w">
+          waiting for your reply
+          {s.external && <span class="x"> · external</span>}
+        </span>
+      ) : (
+        s.external && <span class="x">external</span>
+      )}
     </div>
   );
 }

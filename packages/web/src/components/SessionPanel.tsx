@@ -8,13 +8,14 @@ import {
   endDelete,
   now,
   pendingDeletes,
+  projectsRoot,
 } from '../store.ts';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
 import { Toast } from './Toast.tsx';
 
-/** The target's status classes: wait, run, done (ended shows as done). */
-const CHIP = { 'needs you': 'wait', running: 'run', done: 'done' } as const;
+/** The target's status classes: wait, run, done; ended is grey like done. */
+const CHIP = { 'needs you': 'wait', running: 'run', done: 'done', ended: 'ended' } as const;
 
 const ICON = {
   term: (
@@ -32,6 +33,11 @@ const ICON = {
     <svg viewBox="0 0 24 24" aria-hidden="true">
       <rect x="3" y="4" width="18" height="5" rx="1" />
       <path d="M5 9v10h14V9M10 13h4" />
+    </svg>
+  ),
+  resume: (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path d="M4 12a8 8 0 1 0 2.3-5.6M4 4v4h4" />
     </svg>
   ),
   del: (
@@ -137,8 +143,12 @@ function Confirm({ s }: { s: Session }) {
 export function SessionPanel({ session: s }: { session: Session }) {
   const group = groupOf(s);
   const done = group === 'done';
-  const confirming = done && confirmingDelete.value;
-  const worktree = shortWorktree(s.worktree);
+  const ended = s.status === 'ended';
+  // Kage never stops, archives or deletes a window it didn't create (spec §5.2).
+  const own = !s.external;
+  const confirming = done && own && confirmingDelete.value;
+  const chip = ended ? 'ended' : group;
+  const worktree = shortWorktree(s.worktree, projectsRoot.value);
   return (
     <main class="k-main">
       <div class="k-head">
@@ -148,7 +158,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
             <span class="k-task" title={s.task}>
               {s.task}
             </span>
-            <span class={`k-chip ${CHIP[group]}`}>{group}</span>
+            <span class={`k-chip ${CHIP[chip]}`}>{chip}</span>
           </h3>
         </div>
       </div>
@@ -188,7 +198,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
           </div>
         </div>
       )}
-      {done && !confirming && (
+      {done && !ended && !confirming && (
         <div class="k-follow" {...INERT}>
           Follow up in this session…<kbd>R</kbd>
         </div>
@@ -196,10 +206,14 @@ export function SessionPanel({ session: s }: { session: Session }) {
       {confirming && <Confirm s={s} />}
       <div class="k-foot">
         <div class="l">
-          <Act label="Terminal" hotkey="T" icon={ICON.term} />
+          {ended ? (
+            <Act label="Resume" hotkey="U" icon={ICON.resume} />
+          ) : (
+            <Act label="Terminal" hotkey="T" icon={ICON.term} />
+          )}
         </div>
         <div class="r">
-          {done ? (
+          {!own ? null : done ? (
             <>
               <Act label="Archive" hotkey="E" icon={ICON.arch} />
               <Act

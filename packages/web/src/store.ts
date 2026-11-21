@@ -14,7 +14,14 @@ export const linesById: Signal<Map<string, DisplayLine[]>> = signal(new Map());
 /** This stream's id, from the snapshot; null before the first one. */
 export const streamId: Signal<string | null> = signal(null);
 export const projectsRoot: Signal<string> = signal('');
-const MAX_LINES = 500;
+export const MAX_LINES = 500;
+/**
+ * How many lines each session has received, ever. The key of line i of n held is
+ * `count - n + i`, so a line keeps its key while newer ones are appended and older ones dropped.
+ * Updated in the same batch as linesById; a reset continues the count, so its lines get new keys.
+ */
+const lineCount = new Map<string, number>();
+export const lineKeyBase = (id: string, held: number): number => (lineCount.get(id) ?? 0) - held;
 export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
@@ -88,9 +95,11 @@ export function applyEvent(e: ServerEvent): void {
     } else if (e.type === 'session.lines') {
       const prev = e.reset ? [] : (linesById.value.get(e.id) ?? []);
       const next = [...prev, ...e.lines].slice(-MAX_LINES);
+      lineCount.set(e.id, (lineCount.get(e.id) ?? 0) + e.lines.length);
       linesById.value = new Map(linesById.value).set(e.id, next);
     } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
+      lineCount.delete(e.id);
       if (linesById.value.has(e.id)) {
         const m = new Map(linesById.value);
         m.delete(e.id);

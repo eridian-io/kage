@@ -227,6 +227,11 @@ button {
   color: var(--lime);
   border-color: rgba(205, 243, 90, 0.3);
 }
+/* Ended is grey like done (builder's state, spec §6.5). */
+.k-chip.ended {
+  color: var(--fg-2);
+  border-color: var(--line-strong);
+}
 .k-k {
   font: 12px var(--mono);
   color: var(--fg-3);
@@ -296,6 +301,12 @@ button {
   font-size: 12px;
   color: #565d68;
   font-variant-numeric: tabular-nums;
+}
+/* The external marker: a quiet subline, or a suffix inside the reply hint. */
+.k-it .x {
+  grid-column: 1 / 3;
+  font-size: 12px;
+  color: var(--fg-3);
 }
 .k-it .w {
   grid-column: 1 / 3;

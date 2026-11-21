@@ -605,3 +605,167 @@ describe('delete confirmation reset', () => {
     expect(confirmingDelete.value).toBe(true);
   });
 });
+
+describe('board v2', () => {
+  const withSession = (patch: Partial<Session>, id = 'docs') => {
+    const list = demoSessions(NOW).map((s) => (s.id === id ? { ...s, ...patch } : s));
+    reset(list);
+  };
+  const lines = (n: number, from = 1) =>
+    Array.from({ length: n }, (_, i) => ({ kind: 'say' as const, text: `line ${from + i}` }));
+
+  it('appends one output line as one new node and keeps the existing nodes', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    const before = [...container.querySelectorAll('.k-tr .ln')];
+    applyEvent({ type: 'session.lines', id: 'shop', lines: lines(1, 100), reset: false });
+    await Promise.resolve();
+    const after = [...container.querySelectorAll('.k-tr .ln')];
+    expect(after).toHaveLength(before.length + 1);
+    after.slice(0, before.length).forEach((el, i) => {
+      expect(el).toBe(before[i]);
+    });
+    expect(after.at(-1)?.textContent).toBe('line 100');
+  });
+
+  it('keeps nodes in place when the cap drops the oldest line', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    applyEvent({ type: 'session.lines', id: 'shop', lines: lines(500), reset: true });
+    await Promise.resolve();
+    const before = [...container.querySelectorAll('.k-tr .ln')];
+    applyEvent({ type: 'session.lines', id: 'shop', lines: lines(1, 501), reset: false });
+    await Promise.resolve();
+    const after = [...container.querySelectorAll('.k-tr .ln')];
+    expect(after).toHaveLength(500);
+    expect(after[0]).toBe(before[1]);
+    expect(after.at(-1)?.textContent).toBe('line 501');
+  });
+
+  it('renders at most 500 output nodes, the newest', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    applyEvent({ type: 'session.lines', id: 'shop', lines: lines(600), reset: true });
+    await Promise.resolve();
+    const nodes = [...container.querySelectorAll('.k-tr .ln')];
+    expect(nodes).toHaveLength(500);
+    expect(nodes[0]?.textContent).toBe('line 101');
+    expect(nodes.at(-1)?.textContent).toBe('line 600');
+    // The output caps by itself too, whatever the store holds.
+    linesById.value = new Map(linesById.value).set('shop', lines(600));
+    await Promise.resolve();
+    const direct = [...container.querySelectorAll('.k-tr .ln')];
+    expect(direct).toHaveLength(500);
+    expect(direct[0]?.textContent).toBe('line 101');
+  });
+
+  it('shows an ended session: grey chip, finished age, Resume, Archive and Delete…', () => {
+    withSession({ status: 'ended' });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    const chip = q(container, '.k-chip');
+    expect(chip.textContent).toBe('ended');
+    expect(chip.classList.contains('run')).toBe(false);
+    expect(chip.classList.contains('wait')).toBe(false);
+    const rule = /\.k-chip\.ended\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+    expect(rule).toContain('var(--fg-2)');
+    expect(rule).not.toMatch(/--(amber|lime|red)|#/);
+    expect(texts(container, '.k-meta > span')[2]).toBe('finished 1h ago');
+    expect(container.querySelector('.k-follow')).toBeNull();
+    expect(container.querySelector('.k-tr .cursor')).toBeNull();
+    const [resume, archive, del, ...rest] = footButtons(container);
+    expect(rest).toEqual([]);
+    expect(resume?.textContent).toBe('ResumeU');
+    expect(resume?.querySelector('kbd')?.textContent).toBe('U');
+    expect(resume?.closest('.l')).not.toBeNull();
+    expectInert(resume as Element);
+    expect(archive?.textContent).toBe('ArchiveE');
+    expect(archive?.closest('.r')).not.toBeNull();
+    expect(del?.textContent).toBe('Delete…');
+    expect(del?.closest('.r')).not.toBeNull();
+    expect(container.textContent).not.toContain('Terminal');
+    fireEvent.click(del as Element);
+    expect(container.querySelector('.k-confirm')).not.toBeNull();
+    expect(container.querySelector('.k-follow')).toBeNull();
+    // The list groups it with done.
+    expect(texts(container, '.k-side .k-g')).toEqual(['needs you', 'running', 'done']);
+  });
+
+  it('marks an external session in the row and offers only Terminal', () => {
+    withSession({ external: true }, 'shop');
+    const { container } = render(<Board />);
+    const shop = row(container, 'shop');
+    const mark = q(shop, '.x');
+    expect(mark.textContent).toBe('external');
+    const rule = /\.k-it \.x\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+    expect(rule).toContain('var(--fg-3)');
+    expect(rule).not.toMatch(/--(amber|lime|red)|#/);
+    expect(row(container, 'infra').querySelector('.x')).toBeNull();
+    fireEvent.click(shop);
+    expect(footButtons(container).map((b) => b.textContent)).toEqual(['TerminalT']);
+    expect(container.textContent).not.toContain('Stop');
+  });
+
+  it('marks an external done session and keeps the follow-up but no Archive or Delete', async () => {
+    withSession({ external: true }, 'docs');
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    expect(footButtons(container).map((b) => b.textContent)).toEqual(['TerminalT']);
+    expect(container.querySelector('.k-follow')).not.toBeNull();
+    confirmingDelete.value = true;
+    await Promise.resolve();
+    expect(container.querySelector('.k-confirm')).toBeNull();
+  });
+
+  it('puts the external marker after the reply hint on a needs-you row', () => {
+    withSession({ external: true }, 'web');
+    const { container } = render(<Board />);
+    const web = row(container, 'web');
+    expect(q(web, '.w').textContent).toBe('waiting for your reply · external');
+    expect(q(web, '.w .x').textContent).toBe(' · external');
+    expect(web.querySelectorAll('.x')).toHaveLength(1);
+  });
+
+  it('shortens the worktree with the projects root', () => {
+    withSession({ worktree: '/home/dev/projects/api/.worktrees/x' }, 'web');
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/home/dev/projects',
+      sessions: sessions.value,
+    });
+    const { container } = render(<Board />);
+    expect(texts(container, '.k-meta > span')[1]).toBe('worktree api/.worktrees/x');
+    expect(q(container, '.k-meta > span:nth-child(2)').getAttribute('title')).toBe(
+      '/home/dev/projects/api/.worktrees/x',
+    );
+  });
+
+  it('shows the now line as the think line of a running session', () => {
+    withSession({ now: 'Running npm test' }, 'shop');
+    applyEvent({ type: 'session.lines', id: 'shop', lines: lines(2), reset: true });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    const all = [...container.querySelectorAll('.k-tr .ln')];
+    expect(all.map((l) => l.className).at(-1)).toBe('ln ln-think');
+    expect(all.at(-1)?.textContent).toBe('Running npm test');
+    expect(all.at(-1)?.nextElementSibling?.classList.contains('cursor')).toBe(true);
+  });
+
+  it('does not add the now line when the lines already end with a think line', () => {
+    withSession({ now: 'Running npm test' }, 'shop');
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    expect(texts(container, '.k-tr .ln-think')).toEqual([
+      'Writing a regression test for the refresh case… (38s)',
+    ]);
+  });
+
+  it('does not show the now line for a session that is not running', () => {
+    withSession({ now: 'Running npm test' }, 'docs');
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    expect(container.querySelector('.k-tr .ln-think')).toBeNull();
+  });
+});
