@@ -651,13 +651,11 @@ test('the folder-trust screen is answered from the board, then the task runs', a
   const seen = await chips();
   expect(seen.slice(0, 2)).toEqual([`${task}: needs you`, `${task}: running`]);
   expect(seen.at(-1)).toBe(`${task}: done`);
-  // P3F1: no done between the trust answer and the task's first turn.
-  expect(ownChips(await fromStart(), task)).toEqual([
-    `${task}: running`,
-    `${task}: needs you`,
-    `${task}: running`,
-    `${task}: done`,
-  ]);
+  // P3F1: no done between the trust answer and the task's first turn. (The first "running",
+  // before the trust screen, may come and go before the board first draws the new session.)
+  const own = ownChips(await fromStart(), task);
+  expect(own.slice(-3)).toEqual([`${task}: needs you`, `${task}: running`, `${task}: done`]);
+  expect(own.slice(0, -3)).toEqual(own.length > 3 ? [`${task}: running`] : []);
   // Down, verified on screen, then Enter: never a digit or Escape on the trust screen.
   expect(fakeKeys(task)).toEqual(['Down', 'Enter']);
 });
