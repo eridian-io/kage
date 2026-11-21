@@ -217,6 +217,28 @@ describe('toDisplayLines', () => {
     expect(long.endsWith('…')).toBe(true);
   });
 
+  it('K10b: typed text after a paste starts on its own line', () => {
+    const content = '<pasted_content id="3">\nalpha\nbeta\n</pasted_content id="3">\nand then this';
+    expect(toDisplayLines({ type: 'user', message: { content } })).toEqual([
+      { kind: 'say', text: '> [pasted text] alpha\nand then this' },
+    ]);
+  });
+
+  it('K10b: a closer with another id leaves the wrapper raw', () => {
+    const content = '<pasted_content id="1">\nalpha\n</pasted_content id="2">';
+    expect(toDisplayLines({ type: 'user', message: { content } })).toEqual([
+      { kind: 'say', text: `> ${content}` },
+    ]);
+  });
+
+  it('K10b: many unterminated openers cost linear time', () => {
+    const content = `${'<pasted_content id="1">x'.repeat(8000)}`;
+    const t = performance.now();
+    const [line] = toDisplayLines({ type: 'user', message: { content } });
+    expect(performance.now() - t).toBeLessThan(500);
+    expect(line?.text.startsWith('> <pasted_content id="1">x')).toBe(true);
+  });
+
   it('strips escape sequences and control characters from say, diff and detail text', () => {
     expect(
       toDisplayLines(

@@ -53,7 +53,8 @@ function sayText(text: string): string {
 }
 
 /** One pasted block, as Claude Code writes it: `<pasted_content id="n">`, text, `</pasted_content id="n">`. */
-const PASTED = /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">\n?/g;
+const OPENER = /<pasted_content id="([^"]{0,40})">\n?/g;
+const CLOSER = /\n?<\/pasted_content id="([^"]{0,40})">\n?/g;
 
 /**
  * K10b: a prompt's pasted blocks become "[pasted text] <first line>", one marker per paste id
@@ -61,15 +62,44 @@ const PASTED = /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content i
  */
 function unwrapPasted(text: string): string {
   if (!text.includes('<pasted_content')) return text;
+  // One linear pass finds every closer; each opener then takes the next closer of its id after
+  // it (a pointer per id only moves forward), so unterminated openers cost nothing extra.
+  const closers = new Map<string, { start: number; end: number }[]>();
+  for (const m of text.matchAll(CLOSER)) {
+    const list = closers.get(m[1] as string) ?? [];
+    list.push({ start: m.index, end: m.index + m[0].length });
+    closers.set(m[1] as string, list);
+  }
+  const next = new Map<string, number>();
   const seen = new Set<string>();
-  return text
-    .replace(PASTED, (_m, id: string, body: string) => {
-      if (seen.has(id)) return '';
+  let out = '';
+  let pos = 0;
+  for (const m of text.matchAll(OPENER)) {
+    if (m.index < pos) continue; // inside a block already taken
+    const id = m[1] as string;
+    const list = closers.get(id) ?? [];
+    let i = next.get(id) ?? 0;
+    const bodyStart = m.index + m[0].length;
+    while (
+      i < list.length &&
+      (list[i] as { start: number }).start < bodyStart - (m[0].endsWith('\n') ? 1 : 0)
+    )
+      i++;
+    next.set(id, i);
+    const closer = list[i];
+    if (!closer) continue; // unterminated or mismatched: shown raw
+    out += text.slice(pos, m.index);
+    if (!seen.has(id)) {
       seen.add(id);
-      const first = body.split('\n').find((l) => l.trim() !== '') ?? '';
-      return `[pasted text] ${first.trim()} `;
-    })
-    .trim();
+      const first = text
+        .slice(bodyStart, closer.start)
+        .split('\n')
+        .find((l) => l.trim() !== '');
+      out += `[pasted text] ${(first ?? '').trim()}\n`;
+    }
+    pos = closer.end;
+  }
+  return (out + text.slice(pos)).trim();
 }
 
 /** Path relative to cwd when inside it; otherwise unchanged. */

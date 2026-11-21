@@ -73,6 +73,17 @@ function keepSelection(): void {
   if (s === null || groupOf(s) !== 'done') confirmingDelete.value = false;
 }
 
+/**
+ * Ports and files have their own events, so a session.updated or snapshot must not wipe what
+ * they brought: the incoming session takes the held session's ports, files and filesTotal.
+ */
+function keepLive(incoming: Session): Session {
+  const held = sessions.value.find((s) => s.id === incoming.id);
+  return held
+    ? { ...incoming, ports: held.ports, files: held.files, filesTotal: held.filesTotal }
+    : incoming;
+}
+
 export function applyEvent(e: ServerEvent): void {
   batch(() => {
     if (e.type === 'snapshot') {
@@ -82,7 +93,7 @@ export function applyEvent(e: ServerEvent): void {
       streamId.value = e.streamId;
       projectsRoot.value = e.projectsRoot;
       hadSnapshot.value = true;
-      sessions.value = e.sessions;
+      sessions.value = e.sessions.map(keepLive);
       linesById.value = fresh
         ? new Map()
         : new Map([...linesById.value].filter(([id]) => e.sessions.some((s) => s.id === id)));
@@ -97,18 +108,23 @@ export function applyEvent(e: ServerEvent): void {
     } else if (e.type === 'session.updated') {
       const list = sessions.value;
       const i = list.findIndex((s) => s.id === e.session.id);
-      sessions.value = i < 0 ? [...list, e.session] : list.map((s, j) => (j === i ? e.session : s));
+      const incoming = keepLive(e.session);
+      sessions.value = i < 0 ? [...list, incoming] : list.map((s, j) => (j === i ? incoming : s));
     } else if (e.type === 'session.lines') {
       const prev = e.reset ? [] : (linesById.value.get(e.id) ?? []);
       const next = [...prev, ...e.lines].slice(-MAX_LINES);
       lineCount.set(e.id, (lineCount.get(e.id) ?? 0) + e.lines.length);
       linesById.value = new Map(linesById.value).set(e.id, next);
     } else if (e.type === 'session.ports') {
-      sessions.value = sessions.value.map((s) => (s.id === e.id ? { ...s, ports: e.ports } : s));
+      if (sessions.value.some((s) => s.id === e.id)) {
+        sessions.value = sessions.value.map((s) => (s.id === e.id ? { ...s, ports: e.ports } : s));
+      }
     } else if (e.type === 'session.files') {
-      sessions.value = sessions.value.map((s) =>
-        s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,
-      );
+      if (sessions.value.some((s) => s.id === e.id)) {
+        sessions.value = sessions.value.map((s) =>
+          s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,
+        );
+      }
     } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
       lineCount.delete(e.id);

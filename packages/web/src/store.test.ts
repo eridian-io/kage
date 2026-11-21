@@ -99,7 +99,31 @@ describe('protocol v3 store', () => {
     const before = sessions.value;
     applyEvent({ type: 'session.ports', id: 'zzz', ports: [] });
     applyEvent({ type: 'session.files', id: 'zzz', files: [], filesTotal: 0 });
-    expect(sessions.value).toEqual(before);
-    expect(sessions.value.length).toBe(1);
+    expect(sessions.value).toBe(before);
+  });
+  it('session.updated and a snapshot keep ports, files and filesTotal from their own events', () => {
+    seed();
+    const ports = [{ port: 5173, process: 'vite', localOnly: false }];
+    const files = [{ path: 'x.ts', added: 2, removed: 1 }];
+    applyEvent({ type: 'session.ports', id: 'a', ports });
+    applyEvent({ type: 'session.files', id: 'a', files, filesTotal: 250 });
+    const bare = { ...(sessions.value[0] as Session), ports: [], files: [], filesTotal: 0 };
+    applyEvent({ type: 'session.updated', session: { ...bare, status: 'done' } });
+    expect(sessions.value[0]).toMatchObject({ status: 'done', ports, files, filesTotal: 250 });
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [bare],
+    });
+    expect(sessions.value[0]).toMatchObject({ ports, files, filesTotal: 250 });
+  });
+  it('session.removed drops ports and files with the session', () => {
+    seed();
+    applyEvent({ type: 'session.ports', id: 'a', ports: [] });
+    applyEvent({ type: 'session.removed', id: 'a' });
+    applyEvent({ type: 'session.files', id: 'a', files: [], filesTotal: 5 });
+    expect(sessions.value).toEqual([]);
   });
 });
