@@ -96,7 +96,7 @@ export class EventHub {
   private ensureSubscribed(): void {
     this.unsubscribe ??= this.source.subscribe((e) => {
       if (e.type === 'session.lines') {
-        const text = frame({ ...e, reset: false });
+        const text = frame({ ...e, reset: e.reset ?? false });
         for (const c of [...this.clients.values()]) if (c.viewing === e.id) this.send(c, text);
         return;
       }

@@ -91,6 +91,10 @@ describe('EventHub', () => {
       };
       emitLines('x1');
       expect(await read(a.reader)).toContain('"reset":false');
+      // A source's reset (a pane snapshot or a new transcript) passes through.
+      const { listeners } = source as unknown as { listeners: Set<(e: SourceEvent) => void> };
+      for (const l of listeners) l({ type: 'session.lines', id: 'shop', lines: [], reset: true });
+      expect(await read(a.reader)).toContain('"reset":true');
       expect(hub.view(a.streamId, null)).toBe(true);
       emitLines('x2');
       await source.remove('docs');

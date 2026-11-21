@@ -5,8 +5,8 @@ export class NotFoundError extends Error {}
 export type SourceEvent =
   | { type: 'session.updated'; session: Session }
   | { type: 'session.removed'; id: string }
-  /** Appended lines. */
-  | { type: 'session.lines'; id: string; lines: DisplayLine[] };
+  /** Appended lines; with `reset`, the session's whole line list (a pane snapshot, a new transcript). */
+  | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset?: boolean };
 
 export interface SessionSource {
   /** Excludes archived sessions. Each session's `lines` is []. */
