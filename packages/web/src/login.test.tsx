@@ -82,6 +82,12 @@ describe('the login screen', () => {
     expect(button.type).toBe('submit');
   });
 
+  it('focuses the token field', async () => {
+    const { container } = render(<Board />);
+    const field = q<HTMLInputElement>(container, 'form.k-login input');
+    await waitFor(() => expect(document.activeElement).toBe(field));
+  });
+
   it('posts the token once to /api/login with X-Kage', async () => {
     const { container } = render(<Board />);
     signIn(container);

@@ -1,4 +1,4 @@
-import { useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { login } from '../api.ts';
 import { connect } from '../sse.ts';
 import { authRequired } from '../store.ts';
@@ -14,6 +14,9 @@ export function Login() {
   const [token, setToken] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const field = useRef<HTMLInputElement>(null);
+  // The token is the only thing to do here.
+  useEffect(() => field.current?.focus(), []);
 
   const submit = async (e: Event) => {
     e.preventDefault();
@@ -34,6 +37,7 @@ export function Login() {
       <form class="k-login" onSubmit={submit}>
         <p>This Kage needs its access token.</p>
         <input
+          ref={field}
           class="k-follow"
           type="password"
           placeholder="Access token"
