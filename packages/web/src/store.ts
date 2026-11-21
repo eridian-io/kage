@@ -24,6 +24,8 @@ const lineCount = new Map<string, number>();
 export const lineKeyBase = (id: string, held: number): number => (lineCount.get(id) ?? 0) - held;
 export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
+/** True when the server answered 401: the board shows the login screen (spec §5.10, F18). */
+export const authRequired: Signal<boolean> = signal(false);
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);

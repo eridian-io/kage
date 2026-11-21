@@ -137,9 +137,24 @@ describe('startupWarnings', () => {
   it('is quiet without a token', () => {
     expect(startupWarnings(DEFAULT_CONFIG)).toEqual([]);
   });
-  it('warns once that a token is not enforced yet', () => {
-    expect(startupWarnings({ ...DEFAULT_CONFIG, token: 's3cret' })).toEqual([
-      'Warning: "token" is set in the config but isn\'t enforced yet; anyone on your tailnet can open Kage.',
-    ]);
+  it('no longer mentions the token: token login enforces it (B13)', () => {
+    expect(startupWarnings({ ...DEFAULT_CONFIG, token: 'x'.repeat(16) })).toEqual([]);
+  });
+});
+
+describe('token', () => {
+  it('accepts "" and 16 or more characters, and refuses 1 to 15', async () => {
+    const load = async (token: unknown) =>
+      loadConfig({ path: await write(JSON.stringify({ token })), env: env() });
+    expect((await load('')).token).toBe('');
+    expect((await load('a'.repeat(16))).token).toBe('a'.repeat(16));
+    for (const bad of ['a'.repeat(15), 'x']) {
+      const err = await load(bad).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as Error).message).toBe('token must be at least 16 characters');
+      // The message never repeats the token.
+      expect((err as Error).message).not.toContain(bad);
+    }
+    await expect(load(42)).rejects.toBeInstanceOf(ConfigError);
   });
 });

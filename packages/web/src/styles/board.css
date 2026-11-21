@@ -643,6 +643,41 @@ button {
   gap: 8px;
 }
 
+/* The login screen (spec §5.10): one form, centred; the input and button reuse .k-follow and .k-act. */
+.k-login {
+  margin: auto;
+  width: min(320px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  color: var(--fg);
+  font-size: 14px;
+}
+.k-login p {
+  margin: 0;
+}
+.k-login .k-follow {
+  margin: 0;
+  background: transparent;
+  color: var(--fg-strong);
+  font: inherit;
+  font-size: 13.5px;
+  outline: none;
+}
+.k-login .k-follow::placeholder {
+  color: var(--fg-3);
+}
+.k-login .k-follow:focus {
+  border-color: #4a515c;
+}
+.k-login .k-act {
+  justify-content: center;
+  color: var(--fg-strong);
+}
+.k-login-err {
+  color: var(--fg-2);
+}
+
 /* Controls reset with the all shorthand lose the global focus ring; restore it (after their rules, so it wins). */
 .k-new:focus-visible,
 .k-act:focus-visible,

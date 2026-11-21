@@ -5,6 +5,7 @@ import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
+import { authCookieValue, CLEAR_COOKIE, setCookieHeader } from './auth.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { LiveSource, type LiveSourceDeps } from './live-source.ts';
@@ -44,12 +45,13 @@ beforeEach(() => {
 });
 afterEach(() => hub.close());
 
-const app = (demo = false) =>
+const app = (demo = false, token = '') =>
   createApp({
     source,
     hub,
     assets,
     allowed,
+    token,
     ...(demo
       ? {
           demoReset: () => {
@@ -208,7 +210,7 @@ describe('API', () => {
   it('answers 501 when the live source cannot delete yet', async () => {
     const live = new LiveSource({} as LiveSourceDeps);
     const liveHub = new EventHub(live, 'my-pc', '/p');
-    const liveApp = createApp({ source: live, hub: liveHub, assets, allowed });
+    const liveApp = createApp({ source: live, hub: liveHub, assets, allowed, token: '' });
     const res = await liveApp.fetch(mutate('DELETE', '/api/sessions/k-1'));
     expect(res.status).toBe(501);
     expect(res.headers.get('content-type')).toContain('application/json');
@@ -311,5 +313,176 @@ describe('host guard', () => {
     expect(hub.clientCount).toBe(0);
     expect(source.get('docs')).toBeDefined();
     expect(demoResets).toBe(0);
+  });
+});
+
+describe('token login (B13)', () => {
+  const TOKEN = 'a-very-secret-token-0123';
+  const COOKIE = `kage_auth=${authCookieValue(TOKEN)}`;
+  const withCookie = (r: Request, cookie = COOKIE) => {
+    const h = new Headers(r.headers);
+    h.set('Cookie', cookie);
+    return new Request(r, { headers: h });
+  };
+  const login = (body: unknown) => mutate('POST', '/api/login', body);
+  /** Every response's status, headers and body, to check that none holds the token. */
+  const seen: string[] = [];
+  const record = async (res: Response) => {
+    seen.push(String(res.status), ...[...res.headers].map(([k, v]) => `${k}: ${v}`));
+    seen.push(await res.clone().text());
+    return res;
+  };
+  beforeEach(() => {
+    seen.length = 0;
+  });
+  afterEach(() => {
+    for (const s of seen) expect(s).not.toContain(TOKEN);
+  });
+
+  it('answers 401 without the cookie on the stream, the view and a delete', async () => {
+    const a = app(false, TOKEN);
+    const cases = [
+      req('/api/events'),
+      mutate('POST', '/api/view', { streamId: 's', id: null }),
+      mutate('DELETE', '/api/sessions/docs'),
+      mutate('POST', '/api/logout'),
+      req('/api/nope'),
+    ];
+    for (const r of cases) {
+      const res = await record(await a.fetch(r));
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Sign in to Kage' });
+    }
+    // A cookie made for another token is no better than none.
+    const wrong = await a.fetch(
+      withCookie(req('/api/events'), `kage_auth=${authCookieValue('x'.repeat(16))}`),
+    );
+    expect(wrong.status).toBe(401);
+    expect(hub.clientCount).toBe(0);
+    expect(source.get('docs')).toBeDefined();
+  });
+
+  it('with the cookie, the stream, the view and a delete behave as before', async () => {
+    const a = app(false, TOKEN);
+    const res = await a.fetch(withCookie(req('/api/events')));
+    expect(res.status).toBe(200);
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const snap = JSON.parse(
+      new TextDecoder().decode((await reader.read()).value).split('data: ')[1] ?? '',
+    );
+    const view = await a.fetch(
+      withCookie(mutate('POST', '/api/view', { streamId: snap.streamId, id: 'web' })),
+    );
+    expect(view.status).toBe(204);
+    expect((await a.fetch(withCookie(mutate('DELETE', '/api/sessions/docs')))).status).toBe(204);
+    expect(source.get('docs')).toBeUndefined();
+    expect((await a.fetch(withCookie(req('/api/nope')))).status).toBe(404);
+    await reader.cancel();
+  });
+
+  it('serves the board and its assets without the cookie', async () => {
+    const a = app(false, TOKEN);
+    expect((await record(await a.fetch(req('/')))).status).toBe(200);
+    expect((await record(await a.fetch(req('/app-ABC123.js')))).status).toBe(200);
+  });
+
+  it('GET /api/auth: 204 with the cookie, 401 without', async () => {
+    const a = app(false, TOKEN);
+    expect((await record(await a.fetch(withCookie(req('/api/auth'))))).status).toBe(204);
+    const no = await record(await a.fetch(req('/api/auth')));
+    expect(no.status).toBe(401);
+    expect(await no.json()).toEqual({ error: 'Sign in to Kage' });
+  });
+
+  it('POST /api/login still needs X-Kage and the Origin', async () => {
+    const a = app(false, TOKEN);
+    const body = JSON.stringify({ token: TOKEN });
+    const noHeader = await a.fetch(
+      req('/api/login', { method: 'POST', headers: { Origin: ORIGIN }, body }),
+    );
+    expect(noHeader.status).toBe(403);
+    expect(noHeader.headers.get('set-cookie')).toBeNull();
+    const foreign = await a.fetch(
+      req('/api/login', {
+        method: 'POST',
+        headers: { 'X-Kage': '1', Origin: 'http://evil.example' },
+        body,
+      }),
+    );
+    expect(foreign.status).toBe(403);
+    expect(foreign.headers.get('set-cookie')).toBeNull();
+  });
+
+  it('the right token: 204 with exactly the cookie header', async () => {
+    const res = await record(await app(false, TOKEN).fetch(login({ token: TOKEN })));
+    expect(res.status).toBe(204);
+    expect(res.headers.get('set-cookie')).toBe(setCookieHeader(TOKEN));
+  });
+
+  it('marks the cookie Secure only on a request that came over https', async () => {
+    const r = login({ token: TOKEN });
+    const https = new Request(r.url.replace('http:', 'https:'), {
+      method: 'POST',
+      headers: r.headers,
+      body: JSON.stringify({ token: TOKEN }),
+    });
+    const res = await app(false, TOKEN).fetch(https);
+    expect(res.status).toBe(204);
+    expect(res.headers.get('set-cookie')).toBe(`${setCookieHeader(TOKEN)}; Secure`);
+  });
+
+  it('a wrong token: 401; the 6th wrong try in a minute: 429, even with the right token', async () => {
+    const a = app(false, TOKEN);
+    for (let i = 0; i < 5; i++) {
+      const res = await record(await a.fetch(login({ token: `wrong-token-${i}-padding` })));
+      expect(res.status).toBe(401);
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(await res.json()).toEqual({ error: "That token isn't right." });
+    }
+    const limited = await record(await a.fetch(login({ token: TOKEN })));
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get('set-cookie')).toBeNull();
+    expect(await limited.json()).toEqual({
+      error: 'Too many tries. Wait a minute and try again.',
+    });
+  });
+
+  it('a body that is not exactly {"token": string}: 400, not counted as a failure', async () => {
+    const a = app(false, TOKEN);
+    for (const bad of [{ token: TOKEN, extra: 1 }, { token: 42 }, {}, [TOKEN], null, 'x']) {
+      const res = await record(await a.fetch(login(bad)));
+      expect(res.status).toBe(400);
+      expect(res.headers.get('set-cookie')).toBeNull();
+      expect(await res.json()).toEqual({ error: 'Expected {"token": "<access token>"}' });
+    }
+    const garbage = await a.fetch(
+      req('/api/login', {
+        method: 'POST',
+        headers: { 'X-Kage': '1', Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: '{',
+      }),
+    );
+    expect(garbage.status).toBe(400);
+    expect((await a.fetch(login({ token: TOKEN }))).status).toBe(204);
+  });
+
+  it('logout clears the cookie', async () => {
+    const res = await record(
+      await app(false, TOKEN).fetch(withCookie(mutate('POST', '/api/logout'))),
+    );
+    expect(res.status).toBe(204);
+    expect(res.headers.get('set-cookie')).toBe(CLEAR_COOKIE);
+  });
+
+  it('with no token set, everything passes as in phase 2', async () => {
+    const a = app();
+    expect((await a.fetch(req('/api/auth'))).status).toBe(204);
+    const res = await a.fetch(req('/api/events'));
+    expect(res.status).toBe(200);
+    await res.body?.cancel();
+    expect((await a.fetch(mutate('DELETE', '/api/sessions/docs'))).status).toBe(204);
+    const l = await a.fetch(login({ token: 'anything' }));
+    expect(l.status).toBe(204);
+    expect(l.headers.get('set-cookie')).toBeNull();
   });
 });

@@ -5,9 +5,11 @@
  */
 import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
+import type { Asset } from './assets.ts';
 import { runHookCli } from './hooks/cli.ts';
 import { writeHooksSettings } from './hooks/settings.ts';
 import { stateDir } from './state/store.ts';
+import type { ExecFn } from './tmux/client.ts';
 
 export const USAGE = `Usage:
   kage serve [--demo] [--unsafe-listen-all] [--port N]
@@ -40,6 +42,11 @@ export interface Io {
   dist?: string | undefined;
   /** A tmux config file for the tmux server Kage may start (tests pass /dev/null). */
   tmuxConfigFile?: string | undefined;
+  /** Aborted by the first SIGINT or SIGTERM: `kage serve` stops starting up (B15). */
+  signal?: AbortSignal | undefined;
+  /** Test seams: how serve runs tmux for its session, and how it reads the built board. */
+  tmuxExec?: ExecFn | undefined;
+  loadAssets?: ((dist: string) => Promise<Map<string, Asset>>) | undefined;
 }
 
 /** A started `kage serve`; stop() shuts everything down in reverse start order. */
@@ -106,23 +113,34 @@ if (import.meta.main) {
     } catch {}
     process.exit(0);
   }
+  // Installed before serve starts anything (B15). The first signal aborts a startup in progress,
+  // or stops a running server; a second one exits at once.
+  const startup = new AbortController();
+  let running: Running | null = null;
+  let signals = 0;
+  const shutdown = (r: Running) => {
+    setTimeout(() => process.exit(0), 5000).unref();
+    r.stop().then(
+      () => process.exit(0),
+      () => process.exit(0),
+    );
+  };
+  const onSignal = () => {
+    signals += 1;
+    if (signals > 1) process.exit(130);
+    if (running) shutdown(running);
+    else startup.abort();
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
   const result = await main(argv, {
     env: process.env,
     stdin: process.stdin,
     out: (line) => console.log(line),
     err: (line) => console.error(line),
+    signal: startup.signal,
   });
   if (typeof result === 'number') process.exit(result);
-  let stopping = false;
-  const shutdown = () => {
-    if (stopping) return;
-    stopping = true;
-    setTimeout(() => process.exit(0), 5000).unref();
-    result.stop().then(
-      () => process.exit(0),
-      () => process.exit(0),
-    );
-  };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  running = result;
+  if (startup.signal.aborted) shutdown(result);
 }

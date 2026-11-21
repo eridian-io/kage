@@ -1,6 +1,15 @@
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Asset } from './assets.ts';
+import {
+  authGuard,
+  CLEAR_COOKIE,
+  isAuthorised,
+  LoginLimiter,
+  SIGN_IN,
+  sameSecret,
+  setCookieHeader,
+} from './auth.ts';
 import type { EventHub } from './events.ts';
 import { csrfGuard, hostGuard } from './security.ts';
 import { NotFoundError, NotImplementedError, type SessionSource } from './source.ts';
@@ -10,6 +19,8 @@ export interface AppDeps {
   hub: EventHub;
   assets: Map<string, Asset>;
   allowed: { hostNames: string[]; port: number };
+  /** The config's access token; '' means no login (spec §5.10). */
+  token: string;
   /** Demo mode only: registers POST /api/demo/reset, which calls this. */
   demoReset?: () => void;
 }
@@ -68,7 +79,7 @@ function serveAsset(asset: Asset, req: Request): Response {
 }
 
 export function createApp(deps: AppDeps): Hono {
-  const { source, hub, assets, allowed } = deps;
+  const { source, hub, assets, allowed, token } = deps;
   const app = new Hono();
 
   app.use('*', async (c, next) => {
@@ -84,6 +95,40 @@ export function createApp(deps: AppDeps): Hono {
     '/api/*',
     bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }),
   );
+  app.use('/api/*', authGuard(token));
+
+  app.get('/api/auth', (c) =>
+    isAuthorised(token, c.req.header('Cookie'))
+      ? c.body(null, 204)
+      : c.json({ error: SIGN_IN }, 401),
+  );
+
+  const limiter = new LoginLimiter();
+  app.post('/api/login', async (c) => {
+    if (token === '') return c.body(null, 204);
+    if (!limiter.allow()) {
+      return c.json({ error: 'Too many tries. Wait a minute and try again.' }, 429);
+    }
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const keys = typeof body === 'object' && body !== null ? Object.keys(body) : [];
+    const given = (body as { token?: unknown } | undefined)?.token;
+    if (Array.isArray(body) || keys.length !== 1 || typeof given !== 'string') {
+      return c.json({ error: 'Expected {"token": "<access token>"}' }, 400);
+    }
+    if (!sameSecret(given, token)) {
+      limiter.fail();
+      return c.json({ error: "That token isn't right." }, 401);
+    }
+    // Kage is usually served over plain http on the tailnet, where Secure would drop the cookie.
+    const secure = new URL(c.req.url).protocol === 'https:' ? '; Secure' : '';
+    c.header('Set-Cookie', setCookieHeader(token) + secure);
+    return c.body(null, 204);
+  });
+
+  app.post('/api/logout', (c) => {
+    c.header('Set-Cookie', CLEAR_COOKIE);
+    return c.body(null, 204);
+  });
 
   app.get('/api/events', (c) => {
     const headers = {

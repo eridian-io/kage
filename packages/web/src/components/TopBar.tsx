@@ -1,6 +1,17 @@
-import { hadSnapshot, host, sorted } from '../store.ts';
+import { authRequired, hadSnapshot, host, sorted } from '../store.ts';
 
 export function TopBar() {
+  // Signed out: the logo and wordmark only.
+  if (authRequired.value) {
+    return (
+      <div class="k-top">
+        <span class="k-logo">
+          <img class="klogo" alt="" src="/kage-logo-96.png" />
+          kage
+        </span>
+      </div>
+    );
+  }
   const list = sorted.value;
   const waiting = list.filter((s) => s.status === 'needs-you').length;
   const running = list.filter((s) => s.status === 'running').length;

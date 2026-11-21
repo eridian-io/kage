@@ -27,16 +27,16 @@ import { TranscriptTail } from './transcript/tail.ts';
 
 const DIST = join(import.meta.dirname, '../../web/dist');
 
-/** Backlog B8: a set token would suggest protection that isn't built yet. */
-export const TOKEN_REFUSAL = `"token" is set, but token login isn't built yet. Remove it from the config to run live sessions.`;
+/** B15: a SIGINT or SIGTERM arrived before the server was up; what had started is stopped. */
+export const STOPPED = 'Stopped before Kage was ready.';
+/** The exit code after a startup interrupted by a signal (128 + SIGINT). */
+export const STOPPED_CODE = 130;
 
 /** Why live mode can't start here, or null. Checked before anything is started. */
 export function liveModeError(
-  cfg: KageConfig,
   platform: NodeJS.Platform,
   tmuxVersion: string | null,
 ): string | null {
-  if (cfg.token !== '') return TOKEN_REFUSAL;
   if (platform === 'win32') {
     return 'Live sessions need Linux or macOS (tmux). On Windows, run Kage inside WSL, or use "kage serve --demo".';
   }
@@ -96,6 +96,12 @@ async function unwind(cleanups: Cleanup[]): Promise<void> {
 }
 
 class StartError extends Error {}
+/** Thrown between startup steps once `io.signal` has aborted. */
+class Stopped extends Error {}
+
+function checkSignal(io: Io): void {
+  if (io.signal?.aborted) throw new Stopped();
+}
 
 /**
  * Starts live mode in order: the tmux session, the hook server, the hooks settings file, the
@@ -120,6 +126,7 @@ async function startLive(
     ...target,
     env: { KAGE_SOCKET: hookSocket },
     warn: (message) => io.err(message),
+    ...(io.tmuxExec ? { exec: io.tmuxExec } : {}),
   });
   const ensureSession = async () => {
     await tmux.ensureSession();
@@ -130,6 +137,7 @@ async function startLive(
   } catch (err) {
     throw new StartError(`Couldn't start the tmux session "${cfg.tmuxSession}": ${oneLine(err)}`);
   }
+  checkSignal(io);
 
   const hooks = new HookServer(hookSocket);
   try {
@@ -138,12 +146,14 @@ async function startLive(
     throw new StartError(`Couldn't open the hook socket: ${oneLine(err)}`);
   }
   cleanups.push(() => hooks.close());
+  checkSignal(io);
 
   try {
     await cli.writeSettings(io.env);
   } catch (err) {
     throw new StartError(`Couldn't write the Claude settings file: ${oneLine(err)}`);
   }
+  checkSignal(io);
 
   const store = new StateStore(join(stateDir(io.env), 'state.json'));
   const watcher = new TmuxWatcher({ ...target, beforeLaunch: ensureSession });
@@ -162,6 +172,7 @@ async function startLive(
   } catch (err) {
     throw new StartError(`Couldn't load the sessions: ${oneLine(err)}`);
   }
+  checkSignal(io);
   return source;
 }
 
@@ -172,7 +183,11 @@ export interface CliParts {
   writeSettings: (env: NodeJS.ProcessEnv) => Promise<string>;
 }
 
-/** `kage serve`: a number is the exit code; a Running is a server that is up. */
+/**
+ * `kage serve`: a number is the exit code; a Running is a server that is up. `io.signal` is
+ * checked between startup steps (B15): once it aborts, what started is stopped and the exit code
+ * is 130. Errors after the config checks print one line, never a stack trace.
+ */
 export async function serveCommand(
   args: string[],
   io: Io,
@@ -214,12 +229,35 @@ export async function serveCommand(
     cfg = { ...cfg, port: n };
   }
 
+  const cleanups: Cleanup[] = [];
+  try {
+    return await startServer(cfg, values, io, cli, cleanups);
+  } catch (err) {
+    await unwind(cleanups);
+    if (err instanceof Stopped) {
+      io.err(STOPPED);
+      return STOPPED_CODE;
+    }
+    io.err(err instanceof StartError ? err.message : `Couldn't start Kage: ${oneLine(err)}`);
+    return 1;
+  }
+}
+
+/** serveCommand after the flags and the config: each started part pushes its cleanup. */
+async function startServer(
+  cfg: KageConfig,
+  values: { demo?: boolean; 'unsafe-listen-all'?: boolean },
+  io: Io,
+  cli: CliParts,
+  cleanups: Cleanup[],
+): Promise<number | Running> {
+  checkSignal(io);
   const demo = values.demo === true;
   if (demo) {
     for (const warning of startupWarnings(cfg)) io.err(warning);
   } else {
     const tmuxVersion = io.tmuxVersion === undefined ? tmuxVersionOutput : io.tmuxVersion;
-    const refusal = liveModeError(cfg, io.platform ?? process.platform, tmuxVersion);
+    const refusal = liveModeError(io.platform ?? process.platform, tmuxVersion);
     if (refusal) {
       io.err(refusal);
       return 1;
@@ -241,15 +279,16 @@ export async function serveCommand(
     }
     throw err;
   }
+  checkSignal(io);
 
   const dist = io.dist ?? DIST;
   if (!existsSync(join(dist, 'index.html'))) {
     io.err('The board is not built yet. Run "corepack pnpm build" first.');
     return 1;
   }
-  const assets = await loadAssets(dist);
+  const assets = await (io.loadAssets ?? loadAssets)(dist);
+  checkSignal(io);
 
-  const cleanups: Cleanup[] = [];
   if (process.execArgv.some((a) => a.startsWith('--watch'))) {
     cleanups.push(reloadOnChange(dist, assets, io));
   }
@@ -261,13 +300,7 @@ export async function serveCommand(
     source = d;
     demoReset = () => d.reset();
   } else {
-    try {
-      source = await startLive(cfg, io, cli, cleanups);
-    } catch (err) {
-      await unwind(cleanups);
-      io.err(err instanceof StartError ? err.message : `Couldn't start Kage: ${oneLine(err)}`);
-      return 1;
-    }
+    source = await startLive(cfg, io, cli, cleanups);
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -277,6 +310,7 @@ export async function serveCommand(
     hub,
     assets,
     allowed: { hostNames: listen.hostNames, port: cfg.port },
+    token: cfg.token,
     ...(demoReset ? { demoReset } : {}),
   });
 
@@ -305,6 +339,7 @@ export async function serveCommand(
     if ('closeAllConnections' in server) server.closeAllConnections();
     await Promise.race([closed, new Promise<void>((r) => setTimeout(r, 2000).unref())]);
   });
+  checkSignal(io);
   io.out(`Kage is running at http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`);
 
   return { stop: () => unwind(cleanups) };

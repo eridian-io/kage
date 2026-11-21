@@ -35,13 +35,12 @@ export const DEFAULT_CONFIG: KageConfig = {
 
 export class ConfigError extends Error {}
 
-/** Lines `kage serve` prints at startup about settings that don't do what they suggest yet. */
-export function startupWarnings(cfg: KageConfig): string[] {
-  return cfg.token === ''
-    ? []
-    : [
-        `Warning: "token" is set in the config but isn't enforced yet; anyone on your tailnet can open Kage.`,
-      ];
+/**
+ * Lines `kage serve` prints at startup about settings that don't do what they suggest yet.
+ * None today: the token, the last one, is enforced since phase 3 (B13).
+ */
+export function startupWarnings(_cfg: KageConfig): string[] {
+  return [];
 }
 
 type Obj = Record<string, unknown>;
@@ -58,6 +57,13 @@ function str(v: unknown, key: string): string {
 function bool(v: unknown, key: string): boolean {
   if (typeof v !== 'boolean') throw new ConfigError(`${key} must be true or false`);
   return v;
+}
+
+/** "" (no login) or at least 16 characters. The message never repeats the value. */
+function token(v: unknown, key: string): string {
+  const t = str(v, key);
+  if (t !== '' && t.length < 16) throw new ConfigError(`${key} must be at least 16 characters`);
+  return t;
 }
 
 function port(v: unknown, key: string): number {
@@ -128,7 +134,7 @@ export async function loadConfig(
       c.autoArchive.afterDays = days(a.afterDays, 'autoArchive.afterDays');
   }
   if (raw.ntfyTopic !== undefined) c.ntfyTopic = str(raw.ntfyTopic, 'ntfyTopic');
-  if (raw.token !== undefined) c.token = str(raw.token, 'token');
+  if (raw.token !== undefined) c.token = token(raw.token, 'token');
 
   if (env.KAGE_NAME) c.name = env.KAGE_NAME;
   if (env.KAGE_HOST) c.host = env.KAGE_HOST;

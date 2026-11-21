@@ -1,5 +1,6 @@
 import { render } from 'preact';
 import { useEffect } from 'preact/hooks';
+import { Login } from './components/Login.tsx';
 import { PreviewPane } from './components/PreviewPane.tsx';
 import { SessionList } from './components/SessionList.tsx';
 import { SessionPanel } from './components/SessionPanel.tsx';
@@ -7,7 +8,7 @@ import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
 import { connect } from './sse.ts';
-import { connection, hadSnapshot, host, now, selected } from './store.ts';
+import { authRequired, connection, hadSnapshot, host, now, selected } from './store.ts';
 import { installView } from './view.ts';
 
 const MINUTE = 60_000;
@@ -39,6 +40,18 @@ export function Board() {
     };
   }, []);
   const s = selected.value;
+  if (authRequired.value) {
+    return (
+      <div class="k-app">
+        <div class="k-board">
+          <TopBar />
+          <div class="k-b">
+            <Login />
+          </div>
+        </div>
+      </div>
+    );
+  }
   return (
     <div class="k-app">
       <div class="k-board">

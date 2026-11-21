@@ -1,7 +1,7 @@
 import { demoSessions } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connect } from './sse.ts';
-import { connection, hadSnapshot, host, selectedId, sessions } from './store.ts';
+import { authRequired, connection, hadSnapshot, host, selectedId, sessions } from './store.ts';
 
 type Listener = (e: MessageEvent) => void;
 
@@ -46,10 +46,76 @@ beforeEach(() => {
   sessions.value = [];
   selectedId.value = null;
   connection.value = 'connecting';
+  authRequired.value = false;
+  authStatus = 204;
+  authCalls = [];
+  vi.stubGlobal(
+    'fetch',
+    vi.fn(async (url: string) => {
+      authCalls.push(url);
+      return new Response(null, { status: authStatus });
+    }),
+  );
 });
 afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
+  authRequired.value = false;
+});
+
+/** What GET /api/auth answers, and the URLs fetched. */
+let authStatus = 204;
+let authCalls: string[] = [];
+
+describe('connect: sign-in (B13)', () => {
+  it('on a stream error asks GET /api/auth; a 401 sets authRequired and stops retrying', async () => {
+    authStatus = 401;
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    expect(authCalls).toEqual(['/api/auth']);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authRequired.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(authCalls).toEqual(['/api/auth']);
+    stop();
+  });
+
+  it('a 204 retries as before', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authCalls).toEqual(['/api/auth']);
+    expect(authRequired.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('a failed auth check retries as before', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => {
+        throw new TypeError('offline');
+      }),
+    );
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(authRequired.value).toBe(false);
+    expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('a new connect replaces the old stream: one stream at a time', () => {
+    connect();
+    const first = latest();
+    const stop = connect();
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.all).toHaveLength(2);
+    expect(latest().closed).toBe(false);
+    stop();
+  });
 });
 
 describe('connect', () => {
