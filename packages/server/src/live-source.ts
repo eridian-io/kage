@@ -571,6 +571,8 @@ export class LiveSource implements SessionSource {
         void this.#relist();
         break;
       case 'down':
+        // A new server numbers its panes afresh: old hook panes would mislead the next listing.
+        this.#hookPanes.clear();
         for (const st of [...this.#sessions.values()]) {
           if (!st.record) this.#removeSession(st);
           else if (st.window) this.#detach(st);

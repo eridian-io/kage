@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LIST_PANES_FORMAT, parsePanes, pickPanes } from './format.ts';
 
-/** One list-panes line: window, kage id, pane, pid, command, path, name, activity, active, dead, placeholder. */
+/** One list-panes line: window, kage id, pane, pid, activity, active, dead, placeholder, command, name, path. */
 const line = (o: {
   w?: string;
   kage?: string;
@@ -20,31 +20,35 @@ const line = (o: {
     o.kage ?? '',
     o.pane ?? '%1',
     o.pid ?? '10',
-    o.cmd ?? 'bash',
-    o.cwd ?? '/tmp',
-    o.name ?? 'w',
     o.act ?? '5',
     o.active ?? '1',
     o.dead ?? '0',
     o.placeholder ?? '',
+    o.cmd ?? 'bash',
+    o.name ?? 'w',
+    o.cwd ?? '/tmp',
   ].join('\t');
 
 describe('LIST_PANES_FORMAT', () => {
-  it('uses real tab separators (F16) and lists the fields in order', () => {
+  it('uses real tab separators (F16); free text has tabs replaced, and the path comes last', () => {
     expect(LIST_PANES_FORMAT).not.toContain('\\t');
-    expect(LIST_PANES_FORMAT.split('\t')).toEqual([
-      '#{window_id}',
-      '#{@kage_id}',
-      '#{pane_id}',
-      '#{pane_pid}',
-      '#{pane_current_command}',
-      '#{pane_current_path}',
-      '#{window_name}',
-      '#{window_activity}',
-      '#{pane_active}',
-      '#{pane_dead}',
-      '#{@kage_placeholder}',
-    ]);
+    // A real tab in the s/// pattern: tmux replaces tabs in that field with spaces.
+    const notab = (f: string) => `#{s/\t/ /:${f}}`;
+    expect(LIST_PANES_FORMAT).toBe(
+      [
+        '#{window_id}',
+        notab('@kage_id'),
+        '#{pane_id}',
+        '#{pane_pid}',
+        '#{window_activity}',
+        '#{pane_active}',
+        '#{pane_dead}',
+        notab('@kage_placeholder'),
+        notab('pane_current_command'),
+        notab('window_name'),
+        '#{pane_current_path}',
+      ].join('\t'),
+    );
   });
 });
 
@@ -100,12 +104,18 @@ describe('parsePanes', () => {
       line({ w: '1' }),
       line({ pane: '1' }),
       line({ act: '' }),
-      `${good}\textra`,
       good.split('\t').slice(0, 10).join('\t'),
+      line({ dead: '' }),
       good,
       '',
     ].join('\n');
     expect(parsePanes(out)).toHaveLength(1);
+  });
+
+  it('a tab inside the pane path (the last field) keeps the window and the whole path', () => {
+    const [p, ...rest] = parsePanes(line({ cwd: '/home/dev/a\tb\tc', name: 'n' }));
+    expect(rest).toEqual([]);
+    expect(p).toMatchObject({ cwd: '/home/dev/a\tb\tc', name: 'n', command: 'bash' });
   });
 
   it('tolerates CRLF line ends', () => {

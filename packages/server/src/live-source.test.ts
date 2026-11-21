@@ -833,6 +833,21 @@ describe('LiveSource: split windows (B14) and dead panes', () => {
     expect(tmux.hookPanesSeen.at(-1)).toEqual([]);
   });
 
+  it('watcher down forgets the hook panes (pane ids restart with a new server)', async () => {
+    const { source, hooks, tmux, watcher } = setup({ records: [rec()] });
+    tmux.panes = twoPanes();
+    await source.start();
+    hooks.fire(hook('SessionStart', '%7'));
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(tmux.hookPanesSeen.at(-1)).toEqual(['%7']);
+    watcher.emit({ type: 'down' });
+    watcher.emit({ type: 'up' });
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(tmux.hookPanesSeen.at(-1)).toEqual([]);
+  });
+
   it('a Kage window whose pane is dead (remain-on-exit) is ended although it shows claude', async () => {
     const { source } = setup({ windows: [kageWin({ dead: true })], records: [rec()] });
     await source.start();

@@ -49,7 +49,7 @@ describe('TmuxClient.listWindows', () => {
 describe('TmuxClient.listWindows (list-panes, B14)', () => {
   const TAB = '\t';
   const paneLine = (pane: string, cmd: string, active: string) =>
-    ['@1', '', pane, '10', cmd, '/tmp', 'w', '5', active, '0', ''].join(TAB);
+    ['@1', '', pane, '10', '5', active, '0', '', cmd, 'w', '/tmp'].join(TAB);
 
   it('lists every pane of the session with list-panes -s and picks one per window', async () => {
     const seen: string[][] = [];
@@ -163,10 +163,35 @@ describe('TmuxClient.newWindow', () => {
     expect(seen).toEqual([]);
   });
 
-  it('an empty argv throws', async () => {
+  it('an argv of fewer than two elements throws (tmux runs a lone argv[0] through $SHELL -c)', async () => {
     const { seen, c } = scripted(LAUNCH);
     await expect(c.newWindow(launch({ argv: [] }))).rejects.toThrow(TypeError);
+    await expect(c.newWindow(launch({ argv: ['claude'] }))).rejects.toThrow(TypeError);
+    await expect(c.newWindow(launch({ argv: ['rm -rf ~'] }))).rejects.toThrow(TypeError);
     expect(seen).toEqual([]);
+  });
+
+  it.each([
+    ['#(touch x)', '##(touch x)'],
+    ['#{pane_id}', '##{pane_id}'],
+    ['a##b', 'a####b'],
+    ['plain', 'plain'],
+  ])('escapes # in -n and -c (tmux expands both as formats): %j', async (raw, escaped) => {
+    const { seen, c } = scripted(LAUNCH);
+    await c.newWindow({
+      name: raw,
+      cwd: `/r/${raw}`,
+      env: { K: raw },
+      argv: ['sleep', raw],
+      kageId: raw,
+    });
+    const nw = seen[0] as string[];
+    expect(nw[nw.indexOf('-n') + 1]).toBe(escaped);
+    expect(nw[nw.indexOf('-c') + 1]).toBe(`/r/${escaped}`);
+    // -e values, argv and set-option values are not format-expanded (checked on tmux 3.4).
+    expect(nw[nw.indexOf('-e') + 1]).toBe(`K=${raw}`);
+    expect(nw.at(-1)).toBe(raw);
+    expect(seen[1]?.at(-1)).toBe(raw);
   });
 
   it.each(['@3', '%4', '@3\t', 'x\ty', '@a\t%4', '@3\t%4\t%5'])(
@@ -182,7 +207,7 @@ describe('TmuxClient.newWindow', () => {
       ...LAUNCH,
       'list-panes': Object.assign(new Error('failed'), { stderr: "can't find window: @3" }),
     });
-    await expect(c.newWindow(launch({ argv: ['/no/such'] }))).rejects.toThrow(
+    await expect(c.newWindow(launch({ argv: ['/no/such', '--version'] }))).rejects.toThrow(
       "the window closed at once: /no/such didn't start",
     );
     // Best-effort cleanup of whatever is left.
@@ -191,7 +216,7 @@ describe('TmuxClient.newWindow', () => {
 
   it('K4: a dead pane throws and the window is killed', async () => {
     const { seen, c } = scripted({ ...LAUNCH, 'list-panes': '%4\t1\tclaude\n' });
-    await expect(c.newWindow(launch({ argv: ['/x/claude'] }))).rejects.toThrow(
+    await expect(c.newWindow(launch({ argv: ['/x/claude', '--version'] }))).rejects.toThrow(
       "the window closed at once: /x/claude didn't start",
     );
     expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
@@ -210,7 +235,7 @@ describe('TmuxClient.newWindow', () => {
       'set-option': Object.assign(new Error('failed'), { stderr: 'no such window: @3' }),
       'list-panes': Object.assign(new Error('failed'), { stderr: "can't find window: @3" }),
     });
-    await expect(c.newWindow(launch({ argv: ['/no/such'] }))).rejects.toThrow(
+    await expect(c.newWindow(launch({ argv: ['/no/such', '--version'] }))).rejects.toThrow(
       "the window closed at once: /no/such didn't start",
     );
     expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
@@ -300,6 +325,15 @@ describe('TmuxClient.sendText', () => {
     expect(seen.map((a) => a[5]).join('')).toBe(text);
   });
 
+  it.each(['\n', '\r', '\t', '\x1b', '\x03', '\x00', '\x7f', 'yes\nrm -rf ~'])(
+    'refuses the control character in %j (only sendKeys sends Enter or Escape)',
+    async (text) => {
+      const { seen, c } = scripted();
+      await expect(c.sendText('%1', text)).rejects.toThrow(TypeError);
+      expect(seen).toEqual([]);
+    },
+  );
+
   it('empty text sends nothing', async () => {
     const { seen, c } = scripted();
     await c.sendText('%1', '');
@@ -313,7 +347,7 @@ describe('TmuxClient.sendText', () => {
   });
 });
 
-describe('TmuxClient.windowKageId and killWindow', () => {
+describe('TmuxClient.windowKageId and killOwnedWindow', () => {
   it('reads @kage_id with show-options -q (K5)', async () => {
     const { seen, c } = scripted({ 'show-options': '0b7e5f0e-1111\n' });
     expect(await c.windowKageId('@3')).toBe('0b7e5f0e-1111');
@@ -325,18 +359,55 @@ describe('TmuxClient.windowKageId and killWindow', () => {
     expect(await scripted({ 'show-options': '\n' }).c.windowKageId('@3')).toBeNull();
   });
 
-  it('killWindow kills that window', async () => {
-    const { seen, c } = scripted();
-    await c.killWindow('@3');
-    expect(seen).toEqual([['kill-window', '-t', '@3']]);
+  it('killOwnedWindow re-reads @kage_id and kills only on an exact match', async () => {
+    const { seen, c } = scripted({ 'show-options': 'k-1\n' });
+    expect(await c.killOwnedWindow('@3', 'k-1')).toBe(true);
+    expect(seen).toEqual([
+      ['show-options', '-w', '-q', '-v', '-t', '@3', '@kage_id'],
+      ['kill-window', '-t', '@3'],
+    ]);
+  });
+
+  it.each(['k-2', '', 'K-1', 'k-10'])(
+    'killOwnedWindow does not kill when the window holds %j',
+    async (held) => {
+      const { seen, c } = scripted({ 'show-options': `${held}\n` });
+      expect(await c.killOwnedWindow('@3', 'k-1')).toBe(false);
+      expect(seen.map((a) => a[0])).toEqual(['show-options']);
+    },
+  );
+
+  it('killOwnedWindow is false for a window that is gone', async () => {
+    const { seen, c } = scripted({
+      'show-options': Object.assign(new Error('failed'), { stderr: 'no such window: @3' }),
+    });
+    expect(await c.killOwnedWindow('@3', 'k-1')).toBe(false);
+    expect(seen.map((a) => a[0])).toEqual(['show-options']);
+  });
+
+  it('killOwnedWindow rethrows other tmux failures', async () => {
+    const { c } = scripted({
+      'show-options': Object.assign(new Error('failed'), { stderr: 'server exited unexpectedly' }),
+    });
+    await expect(c.killOwnedWindow('@3', 'k-1')).rejects.toThrow('failed');
+  });
+
+  it('killOwnedWindow refuses an empty kage id', async () => {
+    const { seen, c } = scripted({ 'show-options': '\n' });
+    await expect(c.killOwnedWindow('@3', '')).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
   });
 
   it('both refuse a bad window id', async () => {
     const { seen, c } = scripted();
     await expect(c.windowKageId('=kage')).rejects.toThrow(TypeError);
-    await expect(c.killWindow('@3; kill-server')).rejects.toThrow(TypeError);
-    await expect(c.killWindow('%3')).rejects.toThrow(TypeError);
+    await expect(c.killOwnedWindow('@3; kill-server', 'k')).rejects.toThrow(TypeError);
+    await expect(c.killOwnedWindow('%3', 'k')).rejects.toThrow(TypeError);
     expect(seen).toEqual([]);
+  });
+
+  it('has no public unchecked killWindow', () => {
+    expect('killWindow' in scripted().c).toBe(false);
   });
 });
 

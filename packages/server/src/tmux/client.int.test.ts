@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -130,7 +130,7 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
         name: 'missing',
         cwd: tmp,
         env: {},
-        argv: ['/no/such/claude'],
+        argv: ['/no/such/claude', '--version'],
         kageId: 'kid-x',
       }),
     ).rejects.toThrow("didn't start");
@@ -139,18 +139,56 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
     expect(after.length).toBe(before);
   });
 
-  it('windowKageId is null for an untagged window', async () => {
+  it('windowKageId is null for an untagged window, which killOwnedWindow leaves alone', async () => {
     const id = tmux('new-window', '-d', '-P', '-F', '#{window_id}', '-t', 'kage').trim();
     expect(await client.windowKageId(id)).toBeNull();
-    await client.killWindow(id);
+    expect(await client.killOwnedWindow(id, 'kid-1')).toBe(false);
+    expect((await client.listWindows()).some((x) => x.windowId === id)).toBe(true);
+    tmux('kill-window', '-t', id);
+    // Gone now: false, not an error.
+    expect(await client.killOwnedWindow(id, 'kid-1')).toBe(false);
   });
 
-  it('sendText types into a cat window, which capture-pane shows; killWindow removes it', async () => {
+  it('killOwnedWindow leaves a window tagged with another id', async () => {
+    const { windowId } = await client.newWindow({
+      name: 'other',
+      cwd: tmp,
+      env: {},
+      argv: ['sleep', '30'],
+      kageId: 'kid-other',
+    });
+    expect(await client.killOwnedWindow(windowId, 'kid-1')).toBe(false);
+    expect((await client.listWindows()).some((x) => x.windowId === windowId)).toBe(true);
+    expect(await client.killOwnedWindow(windowId, 'kid-other')).toBe(true);
+    expect((await client.listWindows()).some((x) => x.windowId === windowId)).toBe(false);
+  });
+
+  it('a literal # (and a tab) in the window name and folder survive; no format job runs', async () => {
+    const odd = 'd#(touch pwned)#{pane_id}\tx';
+    const dir = join(tmp, odd);
+    mkdirSync(dir);
+    const { windowId } = await client.newWindow({
+      name: `n#(touch pwned)#{pane_id}\tz`,
+      cwd: dir,
+      env: {},
+      argv: ['sleep', '30'],
+      kageId: 'kid-hash',
+    });
+    const w = (await client.listWindows()).find((x) => x.windowId === windowId);
+    // The folder is exact; the name, display only, has its tab replaced by a space.
+    expect(w).toMatchObject({ cwd: dir, name: 'n#(touch pwned)#{pane_id} z', kageId: 'kid-hash' });
+    await new Promise((r) => setTimeout(r, 300));
+    expect(existsSync(join(tmp, 'pwned'))).toBe(false);
+    expect(existsSync(join(dir, 'pwned'))).toBe(false);
+    expect(await client.killOwnedWindow(windowId, 'kid-hash')).toBe(true);
+  }, 20_000);
+
+  it('sendText types into a cat window, which capture-pane shows; killOwnedWindow removes it', async () => {
     const { windowId, paneId } = await client.newWindow({
       name: 'cat',
       cwd: tmp,
       env: {},
-      argv: ['cat'],
+      argv: ['cat', '-'],
       kageId: 'kid-cat',
     });
     await client.sendText(paneId, '-l $(echo no) é 🙂 kage-typed');
@@ -159,7 +197,7 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
       return t.includes('kage-typed') ? t : undefined;
     });
     expect(shown).toContain('-l $(echo no) é 🙂 kage-typed');
-    await client.killWindow(windowId);
+    expect(await client.killOwnedWindow(windowId, 'kid-cat')).toBe(true);
     expect((await client.listWindows()).find((x) => x.windowId === windowId)).toBeUndefined();
   }, 20_000);
 
@@ -182,7 +220,7 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
       return Buffer.byteLength(t) >= size ? t : undefined;
     });
     expect(got).toBe(text);
-    await client.killWindow(windowId);
+    expect(await client.killOwnedWindow(windowId, 'kid-raw')).toBe(true);
   }, 20_000);
 
   it('B14: a split window is listed once, by the hook pane when one is given', async () => {
@@ -208,7 +246,7 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
       ws.filter((x) => x.windowId === windowId).map((x) => x.paneId);
     expect(mine(await client.listWindows())).toEqual([paneId]);
     expect(mine(await client.listWindows(new Set([second])))).toEqual([second]);
-    await client.killWindow(windowId);
+    expect(await client.killOwnedWindow(windowId, 'kid-split')).toBe(true);
   });
 
   it('capturePane returns text printed in the pane', async () => {

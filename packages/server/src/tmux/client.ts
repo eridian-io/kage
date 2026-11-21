@@ -106,6 +106,14 @@ const LAUNCH_CHECK_MS = 250;
 const WINDOW_ID = /^@\d+$/;
 const PANE_ID = /^%\d+$/;
 const ENV_NAME = /^[A-Z_][A-Z0-9_]*$/;
+/** C0 controls and DEL: only sendKeys produces Enter or Escape. */
+// biome-ignore lint/suspicious/noControlCharactersInRegex: matching control characters is the point
+const CONTROL = /[\u0000-\u001f\u007f]/;
+/** tmux's answer for a window or session that no longer exists. */
+const GONE_RE = /no such window|can't find window|can't find session|no server running/i;
+
+/** A literal value for an option tmux expands as a format: `#` becomes `##`. */
+const escapeFormat = (value: string): string => value.replaceAll('#', '##');
 
 function checkWindowId(id: string): void {
   if (!WINDOW_ID.test(id)) throw new TypeError(`not a tmux window id: ${JSON.stringify(id)}`);
@@ -259,7 +267,10 @@ export class TmuxClient {
   }
 
   /**
-   * Opens a detached window running `argv` directly (no shell), tags it with `@kage_id` in a
+   * Opens a detached window running `argv` directly. tmux skips the shell only when it gets two
+   * or more arguments (a lone argv[0] runs as `$SHELL -c argv[0]`), so argv must have at least
+   * two elements. `name` and `cwd` are format-escaped (`#` as `##`); `-e` values, argv and the
+   * tag are not expanded by tmux. It tags the window with `@kage_id` in a
    * second call (K1: a `;`-chained set-option tags the session's current window), then checks
    * that the window is still there with a live pane (K4: `new-window` exits 0 when argv[0] is
    * missing and the window closes at once). On any failure after the window opened, it is killed
@@ -272,7 +283,9 @@ export class TmuxClient {
     argv: string[];
     kageId: string;
   }): Promise<{ windowId: string; paneId: string }> {
-    if (o.argv.length === 0) throw new TypeError('newWindow needs a command');
+    // With a single argument tmux runs it through `$SHELL -c`: always pass argv[0] and arguments.
+    if (o.argv.length < 2)
+      throw new TypeError('newWindow needs a command and at least one argument');
     const env: string[] = [];
     for (const [k, v] of Object.entries(o.env)) {
       if (!ENV_NAME.test(k))
@@ -287,10 +300,11 @@ export class TmuxClient {
       '#{window_id}\t#{pane_id}',
       '-t',
       `=${this.#session}:`,
+      // tmux expands -n and -c as formats (`#(...)` would run a shell job): `##` is a literal #.
       '-n',
-      o.name,
+      escapeFormat(o.name),
       '-c',
-      o.cwd,
+      escapeFormat(o.cwd),
       ...env,
       '--',
       ...o.argv,
@@ -355,6 +369,8 @@ export class TmuxClient {
    */
   async sendText(paneId: string, text: string): Promise<void> {
     checkPaneId(paneId);
+    if (CONTROL.test(text))
+      throw new TypeError('text holds a control character; use sendKeys for keys');
     for (const chunk of utf8Chunks(text, SEND_TEXT_MAX_BYTES)) {
       await this.#run(['send-keys', '-t', paneId, '-l', '--', chunk]);
     }
@@ -372,12 +388,27 @@ export class TmuxClient {
       windowId,
       '@kage_id',
     ]);
-    const id = stdout.trim();
+    const id = stdout.replace(/\r?\n$/, '');
     return id === '' ? null : id;
   }
 
-  async killWindow(windowId: string): Promise<void> {
+  /**
+   * Kills the window only when its `@kage_id` is exactly `kageId`, re-read just before. False
+   * when it holds another id or none, or when the window is gone. This is the only way control
+   * code kills a window; there is no unchecked kill.
+   */
+  async killOwnedWindow(windowId: string, kageId: string): Promise<boolean> {
     checkWindowId(windowId);
+    if (kageId === '') throw new TypeError('killOwnedWindow needs a kage id');
+    let held: string | null;
+    try {
+      held = await this.windowKageId(windowId);
+    } catch (e) {
+      if (GONE_RE.test(stderrOf(e))) return false;
+      throw e;
+    }
+    if (held !== kageId) return false;
     await this.#run(['kill-window', '-t', windowId]);
+    return true;
   }
 }
