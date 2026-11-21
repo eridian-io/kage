@@ -73,6 +73,12 @@ describe('board.css', () => {
     expect(board).toContain(':focus-visible');
     expect(board).not.toMatch(/\.v1/);
   });
+  it('keeps a focus ring on every all:unset control', () => {
+    for (const sel of ['.k-new', '.k-act', '.k-opts button']) {
+      expect(board).toContain(`${sel}:focus-visible`);
+    }
+    expect(board.match(/all: unset/g)?.length).toBe(3);
+  });
   it('self-hosts Geist', () => {
     for (const f of [
       'geist-latin-400-normal',
