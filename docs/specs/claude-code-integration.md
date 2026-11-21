@@ -60,8 +60,21 @@ All events carry `session_id`, `transcript_path`, `cwd`, `scratchpad_dir` and `h
 | `Notification` | `prompt_id`, `message`, `notification_type`. The permission prompt and AskUserQuestion both gave `permission_prompt` with "Claude needs your permission". It has no `permission_mode`. |
 | `Stop` | `prompt_id`, `permission_mode`, `effort`, `stop_hook_active: false`, `last_assistant_message` (Markdown), `background_tasks: []`, `session_crons: []` |
 | `SessionEnd` | `reason`: `"prompt_input_exit"` after `/exit`, `"other"` after `tmux kill-window`. It carries `prompt_id` when the session had one. |
+| `PostToolUseFailure` | as for `PreToolUse`, plus `error` (e.g. `"Exit code 1\n<stderr>"`), `is_interrupt` (`false`) and `duration_ms`. It has no `tool_response`. |
 
-A Bash command that failed (exit code 1) fired **no `PostToolUse`**. A separate failure event probably exists but was not registered. `Stop` still came, so the status is unaffected.
+`PermissionRequest.permission_suggestions` varies by tool:
+- for Write: `[{type: "setMode", mode: "acceptEdits", destination: "session"}]`;
+- for `touch` in Bash: `[{type: "addDirectories", directories: [<cwd>], destination: "session"}, {type: "setMode", …}]`.
+
+### Denial, cancel and failure
+
+| Case | Hooks that fire | Pane afterwards | `Stop`? | Transcript |
+|---|---|---|---|---|
+| Command fails (exit 1, no prompt) | `PreToolUse`, then **`PostToolUseFailure`** about 0.4 s later. No `PostToolUse`. | `⎿  Error: Exit code 1 …`, and Claude carries on | yes, at the end of the turn | `tool_result` with `is_error: true`; `toolUseResult` is a string `"Error: Exit code 1\n…"` |
+| Permission answered **No** (`send-keys 4` on a Bash prompt) | `PreToolUse` and `PermissionRequest` before the answer. **Nothing after it**: no `PostToolUseFailure`, `PostToolUse` or `Stop` (waited 30 s). | `⎿  Interrupted · What should Claude do instead?` under the tool line, then the empty input box | **no** | `tool_result` with `is_error: true`, content "The user doesn't want to proceed with this tool use. … STOP …", envelope `toolUseResult: "User rejected tool use"`, `toolDenialKind: "user-rejected"`, `toolDenialBeforeRun: true`. Then a user record with a text block `[Request interrupted by user for tool use]`. |
+| Permission cancelled with **Esc** | the same as No: nothing after the key (waited 25 s) | the same as No | **no** | the same records as No. Esc and No cannot be told apart. |
+
+Consequence for Kage: after sending a No or an Esc, no hook moves the session on. Kage must set the status itself when it sends the answer: the turn is over and `claude` is waiting. Alternatively, it can react to the `[Request interrupted by user for tool use]` record. The next prompt runs normally.
 
 ### Event order for one prompt that reads, edits and runs a command
 
@@ -90,11 +103,12 @@ Fixtures: `panes/permission-bash.txt`, `panes/permission-edit.txt`. Both are `ca
 
 | Question | Answer |
 |---|---|
-| Layout | A full-width `─` rule, then a title (` Bash command` or ` Edit file`). Then a description or file name, the command or diff between `╌` rules, and the question (` Do you want to proceed?` or ` Do you want to make this edit to <file>?`). Then numbered options, the selected one prefixed `❯ `. The footer is ` Esc to cancel · Tab to amend`. |
-| Bash options | `1. Yes`, `2. Yes, and don’t ask again for: <prefix> *`, `3. Yes, and switch to auto mode · …`, `4. No` |
+| Layout | A full-width `─` rule, then a title (` Bash command` or ` Edit file`). Bash prompts then show a line ` Tip: auto mode handles these prompts for you — choose "switch to auto mode" below`, which is not an option. Then a description or file name, the command or diff between `╌` rules, and the question (` Do you want to proceed?` or ` Do you want to make this edit to <file>?`). Then numbered options, the selected one prefixed `❯ `. The footer is ` Esc to cancel · Tab to amend`. |
+| Bash options | `1. Yes`, `2. <varies>`, `3. Yes, and switch to auto mode · …`, `4. No`. The option-2 text depends on the command: `Yes, and don’t ask again for: node *` for `node test.js`, and `Yes, and always allow access to <dir> from this project` for `touch`. |
 | Edit and Write options | `1. Yes`, `2. Yes, and switch to accept edits (…) for this session (shift+tab)`, `3. No` |
 | Answering option 1 | `send-keys 1`. It is selected and submitted at once; no Enter is needed. |
-| Answering option 2 | `send-keys 2` works the same way: a digit chose option 2 directly in a numbered dialog. Alternatively, `send-keys Down` moves the `❯` to option 2, then `send-keys Enter` submits. |
+| Answering option 2 | **Observed:** `send-keys 2` on a Bash prompt chose option 2 and ran the command at once, with no Enter. Alternatively, `send-keys Down` moves the `❯` to option 2, then `send-keys Enter` submits. `send-keys 4` (No) is also immediate. |
+| Cancelling | `send-keys Escape` cancels the prompt. It has the same effect as No; see §1, "Denial, cancel and failure". |
 | Lines | `-J` joins wrapped lines, but rows keep trailing spaces, often padded to near the pane width. Trim each line before parsing. Option lines are ` ❯ 1. Yes` or `   2. …`, so match `^\s*(❯\s*)?(\d+)\.\s+(.*)$`. |
 
 ## 3. AskUserQuestion
@@ -142,7 +156,7 @@ Claude Code writes **one record per content block**. Several consecutive assista
 | Grep, Glob | not present in this build (see contradiction 5) |
 
 **Tool result content:**
-- Read: line-numbered text (`"1\t…\n2\t…"`).
+- Read: line-numbered text (`"1\t…\n2\t…"`). In `toolUseResult.file`, `numLines` and `totalLines` count the empty piece after a final newline. A 4-line file ending in `\n` gave `5`, and the tool_result showed a numbered empty line `5\t`.
 - Edit: `"The file <path> has been updated successfully. …"`, with `toolUseResult.structuredPatch[].lines` (` `, `-` and `+` prefixes), which is the diff source for `add`/`del`.
 - Write: `"File created successfully at: <path> …"`.
 - Bash success: the stdout text and `is_error: false`.

@@ -1,0 +1,21 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-projects-demo/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/projects/demo",
+  "scratchpad_dir": "/tmp/claude-1000/-home-dev-projects-demo/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "npm run lint",
+    "description": "Run the linter"
+  },
+  "tool_use_id": "toolu_00000000000000000000000008",
+  "error": "Exit code 1\nsrc/slug.js:2:3 lint/style: use a template literal\n1 problem",
+  "is_interrupt": false,
+  "duration_ms": 640
+}
