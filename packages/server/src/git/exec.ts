@@ -15,12 +15,15 @@ function cleanEnv(): NodeJS.ProcessEnv {
   return env;
 }
 
-/** git with an argument array (never a shell); it never prompts and takes no optional locks. */
+/**
+ * git with an argument array (never a shell); it never prompts and takes no optional locks.
+ * Every call turns fsmonitor off: a repo's `core.fsmonitor` names a program git would run.
+ */
 export const gitExec: GitExec = (args, opts = {}) =>
   new Promise((resolve, reject) => {
     execFile(
       'git',
-      args,
+      ['-c', 'core.fsmonitor=false', ...args],
       {
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
