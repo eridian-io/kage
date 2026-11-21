@@ -408,7 +408,13 @@ export class TmuxClient {
       throw e;
     }
     if (held !== kageId) return false;
-    await this.#run(['kill-window', '-t', windowId]);
+    try {
+      await this.#run(['kill-window', '-t', windowId]);
+    } catch (e) {
+      // The window closed between the re-read and the kill.
+      if (GONE_RE.test(stderrOf(e))) return false;
+      throw e;
+    }
     return true;
   }
 }

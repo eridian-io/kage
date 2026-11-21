@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { authCookieValue, CLEAR_COOKIE, setCookieHeader } from './auth.ts';
+import { ActionError } from './control/actions.ts';
 import { LaunchError } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
@@ -674,5 +675,151 @@ describe('POST /api/sessions', () => {
     expect((await t.a.fetch(mutate('POST', '/api/sessions', BODY))).status).toBe(401);
     expect(bodies).toEqual([]);
     expect(t.bodies).toEqual([]);
+  });
+});
+
+describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
+  type Call = [string, string, unknown?];
+  const withControls = (fail: Error | null = null, token = '') => {
+    const calls: Call[] = [];
+    const act = async (call: Call) => {
+      calls.push(call);
+      if (fail) throw fail;
+    };
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      controls: {
+        answer: (id, option) => act(['answer', id, option]),
+        reply: (id, text) => act(['reply', id, text]),
+        stop: (id) => act(['stop', id]),
+      },
+    });
+    return { a, calls };
+  };
+
+  it('answer {option} → 204 and calls answer(id, option)', async () => {
+    const { a, calls } = withControls();
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/answer', { option: 2 }));
+    expect(res.status).toBe(204);
+    expect(calls).toEqual([['answer', 'k-1', 2]]);
+  });
+
+  it('reply {text} → 204 with the trimmed text', async () => {
+    const { a, calls } = withControls();
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/reply', { text: '  use b.sh ' }));
+    expect(res.status).toBe(204);
+    expect(calls).toEqual([['reply', 'k-1', 'use b.sh']]);
+  });
+
+  it('stop → 204, with or without a body; an external id reaches the controls as is', async () => {
+    const { a, calls } = withControls();
+    expect((await a.fetch(mutate('POST', '/api/sessions/k-1/stop'))).status).toBe(204);
+    expect((await a.fetch(mutate('POST', '/api/sessions/ext-@3/stop', {}))).status).toBe(204);
+    expect(calls).toEqual([
+      ['stop', 'k-1'],
+      ['stop', 'ext-@3'],
+    ]);
+  });
+
+  it('validates the bodies (400) before any action', async () => {
+    const { a, calls } = withControls();
+    for (const [path, body] of [
+      ['answer', { option: 0 }],
+      ['answer', { option: '1' }],
+      ['answer', { option: 1, enter: true }],
+      ['answer', undefined],
+      ['reply', { text: 'a\nb' }],
+      ['reply', { text: 'a\u001b[2J' }],
+      ['reply', { text: 'x'.repeat(4001) }],
+      ['reply', { text: '' }],
+      ['stop', { force: true }],
+    ] as const) {
+      const res = await a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+      expect(res.status, `${path} ${JSON.stringify(body)}`).toBe(400);
+      expect(Object.keys((await res.json()) as object)).toEqual(['error']);
+    }
+    const notJson = await a.fetch(
+      req('/api/sessions/k-1/answer', {
+        method: 'POST',
+        headers: { 'X-Kage': '1', Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: '{"option":',
+      }),
+    );
+    expect(notJson.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it('maps ActionError statuses and messages', async () => {
+    for (const status of [403, 404, 409, 422] as const) {
+      const { a } = withControls(new ActionError(status, `Problem ${status}.`));
+      for (const [path, body] of [
+        ['answer', { option: 1 }],
+        ['reply', { text: 'hi' }],
+        ['stop', undefined],
+      ] as const) {
+        const res = await a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+        expect(res.status).toBe(status);
+        expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+      }
+    }
+  });
+
+  it('an unexpected error is a 500 with a one-sentence body', async () => {
+    const { a } = withControls(new Error('boom\nstack'));
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/stop'));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Kage couldn't send that to the session: boom" });
+  });
+
+  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+    for (const [path, body] of [
+      ['answer', { option: 1 }],
+      ['reply', { text: 'hi' }],
+      ['stop', undefined],
+    ] as const) {
+      const res = await app(true).fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+    }
+  });
+
+  it('needs X-Kage and Origin, and the token when one is set', async () => {
+    const { a, calls } = withControls();
+    for (const headers of [
+      { 'Content-Type': 'application/json' } as Record<string, string>,
+      { 'Content-Type': 'application/json', 'X-Kage': '1' },
+      { 'Content-Type': 'application/json', Origin: ORIGIN },
+      { 'Content-Type': 'application/json', 'X-Kage': '1', Origin: 'http://evil.example' },
+    ]) {
+      for (const path of ['answer', 'reply', 'stop']) {
+        const res = await a.fetch(
+          req(`/api/sessions/k-1/${path}`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify(path === 'answer' ? { option: 1 } : { text: 'hi' }),
+          }),
+        );
+        expect(res.status).toBe(403);
+      }
+    }
+    const t = withControls(null, 'x'.repeat(20));
+    for (const path of ['answer', 'reply', 'stop']) {
+      const body =
+        path === 'answer' ? { option: 1 } : path === 'reply' ? { text: 'hi' } : undefined;
+      expect((await t.a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body))).status).toBe(401);
+    }
+    expect(calls).toEqual([]);
+    expect(t.calls).toEqual([]);
+  });
+
+  it('GET is not a way in', async () => {
+    const { a, calls } = withControls();
+    const res = await a.fetch(req('/api/sessions/k-1/stop'));
+    expect(res.status).toBe(404);
+    expect(calls).toEqual([]);
   });
 });

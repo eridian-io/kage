@@ -1929,3 +1929,254 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     expect(source.branchTaken('shop', 'kage/else')).toBe(false);
   });
 });
+
+describe('LiveSource: controls (phase 3 Task 7)', () => {
+  const ASK_INPUT = {
+    questions: [
+      {
+        question: 'Should slug() use dashes or underscores as the word separator?',
+        header: 'Separator',
+        options: [{ label: 'Dashes' }, { label: 'Underscores' }],
+      },
+      {
+        question: 'Add a test for slug()?',
+        header: 'Test',
+        options: [{ label: 'Add one' }, { label: 'Skip it' }],
+      },
+    ],
+  };
+  /** ask.txt moved on to the second question of the same AskUserQuestion. */
+  const askSecond = (): string =>
+    pane('ask')
+      .replace(
+        'Should slug() use dashes or underscores as the word separator?',
+        'Add a test for slug()?',
+      )
+      .replace('1. Dashes', '1. Add one')
+      .replace('2. Underscores', '2. Skip it');
+
+  async function asking() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2', { toolName: 'AskUserQuestion', toolInput: ASK_INPUT }));
+    await flush();
+    return s;
+  }
+
+  async function permission() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    return s;
+  }
+
+  it('target: ids, window and pane, status, a copy of the question, promptKind ask after an AskUserQuestion PreToolUse', async () => {
+    const { source } = await asking();
+    const t = source.target('k-1');
+    expect(t).toEqual({
+      id: 'k-1',
+      kageId: 'k-1',
+      windowId: '@2',
+      paneId: '%2',
+      status: 'needs-you',
+      question: {
+        text: 'Should slug() use dashes or underscores as the word separator?',
+        options: ['Dashes', 'Underscores'],
+      },
+      promptKind: 'ask',
+      external: false,
+    });
+    t?.question?.options.push('mutated');
+    expect(source.target('k-1')?.question?.options).toEqual(['Dashes', 'Underscores']);
+  });
+
+  it('target: promptKind permission after a PermissionRequest capture', async () => {
+    const { source } = await permission();
+    expect(source.target('k-1')).toMatchObject({ status: 'needs-you', promptKind: 'permission' });
+    expect(source.target('k-1')?.question?.options[0]).toBe('Yes');
+  });
+
+  it('target: promptKind trust for the trust screen, and question.startup is true', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('trust'));
+    await s.source.start();
+    expect(s.source.target('k-1')).toMatchObject({
+      status: 'needs-you',
+      promptKind: 'trust',
+      question: {
+        text: 'Trust this folder?',
+        options: ['No, exit', 'Yes, I trust this folder'],
+        startup: true,
+      },
+    });
+    expect(s.source.get('k-1')?.question?.startup).toBe(true);
+    // The screen kind never reaches the wire (F8).
+    expect(s.source.get('k-1')?.question).not.toHaveProperty('screen');
+    expect(s.source.target('nope')).toBeNull();
+  });
+
+  it('target: an external session has no kageId; a gone window has no window or pane', async () => {
+    const { source, tmux, watcher } = setup({ windows: [win()], records: [rec()] });
+    await source.start();
+    expect(source.target('ext-@1')).toMatchObject({
+      external: true,
+      kageId: null,
+      windowId: '@1',
+      paneId: '%1',
+    });
+    expect(source.target('k-1')).toMatchObject({
+      status: 'ended',
+      windowId: null,
+      paneId: null,
+      kageId: 'k-1',
+    });
+    tmux.windows = [];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.target('ext-@1')).toBeNull();
+  });
+
+  it('promptKind clears when the session leaves needs-you', async () => {
+    const { source, hooks } = await permission();
+    hooks.fire(hook('PostToolUse', '%2'));
+    expect(source.target('k-1')).toMatchObject({
+      status: 'running',
+      promptKind: null,
+      question: null,
+    });
+  });
+
+  it('markAnswered: needs-you → running with the question cleared, at once', async () => {
+    const { source, updates } = await permission();
+    source.markAnswered('k-1');
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(source.get('k-1')?.question).toBeUndefined();
+    expect(updates('k-1').at(-1)?.status).toBe('running');
+  });
+
+  it('markAnswered: the check capture 500 ms later finds the next question of an AskUserQuestion', async () => {
+    const { source, tmux } = await asking();
+    tmux.setCapture('%2', askSecond());
+    source.markAnswered('k-1');
+    await vi.advanceTimersByTimeAsync(499);
+    expect(source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(source.target('k-1')).toMatchObject({
+      status: 'needs-you',
+      question: { text: 'Add a test for slug()?', options: ['Add one', 'Skip it'] },
+      promptKind: 'ask',
+    });
+  });
+
+  it('markAnswered: the check capture showing the denial line → done', async () => {
+    const { source, tmux } = await permission();
+    tmux.setCapture('%2', DENIED_PANE);
+    source.markAnswered('k-1');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('markAnswered: an old denial above the running tool is not this answer (stays running)', async () => {
+    const { source, tmux } = await permission();
+    tmux.setCapture(
+      '%2',
+      [
+        '● Bash(sh ./a.sh)',
+        '  ⎿  Interrupted · What should Claude do instead?',
+        '',
+        '● Bash(npm test)',
+        '  ⎿  Running…',
+        '',
+        RULE,
+        '❯ ',
+        RULE,
+        '',
+      ].join('\n'),
+    );
+    source.markAnswered('k-1');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+  });
+
+  it('markAnswered: a capture taken after a later status change cannot undo it (gen)', async () => {
+    const { source, tmux, hooks } = await permission();
+    source.markAnswered('k-1');
+    hooks.fire(hook('PostToolUse', '%2'));
+    hooks.fire(hook('Stop', '%2'));
+    expect(source.get('k-1')?.status).toBe('done');
+    // The old prompt is still in the scripted capture: it must not bring needs-you back.
+    tmux.setCapture('%2', pane('permission-bash'));
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('markAnswered on the trust screen: the check finds the next startup screen', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('trust'));
+    await s.source.start();
+    s.source.markAnswered('k-1');
+    expect(s.source.get('k-1')?.status).toBe('running');
+    s.tmux.setCapture(
+      '%2',
+      ' Security notes:\n\n 1. Claude can make mistakes\n\n Press Enter to continue…',
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(s.source.target('k-1')).toMatchObject({
+      status: 'needs-you',
+      promptKind: 'security',
+      question: { text: 'Security notes', options: ['Continue'], startup: true },
+    });
+  });
+
+  it('markAnswered does nothing unless the session needs you', async () => {
+    const { source, hooks } = await permission();
+    hooks.fire(hook('PostToolUse', '%2'));
+    hooks.fire(hook('Stop', '%2'));
+    source.markAnswered('k-1');
+    expect(source.get('k-1')?.status).toBe('done');
+    source.markAnswered('nope');
+  });
+
+  it("markReplied: → running; a transcript interrupt within 5 s is Kage's own Escape, one after sets done", async () => {
+    const { source, tails } = await permission();
+    source.markReplied('k-1');
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(source.get('k-1')?.question).toBeUndefined();
+    await vi.advanceTimersByTimeAsync(4000);
+    tails[0]?.interrupt();
+    expect(source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(1001);
+    tails[0]?.interrupt();
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('markReplied from done', async () => {
+    const { source, hooks } = await permission();
+    hooks.fire(hook('PostToolUse', '%2'));
+    hooks.fire(hook('Stop', '%2'));
+    source.markReplied('k-1');
+    expect(source.get('k-1')?.status).toBe('running');
+  });
+
+  it('markStopped → ended now, question cleared; a later listing without the window keeps it ended', async () => {
+    const { source, tmux, watcher, updates } = await permission();
+    source.markStopped('k-1');
+    expect(source.get('k-1')).toMatchObject({ status: 'ended' });
+    expect(source.get('k-1')?.question).toBeUndefined();
+    expect(updates('k-1').at(-1)?.status).toBe('ended');
+    tmux.windows = [];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.target('k-1')).toMatchObject({ status: 'ended', windowId: null });
+  });
+});

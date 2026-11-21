@@ -221,7 +221,30 @@ function textBlocks(lines: string[]): Block[] {
   return blocks.slice(-STARTUP_BLOCKS);
 }
 
-function parseStartup(all: string[]): Question | null {
+/** Claude Code's startup screens (integration §6). */
+export type StartupKind = 'login' | 'trust' | 'renderer' | 'security' | 'theme';
+/** A startup screen: its card question, plus which screen it is (never on the wire, F8). */
+export interface StartupScreen extends Question {
+  screen: StartupKind;
+}
+
+/** The trust screen's unnumbered options, in the order trust.txt recorded (F9). */
+const TRUST_OPTIONS = ['No, exit', 'Yes, I trust this folder'] as const;
+
+/**
+ * The trust options in the order the live screen draws them (the last line of each), so the
+ * cursor plan follows the screen; the recorded order when either line is missing.
+ */
+function trustOptions(lines: string[]): string[] {
+  const found = TRUST_OPTIONS.map((label) => ({
+    label,
+    at: lines.findLastIndex((l) => l.replace(/^❯\s*/, '') === label),
+  }));
+  if (found.some((f) => f.at === -1)) return [...TRUST_OPTIONS];
+  return found.sort((a, b) => a.at - b.at).map((f) => f.label);
+}
+
+function parseStartup(all: string[]): StartupScreen | null {
   const lines = startupWindow(all);
   const blocks = textBlocks(lines);
   const first = blocks[0]?.at ?? lines.length;
@@ -235,7 +258,7 @@ function parseStartup(all: string[]): Question | null {
   const live = (...at: number[]): boolean =>
     at.every((i) => i >= 0) && !idleBoxBelow(lines, Math.min(...at));
   if (live(find(/Select login method/))) {
-    return { text: 'Sign in to Claude Code in the terminal', options: [] };
+    return { text: 'Sign in to Claude Code in the terminal', options: [], screen: 'login' };
   }
   if (
     live(find(/Is this a project you created or one you trust\?/)) ||
@@ -244,26 +267,31 @@ function parseStartup(all: string[]): Question | null {
       findLine(/^(❯\s*)?(\d+\.\s+)?Yes, I trust this folder$/),
     )
   ) {
-    return { text: 'Trust this folder?', options: ['No, exit', 'Yes, I trust this folder'] };
+    return { text: 'Trust this folder?', options: trustOptions(lines), screen: 'trust' };
   }
   if (live(find(/Try the new fullscreen renderer\?/))) {
-    return { text: 'Try the new fullscreen renderer?', options: ['Yes, try it', 'Not now'] };
+    return {
+      text: 'Try the new fullscreen renderer?',
+      options: ['Yes, try it', 'Not now'],
+      screen: 'renderer',
+    };
   }
   if (live(find(/Security notes/), find(/Press Enter to continue/))) {
-    return { text: 'Security notes', options: ['Continue'] };
+    return { text: 'Security notes', options: ['Continue'], screen: 'security' };
   }
   if (live(find(/Choose the text style/))) {
     const numbered = lines.flatMap((l) => {
       const m = OPTION.exec(l);
       return m ? [optionLabel(m[3] as string)] : [];
     });
-    return boundQuestion('Choose a text style', numbered.length > 0 ? numbered : ['Continue']);
+    const q = boundQuestion('Choose a text style', numbered.length > 0 ? numbered : ['Continue']);
+    return { ...q, screen: 'theme' };
   }
   return null;
 }
 
 /** Recognises Claude Code's startup screens (R9) by their recorded key phrases. */
-export function parseStartupScreen(pane: string): Question | null {
+export function parseStartupScreen(pane: string): StartupScreen | null {
   return parseStartup(cleanLines(pane));
 }
 
@@ -284,6 +312,27 @@ export function showsDenial(pane: string): boolean {
     .filter((l) => l !== '')
     .slice(-DENIAL_WINDOW)
     .some((l) => DENIAL.test(l));
+}
+
+/**
+ * True when the denial line sits right under the last tool line (`● …`) on screen: the answer
+ * just given was No. An older denial above a later tool line doesn't count.
+ */
+export function showsDenialLast(pane: string): boolean {
+  const lines = cleanLines(pane).filter((l) => l !== '');
+  const tool = lines.findLastIndex((l) => l.startsWith('●'));
+  return tool !== -1 && DENIAL.test(lines[tool + 1] ?? '') && showsDenial(pane);
+}
+
+/**
+ * Which numbered prompt is on screen: an AskUserQuestion (footer `Enter to select …`) or a
+ * permission prompt (footer `Esc to cancel …`); null when there is none.
+ */
+export function numberedPromptKind(pane: string): 'permission' | 'ask' | null {
+  const raw = rawLines(pane);
+  if (parsePrompt(raw) === null) return null;
+  const footer = raw.findLast((l) => l.trim() !== '')?.trim() ?? '';
+  return footer.startsWith('Enter to select') ? 'ask' : 'permission';
 }
 
 /** Cuts the input box (rule, `❯ …`, rule) and the footer under it from the bottom of the lines. */

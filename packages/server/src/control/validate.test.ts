@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { hasControlChars, parseNewTask } from './validate.ts';
+import { hasControlChars, parseAnswer, parseNewTask, parseReply } from './validate.ts';
 
 const ok = { project: 'shop', base: 'main', task: 'Fix the cart total', acceptEdits: false };
 const EXPECTED = 'Expected {"project", "base", "task", "acceptEdits"}';
@@ -117,5 +117,94 @@ describe('hasControlChars', () => {
 
   it('passes ordinary text, accents and emoji', () => {
     expect(hasControlChars('Ünïcödé café 😀 日本語', false)).toBe(false);
+  });
+});
+
+describe('parseAnswer', () => {
+  const answerError = (body: unknown): string | null => {
+    const r = parseAnswer(body);
+    return r.ok ? null : r.error;
+  };
+
+  it('accepts exactly {option} with an integer 1–9', () => {
+    for (const option of [1, 4, 9])
+      expect(parseAnswer({ option })).toEqual({ ok: true, value: { option } });
+  });
+
+  it('refuses other numbers, types and shapes', () => {
+    for (const option of [0, 10, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '1', null, true]) {
+      expect(answerError({ option })).toBe('Expected {"option": <1–9>}');
+    }
+    for (const body of [undefined, null, 1, 'x', [], [{ option: 1 }], {}]) {
+      expect(answerError(body)).toBe('Expected {"option": <1–9>}');
+    }
+    expect(answerError({ option: 1, enter: true })).toBe('Unexpected field "enter"');
+  });
+});
+
+describe('parseReply', () => {
+  const replyError = (body: unknown): string | null => {
+    const r = parseReply(body);
+    return r.ok ? null : r.error;
+  };
+  const CONTROL_ERROR = "The reply can't contain control characters or line breaks.";
+
+  it('accepts exactly {text} and trims it', () => {
+    expect(parseReply({ text: '  use the other script  ' })).toEqual({
+      ok: true,
+      value: { text: 'use the other script' },
+    });
+    // Control characters are checked before trimming: a trailing newline is refused too.
+    expect(replyError({ text: 'yes\n' })).toBe(
+      "The reply can't contain control characters or line breaks.",
+    );
+  });
+
+  it('refuses other shapes', () => {
+    for (const body of [undefined, null, 'x', [], {}, { text: 7 }, { text: null }]) {
+      expect(replyError(body)).toBe('Expected {"text": "<reply>"}');
+    }
+    expect(replyError({ text: 'hi', submit: false })).toBe('Unexpected field "submit"');
+  });
+
+  it('refuses empty, blank and over-long replies (4,000 code points, 12,000 bytes)', () => {
+    expect(replyError({ text: '' })).toBe('Write a reply of 1–4000 characters.');
+    expect(replyError({ text: '   ' })).toBe('Write a reply of 1–4000 characters.');
+    expect(replyError({ text: 'a'.repeat(4001) })).toBe('Write a reply of 1–4000 characters.');
+    expect(parseReply({ text: 'a'.repeat(4000) }).ok).toBe(true);
+    // 3,000 emoji are 3,000 characters but 12,000 bytes: allowed; 3,001 are over.
+    expect(parseReply({ text: '😀'.repeat(3000) }).ok).toBe(true);
+    expect(replyError({ text: '😀'.repeat(3001) })).toBe(
+      'The reply is too long (over 12,000 bytes).',
+    );
+  });
+
+  it('refuses newlines, ESC, NUL, other controls and bidi overrides (F15)', () => {
+    for (const text of [
+      'yes\nrm -rf ~',
+      'yes\r',
+      'a\tb',
+      'a\u001b[2J',
+      'a\u0000b',
+      'a\u007fb',
+      'a\u0085b',
+      'abc‮def',
+      'a⁦b',
+      'a b',
+    ]) {
+      expect(replyError({ text })).toBe(CONTROL_ERROR);
+    }
+  });
+
+  it('keeps shell syntax and option-like text as plain text (F15: it is typed, never run)', () => {
+    for (const text of [
+      'ok; rm -rf ~',
+      '$(rm -rf ~)',
+      '`id`',
+      '--dangerously-skip-permissions',
+      '-p x',
+    ]) {
+      expect(parseReply({ text })).toEqual({ ok: true, value: { text } });
+    }
   });
 });

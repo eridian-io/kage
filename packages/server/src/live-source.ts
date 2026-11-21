@@ -1,4 +1,6 @@
 import type { DisplayLine, Session, SessionStatus } from '@kage/shared';
+import type { ControlTarget } from './control/actions.ts';
+import type { PromptKind } from './control/keys.ts';
 import type { HookEvent } from './hooks/event.ts';
 import type { HookServer } from './hooks/server.ts';
 import { nextStatus } from './hooks/status.ts';
@@ -12,10 +14,12 @@ import {
   toSession,
 } from './live/session-view.ts';
 import {
+  numberedPromptKind,
   paneLines,
   parsePermissionPrompt,
   parseStartupScreen,
   showsDenial,
+  showsDenialLast,
   showsIdleBox,
   showsPrompt,
 } from './pane/prompt.ts';
@@ -78,6 +82,10 @@ const STARTUP_RECHECK_MS = 1000;
 const UNKNOWN_PANE_MS = 5000;
 /** Pane fallback: a new capture continues the last one when they overlap by this many lines (or all of the last). */
 const MIN_OVERLAP = 3;
+/** After an answer, look at the pane once more this much later (a next question or screen). */
+const ANSWER_CHECK_MS = 500;
+/** A transcript interrupt this soon after a reply is Kage's own Escape (Review Focus 6). */
+const REPLY_INTERRUPT_MS = 5000;
 /** The now line of a launched session until Claude says what it is doing. */
 const STARTING = 'Starting Claude…';
 
@@ -120,13 +128,17 @@ function appended(prev: DisplayLine[], next: DisplayLine[]): DisplayLine[] | nul
   return null;
 }
 
-type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire' | 'startup';
+type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire' | 'startup' | 'answered';
 
 interface Live extends SessionView {
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
   mode: 'activity' | 'hooks';
   /** The question is a startup screen (R9). */
   startup: boolean;
+  /** What kind of prompt the question is (how SessionControls answers it); null unless needs-you. */
+  promptKind: PromptKind | null;
+  /** Monotonic ms of Kage's last reply (its Escape's interrupt record is not a denial). */
+  replyAt: number;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
   promptSeen: boolean;
   /** R12: a PreToolUse or PermissionRequest without its PostToolUse, failure, Stop or end yet. */
@@ -309,6 +321,87 @@ export class LiveSource implements SessionSource {
     return false;
   }
 
+  // ------------------------------------------------------------ controls (SessionControls)
+
+  /** What SessionControls checks before it sends keys; null only for an unknown id. */
+  target(id: string): ControlTarget | null {
+    const st = this.#sessions.get(id);
+    if (!st) return null;
+    const q = st.question;
+    return {
+      id: st.id,
+      kageId: st.record?.kageId ?? null,
+      windowId: st.window?.windowId ?? null,
+      paneId: st.window?.paneId ?? null,
+      status: st.status,
+      question: q ? { ...q, options: q.options.slice() } : null,
+      promptKind: st.status === 'needs-you' ? st.promptKind : null,
+      external: st.record === null,
+    };
+  }
+
+  /**
+   * Kage answered the prompt: needs-you → running, the question cleared. One check capture
+   * 500 ms later shows what came next: another prompt or startup screen (needs-you with it), or
+   * the denial line under the tool (done, the answer was No). Any status change meanwhile bumps
+   * the gen, and the check is dropped.
+   */
+  markAnswered(id: string): void {
+    const st = this.#sessions.get(id);
+    if (st?.status !== 'needs-you' || !this.#running) return;
+    this.#clearTimers(st, ['retry', 'answered']);
+    this.#setStatus(st, 'running');
+    st.lastActivity = this.#clock();
+    this.#scheduleIdle(st);
+    this.#emitNow(st);
+    const gen = st.gen;
+    st.timers.answered = setTimeout(() => {
+      delete st.timers.answered;
+      void this.#checkAfterAnswer(st, gen);
+    }, ANSWER_CHECK_MS);
+  }
+
+  async #checkAfterAnswer(st: Live, gen: number): Promise<void> {
+    if (!this.#running || st.gen !== gen) return;
+    const text = await this.#capture(st);
+    if (text === null || !this.#running || st.gen !== gen || st.status !== 'running') return;
+    if (!showsPrompt(text) && showsDenialLast(text)) {
+      this.#clearTimers(st, ['idle']);
+      this.#setStatus(st, 'done');
+      st.pending = false;
+      this.#emitNow(st);
+      return;
+    }
+    // As a first look: a prompt on screen means needs-you even in hooks mode.
+    this.#processCapture(st, text, gen, true);
+  }
+
+  /** Kage sent a reply: running; the transcript's interrupt from its Escape is ignored for 5 s. */
+  markReplied(id: string): void {
+    const st = this.#sessions.get(id);
+    if (!st || st.status === 'ended') return;
+    st.replyAt = this.#clock();
+    this.#clearTimers(st, ['retry', 'answered']);
+    st.pending = false;
+    this.#setStatus(st, 'running');
+    st.lastActivity = this.#clock();
+    this.#scheduleIdle(st);
+    this.#emitNow(st);
+  }
+
+  /** Kage killed the window: ended now; the window-close listing confirms it. */
+  markStopped(id: string): void {
+    const st = this.#sessions.get(id);
+    if (!st || st.status === 'ended') return;
+    this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
+    st.mode = 'hooks';
+    this.#setStatus(st, 'ended');
+    st.pending = false;
+    this.#retireTailSoon(st);
+    this.#emitNow(st);
+    this.#recheckSoon(STOP_RECHECK_MS);
+  }
+
   // ------------------------------------------------------------ lifecycle
 
   async start(): Promise<void> {
@@ -382,6 +475,8 @@ export class LiveSource implements SessionSource {
       now: null,
       mode: 'activity',
       startup: false,
+      promptKind: null,
+      replyAt: Number.NEGATIVE_INFINITY,
       promptSeen: false,
       pending: false,
       sessionId: record?.sessionId ?? null,
@@ -768,10 +863,12 @@ export class LiveSource implements SessionSource {
       if (e.event === 'PreToolUse' && e.toolName === 'AskUserQuestion') {
         st.question =
           questionFromToolInput(e.toolInput) ?? st.question ?? st.tail?.question() ?? null;
+        st.promptKind = 'ask';
       } else if (
         e.event === 'PermissionRequest' ||
         (e.event === 'Notification' && counts && !st.question)
       ) {
+        if (e.event === 'PermissionRequest') st.promptKind = 'permission';
         void this.#capturePrompt(st, false);
       }
     }
@@ -831,6 +928,8 @@ export class LiveSource implements SessionSource {
       }),
       tail.onInterrupt(() => {
         if (st.tail !== tail) return;
+        // Kage's reply at a prompt starts with Escape, whose interrupt record lands after it.
+        if (this.#clock() - st.replyAt < REPLY_INTERRUPT_MS) return;
         // R11: No or Esc fires no hook; the transcript shows it.
         if (st.status !== 'ended') this.#setStatus(st, 'done');
         st.question = null;
@@ -854,8 +953,12 @@ export class LiveSource implements SessionSource {
       if (q && st.status !== 'ended') {
         if (st.status !== 'needs-you') this.#setStatus(st, 'needs-you');
         st.question ??= q;
+        st.promptKind ??= 'ask';
       }
-    } else if (q && st.status === 'needs-you' && !st.question) st.question = q;
+    } else if (q && st.status === 'needs-you' && !st.question) {
+      st.question = q;
+      st.promptKind ??= 'ask';
+    }
     this.#emitThrottled(st);
   }
 
@@ -870,6 +973,7 @@ export class LiveSource implements SessionSource {
     if (q) {
       this.#setStatus(st, 'needs-you');
       st.question = q;
+      st.promptKind = 'ask';
     } else this.#setStatus(st, st.now !== null ? 'running' : this.#activityStatus(st));
   }
 
@@ -1001,7 +1105,8 @@ export class LiveSource implements SessionSource {
         this.#clearTimers(st, ['startup']);
         this.#setStatus(st, 'needs-you');
         st.startup = true;
-        st.question = screen;
+        st.question = { text: screen.text, options: screen.options, startup: true };
+        st.promptKind = screen.screen;
         this.#emitNow(st);
         return;
       }
@@ -1023,6 +1128,7 @@ export class LiveSource implements SessionSource {
       if (prompt) {
         st.promptSeen = true;
         st.question ??= prompt;
+        st.promptKind ??= numberedPromptKind(text);
         this.#emitNow(st);
       } else if (st.promptSeen && !showsPrompt(text)) {
         // R11 fallback: the prompt went away without a hook. No or Esc leaves Claude's denial
@@ -1044,6 +1150,7 @@ export class LiveSource implements SessionSource {
       this.#clearTimers(st, ['idle']);
       this.#setStatus(st, 'needs-you');
       st.question = prompt;
+      st.promptKind = numberedPromptKind(text);
       st.promptSeen = true;
       st.pending = true;
       this.#emitNow(st);
@@ -1058,6 +1165,7 @@ export class LiveSource implements SessionSource {
     const prompt = text === null ? null : parsePermissionPrompt(text);
     if (prompt) {
       st.question = prompt;
+      st.promptKind = numberedPromptKind(text as string) ?? 'permission';
       st.promptSeen = true;
       this.#emitNow(st);
       return;
@@ -1085,6 +1193,7 @@ export class LiveSource implements SessionSource {
     st.gen++;
     if (status !== 'needs-you') {
       st.question = null;
+      st.promptKind = null;
       st.promptSeen = false;
       st.startup = false;
       this.#clearTimers(st, ['retry']);

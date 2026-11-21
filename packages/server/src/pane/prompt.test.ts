@@ -2,10 +2,12 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
+  numberedPromptKind,
   paneLines,
   parsePermissionPrompt,
   parseStartupScreen,
   showsDenial,
+  showsDenialLast,
   showsIdleBox,
   showsPrompt,
 } from './prompt.ts';
@@ -96,28 +98,39 @@ describe('parseStartupScreen', () => {
     expect(parseStartupScreen(p)).toEqual({
       text: 'Trust this folder?',
       options: ['No, exit', 'Yes, I trust this folder'],
+      screen: 'trust',
     });
   });
   it('theme: Continue by default, numbered options when shown', () => {
     const p =
       ' Welcome.\n\n Choose the text style that looks best with your terminal\n\n ❯ Auto\n   Dark\n';
-    expect(parseStartupScreen(p)).toEqual({ text: 'Choose a text style', options: ['Continue'] });
+    expect(parseStartupScreen(p)).toEqual({
+      text: 'Choose a text style',
+      options: ['Continue'],
+      screen: 'theme',
+    });
     const n =
       ' Choose the text style that looks best with your terminal\n ❯ 1. Auto\n   2. Dark mode\n   3. Light mode\n';
     expect(parseStartupScreen(n)).toEqual({
       text: 'Choose a text style',
       options: ['Auto', 'Dark mode', 'Light mode'],
+      screen: 'theme',
     });
   });
   it('security notes', () => {
     const p = ' Security notes:\n\n 1. Claude can make mistakes\n\n Press Enter to continue…';
-    expect(parseStartupScreen(p)).toEqual({ text: 'Security notes', options: ['Continue'] });
+    expect(parseStartupScreen(p)).toEqual({
+      text: 'Security notes',
+      options: ['Continue'],
+      screen: 'security',
+    });
   });
   it('renderer offer', () => {
     const p = ' Try the new fullscreen renderer?\n\n ❯ 1. Yes, try it\n   2. Not now\n';
     expect(parseStartupScreen(p)).toEqual({
       text: 'Try the new fullscreen renderer?',
       options: ['Yes, try it', 'Not now'],
+      screen: 'renderer',
     });
   });
   it('login', () => {
@@ -125,6 +138,7 @@ describe('parseStartupScreen', () => {
     expect(parseStartupScreen(p)).toEqual({
       text: 'Sign in to Claude Code in the terminal',
       options: [],
+      screen: 'login',
     });
   });
   it('null for ordinary panes', () => {
@@ -143,6 +157,7 @@ describe('real 2.1.330 captures at 80 columns (R23)', () => {
     expect(parseStartupScreen(pane('real-trust-80'))).toEqual({
       text: 'Trust this folder?',
       options: ['No, exit', 'Yes, I trust this folder'],
+      screen: 'trust',
     });
     expect(showsPrompt(pane('real-trust-80'))).toBe(true);
     expect(parsePermissionPrompt(pane('real-trust-80'))).toBeNull();
@@ -307,5 +322,56 @@ describe('paneLines: bidi and format characters (R28)', () => {
       { kind: 'out', text: 'rm txt.exe' },
       { kind: 'out', text: 'ok' },
     ]);
+  });
+});
+
+describe('parseStartupScreen: trust option order from the screen (F9)', () => {
+  it('the recorded trust.txt: "No, exit" first, then "Yes, I trust this folder"', () => {
+    expect(parseStartupScreen(pane('trust'))).toEqual({
+      text: 'Trust this folder?',
+      options: ['No, exit', 'Yes, I trust this folder'],
+      screen: 'trust',
+    });
+  });
+  it('options in the order the screen draws them, should Claude ever swap them', () => {
+    const swapped = pane('trust')
+      .replace(' ❯ No, exit', ' ❯ Yes, I trust this folder')
+      .replace('   Yes, I trust this folder', '   No, exit');
+    expect(parseStartupScreen(swapped)?.options).toEqual(['Yes, I trust this folder', 'No, exit']);
+  });
+});
+
+describe('numberedPromptKind and showsDenialLast (Task 7)', () => {
+  it('numberedPromptKind: ask by its "Enter to select" footer, permission by "Esc to cancel"', () => {
+    expect(numberedPromptKind(pane('ask'))).toBe('ask');
+    expect(numberedPromptKind(pane('ask-question'))).toBe('ask');
+    expect(numberedPromptKind(pane('permission-bash'))).toBe('permission');
+    expect(numberedPromptKind(pane('permission-edit'))).toBe('permission');
+    expect(numberedPromptKind(pane('trust'))).toBeNull();
+    expect(numberedPromptKind(pane('idle-typed'))).toBeNull();
+  });
+  it('showsDenialLast: the denial right under the last tool line only', () => {
+    const rule = '─'.repeat(40);
+    const denied = [
+      '● Bash(npm test)',
+      '  ⎿  Interrupted · What should Claude do instead?',
+      '',
+      rule,
+      '❯ ',
+      rule,
+    ].join('\n');
+    expect(showsDenialLast(denied)).toBe(true);
+    const later = [
+      '● Bash(sh ./a.sh)',
+      '  ⎿  Interrupted · What should Claude do instead?',
+      '● Bash(npm test)',
+      '  ⎿  Running…',
+      rule,
+      '❯ ',
+      rule,
+    ].join('\n');
+    expect(showsDenial(later)).toBe(true);
+    expect(showsDenialLast(later)).toBe(false);
+    expect(showsDenialLast(pane('permission-bash'))).toBe(false);
   });
 });

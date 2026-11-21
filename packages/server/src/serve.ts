@@ -7,6 +7,7 @@ import type { ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
+import { attachCommand, SessionControls } from './control/actions.ts';
 import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
@@ -110,6 +111,8 @@ function checkSignal(io: Io): void {
 /** What live mode started, for the task launcher. */
 interface LiveParts {
   source: LiveSource;
+  /** The tmux client, for SessionControls (captures, keys, the owned-window kill). */
+  tmux: TmuxClient;
   /** Opens a window in the kage session, re-creating the session first if it went away. */
   newWindow: TmuxClient['newWindow'];
   settingsPath: string;
@@ -191,7 +194,7 @@ async function startLive(
     await ensureSession();
     return tmux.newWindow(o);
   };
-  return { source, newWindow, settingsPath, hookSocket };
+  return { source, tmux, newWindow, settingsPath, hookSocket };
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
@@ -316,6 +319,7 @@ async function startServer(
   let projects: (() => Promise<ProjectsResponse>) | undefined;
   let launcher: TaskLauncher | undefined;
   let invalidateProjects: (() => void) | undefined;
+  let controls: SessionControls | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
@@ -345,6 +349,11 @@ async function startServer(
       // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.
       windowPath: io.env.PATH ?? null,
     });
+    controls = new SessionControls({
+      tmux: live.tmux,
+      source: live.source,
+      attach: attachCommand(cfg.tmuxSession, cfg.tmuxSocket),
+    });
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -359,6 +368,7 @@ async function startServer(
     ...(projects ? { projects } : {}),
     ...(launcher ? { launcher } : {}),
     ...(invalidateProjects ? { invalidateProjects } : {}),
+    ...(controls ? { controls } : {}),
   });
 
   let server: ReturnType<typeof serve>;

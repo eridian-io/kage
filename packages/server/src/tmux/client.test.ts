@@ -385,6 +385,23 @@ describe('TmuxClient.windowKageId and killOwnedWindow', () => {
     expect(seen.map((a) => a[0])).toEqual(['show-options']);
   });
 
+  it('killOwnedWindow is false when the window vanishes between the re-read and the kill', async () => {
+    const { seen, c } = scripted({
+      'show-options': 'k-1\n',
+      'kill-window': Object.assign(new Error('failed'), { stderr: "can't find window: @3" }),
+    });
+    expect(await c.killOwnedWindow('@3', 'k-1')).toBe(false);
+    expect(seen.map((a) => a[0])).toEqual(['show-options', 'kill-window']);
+  });
+
+  it('killOwnedWindow rethrows other kill-window failures', async () => {
+    const { c } = scripted({
+      'show-options': 'k-1\n',
+      'kill-window': Object.assign(new Error('failed'), { stderr: 'server exited unexpectedly' }),
+    });
+    await expect(c.killOwnedWindow('@3', 'k-1')).rejects.toThrow('failed');
+  });
+
   it('killOwnedWindow rethrows other tmux failures', async () => {
     const { c } = scripted({
       'show-options': Object.assign(new Error('failed'), { stderr: 'server exited unexpectedly' }),

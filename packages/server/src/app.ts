@@ -1,4 +1,5 @@
 import type { ProjectsResponse } from '@kage/shared';
+import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Asset } from './assets.ts';
@@ -11,7 +12,9 @@ import {
   sameSecret,
   setCookieHeader,
 } from './auth.ts';
+import { ActionError, type SessionControls } from './control/actions.ts';
 import { LaunchError, type TaskLauncher } from './control/launcher.ts';
+import { type Parsed, parseAnswer, parseReply } from './control/validate.ts';
 import type { EventHub } from './events.ts';
 import { firstLine } from './git/exec.ts';
 import { csrfGuard, hostGuard } from './security.ts';
@@ -32,9 +35,26 @@ export interface AppDeps {
   launcher?: Pick<TaskLauncher, 'start'>;
   /** R35: forgets the cached project listing after a launch (it adds a branch). */
   invalidateProjects?: () => void;
+  /** Live mode: answer, reply and stop. Without it (demo mode) those routes answer 501. */
+  controls?: Pick<SessionControls, 'answer' | 'reply' | 'stop'>;
 }
 
 const DEMO_NO_TASKS = "Demo mode can't start tasks.";
+const DEMO_NO_CONTROLS = "Demo mode can't run tasks.";
+
+/** Stop takes no body: none, or an empty JSON object. */
+function parseNoBody(raw: string): Parsed<null> {
+  if (raw.trim() === '') return { ok: true, value: null };
+  try {
+    const body: unknown = JSON.parse(raw);
+    if (typeof body === 'object' && body !== null && !Array.isArray(body)) {
+      const [extra] = Object.keys(body);
+      if (extra === undefined) return { ok: true, value: null };
+      return { ok: false, error: `Unexpected field "${extra}"` };
+    }
+  } catch {}
+  return { ok: false, error: 'Expected no body' };
+}
 
 const CSP = [
   "default-src 'self'",
@@ -189,6 +209,55 @@ export function createApp(deps: AppDeps): Hono {
       invalidateProjects?.();
     }
   });
+
+  const { controls } = deps;
+  /**
+   * One route helper for answer, reply and stop (F19): 501 in demo mode, 400 for a bad body,
+   * the ActionError's status and message, else a one-sentence 500.
+   */
+  const control =
+    <T>(
+      parse: (raw: string) => Parsed<T>,
+      run: (ctl: NonNullable<typeof controls>, id: string, body: T) => Promise<void>,
+    ) =>
+    async (c: Context) => {
+      if (!controls) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+      const parsed = parse(await c.req.text());
+      if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+      try {
+        await run(controls, c.req.param('id') as string, parsed.value);
+      } catch (err) {
+        if (err instanceof ActionError) return c.json({ error: err.message }, err.status);
+        return c.json({ error: `Kage couldn't send that to the session: ${firstLine(err)}` }, 500);
+      }
+      return c.body(null, 204);
+    };
+  /** A JSON body for the body parsers; `undefined` when it isn't JSON (they answer 400). */
+  const json = (raw: string): unknown => {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return undefined;
+    }
+  };
+  app.post(
+    '/api/sessions/:id/answer',
+    control(
+      (raw) => parseAnswer(json(raw)),
+      (ctl, id, b) => ctl.answer(id, b.option),
+    ),
+  );
+  app.post(
+    '/api/sessions/:id/reply',
+    control(
+      (raw) => parseReply(json(raw)),
+      (ctl, id, b) => ctl.reply(id, b.text),
+    ),
+  );
+  app.post(
+    '/api/sessions/:id/stop',
+    control(parseNoBody, (ctl, id) => ctl.stop(id)),
+  );
 
   app.delete('/api/sessions/:id', async (c) => {
     const id = c.req.param('id');
