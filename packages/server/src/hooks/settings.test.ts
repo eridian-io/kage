@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -62,6 +62,15 @@ describe('writeHooksSettings', () => {
     expect(path).toBe(join(dir, 'claude-settings.json'));
     expect(() => JSON.parse(readFileSync(path, 'utf8'))).not.toThrow();
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'creates the dir 0700 and writes the file 0600',
+    async () => {
+      const path = await writeHooksSettings(join(dir, 'state', 'kage'), COMMAND);
+      expect(statSync(join(dir, 'state', 'kage')).mode & 0o777).toBe(0o700);
+      expect(statSync(path).mode & 0o777).toBe(0o600);
+    },
+  );
 
   it('creates the dir when missing', async () => {
     const path = await writeHooksSettings(join(dir, 'a', 'b'), COMMAND);

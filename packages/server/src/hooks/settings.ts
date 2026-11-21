@@ -20,7 +20,7 @@ export function hookCommand(command: readonly string[], event: HookEventName): s
 
 /**
  * Writes a Claude settings file that registers Kage's hooks and nothing else, for
- * `claude --settings <file>`. Returns the file path.
+ * `claude --settings <file>`. Returns the file path. New directories are 0700 and the file 0600.
  */
 export async function writeHooksSettings(dir: string, command: string[]): Promise<string> {
   if (command.length === 0) throw new Error('writeHooksSettings: command is empty');
@@ -30,10 +30,10 @@ export async function writeHooksSettings(dir: string, command: string[]): Promis
       { matcher: '', hooks: [{ type: 'command', command: hookCommand(command, event) }] },
     ];
   }
-  await mkdir(dir, { recursive: true });
+  await mkdir(dir, { recursive: true, mode: 0o700 });
   const path = join(dir, SETTINGS_FILE);
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
-  await writeFile(tmp, `${JSON.stringify({ hooks }, null, 2)}\n`);
+  await writeFile(tmp, `${JSON.stringify({ hooks }, null, 2)}\n`, { mode: 0o600 });
   await rename(tmp, path);
   return path;
 }
