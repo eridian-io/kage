@@ -578,6 +578,8 @@ async function trust() {
 if (scenario === 'trust-first') await trust();
 draw(box('', false), banner());
 await hook('SessionStart', { source: 'startup', model: 'claude-opus-5-5' });
+// Real Claude takes about a second from SessionStart to the argv prompt's UserPromptSubmit (P3F1).
+await step();
 if (turnScenario === 'needs-permission') await needsPermission(firstPrompt);
 else await editAndTest(firstPrompt);
 await idle();

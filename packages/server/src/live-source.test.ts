@@ -1960,6 +1960,105 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     expect(source.branchTaken('other', 'kage/fix-the-cart-total')).toBe(false);
     expect(source.branchTaken('shop', 'kage/else')).toBe(false);
   });
+
+  describe('until the first prompt (P3F1)', () => {
+    /** The idle input box, Claude waiting for input. */
+    const IDLE = ['', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+    const BUSY = ['✻ Thinking… (esc to interrupt)', '', RULE, '❯ ', RULE, ''].join('\n');
+    async function launchedWindow(capture = IDLE) {
+      const s = setup();
+      await s.source.start();
+      await s.source.adopt(launched());
+      s.tmux.windows = [newWin()];
+      s.tmux.setCapture('%7', capture);
+      s.source.claim('k-9', '@7');
+      await flush();
+      return s;
+    }
+
+    it('a SessionStart before the first UserPromptSubmit keeps it running, "Starting Claude…"', async () => {
+      const { source, hooks, updates } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      await flush();
+      expect(source.get('k-9')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+      hooks.fire(hook('UserPromptSubmit', '%7'));
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
+      hooks.fire(hook('Stop', '%7'));
+      await flush();
+      expect(updates('k-9').map((s) => s.status)).not.toContain('needs-you');
+      const statuses = updates('k-9').map((s) => s.status);
+      expect(statuses.indexOf('done')).toBe(statuses.length - 1);
+    });
+
+    it('after the first prompt, a SessionStart (a /clear) means done again', async () => {
+      const { source, hooks } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      hooks.fire(hook('UserPromptSubmit', '%7'));
+      hooks.fire(hook('Stop', '%7'));
+      hooks.fire(hook('SessionStart', '%7', { source: 'clear' }));
+      await flush();
+      expect(source.get('k-9')?.status).toBe('done');
+    });
+
+    it('a PreToolUse also ends the wait; a SessionEnd ends the session', async () => {
+      const a = await launchedWindow();
+      a.hooks.fire(hook('PreToolUse', '%7'));
+      a.hooks.fire(hook('Stop', '%7'));
+      a.hooks.fire(hook('SessionStart', '%7', { source: 'resume' }));
+      await flush();
+      expect(a.source.get('k-9')?.status).toBe('done');
+      const b = await launchedWindow();
+      b.hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      b.hooks.fire(hook('SessionEnd', '%7'));
+      await flush();
+      expect(b.source.get('k-9')?.status).toBe('ended');
+    });
+
+    it('after the trust screen is answered, SessionStart does not blink done', async () => {
+      const { source, hooks, tmux, updates } = await launchedWindow(pane('trust'));
+      expect(source.get('k-9')).toMatchObject({ status: 'needs-you' });
+      expect(source.get('k-9')?.question?.startup).toBe(true);
+      tmux.setCapture('%7', IDLE);
+      source.markAnswered('k-9');
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      await vi.advanceTimersByTimeAsync(600);
+      expect(source.get('k-9')?.status).toBe('running');
+      hooks.fire(hook('UserPromptSubmit', '%7'));
+      await flush();
+      expect(updates('k-9').map((s) => s.status)).not.toContain('done');
+    });
+
+    it('10 s after SessionStart with no prompt and an idle box on screen, it is done', async () => {
+      const { source, hooks } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      await vi.advanceTimersByTimeAsync(9_900);
+      expect(source.get('k-9')?.status).toBe('running');
+      await vi.advanceTimersByTimeAsync(200);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('done');
+    });
+
+    it('the 10 s fallback leaves it running while Claude shows "esc to interrupt", and stops waiting', async () => {
+      const { source, hooks } = await launchedWindow(BUSY);
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
+      hooks.fire(hook('Stop', '%7'));
+      hooks.fire(hook('SessionStart', '%7', { source: 'clear' }));
+      await flush();
+      expect(source.get('k-9')?.status).toBe('done');
+    });
+
+    it('a session Kage did not just launch still goes done on SessionStart (R21)', async () => {
+      const { source, hooks } = setup({ windows: [kageWin()], records: [rec()] });
+      await source.start();
+      hooks.fire(hook('SessionStart', '%2', { source: 'startup' }));
+      await flush();
+      expect(source.get('k-1')?.status).toBe('done');
+    });
+  });
 });
 
 describe('LiveSource: controls (phase 3 Task 7)', () => {

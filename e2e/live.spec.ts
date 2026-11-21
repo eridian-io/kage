@@ -303,6 +303,9 @@ async function recordChips(page: Page): Promise<() => Promise<string[]>> {
   return () => page.evaluate(() => (window as unknown as { kageChips: string[] }).kageChips);
 }
 
+/** The recorded chips of one task (the head shows other sessions before it is selected). */
+const ownChips = (seen: string[], task: string) => seen.filter((c) => c.startsWith(`${task}: `));
+
 test('a fake Claude session runs with its transcript lines, then is done', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('.k-host')).toContainText('my-pc');
@@ -498,6 +501,8 @@ test('a task started from the board gets its worktree, branch and window, and ru
   page,
 }) => {
   await page.goto('/');
+  // From the start: a launched task never shows done before its first turn (P3F1).
+  const chips = await recordChips(page);
   const id = await startTask(page, DEMO_TASK, 'demo');
   await expect(page.locator('.k-meta')).toContainText(`branch kage/${DEMO_SLUG}`);
 
@@ -528,6 +533,10 @@ test('a task started from the board gets its worktree, branch and window, and ru
     { timeout: STATUS_MS },
   );
   await expect(chip(page)).toHaveText('done', { timeout: STATUS_MS });
+  expect(ownChips(await chips(), DEMO_TASK)).toEqual([
+    `${DEMO_TASK}: running`,
+    `${DEMO_TASK}: done`,
+  ]);
 });
 
 test('a prompt is answered from the board with its digit key', async ({ page }) => {
@@ -623,6 +632,7 @@ test('No from the board (B17) denies the command: done, no question, the denial 
 test('the folder-trust screen is answered from the board, then the task runs', async ({ page }) => {
   const task = 'trust-first Check the folder';
   await page.goto('/');
+  const fromStart = await recordChips(page);
   await startTask(page, task, 'demo');
   await expect(chip(page)).toHaveText('needs you', { timeout: STATUS_MS });
   await expect(page.locator('.k-ask .k-q')).toHaveText('Waiting for youTrust this folder?');
@@ -641,6 +651,13 @@ test('the folder-trust screen is answered from the board, then the task runs', a
   const seen = await chips();
   expect(seen.slice(0, 2)).toEqual([`${task}: needs you`, `${task}: running`]);
   expect(seen.at(-1)).toBe(`${task}: done`);
+  // P3F1: no done between the trust answer and the task's first turn.
+  expect(ownChips(await fromStart(), task)).toEqual([
+    `${task}: running`,
+    `${task}: needs you`,
+    `${task}: running`,
+    `${task}: done`,
+  ]);
   // Down, verified on screen, then Enter: never a digit or Escape on the trust screen.
   expect(fakeKeys(task)).toEqual(['Down', 'Enter']);
 });

@@ -107,6 +107,10 @@ const ANSWER_CHECK_MS = 500;
 const REPLY_INTERRUPT_MS = 5000;
 /** The now line of a launched session until Claude says what it is doing. */
 const STARTING = 'Starting Claude…';
+/** P3F1: a launched session that had its SessionStart but no first prompt is looked at again this much later. */
+const FIRST_PROMPT_MS = 10_000;
+/** Claude's footer while a turn runs. */
+const BUSY_FOOTER = /esc to interrupt/i;
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -155,7 +159,8 @@ type TimerName =
   | 'retire'
   | 'startup'
   | 'answered'
-  | 'replying';
+  | 'replying'
+  | 'firstPrompt';
 
 interface Live extends SessionView {
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
@@ -169,6 +174,13 @@ interface Live extends SessionView {
    * interrupt record and the pane's denial line are Kage's own, not a No.
    */
   replying: boolean;
+  /**
+   * P3F1: Kage launched this session (adopt) and Claude hasn't taken its first prompt yet. Its
+   * SessionStart then keeps it running, "Starting Claude…", instead of a brief done (R21) before
+   * the task's own UserPromptSubmit. Cleared by the first UserPromptSubmit, PreToolUse or
+   * SessionEnd, or by the FIRST_PROMPT_MS fallback after SessionStart.
+   */
+  firstPromptPending: boolean;
   /** The last AskUserQuestion's multiSelect per question text (whitespace collapsed). */
   askMulti: Map<string, boolean>;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
@@ -363,6 +375,7 @@ export class LiveSource implements SessionSource {
     const st = this.#fresh(r.kageId, r);
     st.status = 'running';
     st.now = STARTING;
+    st.firstPromptPending = true;
     st.lastActivity = this.#clock();
     this.#sessions.set(r.kageId, st);
     this.#emitNow(st);
@@ -577,6 +590,7 @@ export class LiveSource implements SessionSource {
       startup: false,
       promptKind: null,
       replying: false,
+      firstPromptPending: false,
       askMulti: new Map(),
       promptSeen: false,
       pending: false,
@@ -957,8 +971,21 @@ export class LiveSource implements SessionSource {
     st.mode = 'hooks';
     st.startup = false;
     this.#clearTimers(st, ['idle']);
+    if (e.event === 'UserPromptSubmit' || e.event === 'PreToolUse' || e.event === 'SessionEnd') {
+      this.#endFirstPromptWait(st);
+    }
     const before = st.status;
-    const next = counts ? (nextStatus(st.status, e) ?? st.status) : st.status;
+    let next = counts ? (nextStatus(st.status, e) ?? st.status) : st.status;
+    // P3F1: a launched session's SessionStart comes just before its task's first prompt.
+    if (e.event === 'SessionStart' && !compact && st.firstPromptPending && before !== 'ended') {
+      next = 'running';
+      st.now = STARTING;
+      this.#clearTimers(st, ['firstPrompt']);
+      st.timers.firstPrompt = setTimeout(() => {
+        delete st.timers.firstPrompt;
+        void this.#firstPromptFallback(st);
+      }, FIRST_PROMPT_MS);
+    }
     this.#setStatus(st, next);
     if (before === 'ended' && next !== 'ended') this.#clearTimers(st, ['retire']);
     if (next === 'needs-you') {
@@ -981,6 +1008,30 @@ export class LiveSource implements SessionSource {
     if (e.event === 'PostToolUse' && e.toolName !== null && EDIT_TOOLS.has(e.toolName)) {
       this.#preview?.touch(st.id, 'edit');
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
+  }
+
+  #endFirstPromptWait(st: Live): void {
+    st.firstPromptPending = false;
+    this.#clearTimers(st, ['firstPrompt']);
+  }
+
+  /**
+   * P3F1 fallback: FIRST_PROMPT_MS after SessionStart no first prompt came. The wait ends; when
+   * the pane shows Claude's idle box without "esc to interrupt", it is waiting for input: done.
+   */
+  async #firstPromptFallback(st: Live): Promise<void> {
+    if (!st.firstPromptPending) return;
+    st.firstPromptPending = false;
+    if (!this.#running || st.status !== 'running') return;
+    const gen = st.gen;
+    const text = await this.#capture(st);
+    if (text === null || !this.#running || st.gen !== gen || st.status !== 'running') return;
+    if (showsIdleBox(text) && !BUSY_FOOTER.test(text)) {
+      this.#clearTimers(st, ['idle']);
+      this.#setStatus(st, 'done');
+      if (st.now === STARTING) st.now = st.tail?.now() ?? null;
+      this.#emitNow(st);
+    }
   }
 
   /**
@@ -1051,7 +1102,7 @@ export class LiveSource implements SessionSource {
   }
 
   #onTailChange(st: Live, tail: TailLike): void {
-    st.now = tail.now();
+    st.now = tail.now() ?? (st.firstPromptPending ? STARTING : null);
     const q = tail.question();
     const key = questionKey(q);
     if (key !== st.tailQuestionKey) {
