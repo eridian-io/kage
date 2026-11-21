@@ -1,0 +1,50 @@
+ ▐▛███▛█   Claude Code v2.1.330
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   /home/dev/projects/demo
+
+  1 more notice hidden (ctrl+o to expand)
+
+❯ Should slug() use dashes or underscores? Ask me.                                                                                                                                                      
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ ☐ Separator                                                                                                                                                                                            
+
+Which separator should slug() use?
+
+❯ 1. Dash
+     Turn spaces into dashes.                                                                                                                                                                           
+  2. Underscore                
+     Keep the underscores.
+  3. Type something.
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  4. Chat about this
+
+Enter to select · ↑/↓ to navigate · Esc to cancel
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

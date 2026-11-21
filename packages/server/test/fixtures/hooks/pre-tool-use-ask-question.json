@@ -1,0 +1,33 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/home/dev/.claude/projects/-home-dev-projects-demo/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/home/dev/projects/demo",
+  "scratchpad_dir": "/tmp/claude-1000/-home-dev-projects-demo/00000000-0000-4000-8000-000000000001/scratchpad",
+  "prompt_id": "00000000-0000-4000-8000-0000000000a1",
+  "permission_mode": "default",
+  "effort": {
+    "level": "medium"
+  },
+  "hook_event_name": "PreToolUse",
+  "tool_name": "AskUserQuestion",
+  "tool_input": {
+    "questions": [
+      {
+        "question": "Which separator should slug() use?",
+        "header": "Separator",
+        "options": [
+          {
+            "label": "Dash",
+            "description": "Turn spaces into dashes."
+          },
+          {
+            "label": "Underscore",
+            "description": "Keep the underscores."
+          }
+        ],
+        "multiSelect": false
+      }
+    ]
+  },
+  "tool_use_id": "toolu_00000000000000000000000009"
+}
