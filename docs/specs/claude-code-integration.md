@@ -255,7 +255,7 @@ Fixtures, all with invented paths and the observed layout:
 | `send-keys C-u` | Deletes from the cursor to the start of the **current visual row** and never submits. With one row of text the box is empty again: the ghost returns, and the footer shows `ctrl+y to paste deleted text`. **A wrapped multi-row text needs one `C-u` per row:** 200 characters at 80 columns took three. `C-u` on an empty box is harmless. |
 | One `Escape` with text in the box | Nothing is cleared. The footer shows `esc again to clear`. |
 | `send-keys Escape Escape` (one call), or two `Escape` calls 0.2 s apart | Clears the whole box, including `[Pasted text #N]` placeholders, without submitting. Two `Escape` calls several seconds apart don't clear (the second only re-arms). |
-| Two `Escape` on an empty idle box | Nothing visible happened (no rewind menu) in this session. |
+| Two `Escape` on an empty idle box | Nothing visible happened (no rewind menu) in this session. Claude's documentation says a double `Escape` opens the rewind menu, so Kage treats it as possible and never sends it (design spec §5.4, ruling K8). |
 
 ### Paste placeholder
 
