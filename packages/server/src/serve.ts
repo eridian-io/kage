@@ -9,7 +9,7 @@ import { type Asset, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
-import { listProjects } from './git/projects.ts';
+import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
 import {
@@ -305,10 +305,11 @@ async function startServer(
   } else {
     const live = await startLive(cfg, io, cli, cleanups);
     source = live;
-    projects = async () => ({
+    const cache = new ProjectsCache(async () => ({
       projects: await listProjects(cfg.projectsRoot),
       last: live.lastProject(),
-    });
+    }));
+    projects = () => cache.get();
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);

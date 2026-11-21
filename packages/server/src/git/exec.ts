@@ -8,6 +8,13 @@ export type GitExec = (
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_BUFFER = 16 * 1024 * 1024;
 
+/** The environment minus variables that would point git at another repository. */
+function cleanEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
+  return env;
+}
+
 /** git with an argument array (never a shell); it never prompts and takes no optional locks. */
 export const gitExec: GitExec = (args, opts = {}) =>
   new Promise((resolve, reject) => {
@@ -18,7 +25,7 @@ export const gitExec: GitExec = (args, opts = {}) =>
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
-        env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' },
+        env: { ...cleanEnv(), GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' },
         windowsHide: true,
       },
       (err, stdout, stderr) => {

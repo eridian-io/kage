@@ -164,7 +164,18 @@ describe('worktreeDir and branchPrefix', () => {
     loadConfig({ path: await write(JSON.stringify(obj)), env: env() });
 
   it('refuses unsafe worktreeDir values', async () => {
-    for (const v of ['../out', '/abs', 'a/../b', '.', '', 'a b', 'x;y']) {
+    for (const v of [
+      '../out',
+      '/abs',
+      'a/../b',
+      '.',
+      '',
+      'a b',
+      'x;y',
+      '.git',
+      'a/.git/b',
+      '.GIT',
+    ]) {
       await expect(load({ worktreeDir: v })).rejects.toThrow(ConfigError);
     }
   });

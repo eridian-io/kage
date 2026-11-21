@@ -85,7 +85,9 @@ const SEGMENT = /^[A-Za-z0-9._-]+$/;
 /** A relative folder inside the repo: segments of safe characters, none "." or "..". */
 function worktreeDir(v: unknown, key: string): string {
   const d = str(v, key);
-  const bad = d.split('/').some((s) => !SEGMENT.test(s) || s === '.' || s === '..');
+  const bad = d
+    .split('/')
+    .some((s) => !SEGMENT.test(s) || s === '.' || s === '..' || s.toLowerCase() === '.git');
   if (bad) throw new ConfigError(`${key} must be a relative folder name like ".worktrees"`);
   return d;
 }

@@ -1,6 +1,6 @@
 import { readdir, stat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { LIMITS, type Project } from '@kage/shared';
+import { LIMITS, type Project, type ProjectsResponse } from '@kage/shared';
 import { type GitExec, gitExec } from './exec.ts';
 
 export const PROJECT_NAME = /^(?!\.\.?$)[A-Za-z0-9._-]{1,100}$/;
@@ -16,29 +16,38 @@ async function hasGit(dir: string): Promise<boolean> {
   }
 }
 
-async function out(exec: GitExec, args: string[], cwd: string): Promise<string | null> {
+/** One git spawn per repo: local branches, which one is checked out, and origin/HEAD. */
+async function readProject(exec: GitExec, name: string, path: string): Promise<Project | null> {
+  let stdout: string;
   try {
-    return (await exec(args, { cwd })).stdout.trim();
+    ({ stdout } = await exec(
+      [
+        'for-each-ref',
+        '--format=%(refname)%09%(HEAD)%09%(symref)',
+        'refs/heads',
+        'refs/remotes/origin/HEAD',
+      ],
+      { cwd: path },
+    ));
   } catch {
     return null;
   }
-}
-
-async function readProject(exec: GitExec, name: string, path: string): Promise<Project | null> {
-  const refs = await out(exec, ['for-each-ref', '--format=%(refname:short)', 'refs/heads'], path);
-  const all = (refs ?? '').split('\n').filter((b) => b !== '');
+  const all: string[] = [];
+  let head: string | null = null;
+  let originBranch: string | null = null;
+  for (const line of stdout.split('\n')) {
+    const [ref = '', mark = '', symref = ''] = line.split('\t');
+    if (ref.startsWith('refs/heads/')) {
+      const branch = ref.slice('refs/heads/'.length);
+      all.push(branch);
+      if (mark === '*') head = branch;
+    } else if (ref === 'refs/remotes/origin/HEAD' && symref.startsWith('refs/remotes/origin/')) {
+      originBranch = symref.slice('refs/remotes/origin/'.length);
+    }
+  }
   if (all.length === 0) return null;
   const branches = all.slice(0, LIMITS.branches);
-  const has = (b: string | null | undefined): b is string => !!b && all.includes(b);
-  const origin = await out(
-    exec,
-    ['symbolic-ref', '-q', '--short', 'refs/remotes/origin/HEAD'],
-    path,
-  );
-  const head = await out(exec, ['symbolic-ref', '-q', '--short', 'HEAD'], path);
-  const originBranch = origin?.startsWith('origin/') ? origin.slice('origin/'.length) : null;
-  const candidates = [originBranch, head, 'main', 'master'];
-  const found = candidates.find(has);
+  const found = [originBranch, head, 'main', 'master'].find((c) => c && all.includes(c));
   const defaultBranch = found ?? all[0] ?? '';
   // The default must be listed even when the cap cut it off.
   if (!branches.includes(defaultBranch)) branches[branches.length - 1] = defaultBranch;
@@ -94,4 +103,39 @@ export async function findProject(
   if (!(await hasGit(path))) return null;
   const p = await readProject(exec, name, path);
   return p ? { ...p, path } : null;
+}
+
+/**
+ * Caches one listing for a short time and shares a scan that is already running, so repeated
+ * opens of the form (or a burst of requests) cost git at most once per ttl.
+ */
+export class ProjectsCache {
+  readonly #load: () => Promise<ProjectsResponse>;
+  readonly #ttl: number;
+  readonly #now: () => number;
+  #value: ProjectsResponse | null = null;
+  #at = 0;
+  #flight: Promise<ProjectsResponse> | null = null;
+
+  constructor(load: () => Promise<ProjectsResponse>, ttlMs = 10_000, now = Date.now) {
+    this.#load = load;
+    this.#ttl = ttlMs;
+    this.#now = now;
+  }
+
+  get(): Promise<ProjectsResponse> {
+    if (this.#value && this.#now() - this.#at < this.#ttl) return Promise.resolve(this.#value);
+    if (!this.#flight) {
+      this.#flight = this.#load()
+        .then((v) => {
+          this.#value = v;
+          this.#at = this.#now();
+          return v;
+        })
+        .finally(() => {
+          this.#flight = null;
+        });
+    }
+    return this.#flight;
+  }
 }

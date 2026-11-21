@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { firstLine, gitExec } from './exec.ts';
-import { findProject, listProjects, PROJECT_NAME } from './projects.ts';
+import { findProject, listProjects, PROJECT_NAME, ProjectsCache } from './projects.ts';
 
 let root: string;
 let home: string;
@@ -43,7 +43,7 @@ beforeAll(async () => {
   await repo('web', 'develop');
   await mkdir(join(root, 'notes'));
   await writeFile(join(root, 'afile'), 'x');
-  await mkdir(join(root, 'bad name'));
+  await repo('bad name');
   const empty = join(root, 'empty');
   await mkdir(empty);
   git(empty, 'init', '-q', '-b', 'main');
@@ -107,6 +107,78 @@ describe('listProjects', () => {
       expect(names).toContain('link-to-web');
     },
   );
+});
+
+describe('ProjectsCache', () => {
+  const resp = { projects: [], last: null };
+  it('serves a second call within the ttl without loading again', async () => {
+    let n = 0;
+    let t = 0;
+    const c = new ProjectsCache(
+      async () => {
+        n++;
+        return resp;
+      },
+      10_000,
+      () => t,
+    );
+    await c.get();
+    t = 9_999;
+    await c.get();
+    expect(n).toBe(1);
+    t = 10_000;
+    await c.get();
+    expect(n).toBe(2);
+  });
+  it('shares one scan between concurrent calls', async () => {
+    let n = 0;
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const c = new ProjectsCache(async () => {
+      n++;
+      await gate;
+      return resp;
+    });
+    const all = [c.get(), c.get(), c.get()];
+    release();
+    await Promise.all(all);
+    expect(n).toBe(1);
+  });
+  it('does not cache a failure', async () => {
+    let n = 0;
+    const c = new ProjectsCache(async () => {
+      if (n++ === 0) throw new Error('x');
+      return resp;
+    });
+    await expect(c.get()).rejects.toThrow();
+    await expect(c.get()).resolves.toBe(resp);
+  });
+});
+
+describe('git spawns', () => {
+  it('reads a repo with one git call', async () => {
+    let calls = 0;
+    const exec: typeof gitExec = (args, opts) => {
+      calls++;
+      return gitExec(args, opts);
+    };
+    const p = await findProject(root, 'api', exec);
+    expect(calls).toBe(1);
+    expect(p?.defaultBranch).toBe('main');
+  });
+  it('uses origin/HEAD when it exists locally', async () => {
+    const dir = await repo('withorigin', 'main', ['trunk']);
+    git(dir, 'update-ref', 'refs/remotes/origin/trunk', 'HEAD');
+    git(dir, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/trunk');
+    expect((await findProject(root, 'withorigin'))?.defaultBranch).toBe('trunk');
+  });
+  it('a tag with a branch name does not change the branch names', async () => {
+    const dir = await repo('tagged', 'main', ['x']);
+    git(dir, 'tag', 'x');
+    expect((await findProject(root, 'tagged'))?.branches).toEqual(['main', 'x']);
+  });
 });
 
 describe('findProject', () => {
