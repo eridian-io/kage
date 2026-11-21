@@ -146,8 +146,11 @@ interface Live extends SessionView {
   startup: boolean;
   /** What kind of prompt the question is (how SessionControls answers it); null unless needs-you. */
   promptKind: PromptKind | null;
-  /** Monotonic ms of Kage's last reply Escape (its interrupt record is not a denial). */
-  replyAt: number;
+  /**
+   * Set just before Kage's reply Escape and cleared by its 5 s timer: meanwhile the transcript's
+   * interrupt record and the pane's denial line are Kage's own, not a No.
+   */
+  replying: boolean;
   /** The last AskUserQuestion's multiSelect per question text (whitespace collapsed). */
   askMulti: Map<string, boolean>;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
@@ -396,19 +399,21 @@ export class LiveSource implements SessionSource {
   markReplying(id: string): void {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended' || !this.#running) return;
-    st.replyAt = this.#clock();
+    st.replying = true;
     this.#clearTimers(st, ['replying']);
     st.timers.replying = setTimeout(() => {
       delete st.timers.replying;
+      // Cleared here, so the settling capture below always runs the pane fallback.
+      st.replying = false;
       if (st.status === 'needs-you') this.#requestCapture(st);
     }, REPLY_INTERRUPT_MS);
   }
 
-  /** Kage sent a reply: running. */
+  /** Kage sent a reply: running. The replying window runs on: the interrupt may still land. */
   markReplied(id: string): void {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended') return;
-    this.#clearTimers(st, ['retry', 'answered', 'replying']);
+    this.#clearTimers(st, ['retry', 'answered']);
     st.pending = false;
     this.#setStatus(st, 'running');
     st.lastActivity = this.#clock();
@@ -503,7 +508,7 @@ export class LiveSource implements SessionSource {
       mode: 'activity',
       startup: false,
       promptKind: null,
-      replyAt: Number.NEGATIVE_INFINITY,
+      replying: false,
       askMulti: new Map(),
       promptSeen: false,
       pending: false,
@@ -1216,7 +1221,7 @@ export class LiveSource implements SessionSource {
 
   /** Within 5 s of Kage's reply Escape (Review Focus 6). */
   #replying(st: Live): boolean {
-    return this.#clock() - st.replyAt < REPLY_INTERRUPT_MS;
+    return st.replying;
   }
 
   #setStatus(st: Live, status: SessionStatus): void {

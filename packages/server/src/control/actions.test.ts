@@ -823,3 +823,65 @@ describe('fix round 1: SessionControls', () => {
     await controls.answer('k-1', 1, shown('k-1'));
   });
 });
+
+describe('fix round 2: AskUserQuestion text over several lines', () => {
+  /** ask-question.txt with a line of context above the question, as a two-line question draws. */
+  const twoLine = (): string =>
+    pane('ask-question').replace(
+      'Which separator should slug() use?',
+      'The tests use both styles today.\n\nWhich separator should slug() use?',
+    );
+  const ask = (text: string) =>
+    target({ promptKind: 'ask', question: { text, options: ['Dash', 'Underscore'] } });
+  const FULL = 'The tests use both styles today. Which separator should slug() use?';
+
+  it('the hook holds the whole question, the screen parse only its last line: answered', async () => {
+    expect(twoLine()).toContain('The tests use both styles today.');
+    const { tmux, source, controls } = setup(ask(FULL), twoLine());
+    await controls.answer('k-1', 2, FULL);
+    expect(tmux.log()).toEqual(['capture', 'keys 2']);
+    expect(source.marks).toEqual(['answered k-1']);
+  });
+
+  it('the card text must still equal the server text exactly (whitespace collapsed)', async () => {
+    const { tmux, controls } = setup(ask(FULL), twoLine());
+    const e = await refusal(controls.answer('k-1', 2, 'Which separator should slug() use?'));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('A vs B with the same labels but a different last line: 409, no key', async () => {
+    const a = 'The tests use both styles today. Which separator should slug() use?';
+    const screenB = twoLine().replace(
+      'Which separator should slug() use?',
+      'Which separator should the CLI flags use?',
+    );
+    const { tmux, controls } = setup(ask(a), screenB);
+    const e = await refusal(controls.answer('k-1', 1, a));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(tmux.log()).toEqual(['capture']);
+  });
+
+  it('the screen line must end the server text at a word boundary', async () => {
+    const t = ask('Should the slug use dashes?');
+    const screen = pane('ask-question').replace('Which separator should slug() use?', 'shes?');
+    const { tmux, controls } = setup(t, screen);
+    expect((await refusal(controls.answer('k-1', 1, 'Should the slug use dashes?'))).message).toBe(
+      QCHANGED,
+    );
+    expect(tmux.log()).toEqual(['capture']);
+  });
+
+  it('permission prompts still compare the whole text exactly', async () => {
+    const t = target({
+      question: {
+        text: 'Run the tests first. Do you want to proceed? — npm test',
+        options: BASH_OPTIONS,
+      },
+    });
+    const { tmux, controls } = setup(t, pane('permission-bash'));
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(tmux.log()).toEqual(['capture']);
+  });
+});

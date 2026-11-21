@@ -2272,3 +2272,39 @@ describe('LiveSource: Task 7 fix round 1', () => {
     expect(t.source.get('k-1')?.question).not.toHaveProperty('disabledOptions');
   });
 });
+
+describe('LiveSource: Task 7 fix round 2', () => {
+  it('the replying window ends in its own timer: the settling capture at exactly 5 s runs the fallback', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    s.source.markReplying('k-1');
+    s.tmux.setCapture('%2', DENIED_PANE);
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+  });
+
+  it('markReplied keeps the window open: an interrupt landing after it (within 5 s) is still Kage’s own', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    s.source.markReplying('k-1');
+    await vi.advanceTimersByTimeAsync(1000);
+    s.source.markReplied('k-1');
+    await vi.advanceTimersByTimeAsync(2000);
+    s.tails[0]?.interrupt();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    s.tails[0]?.interrupt();
+    expect(s.source.get('k-1')?.status).toBe('done');
+  });
+});

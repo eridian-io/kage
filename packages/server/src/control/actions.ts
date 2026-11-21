@@ -296,7 +296,10 @@ export class SessionControls {
 
   /**
    * The capture shows the question the board showed: the same kind, the same question text
-   * (whitespace collapsed, R36) and the same option labels.
+   * (whitespace collapsed, R36) and the same option labels. An AskUserQuestion's text comes from
+   * the hook in full (it may span lines or paragraphs) while the screen parse keeps only its last
+   * line and the lines wrapped into it, so for `ask` the server text must end with the (non-empty)
+   * screen text; permission prompts and startup screens compare exactly.
    */
   #showsSame(pane: string, kind: PromptKind, question: Question): boolean {
     let seen: Question | null;
@@ -306,10 +309,13 @@ export class SessionControls {
       const s = parseStartupScreen(pane);
       seen = s !== null && s.screen === kind ? s : null;
     }
-    return (
-      seen !== null &&
-      norm(seen.text) === norm(question.text) &&
-      sameOptions(seen.options, question.options)
-    );
+    if (seen === null || !sameOptions(seen.options, question.options)) return false;
+    const onScreen = norm(seen.text);
+    const expected = norm(question.text);
+    if (kind === 'ask') {
+      // At a word boundary: a screen line "shes?" must not match "…use dashes?".
+      return onScreen !== '' && (expected === onScreen || expected.endsWith(` ${onScreen}`));
+    }
+    return onScreen === expected;
   }
 }
