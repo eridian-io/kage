@@ -38,6 +38,16 @@ describe('nextStatus (spec §5.3 with R6, R6b, R7, R12, R21)', () => {
     for (const prev of ALL) expect(nextStatus(prev, e)).toBe('done');
   });
 
+  it('SessionStart source=compact leaves a live status unchanged (a compaction mid-turn)', () => {
+    const e = { ...fixture('session-start.json'), source: 'compact' };
+    for (const prev of LIVE) expect(nextStatus(prev, e)).toBe(prev);
+  });
+
+  it.each(['resume', 'clear', 'startup'])('SessionStart source=%s → done (R21)', (source) => {
+    const e = { ...fixture('session-start.json'), source };
+    for (const prev of ALL) expect(nextStatus(prev, e)).toBe('done');
+  });
+
   it('PermissionRequest → needs-you', () => {
     const e = fixture('permission-request.json');
     expect(e.event).toBe('PermissionRequest');

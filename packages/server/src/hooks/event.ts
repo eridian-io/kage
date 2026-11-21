@@ -26,6 +26,11 @@ export interface HookEvent {
   toolName: string | null;
   /** `tool_input` as Claude sent it (an object), e.g. AskUserQuestion's questions. */
   toolInput: unknown | null;
+  /**
+   * SessionStart only: why the session started (`startup`, `resume`, `clear`, `compact`);
+   * null for other events.
+   */
+  source: string | null;
   /** Epoch ms when Kage received it. */
   at: number;
 }
@@ -74,6 +79,7 @@ export function parseHookEvent(body: unknown, at: number): HookEvent | null {
     const toolInput = p.tool_input ?? null;
     if (toolInput !== null && !isRecord(toolInput)) return null;
     const type = str(p, 'notification_type');
+    const source = body.event === 'SessionStart' ? str(p, 'source') : null;
     return {
       event: body.event,
       pane,
@@ -84,6 +90,7 @@ export function parseHookEvent(body: unknown, at: number): HookEvent | null {
       message: str(p, 'message'),
       toolName: str(p, 'tool_name'),
       toolInput,
+      source,
       at,
     };
   } catch (err) {

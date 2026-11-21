@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { stripAnsi } from './ansi.ts';
+import { plainLine } from './bounds.ts';
 
 describe('stripAnsi', () => {
   it('removes CSI colour codes and cursor moves', () => {
@@ -22,5 +23,44 @@ describe('stripAnsi', () => {
   });
   it('keeps hostile markup as plain text', () => {
     expect(stripAnsi('<img src=x onerror=alert(1)>')).toBe('<img src=x onerror=alert(1)>');
+  });
+});
+
+describe('plainLine: bidi and format characters (Trojan Source)', () => {
+  const FORMAT = [
+    '\u200b',
+    '\u200c',
+    '\u200d',
+    '\u200e',
+    '\u200f',
+    '\u202a',
+    '\u202b',
+    '\u202c',
+    '\u202d',
+    '\u202e',
+    '\u2066',
+    '\u2067',
+    '\u2068',
+    '\u2069',
+    '\u2028',
+    '\u2029',
+  ];
+  it('strips each of U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, U+2028 and U+2029', () => {
+    for (const c of FORMAT) expect(plainLine(`a${c}b`, 50)).toBe('ab');
+  });
+  it('keeps other non-ASCII text (no-break space, emoji, accents, RTL letters)', () => {
+    expect(plainLine('café \u00a0\u{1f600} שלום', 50)).toBe('café \u00a0\u{1f600} שלום');
+  });
+  it('strips them after the escape sequences: no escape fragment survives', () => {
+    expect(plainLine('\x1b[31m\u202eevil\u202c\x1b[0m', 50)).toBe('evil');
+    expect(plainLine('a\x1b]8;;https://x.test/\u2066\x07link\x1b]8;;\x07b', 50)).toBe('alinkb');
+  });
+  it('cuts after stripping: a long escape sequence does not eat the visible text', () => {
+    const link = `\x1b]8;;https://x.test/${'p'.repeat(1000)}\x07`;
+    expect(plainLine(`${link}visible\x1b]8;;\x07`, 50)).toBe('visible');
+    expect(plainLine(`${'\u200b'.repeat(300)}visible`, 50)).toBe('visible');
+  });
+  it('clips to max after stripping, ending with …', () => {
+    expect(plainLine(`\x1b[1m${'x'.repeat(60)}`, 10)).toBe(`${'x'.repeat(9)}…`);
   });
 });

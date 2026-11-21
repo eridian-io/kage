@@ -16,11 +16,12 @@ export function clip(text: string, max: number): string {
 }
 
 /**
- * One line of plain text at most `max` characters: line breaks become spaces, escape sequences
- * and control characters go. Only a bounded prefix is looked at.
+ * One line of plain text at most `max` characters: line breaks become spaces; escape sequences,
+ * control characters, and bidi and format characters go. It is cut after stripping, so a long
+ * escape sequence can't push the visible text out; stripping stops one character past `max`.
  */
 export function plainLine(text: string, max: number): string {
-  return clip(stripAnsi(text.slice(0, max * 4).replace(/\r?\n/g, ' ')), max);
+  return clip(stripAnsi(text, { oneLine: true, limit: max + 1 }), max);
 }
 
 /** A question as it may go on the wire: plain text, bounded in length and count. */

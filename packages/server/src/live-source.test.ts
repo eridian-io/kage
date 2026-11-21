@@ -232,6 +232,7 @@ const hook = (event: HookEventName, paneId: string, over: Partial<HookEvent> = {
       ? 'Bash'
       : null,
   toolInput: null,
+  source: null,
   at: Date.now(),
   ...over,
 });
@@ -1543,5 +1544,136 @@ describe('LiveSource: final fix wave', () => {
     expect(source.get('k-1')?.now).toBe('Running npm test');
     hooks.fire(hook('Stop', '%2'));
     expect(source.get('k-1')?.now).toBeUndefined();
+  });
+});
+
+describe('LiveSource: phase 2 residuals (phase 3 Task 0)', () => {
+  const RULE80 = '─'.repeat(80);
+  const IDLE = `● Done.\n\n${RULE80}\n❯ \n${RULE80}\n  ⏸ manual mode on · ? for shortcuts\n`;
+  const ask = {
+    toolName: 'AskUserQuestion',
+    toolInput: {
+      questions: [
+        { question: 'Which separator?', options: [{ label: 'Dash' }, { label: 'Snake' }] },
+      ],
+    },
+  };
+
+  it('SessionStart source=compact keeps a running session running, with its now line and tail', async () => {
+    const { source, hooks, tails, lineEvents } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2', { source: 'startup' }));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    tails[0]?.push([{ kind: 'tool', text: 'Bash', detail: 'npm test' }], {
+      now: 'Running npm test',
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(source.get('k-1')).toMatchObject({ status: 'running', now: 'Running npm test' });
+    const before = lineEvents('k-1').length;
+    hooks.fire(hook('SessionStart', '%2', { source: 'compact' }));
+    await flush();
+    expect(source.get('k-1')).toMatchObject({ status: 'running', now: 'Running npm test' });
+    expect(tails).toHaveLength(1);
+    expect(tails[0]?.stopped).toBe(false);
+    expect(lineEvents('k-1').length).toBe(before);
+    expect(source.lines('k-1')).toEqual([{ kind: 'tool', text: 'Bash', detail: 'npm test' }]);
+  });
+
+  it('SessionStart source=compact keeps needs-you and its question', async () => {
+    const { source, hooks } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2', ask));
+    const q = { text: 'Which separator?', options: ['Dash', 'Snake'] };
+    expect(source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+    hooks.fire(hook('SessionStart', '%2', { source: 'compact' }));
+    await flush();
+    expect(source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+  });
+
+  it('SessionStart source=compact keeps a pending tool: a later permission notice still counts (R12)', async () => {
+    const { source, hooks } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    hooks.fire(hook('SessionStart', '%2', { source: 'compact' }));
+    expect(source.get('k-1')?.status).toBe('running');
+    hooks.fire(permissionNote('%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+  });
+
+  it.each(['resume', 'clear'])('SessionStart source=%s is done (R21)', async (src) => {
+    const { source, hooks } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    expect(source.get('k-1')?.status).toBe('running');
+    hooks.fire(hook('SessionStart', '%2', { source: src }));
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('a claude window without hooks that returns to its shell gets a second claude checked for startup screens', async () => {
+    const { source, tmux, watcher } = setup({ windows: [win({ command: 'claude' })] });
+    tmux.setCapture('%1', IDLE);
+    await source.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    // The first claude exits to the shell.
+    (tmux.windows[0] as TmuxWindow).command = 'bash';
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    // A second claude starts there and shows the trust screen.
+    tmux.setCapture('%1', pane('real-trust-80'));
+    (tmux.windows[0] as TmuxWindow).command = 'claude';
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('ext-@1')).toMatchObject({
+      status: 'needs-you',
+      question: { text: 'Trust this folder?' },
+    });
+  });
+
+  it('a hooked Kage window that returns to its shell gets a second claude checked for startup screens', async () => {
+    const { source, tmux, watcher, hooks } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    await flush();
+    (tmux.windows[0] as TmuxWindow).command = 'bash';
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    tmux.setCapture('%2', pane('real-trust-80'));
+    (tmux.windows[0] as TmuxWindow).command = 'claude';
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('k-1')).toMatchObject({
+      status: 'needs-you',
+      question: { text: 'Trust this folder?' },
+    });
+    await source.stop();
+  });
+
+  it('pane fallback: a capture that shrank to a strict suffix of the last one resets', async () => {
+    const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', 'a\nb\nc\nd\ne\n', 'c\nd\ne\n');
+    source.setViewed(new Set(['ext-@1']));
+    await source.start();
+    await flush();
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(lineEvents('ext-@1').at(-1)).toEqual({
+      type: 'session.lines',
+      id: 'ext-@1',
+      lines: [
+        { kind: 'out', text: 'c' },
+        { kind: 'out', text: 'd' },
+        { kind: 'out', text: 'e' },
+      ],
+      reset: true,
+    });
+    expect(source.lines('ext-@1').map((l) => l.text)).toEqual(['c', 'd', 'e']);
   });
 });

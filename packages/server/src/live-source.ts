@@ -104,7 +104,9 @@ const hiddenPlaceholder = (w: TmuxWindow): boolean => w.placeholder && atShell(w
 
 /**
  * Pane fallback deltas: when `next` continues `prev` (the tail of `prev` is the head of `next`),
- * the lines appended after the overlap; null when they don't overlap (the screen was redrawn).
+ * the lines appended after the overlap; null when they don't overlap (the screen was redrawn) or
+ * when `next` is only a strict suffix of `prev` (the capture shrank: nothing to append, but the
+ * head the client holds is gone).
  */
 function appended(prev: DisplayLine[], next: DisplayLine[]): DisplayLine[] | null {
   if (prev.length === 0) return null;
@@ -114,7 +116,7 @@ function appended(prev: DisplayLine[], next: DisplayLine[]): DisplayLine[] | nul
   for (let k = Math.min(prev.length, next.length); k >= min; k--) {
     let match = true;
     for (let i = 0; i < k && match; i++) match = same(prev[prev.length - k + i], next[i]);
-    if (match) return next.slice(k);
+    if (match) return k === next.length ? null : next.slice(k);
   }
   return null;
 }
@@ -138,6 +140,11 @@ interface Live extends SessionView {
   hookSeen: boolean;
   /** A capture showed Claude's idle input box: past its startup screens (no more R9 checks). */
   idleSeen: boolean;
+  /**
+   * The pane was back at a shell after this session was linked: a claude started there next is a
+   * new one, so it gets the R9 startup checks although a Claude session is still linked.
+   */
+  claudeExited: boolean;
   /** Ended because the pane went back to a shell (not by SessionEnd): a non-shell command revives it. */
   shellEnded: boolean;
   tail: TailLike | null;
@@ -312,6 +319,7 @@ export class LiveSource implements SessionSource {
       sawClaude: false,
       hookSeen: false,
       idleSeen: false,
+      claudeExited: false,
       shellEnded: false,
       tail: null,
       tailPath: null,
@@ -380,6 +388,7 @@ export class LiveSource implements SessionSource {
         st = this.#fresh(id, record ?? null);
         this.#sessions.set(id, st);
       }
+      if (atShell(w.command)) this.#atShell(st);
       if (st.window?.windowId === w.windowId) {
         const old = st.window;
         st.window = w;
@@ -481,6 +490,16 @@ export class LiveSource implements SessionSource {
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
+  }
+
+  /**
+   * The pane is at a shell: whatever claude ran there is gone, so the next one starts its
+   * startup checks afresh (R9), even in a window whose earlier claude sent hooks.
+   */
+  #atShell(st: Live): void {
+    st.hookSeen = false;
+    st.idleSeen = false;
+    st.claudeExited = true;
   }
 
   /** pane_current_command changes fire no tmux event: re-list, at most once per second. */
@@ -629,6 +648,9 @@ export class LiveSource implements SessionSource {
     // SessionStart Kage missed (a restart, a hook lost) still gets its tail.
     this.#link(st, e);
     st.hookSeen = true;
+    st.claudeExited = false;
+    // A compaction (auto-compact can run mid-turn) is the same turn going on (R21 exception).
+    const compact = e.event === 'SessionStart' && e.source === 'compact';
     this.#clearTimers(st, ['startup']);
     if (e.event === 'PreToolUse' || e.event === 'PermissionRequest') st.pending = true;
     if (
@@ -636,7 +658,7 @@ export class LiveSource implements SessionSource {
       e.event === 'PostToolUseFailure' ||
       e.event === 'Stop' ||
       e.event === 'SessionEnd' ||
-      e.event === 'SessionStart'
+      (e.event === 'SessionStart' && !compact)
     ) {
       st.pending = false;
     }
@@ -804,14 +826,15 @@ export class LiveSource implements SessionSource {
   }
 
   /**
-   * R9 startup checks: a Kage window, or one running claude, with no Claude session linked yet.
-   * They stop for good once a hook arrived or the idle input box showed, so a claude window is
-   * not captured on every activity forever.
+   * R9 startup checks: a Kage window, or one running claude, with no Claude session linked yet
+   * (or whose linked claude exited to the shell). They stop once a hook arrived or the idle input
+   * box showed, so a claude window is not captured on every activity forever; the pane going
+   * back to a shell starts them again for the next claude.
    */
   #startupEligible(st: Live): boolean {
     return (
       st.window !== null &&
-      st.sessionId === null &&
+      (st.sessionId === null || st.claudeExited) &&
       !st.hookSeen &&
       !st.idleSeen &&
       (st.record !== null || isClaude(st.window.command))

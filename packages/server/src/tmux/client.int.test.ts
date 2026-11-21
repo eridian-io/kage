@@ -1,5 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import { afterAll, describe, expect, it } from 'vitest';
 import { hasTmux, TmuxClient } from './client.ts';
 
@@ -32,6 +33,29 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
     await client.clearPlaceholder(windows[0]?.windowId as string);
     expect((await client.listWindows())[0]?.placeholder).toBe(false);
   });
+
+  it.runIf(process.platform === 'linux')(
+    "the first window's shell gets the session env (new-session -e KAGE_SOCKET)",
+    async () => {
+      const sock2 = `kage-test-${randomBytes(4).toString('hex')}`;
+      const c = new TmuxClient({
+        session: 'kage',
+        socket: sock2,
+        configFile: '/dev/null',
+        env: { KAGE_SOCKET: '/tmp/kage first.sock' },
+      });
+      try {
+        await c.ensureSession();
+        const [w] = await c.listWindows();
+        const environ = readFileSync(`/proc/${w?.panePid}/environ`, 'utf8').split('\0');
+        expect(environ).toContain('KAGE_SOCKET=/tmp/kage first.sock');
+      } finally {
+        try {
+          execFileSync('tmux', ['-L', sock2, 'kill-server'], { stdio: 'ignore' });
+        } catch {}
+      }
+    },
+  );
 
   it('setEnvironment sets a session variable that new windows inherit', async () => {
     await client.setEnvironment('KAGE_SOCKET', '/tmp/kage test.sock');

@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -69,6 +69,17 @@ describe('writeHooksSettings', () => {
       const path = await writeHooksSettings(join(dir, 'state', 'kage'), COMMAND);
       expect(statSync(join(dir, 'state', 'kage')).mode & 0o777).toBe(0o700);
       expect(statSync(path).mode & 0o777).toBe(0o600);
+    },
+  );
+
+  it.runIf(process.platform !== 'win32')(
+    'tightens an existing dir of ours that is looser than 0700',
+    async () => {
+      const state = join(dir, 'state');
+      mkdirSync(state);
+      chmodSync(state, 0o755);
+      await writeHooksSettings(state, COMMAND);
+      expect(statSync(state).mode & 0o777).toBe(0o700);
     },
   );
 

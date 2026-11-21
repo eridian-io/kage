@@ -7,8 +7,9 @@ import type { HookEvent } from './event.ts';
  * and AskUserQuestion is seen on its PreToolUse. Any other in-turn event means running,
  * which also clears needs-you. Idle and other notifications leave the status as it is, and
  * so does a late permission Notification once the turn is done. SessionStart means Claude is
- * waiting for input (R21): done. Ended is terminal; only a SessionStart (a resumed session)
- * brings it back, as done.
+ * waiting for input (R21): done, for every source but `compact`. A compaction can happen
+ * mid-turn (auto-compact), so SessionStart(compact) leaves the status as it is. Ended is
+ * terminal; only a SessionStart (a resumed session) brings it back, as done.
  */
 export function nextStatus(
   prev: SessionStatus | undefined,
@@ -23,7 +24,7 @@ export function nextStatus(
     case 'PreToolUse':
       return e.toolName === 'AskUserQuestion' ? 'needs-you' : 'running';
     case 'SessionStart':
-      return 'done';
+      return e.source === 'compact' ? prev : 'done';
     case 'UserPromptSubmit':
     case 'PostToolUse':
     case 'PostToolUseFailure':

@@ -390,4 +390,14 @@ describe('bounds (review minor)', () => {
       'Reading ab.ts',
     );
   });
+  it('plain text drops bidi and format characters, after the escape sequences', () => {
+    expect(nowLine(toolUse('Bash', { command: 'rm \u202e\x1b[31mtxt.exe\u202c\u200b' }))).toBe(
+      'Running rm txt.exe',
+    );
+    expect(nowLine(toolUse('Read', { file_path: `${CWD}/a\u2066\u2028b.ts` }))).toBe(
+      'Reading ab.ts',
+    );
+    const link = `\x1b]8;;https://x.test/${'p'.repeat(1000)}\x07`;
+    expect(nowLine(toolUse('Grep', { pattern: `${link}needle` }))).toBe('Searching needle');
+  });
 });

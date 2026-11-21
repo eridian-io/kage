@@ -1,4 +1,4 @@
-import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rename, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HOOK_EVENTS, type HookEventName } from './event.ts';
 
@@ -19,8 +19,20 @@ export function hookCommand(command: readonly string[], event: HookEventName): s
 }
 
 /**
+ * An existing directory of ours that group or others can reach is narrowed to 0700. One owned by
+ * someone else is left alone (chmod would fail anyway); there is no owner check on Windows.
+ */
+async function tightenDir(dir: string): Promise<void> {
+  const uid = process.getuid?.();
+  if (uid === undefined) return;
+  const st = await stat(dir);
+  if (st.uid === uid && (st.mode & 0o077) !== 0) await chmod(dir, 0o700);
+}
+
+/**
  * Writes a Claude settings file that registers Kage's hooks and nothing else, for
- * `claude --settings <file>`. Returns the file path. New directories are 0700 and the file 0600.
+ * `claude --settings <file>`. Returns the file path. The directory is 0700 (an existing one of
+ * ours that is looser is tightened) and the file 0600.
  */
 export async function writeHooksSettings(dir: string, command: string[]): Promise<string> {
   if (command.length === 0) throw new Error('writeHooksSettings: command is empty');
@@ -31,6 +43,7 @@ export async function writeHooksSettings(dir: string, command: string[]): Promis
     ];
   }
   await mkdir(dir, { recursive: true, mode: 0o700 });
+  await tightenDir(dir);
   const path = join(dir, SETTINGS_FILE);
   const tmp = `${path}.${process.pid}.${Date.now()}.tmp`;
   await writeFile(tmp, `${JSON.stringify({ hooks }, null, 2)}\n`, { mode: 0o600 });

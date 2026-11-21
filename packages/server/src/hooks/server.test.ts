@@ -84,6 +84,7 @@ describe('HookServer', () => {
         message: null,
         toolName: 'Edit',
         toolInput: payload('pre-tool-use.json').tool_input,
+        source: null,
         at: 42,
       },
     ]);
@@ -360,9 +361,25 @@ describe('parseHookEvent', () => {
         message: null,
         toolName: null,
         toolInput: null,
+        source: null,
         at: 1,
       });
     }
+  });
+
+  it('reads SessionStart source (startup, compact, resume, clear); null for other events', () => {
+    expect(
+      ok({ event: 'SessionStart', pane: '%1', payload: payload('session-start.json') })?.source,
+    ).toBe('startup');
+    for (const source of ['compact', 'resume', 'clear']) {
+      expect(ok({ event: 'SessionStart', payload: { session_id: 's', source } })?.source).toBe(
+        source,
+      );
+    }
+    expect(ok({ event: 'Stop', payload: { session_id: 's', source: 'compact' } })?.source).toBe(
+      null,
+    );
+    expect(ok({ event: 'SessionStart', payload: { session_id: 's', source: 7 } })).toBeNull();
   });
 
   it('keeps tool_input for AskUserQuestion', () => {

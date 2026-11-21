@@ -66,16 +66,25 @@ export class TmuxClient {
   readonly #session: string;
   readonly #target: TmuxTarget;
   readonly #exec: ExecFn;
+  readonly #env: Record<string, string>;
+  readonly #warn: (message: string) => void;
+  #warnedPlaceholder = false;
 
   constructor(opts: {
     session: string;
     socket: string | null;
     configFile?: string;
     exec?: ExecFn;
+    /** Environment for the session's first window (`new-session -e`), e.g. KAGE_SOCKET. */
+    env?: Record<string, string>;
+    /** Where a non-fatal problem is reported (serve passes stderr). */
+    warn?: (message: string) => void;
   }) {
     this.#session = opts.session;
     this.#target = { socket: opts.socket, configFile: opts.configFile };
     this.#exec = opts.exec ?? defaultExec;
+    this.#env = opts.env ?? {};
+    this.#warn = opts.warn ?? (() => {});
   }
 
   #run(args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -85,7 +94,9 @@ export class TmuxClient {
   /**
    * Creates the detached session when it is missing. Its first window only holds the session
    * open, so it is tagged `@kage_placeholder` (R22) and the board hides it while it sits at a
-   * shell.
+   * shell. It gets the client's `env` (KAGE_SOCKET), which `set-environment` would only give
+   * windows created later. The tag is best-effort: a failure is reported once and the session
+   * stands (the placeholder then shows on the board as a shell window).
    */
   async ensureSession(): Promise<void> {
     try {
@@ -93,11 +104,13 @@ export class TmuxClient {
     } catch {
       let windowId: string;
       try {
+        const env = Object.entries(this.#env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
         const { stdout } = await this.#run([
           'new-session',
           '-d',
           '-s',
           this.#session,
+          ...env,
           '-P',
           '-F',
           '#{window_id}',
@@ -109,7 +122,15 @@ export class TmuxClient {
         return;
       }
       if (/^@\d+$/.test(windowId)) {
-        await this.#run(['set-option', '-w', '-t', windowId, '@kage_placeholder', '1']);
+        try {
+          await this.#run(['set-option', '-w', '-t', windowId, '@kage_placeholder', '1']);
+        } catch (e) {
+          if (!this.#warnedPlaceholder) {
+            this.#warnedPlaceholder = true;
+            const why = (stderrOf(e).trim() || String((e as Error).message ?? e)).split(/\r?\n/)[0];
+            this.#warn(`kage: couldn't tag tmux window ${windowId} as @kage_placeholder: ${why}`);
+          }
+        }
       }
     }
   }

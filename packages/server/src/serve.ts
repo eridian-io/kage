@@ -112,10 +112,15 @@ async function startLive(
     socket: cfg.tmuxSocket,
     configFile: io.tmuxConfigFile,
   };
-  const tmux = new TmuxClient(target);
   const hookSocket = socketPath(io.env);
   // Windows inherit the session's environment, so `kage hook` in them posts to this socket even
-  // when their shell's XDG_RUNTIME_DIR or HOME differ from serve's.
+  // when their shell's XDG_RUNTIME_DIR or HOME differ from serve's. The first window gets it at
+  // new-session (-e); set-environment covers a session that already exists.
+  const tmux = new TmuxClient({
+    ...target,
+    env: { KAGE_SOCKET: hookSocket },
+    warn: (message) => io.err(message),
+  });
   const ensureSession = async () => {
     await tmux.ensureSession();
     await tmux.setEnvironment('KAGE_SOCKET', hookSocket).catch(() => {});

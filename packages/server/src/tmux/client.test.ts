@@ -3,7 +3,10 @@ import { EXEC_OPTIONS, type ExecFn, parseTmuxVersion, TmuxClient, tmuxArgs } fro
 
 const fail = (stderr: string): Error => Object.assign(new Error('failed'), { stderr });
 
-function client(exec: ExecFn, extra: { configFile?: string } = {}) {
+function client(
+  exec: ExecFn,
+  extra: { configFile?: string; env?: Record<string, string>; warn?: (m: string) => void } = {},
+) {
   return new TmuxClient({ session: 'kage', socket: 'sock', exec, ...extra });
 }
 
@@ -68,6 +71,57 @@ describe('TmuxClient.ensureSession placeholder (R22)', () => {
       ['new-session', '-d', '-s', 'kage', '-P', '-F', '#{window_id}'],
       ['set-option', '-w', '-t', '@7', '@kage_placeholder', '1'],
     ]);
+  });
+
+  it('gives the first window the session env (KAGE_SOCKET) with new-session -e', async () => {
+    const seen: string[][] = [];
+    const c = client(
+      async (_cmd, args) => {
+        seen.push(args.slice(2));
+        if (args.includes('has-session')) throw fail("can't find session: kage");
+        if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
+        return { stdout: '', stderr: '' };
+      },
+      { env: { KAGE_SOCKET: "/run/user/1000/it's kage.sock" } },
+    );
+    await c.ensureSession();
+    expect(seen[1]).toEqual([
+      'new-session',
+      '-d',
+      '-s',
+      'kage',
+      '-e',
+      "KAGE_SOCKET=/run/user/1000/it's kage.sock",
+      '-P',
+      '-F',
+      '#{window_id}',
+    ]);
+  });
+
+  it('a failed placeholder tag is logged once and does not fail ensureSession', async () => {
+    const warnings: string[] = [];
+    const c = client(
+      async (_cmd, args) => {
+        if (args.includes('has-session')) throw fail("can't find session: kage");
+        if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
+        throw fail('invalid option: @kage_placeholder');
+      },
+      { warn: (m) => warnings.push(m) },
+    );
+    await expect(c.ensureSession()).resolves.toBeUndefined();
+    await expect(c.ensureSession()).resolves.toBeUndefined();
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('@kage_placeholder');
+    expect(warnings[0]).toContain('invalid option');
+  });
+
+  it('a failed placeholder tag without a logger still does not fail ensureSession', async () => {
+    const c = client(async (_cmd, args) => {
+      if (args.includes('has-session')) throw fail("can't find session: kage");
+      if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
+      throw fail('server exited unexpectedly');
+    });
+    await expect(c.ensureSession()).resolves.toBeUndefined();
   });
 
   it('does not tag anything when the session exists', async () => {

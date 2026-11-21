@@ -1,6 +1,6 @@
 import type { DisplayLine, Question } from '@kage/shared';
 import { stripAnsi } from '../text/ansi.ts';
-import { boundQuestion } from '../text/bounds.ts';
+import { boundQuestion, clip as clipTo, plainLine } from '../text/bounds.ts';
 
 /** Turns Claude Code transcript records (one JSON object per JSONL line) into board lines. */
 
@@ -37,27 +37,19 @@ function blocks(record: unknown, type: 'user' | 'assistant'): Obj[] {
   return Array.isArray(c) ? c.filter(isObj) : [];
 }
 
-/** Cuts text to `max` characters, ending with "…" when cut; never splits a surrogate pair. */
-function clip(text: string, max = MAX_TEXT): string {
-  if (text.length <= max) return text;
-  let cut = text.slice(0, max - 1);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return `${cut}…`;
-}
+/** Cuts text to `max` characters (default 200), ending with "…" when cut. */
+const clip = (text: string, max = MAX_TEXT): string => clipTo(text, max);
 
 /**
- * One line of plain text: line breaks become spaces, escape sequences and control characters go,
- * and the result is clipped. Only a bounded prefix is looked at.
+ * One line of plain text (`plainLine`): line breaks become spaces; escape sequences, control
+ * characters, and bidi and format characters go; then it is clipped.
  */
-function plain(text: string): string {
-  return clip(stripAnsi(text.slice(0, MAX_TEXT * 4).replace(/\r?\n/g, ' ')));
-}
+const plain = (text: string): string => plainLine(text, MAX_TEXT);
 
 /** Say text: escape sequences and control characters go per line, line breaks stay; clipped. */
 function sayText(text: string): string {
   const lines = text.slice(0, MAX_SAY * 4).split('\n');
-  return clip(lines.map(stripAnsi).join('\n'), MAX_SAY);
+  return clip(lines.map((l) => stripAnsi(l)).join('\n'), MAX_SAY);
 }
 
 /** Path relative to cwd when inside it; otherwise unchanged. */

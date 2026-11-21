@@ -2,12 +2,42 @@
 
 const ESC = 0x1b;
 const BEL = 0x07;
+const LF = 0x0a;
 
-/** Removes terminal escape sequences (CSI, OSC including OSC 8 links, others) and control characters other than tab. */
-export function stripAnsi(text: string): string {
+/**
+ * Unicode bidi controls and invisible format characters that can make text read differently
+ * from what it is (Trojan Source): U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, and the line
+ * and paragraph separators U+2028 and U+2029.
+ */
+export function isFormatChar(c: number): boolean {
+  return (
+    (c >= 0x200b && c <= 0x200f) ||
+    (c >= 0x202a && c <= 0x202e) ||
+    (c >= 0x2066 && c <= 0x2069) ||
+    c === 0x2028 ||
+    c === 0x2029
+  );
+}
+
+export interface StripOptions {
+  /** One line: a line feed becomes a space, and bidi and format characters go too. */
+  oneLine?: boolean;
+  /** Stop once the output has this many characters (bounds the work on huge input). */
+  limit?: number;
+}
+
+/**
+ * Removes terminal escape sequences (CSI, OSC including OSC 8 links, others) and control
+ * characters other than tab. With `oneLine`, the character filter that runs after the escape
+ * parsing also turns line feeds into spaces and drops bidi and format characters, so they can
+ * neither hide an escape sequence nor be left over from one.
+ */
+export function stripAnsi(text: string, opts: StripOptions = {}): string {
+  const oneLine = opts.oneLine === true;
+  const limit = opts.limit ?? Number.POSITIVE_INFINITY;
   let out = '';
   let i = 0;
-  while (i < text.length) {
+  while (i < text.length && out.length < limit) {
     const c = text.charCodeAt(i);
     const next = text[i + 1];
     if (c === ESC && next === '[') {
@@ -27,7 +57,10 @@ export function stripAnsi(text: string): string {
       while (i < text.length && text.charCodeAt(i) >= 0x20 && text.charCodeAt(i) <= 0x2f) i++;
       i++;
     } else {
-      if (c === 0x09 || (c >= 0x20 && c < 0x7f) || c > 0x9f) out += text[i];
+      if (oneLine && c === LF) out += ' ';
+      else if (oneLine && isFormatChar(c)) {
+        // dropped
+      } else if (c === 0x09 || (c >= 0x20 && c < 0x7f) || c > 0x9f) out += text[i];
       i++;
     }
   }
