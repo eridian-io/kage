@@ -38,6 +38,15 @@ export function answerPlan(
   if (!Number.isInteger(option) || option < 1 || option > options.length) {
     return { kind: 'refuse', reason: `There's no option ${option}.` };
   }
+  if (disabledOptions(kind, options).includes(option)) {
+    return {
+      kind: 'refuse',
+      reason:
+        kind === 'renderer'
+          ? "Kage can't read the new renderer's screen. Choose Not now, or answer in the terminal."
+          : 'Switch modes in the terminal.',
+    };
+  }
   switch (kind) {
     case 'permission':
     case 'ask':
@@ -52,6 +61,31 @@ export function answerPlan(
     case 'trust':
       return { kind: 'cursor', index: option - 1 };
   }
+}
+
+/** R39: a Bash prompt's option that changes the permission policy chosen at launch. */
+const AUTO_MODE = 'Yes, and switch to auto mode';
+/** R39: the renderer offer's yes changes what capture-pane returns. */
+const TRY_RENDERER = 'Yes, try it';
+
+/**
+ * R39: the options (1-based) the board shows but must not send: on a permission prompt, any
+ * label starting "Yes, and switch to auto mode"; on the renderer offer, "Yes, try it".
+ */
+export function disabledOptions(kind: PromptKind | null, options: readonly string[]): number[] {
+  const off = (test: (label: string) => boolean): number[] =>
+    options.flatMap((o, i) => (test(o) ? [i + 1] : []));
+  if (kind === 'permission') return off((o) => o.startsWith(AUTO_MODE));
+  if (kind === 'renderer') return off((o) => o === TRY_RENDERER);
+  return [];
+}
+
+/** A label drawn with a checkbox: an AskUserQuestion that allows several choices. */
+const CHECKBOX = /^(☐|☑|☒|◻|◼|\[[ xX✓✔]\])\s/;
+
+/** True when the labels on screen carry checkboxes (a multi-select AskUserQuestion). */
+export function hasCheckboxes(options: readonly string[]): boolean {
+  return options.some((o) => CHECKBOX.test(o));
 }
 
 const FULL_RULE = /^─{3,}$/;
@@ -130,6 +164,20 @@ export function inputLine(pane: string): string | null {
     .filter((r) => r !== '')
     .join(' ')
     .trim();
+}
+
+/** The footer while Claude works: `⏸ manual mode on · esc to interrupt` (integration §7). */
+const WORKING = /esc to interrupt/i;
+
+/**
+ * True when the input box is live and its footer says Claude is working (the box stays on screen
+ * during a turn): typing then would queue text behind the turn.
+ */
+export function boxWorking(pane: string): boolean {
+  if (inputLine(pane) === null) return false;
+  const lines = linesOf(pane);
+  const bottom = lines.findLastIndex((l) => FULL_RULE.test(l));
+  return lines.slice(bottom + 1).some((l) => WORKING.test(l));
 }
 
 /** K9: a burst longer than this many UTF-16 units shows as a paste placeholder. */

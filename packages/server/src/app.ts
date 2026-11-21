@@ -244,7 +244,7 @@ export function createApp(deps: AppDeps): Hono {
     '/api/sessions/:id/answer',
     control(
       (raw) => parseAnswer(json(raw)),
-      (ctl, id, b) => ctl.answer(id, b.option),
+      (ctl, id, b) => ctl.answer(id, b.option, b.question),
     ),
   );
   app.post(

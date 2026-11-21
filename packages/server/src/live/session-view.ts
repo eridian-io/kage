@@ -1,5 +1,6 @@
 import { posix } from 'node:path';
 import type { DisplayLine, Question, Session, SessionStatus } from '@kage/shared';
+import { disabledOptions, type PromptKind } from '../control/keys.ts';
 import type { SessionRecord } from '../state/store.ts';
 import { boundQuestion } from '../text/bounds.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
@@ -17,6 +18,8 @@ export interface SessionView {
   status: SessionStatus;
   statusSince: number;
   question: Question | null;
+  /** How the question is answered; it decides which options are disabled (R39). */
+  promptKind?: PromptKind | null;
   now: string | null;
 }
 
@@ -46,6 +49,8 @@ export function toSession(v: SessionView): Session {
   if (v.question) {
     s.question = { text: v.question.text, options: v.question.options.slice() };
     if (v.question.startup) s.question.startup = true;
+    const off = disabledOptions(v.promptKind ?? null, v.question.options);
+    if (off.length > 0) s.question.disabledOptions = off;
   }
   // The now line says what a running turn is doing; a finished or waiting one shows none (F3).
   if (v.now && v.status === 'running') s.now = v.now;
@@ -59,6 +64,7 @@ const sameQuestion = (a: Question | undefined, b: Question | undefined): boolean
     a.text === b.text &&
     a.options.length === b.options.length &&
     a.options.every((o, i) => o === b.options[i]) &&
+    (a.disabledOptions ?? []).join() === (b.disabledOptions ?? []).join() &&
     (a.startup ?? false) === (b.startup ?? false));
 
 /**
@@ -97,6 +103,21 @@ export function questionFromToolInput(input: unknown): Question | null {
     ? q.options.flatMap((o) => (isObj(o) && typeof o.label === 'string' ? [o.label] : []))
     : [];
   return boundQuestion(q.question, options);
+}
+
+/**
+ * AskUserQuestion's hook `tool_input` → each question's multiSelect, keyed by its question text
+ * as the card shows it (bounded, whitespace collapsed).
+ */
+export function multiSelectByQuestion(input: unknown): Map<string, boolean> {
+  const out = new Map<string, boolean>();
+  if (!isObj(input) || !Array.isArray(input.questions)) return out;
+  for (const q of input.questions) {
+    if (!isObj(q) || typeof q.question !== 'string') continue;
+    const text = boundQuestion(q.question, []).text.replace(/ +/g, ' ').trim();
+    out.set(text, q.multiSelect === true);
+  }
+  return out;
 }
 
 export const questionKey = (q: Question | null): string | null =>

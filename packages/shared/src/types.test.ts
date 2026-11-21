@@ -29,6 +29,7 @@ describe('protocol v3 types', () => {
     expect(LIMITS).toEqual({
       taskChars: 4000,
       replyChars: 4000,
+      questionChars: 500,
       textBytes: 12_000,
       files: 100,
       projects: 200,

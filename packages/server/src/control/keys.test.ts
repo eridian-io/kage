@@ -1,14 +1,22 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { answerPlan, cursorIndex, inputLine, inputShows } from './keys.ts';
+import {
+  answerPlan,
+  boxWorking,
+  cursorIndex,
+  disabledOptions,
+  hasCheckboxes,
+  inputLine,
+  inputShows,
+} from './keys.ts';
 
 const pane = (name: string): string =>
   readFileSync(join(import.meta.dirname, '../../test/fixtures/panes', `${name}.txt`), 'utf8');
 
 const TRUST = ['No, exit', 'Yes, I trust this folder'];
 const RULE = '─'.repeat(80);
-const NBSP = ' ';
+const NBSP = String.fromCodePoint(0xa0);
 
 /** trust.txt with the cursor moved to "Yes, I trust this folder" (as `Down` leaves it). */
 const trustOnYes = (): string =>
@@ -212,6 +220,51 @@ describe('inputShows', () => {
   });
 
   it('ignores characters a capture drops (format characters)', () => {
-    expect(inputShows(idle('ab'), 'a​b')).toBe(true);
+    expect(inputShows(idle('ab'), `a${String.fromCodePoint(0x200b)}b`)).toBe(true);
+  });
+});
+
+describe('fix round 1: R39, multi-select and the working footer', () => {
+  const BASH = [
+    'Yes',
+    'Yes, and don’t ask again for: npm test *',
+    'Yes, and switch to auto mode',
+    'No',
+  ];
+
+  it('disabledOptions: auto mode on a permission prompt, "Yes, try it" on the renderer offer', () => {
+    expect(disabledOptions('permission', BASH)).toEqual([3]);
+    expect(disabledOptions('renderer', ['Yes, try it', 'Not now'])).toEqual([1]);
+    expect(disabledOptions('permission', ['Yes', 'No'])).toEqual([]);
+    expect(disabledOptions('ask', ['Yes, and switch to auto mode', 'No'])).toEqual([]);
+    expect(disabledOptions('trust', ['No, exit', 'Yes, I trust this folder'])).toEqual([]);
+    expect(disabledOptions(null, BASH)).toEqual([]);
+  });
+
+  it('answerPlan refuses the disabled options', () => {
+    expect(answerPlan('permission', BASH, 3)).toEqual({
+      kind: 'refuse',
+      reason: 'Switch modes in the terminal.',
+    });
+    expect(answerPlan('renderer', ['Yes, try it', 'Not now'], 1).kind).toBe('refuse');
+    expect(answerPlan('renderer', ['Yes, try it', 'Not now'], 2)).toEqual({
+      kind: 'digit',
+      digit: 2,
+    });
+  });
+
+  it('hasCheckboxes: labels drawn with a checkbox', () => {
+    expect(hasCheckboxes(['☐ Dashes', '☐ Underscores'])).toBe(true);
+    expect(hasCheckboxes(['☑ Dashes', 'Underscores'])).toBe(true);
+    expect(hasCheckboxes(['[ ] Dashes', '[x] Underscores'])).toBe(true);
+    expect(hasCheckboxes(['Dashes', 'Underscores'])).toBe(false);
+    expect(hasCheckboxes(['[draft] mode'])).toBe(false);
+  });
+
+  it('boxWorking: the box footer says "esc to interrupt"', () => {
+    expect(boxWorking(idle('', '  ⏸ manual mode on · esc to interrupt'))).toBe(true);
+    expect(boxWorking(idle(''))).toBe(false);
+    expect(boxWorking(pane('idle-typed'))).toBe(false);
+    expect(boxWorking(pane('permission-bash'))).toBe(false);
   });
 });

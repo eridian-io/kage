@@ -125,20 +125,45 @@ describe('parseAnswer', () => {
     const r = parseAnswer(body);
     return r.ok ? null : r.error;
   };
+  const EXPECTED = 'Expected {"option": <1–9>, "question": "<the question shown>"}';
+  const Q = 'Do you want to proceed? — npm test';
 
-  it('accepts exactly {option} with an integer 1–9', () => {
-    for (const option of [1, 4, 9])
-      expect(parseAnswer({ option })).toEqual({ ok: true, value: { option } });
+  it('accepts exactly {option, question} with an integer 1–9 and the question text (R36)', () => {
+    for (const option of [1, 4, 9]) {
+      expect(parseAnswer({ option, question: Q })).toEqual({
+        ok: true,
+        value: { option, question: Q },
+      });
+    }
   });
 
   it('refuses other numbers, types and shapes', () => {
     for (const option of [0, 10, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, '1', null, true]) {
-      expect(answerError({ option })).toBe('Expected {"option": <1–9>}');
+      expect(answerError({ option, question: Q })).toBe(EXPECTED);
     }
-    for (const body of [undefined, null, 1, 'x', [], [{ option: 1 }], {}]) {
-      expect(answerError(body)).toBe('Expected {"option": <1–9>}');
+    for (const body of [
+      undefined,
+      null,
+      1,
+      'x',
+      [],
+      [{ option: 1, question: Q }],
+      {},
+      { option: 1 },
+    ]) {
+      expect(answerError(body)).toBe(EXPECTED);
     }
-    expect(answerError({ option: 1, enter: true })).toBe('Unexpected field "enter"');
+    expect(answerError({ option: 1, question: 7 })).toBe(EXPECTED);
+    expect(answerError({ option: 1, question: Q, enter: true })).toBe('Unexpected field "enter"');
+  });
+
+  it('the question is 1–500 characters without control characters', () => {
+    const msg = `"question" must be the question's text (1–500 characters).`;
+    expect(answerError({ option: 1, question: '' })).toBe(msg);
+    expect(answerError({ option: 1, question: '   ' })).toBe(msg);
+    expect(answerError({ option: 1, question: 'q'.repeat(501) })).toBe(msg);
+    expect(answerError({ option: 1, question: `a${String.fromCharCode(10)}b` })).toBe(msg);
+    expect(parseAnswer({ option: 1, question: 'q'.repeat(500) }).ok).toBe(true);
   });
 });
 
@@ -188,12 +213,33 @@ describe('parseReply', () => {
       'a\u0000b',
       'a\u007fb',
       'a\u0085b',
-      'abc‮def',
-      'a⁦b',
-      'a b',
+      `abc${String.fromCodePoint(0x202e)}def`,
+      `a${String.fromCodePoint(0x2066)}b`,
+      `a${String.fromCodePoint(0x2028)}b`,
     ]) {
       expect(replyError({ text })).toBe(CONTROL_ERROR);
     }
+  });
+
+  it('refuses LRM, RLM, ALM and the BOM (fix round item 9)', () => {
+    for (const cp of [0x200e, 0x200f, 0x061c, 0xfeff]) {
+      expect(replyError({ text: `a${String.fromCodePoint(cp)}b` })).toBe(CONTROL_ERROR);
+    }
+  });
+
+  it('R37: refuses a reply starting with !, # or / (after leading spaces)', () => {
+    const msg = "Replies from the board can't start with !, # or /. Use the terminal for those.";
+    for (const text of ['!rm -rf ~', '# remember this', '/exit', '  !ls', ' /compact']) {
+      expect(replyError({ text })).toBe(msg);
+    }
+    expect(parseReply({ text: 'use a/b instead' }).ok).toBe(true);
+  });
+
+  it('refuses a reply starting with a digit 1–9 (it could answer a prompt that appears mid-send)', () => {
+    const msg = "Replies from the board can't start with a number. Use the terminal for that.";
+    for (const text of ['1', '2 please', ' 9 tests']) expect(replyError({ text })).toBe(msg);
+    expect(parseReply({ text: '0 errors is the goal' }).ok).toBe(true);
+    expect(parseReply({ text: 'run 3 tests' }).ok).toBe(true);
   });
 
   it('keeps shell syntax and option-like text as plain text (F15: it is typed, never run)', () => {

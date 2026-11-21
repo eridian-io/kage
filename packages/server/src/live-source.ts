@@ -6,6 +6,7 @@ import type { HookServer } from './hooks/server.ts';
 import { nextStatus } from './hooks/status.ts';
 import {
   ACTIVE_MS,
+  multiSelectByQuestion,
   questionFromToolInput,
   questionKey,
   type SessionView,
@@ -128,7 +129,15 @@ function appended(prev: DisplayLine[], next: DisplayLine[]): DisplayLine[] | nul
   return null;
 }
 
-type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire' | 'startup' | 'answered';
+type TimerName =
+  | 'emit'
+  | 'idle'
+  | 'capture'
+  | 'retry'
+  | 'retire'
+  | 'startup'
+  | 'answered'
+  | 'replying';
 
 interface Live extends SessionView {
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
@@ -137,8 +146,10 @@ interface Live extends SessionView {
   startup: boolean;
   /** What kind of prompt the question is (how SessionControls answers it); null unless needs-you. */
   promptKind: PromptKind | null;
-  /** Monotonic ms of Kage's last reply (its Escape's interrupt record is not a denial). */
+  /** Monotonic ms of Kage's last reply Escape (its interrupt record is not a denial). */
   replyAt: number;
+  /** The last AskUserQuestion's multiSelect per question text (whitespace collapsed). */
+  askMulti: Map<string, boolean>;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
   promptSeen: boolean;
   /** R12: a PreToolUse or PermissionRequest without its PostToolUse, failure, Stop or end yet. */
@@ -336,6 +347,7 @@ export class LiveSource implements SessionSource {
       status: st.status,
       question: q ? { ...q, options: q.options.slice() } : null,
       promptKind: st.status === 'needs-you' ? st.promptKind : null,
+      multiSelect: q !== null && (st.askMulti.get(q.text.replace(/ +/g, ' ').trim()) ?? false),
       external: st.record === null,
     };
   }
@@ -376,12 +388,27 @@ export class LiveSource implements SessionSource {
     this.#processCapture(st, text, gen, true);
   }
 
-  /** Kage sent a reply: running; the transcript's interrupt from its Escape is ignored for 5 s. */
+  /**
+   * Kage is about to send Escape at a prompt to reply: for 5 s from now the transcript's interrupt
+   * record and the pane's denial line are Kage's own, not a No. Should the reply then fail, one
+   * capture at the end of those 5 s lets the pane fallback (R11) settle the status.
+   */
+  markReplying(id: string): void {
+    const st = this.#sessions.get(id);
+    if (!st || st.status === 'ended' || !this.#running) return;
+    st.replyAt = this.#clock();
+    this.#clearTimers(st, ['replying']);
+    st.timers.replying = setTimeout(() => {
+      delete st.timers.replying;
+      if (st.status === 'needs-you') this.#requestCapture(st);
+    }, REPLY_INTERRUPT_MS);
+  }
+
+  /** Kage sent a reply: running. */
   markReplied(id: string): void {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended') return;
-    st.replyAt = this.#clock();
-    this.#clearTimers(st, ['retry', 'answered']);
+    this.#clearTimers(st, ['retry', 'answered', 'replying']);
     st.pending = false;
     this.#setStatus(st, 'running');
     st.lastActivity = this.#clock();
@@ -477,6 +504,7 @@ export class LiveSource implements SessionSource {
       startup: false,
       promptKind: null,
       replyAt: Number.NEGATIVE_INFINITY,
+      askMulti: new Map(),
       promptSeen: false,
       pending: false,
       sessionId: record?.sessionId ?? null,
@@ -864,6 +892,7 @@ export class LiveSource implements SessionSource {
         st.question =
           questionFromToolInput(e.toolInput) ?? st.question ?? st.tail?.question() ?? null;
         st.promptKind = 'ask';
+        st.askMulti = multiSelectByQuestion(e.toolInput);
       } else if (
         e.event === 'PermissionRequest' ||
         (e.event === 'Notification' && counts && !st.question)
@@ -929,7 +958,7 @@ export class LiveSource implements SessionSource {
       tail.onInterrupt(() => {
         if (st.tail !== tail) return;
         // Kage's reply at a prompt starts with Escape, whose interrupt record lands after it.
-        if (this.#clock() - st.replyAt < REPLY_INTERRUPT_MS) return;
+        if (this.#replying(st)) return;
         // R11: No or Esc fires no hook; the transcript shows it.
         if (st.status !== 'ended') this.#setStatus(st, 'done');
         st.question = null;
@@ -1130,7 +1159,7 @@ export class LiveSource implements SessionSource {
         st.question ??= prompt;
         st.promptKind ??= numberedPromptKind(text);
         this.#emitNow(st);
-      } else if (st.promptSeen && !showsPrompt(text)) {
+      } else if (st.promptSeen && !showsPrompt(text) && !this.#replying(st)) {
         // R11 fallback: the prompt went away without a hook. No or Esc leaves Claude's denial
         // line and ends the turn. Otherwise it was a Yes: the tool runs, and no hook fires until
         // its PostToolUse, which may be minutes away for a long command.
@@ -1184,6 +1213,11 @@ export class LiveSource implements SessionSource {
   }
 
   // ------------------------------------------------------------ state and events
+
+  /** Within 5 s of Kage's reply Escape (Review Focus 6). */
+  #replying(st: Live): boolean {
+    return this.#clock() - st.replyAt < REPLY_INTERRUPT_MS;
+  }
 
   #setStatus(st: Live, status: SessionStatus): void {
     if (status === st.status) return;

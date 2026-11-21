@@ -5,8 +5,10 @@ import { parsePermissionPrompt, parseStartupScreen, showsPrompt } from '../pane/
 import type { Key, TmuxClient } from '../tmux/client.ts';
 import {
   answerPlan,
+  boxWorking,
   cursorIndex,
   DEFAULT_ATTACH,
+  hasCheckboxes,
   inputLine,
   inputShows,
   type PromptKind,
@@ -32,6 +34,8 @@ export interface ControlTarget {
   status: SessionStatus;
   question: Question | null;
   promptKind: PromptKind | null;
+  /** An AskUserQuestion that allows several choices (from the hook's or transcript's multiSelect). */
+  multiSelect: boolean;
   external: boolean;
 }
 
@@ -41,7 +45,7 @@ export type ControlTmux = Pick<
 >;
 export type ControlSource = Pick<
   LiveSource,
-  'target' | 'markAnswered' | 'markReplied' | 'markStopped'
+  'target' | 'markAnswered' | 'markReplying' | 'markReplied' | 'markStopped'
 >;
 
 /** A word as a POSIX shell reads it: bare when safe, else single-quoted. */
@@ -61,8 +65,20 @@ const POLL_MS = 100;
 const POLLS = 10;
 
 const CHANGED = 'The prompt on screen changed. Look again.';
+/** R36: the card's question is not the one on the server or on screen any more. */
+const QUESTION_CHANGED = 'The question changed. Look again before answering.';
+const MULTI = 'This question allows several choices. Answer it in the terminal.';
+const WORKING = "Claude is working. Wait until it's done.";
+const NO_BOX = "Claude isn't at its input box.";
 const ENDED = 'This session has ended.';
-const GONE_RE = /no such window|can't find window|can't find session|no server running/i;
+/** tmux's answer for a window, pane or session that no longer exists. */
+const GONE_RE =
+  /no such window|can't find window|can't find pane|can't find session|no server running/i;
+/** A failed tmux run (execFile attaches its stderr); anything else is a bug, not tmux's. */
+const isExecError = (e: unknown): boolean =>
+  e instanceof Error && typeof (e as { stderr?: unknown }).stderr === 'string';
+/** Whitespace collapsed, for comparing question texts. */
+const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
 const STARTUP_KINDS: ReadonlySet<PromptKind> = new Set([
   'login',
   'trust',
@@ -102,18 +118,28 @@ export class SessionControls {
     this.#attach = d.attach ?? DEFAULT_ATTACH;
   }
 
-  answer(id: string, option: number): Promise<void> {
+  /**
+   * Answers option `option` of the question whose text the card showed (`shown`, R36): only when
+   * the server's question has that text and the fresh capture shows that same question, with the
+   * same options.
+   */
+  answer(id: string, option: number, shown: string): Promise<void> {
     return this.#locked(id, async (t) => {
       if (t.status === 'ended' || !t.paneId) throw new ActionError(409, ENDED);
       if (t.status !== 'needs-you' || !t.question || !t.promptKind) {
         throw new ActionError(409, "This session isn't waiting for an answer.");
       }
       const { paneId, question, promptKind: kind } = t;
+      if (norm(question.text) !== norm(shown)) throw new ActionError(409, QUESTION_CHANGED);
+      if (kind === 'ask' && t.multiSelect) throw new ActionError(409, MULTI);
       const plan = answerPlan(kind, question.options, option, this.#attach);
       if (plan.kind === 'refuse') throw new ActionError(409, plan.reason);
 
       const before = await this.#capture(paneId);
-      if (!this.#showsSame(before, kind, question)) throw new ActionError(409, CHANGED);
+      if (kind === 'ask' && hasCheckboxes(parsePermissionPrompt(before)?.options ?? [])) {
+        throw new ActionError(409, MULTI);
+      }
+      if (!this.#showsSame(before, kind, question)) throw new ActionError(409, QUESTION_CHANGED);
       if (plan.kind === 'digit') {
         await this.#keys(paneId, [String(plan.digit) as Key]);
       } else if (plan.kind === 'enter') {
@@ -160,16 +186,21 @@ export class SessionControls {
         if (parsePermissionPrompt(before) === null || parseStartupScreen(before) !== null) {
           throw new ActionError(409, CHANGED);
         }
+        // The transcript's interrupt record for this Escape is not a denial (Review Focus 6).
+        this.#source.markReplying(id);
         await this.#keys(paneId, ['Escape']);
         const back = await this.#poll(
           paneId,
           (pane) => inputLine(pane) !== null && !showsPrompt(pane),
         );
         if (!back) throw new ActionError(409, "Claude didn't return to its input box.");
-      } else {
-        const now = await this.#capture(paneId);
-        if (inputLine(now) === null) throw new ActionError(409, "Claude isn't at its input box.");
       }
+      // Right before typing: the idle box, no prompt, and Claude not working (a turn in progress
+      // would queue the text, and a prompt could take a typed character as its answer).
+      const ready = await this.#capture(paneId);
+      if (showsPrompt(ready)) throw new ActionError(409, CHANGED);
+      if (inputLine(ready) === null) throw new ActionError(409, NO_BOX);
+      if (boxWorking(ready)) throw new ActionError(409, WORKING);
       // A ghost suggestion looks like typed text: Enter goes only after the text shows (K9, K10).
       await this.#tmux.sendText(paneId, text);
       let last = '';
@@ -220,7 +251,11 @@ export class SessionControls {
     });
   }
 
-  /** 404 for an unknown id, 409 while another action runs; any other failure is tmux's: 422. */
+  /**
+   * 404 for an unknown id, 409 while another action runs. A tmux run that fails because the
+   * window or pane is gone is 409 (ended); any other failed tmux run is 422. Other errors are
+   * bugs and go through as they are (the route answers 500).
+   */
   async #locked(id: string, run: (t: ControlTarget) => Promise<void>): Promise<void> {
     const t = this.#source.target(id);
     if (!t) throw new ActionError(404, `No session with id ${id}`);
@@ -231,7 +266,8 @@ export class SessionControls {
     try {
       await run(t);
     } catch (e) {
-      if (e instanceof ActionError) throw e;
+      if (e instanceof ActionError || !isExecError(e)) throw e;
+      if (GONE_RE.test(firstLine(e))) throw new ActionError(409, ENDED);
       throw new ActionError(422, `tmux couldn't send the keys: ${firstLine(e)}`);
     } finally {
       this.#busy.delete(id);
@@ -258,14 +294,22 @@ export class SessionControls {
     return false;
   }
 
-  /** The capture shows the prompt the board showed: the same kind and the same option labels. */
+  /**
+   * The capture shows the question the board showed: the same kind, the same question text
+   * (whitespace collapsed, R36) and the same option labels.
+   */
   #showsSame(pane: string, kind: PromptKind, question: Question): boolean {
+    let seen: Question | null;
     if (kind === 'permission' || kind === 'ask') {
-      if (parseStartupScreen(pane) !== null) return false;
-      const p = parsePermissionPrompt(pane);
-      return p !== null && sameOptions(p.options, question.options);
+      seen = parseStartupScreen(pane) === null ? parsePermissionPrompt(pane) : null;
+    } else {
+      const s = parseStartupScreen(pane);
+      seen = s !== null && s.screen === kind ? s : null;
     }
-    const s = parseStartupScreen(pane);
-    return s !== null && s.screen === kind && sameOptions(s.options, question.options);
+    return (
+      seen !== null &&
+      norm(seen.text) === norm(question.text) &&
+      sameOptions(seen.options, question.options)
+    );
   }
 }

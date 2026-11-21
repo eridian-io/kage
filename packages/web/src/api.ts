@@ -45,3 +45,11 @@ export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' |
     return 'error';
   }
 }
+
+/**
+ * POST /api/sessions/:id/answer with the option and the question text the card showed (R36):
+ * the server answers only that question. Task 10 wires it to the card.
+ */
+export function answer(id: string, option: number, question: string): Promise<Response> {
+  return apiPost(`/api/sessions/${encodeURIComponent(id)}/answer`, { option, question });
+}

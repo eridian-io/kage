@@ -64,38 +64,63 @@ function exactKeys(
   return { ok: true, value: o };
 }
 
-const EXPECTED_ANSWER = 'Expected {"option": <1–9>}';
+const EXPECTED_ANSWER = 'Expected {"option": <1–9>, "question": "<the question shown>"}';
 
-/** A `POST …/answer` body: exactly `{option}`, an integer 1–9 (the key Claude shows for it). */
+/**
+ * A `POST …/answer` body: exactly `{option, question}`. `option` is an integer 1–9 (the key
+ * Claude shows for it); `question` (R36) is the question text the card showed, 1–500
+ * characters without control characters, so the server answers only that question.
+ */
 export function parseAnswer(body: unknown): Parsed<AnswerBody> {
-  const o = exactKeys(body, ['option'], EXPECTED_ANSWER);
+  const o = exactKeys(body, ['option', 'question'], EXPECTED_ANSWER);
   if (!o.ok) return o;
-  const { option } = o.value;
+  const { option, question } = o.value;
   if (typeof option !== 'number' || !Number.isInteger(option) || option < 1 || option > 9) {
     return fail(EXPECTED_ANSWER);
   }
-  return { ok: true, value: { option } };
+  if (typeof question !== 'string') return fail(EXPECTED_ANSWER);
+  const chars = [...question].length;
+  if (question.trim() === '' || chars > LIMITS.questionChars || hasControlChars(question, false)) {
+    return fail(`"question" must be the question's text (1–${LIMITS.questionChars} characters).`);
+  }
+  return { ok: true, value: { option, question } };
 }
+
+/** Invisible marks a reply may not carry (fix round item 9): LRM, RLM, ALM and the BOM. */
+const INVISIBLE = new RegExp(`[${String.fromCodePoint(0x200e, 0x200f, 0x061c, 0xfeff)}]`, 'u');
+/**
+ * R37: `!` runs a shell command in Claude (no permission prompt), `#` writes memory and `/` is a
+ * slash command. A leading digit could answer a prompt that appears mid-send.
+ */
+const RISKY_START = /^[!#/]/;
+const DIGIT_START = /^[1-9]/;
 
 const EXPECTED_REPLY = 'Expected {"text": "<reply>"}';
 
 /**
  * A `POST …/reply` body: exactly `{text}`. No control characters at all (newlines included: a
- * newline would submit early), checked before trimming; then 1–4000 characters (code points)
- * and at most 12,000 bytes, trimmed.
+ * newline would submit early) and no invisible marks, checked before trimming; then 1–4000
+ * characters (code points) and at most 12,000 bytes, trimmed; never starting with !, #, / (R37)
+ * or a digit 1–9.
  */
 export function parseReply(body: unknown): Parsed<ReplyBody> {
   const o = exactKeys(body, ['text'], EXPECTED_REPLY);
   if (!o.ok) return o;
   const { text: raw } = o.value;
   if (typeof raw !== 'string') return fail(EXPECTED_REPLY);
-  if (hasControlChars(raw, false)) {
+  if (hasControlChars(raw, false) || INVISIBLE.test(raw)) {
     return fail("The reply can't contain control characters or line breaks.");
   }
   const text = raw.trim();
   const chars = [...text].length;
   if (chars === 0 || chars > LIMITS.replyChars) {
     return fail(`Write a reply of 1–${LIMITS.replyChars} characters.`);
+  }
+  if (RISKY_START.test(text)) {
+    return fail("Replies from the board can't start with !, # or /. Use the terminal for those.");
+  }
+  if (DIGIT_START.test(text)) {
+    return fail("Replies from the board can't start with a number. Use the terminal for that.");
   }
   if (Buffer.byteLength(text, 'utf8') > LIMITS.textBytes) {
     return fail('The reply is too long (over 12,000 bytes).');

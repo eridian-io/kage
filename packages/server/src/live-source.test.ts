@@ -1989,6 +1989,7 @@ describe('LiveSource: controls (phase 3 Task 7)', () => {
         options: ['Dashes', 'Underscores'],
       },
       promptKind: 'ask',
+      multiSelect: false,
       external: false,
     });
     t?.question?.options.push('mutated');
@@ -2147,8 +2148,9 @@ describe('LiveSource: controls (phase 3 Task 7)', () => {
     source.markAnswered('nope');
   });
 
-  it("markReplied: → running; a transcript interrupt within 5 s is Kage's own Escape, one after sets done", async () => {
+  it("markReplied: → running; a transcript interrupt within 5 s of Kage's Escape is its own, one after sets done", async () => {
     const { source, tails } = await permission();
+    source.markReplying('k-1');
     source.markReplied('k-1');
     expect(source.get('k-1')?.status).toBe('running');
     expect(source.get('k-1')?.question).toBeUndefined();
@@ -2178,5 +2180,95 @@ describe('LiveSource: controls (phase 3 Task 7)', () => {
     watcher.emit({ type: 'windows-changed' });
     await flush();
     expect(source.target('k-1')).toMatchObject({ status: 'ended', windowId: null });
+  });
+});
+
+describe('LiveSource: Task 7 fix round 1', () => {
+  async function permission() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    return s;
+  }
+
+  it('the interrupt record and the denial on screen between the Escape and markReplied never show done', async () => {
+    const { source, tails, tmux, watcher, updates } = await permission();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    const from = updates('k-1').length;
+    source.markReplying('k-1');
+    // Kage's Escape: the transcript records the interrupt, and the pane shows the denial.
+    tails[0]?.interrupt();
+    await vi.advanceTimersByTimeAsync(300);
+    tmux.setCapture('%2', DENIED_PANE);
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    source.markReplied('k-1');
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(
+      updates('k-1')
+        .slice(from)
+        .map((u) => u.status),
+    ).toEqual(['running']);
+  });
+
+  it('a reply that fails after its Escape: the pane fallback settles the status 5 s later', async () => {
+    const { source, tmux } = await permission();
+    source.markReplying('k-1');
+    tmux.setCapture('%2', DENIED_PANE);
+    await vi.advanceTimersByTimeAsync(4900);
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    await vi.advanceTimersByTimeAsync(400);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('target.multiSelect comes from the AskUserQuestion hook, per question text', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(
+      hook('PreToolUse', '%2', {
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            {
+              question: 'Which  checks should run?',
+              header: 'Checks',
+              multiSelect: true,
+              options: [{ label: 'Lint' }, { label: 'Tests' }],
+            },
+          ],
+        },
+      }),
+    );
+    expect(s.source.target('k-1')).toMatchObject({ promptKind: 'ask', multiSelect: true });
+  });
+
+  it('R39: a permission prompt marks "Yes, and switch to auto mode" disabled on the wire', async () => {
+    const { source } = await permission();
+    expect(source.get('k-1')?.question?.disabledOptions).toEqual([3]);
+    // The options stay as text (R5).
+    expect(source.get('k-1')?.question?.options[2]).toBe('Yes, and switch to auto mode');
+  });
+
+  it('R39: the renderer offer marks "Yes, try it" disabled; other screens have none', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture(
+      '%2',
+      ' Try the new fullscreen renderer?\n\n ❯ 1. Yes, try it\n   2. Not now\n',
+    );
+    await s.source.start();
+    expect(s.source.get('k-1')?.question).toMatchObject({ startup: true, disabledOptions: [1] });
+
+    const t = setup({ windows: [kageWin()], records: [rec()] });
+    t.tmux.setCapture('%2', pane('trust'));
+    await t.source.start();
+    expect(t.source.get('k-1')?.question).not.toHaveProperty('disabledOptions');
   });
 });

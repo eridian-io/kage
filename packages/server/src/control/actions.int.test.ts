@@ -129,7 +129,7 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
       question:
         mode === 'prompt'
           ? {
-              text: 'Do you want to proceed? — npm test',
+              text: 'Do you want to proceed?',
               options: ['Yes', 'Yes, and don’t ask again for: npm test *', 'No'],
             }
           : mode === 'trust'
@@ -140,6 +140,7 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
               }
             : null,
       promptKind: mode === 'prompt' ? 'permission' : mode === 'trust' ? 'trust' : null,
+      multiSelect: false,
       external: false,
     };
     const controls = new SessionControls({
@@ -147,6 +148,7 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
       source: {
         target: (id) => (id === kageId ? { ...t } : null),
         markAnswered: (id) => marks.push(`answered ${id}`),
+        markReplying: () => {},
         markReplied: (id) => marks.push(`replied ${id}`),
         markStopped: (id) => marks.push(`stopped ${id}`),
       },
@@ -164,7 +166,7 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
 
   it('answer 1 at a permission prompt: the TUI receives exactly "1", no Enter', async () => {
     const s = await open('prompt');
-    await s.controls.answer(s.kageId, 1);
+    await s.controls.answer(s.kageId, 1, s.t.question?.text ?? '');
     expect(await s.received(1)).toEqual(['prompt-key:"1"']);
     await sleep(300);
     expect(await s.received(1)).toEqual(['prompt-key:"1"']);
@@ -173,7 +175,7 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
 
   it('trust option 2: Down, verified, then Enter picks "Yes, I trust this folder"', async () => {
     const s = await open('trust');
-    await s.controls.answer(s.kageId, 2);
+    await s.controls.answer(s.kageId, 2, s.t.question?.text ?? '');
     expect(await s.received(1)).toEqual(['trust:Yes, I trust this folder']);
   });
 

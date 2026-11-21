@@ -11,6 +11,11 @@ export interface Question {
   options: string[];
   /** A Claude startup screen (R9): answered by buttons only, no typed reply. */
   startup?: boolean;
+  /**
+   * R39: options the board shows but must not send (1-based), e.g. a Bash prompt's "Yes, and
+   * switch to auto mode" or the renderer offer's "Yes, try it". The server refuses them too.
+   */
+  disabledOptions?: number[];
 }
 export interface Port {
   port: number;
@@ -77,6 +82,8 @@ export interface NewTaskResponse {
 }
 export interface AnswerBody {
   option: number;
+  /** R36: the question text the card showed; the server answers only that question. */
+  question: string;
 }
 export interface ReplyBody {
   text: string;
@@ -88,6 +95,7 @@ export interface ApiError {
 export const LIMITS = {
   taskChars: 4000,
   replyChars: 4000,
+  questionChars: 500,
   textBytes: 12_000,
   files: 100,
   projects: 200,

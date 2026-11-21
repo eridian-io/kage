@@ -8,7 +8,7 @@ const pane = (name: string): string =>
   readFileSync(join(import.meta.dirname, '../../test/fixtures/panes', `${name}.txt`), 'utf8');
 
 const RULE = '─'.repeat(80);
-const NBSP = ' ';
+const NBSP = String.fromCodePoint(0xa0);
 /** An idle input box holding `text`. */
 const idle = (text: string): string =>
   ['● Done.', '', RULE, `❯${NBSP}${text}`, RULE, '  ⏸ manual mode on · ? for shortcuts', ''].join(
@@ -101,6 +101,9 @@ class FakeSource {
   markAnswered(id: string): void {
     this.marks.push(`answered ${id}`);
   }
+  markReplying(id: string): void {
+    this.marks.push(`replying ${id}`);
+  }
   markReplied(id: string): void {
     this.marks.push(`replied ${id}`);
   }
@@ -117,14 +120,21 @@ const target = (over: Partial<ControlTarget> = {}): ControlTarget => ({
   status: 'needs-you',
   question: { text: 'Do you want to proceed? — npm test', options: BASH_OPTIONS },
   promptKind: 'permission',
+  multiSelect: false,
   external: false,
   ...over,
 });
+
+/** The source of the last setup(): `shown` reads the card's question text from it. */
+let current: FakeSource;
+/** The question text the board shows for a session (what the answer body carries, R36). */
+const shown = (id: string): string => current.targets.get(id)?.question?.text ?? 'none';
 
 function setup(t: ControlTarget | null = target(), ...captures: string[]) {
   const tmux = new FakeTmux();
   tmux.captures = captures;
   const source = new FakeSource();
+  current = source;
   if (t) source.targets.set(t.id, t);
   const sleeps: number[] = [];
   const controls = new SessionControls({
@@ -157,18 +167,19 @@ function expectCaptureBeforeEveryKey(tmux: FakeTmux): void {
 }
 
 const CHANGED = 'The prompt on screen changed. Look again.';
+const QCHANGED = 'The question changed. Look again before answering.';
 
 describe('SessionControls.answer', () => {
   it('option 1 on a permission prompt: exactly ["1"] after one capture, then markAnswered', async () => {
     const { tmux, source, controls } = setup(target(), pane('permission-bash'));
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys 1']);
     expect(source.marks).toEqual(['answered k-1']);
   });
 
   it('option 4 (No) is the digit too: never Enter at a permission prompt', async () => {
     const { tmux, controls } = setup(target(), pane('permission-bash'));
-    await controls.answer('k-1', 4);
+    await controls.answer('k-1', 4, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys 4']);
   });
 
@@ -181,29 +192,29 @@ describe('SessionControls.answer', () => {
       },
     });
     const { tmux, controls } = setup(t, pane('ask'));
-    await controls.answer('k-1', 2);
+    await controls.answer('k-1', 2, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys 2']);
   });
 
   it('different options on screen → 409, no keys', async () => {
     const t = target({ question: { text: 'Edit?', options: ['Yes', 'No'] } });
     const { tmux, source, controls } = setup(t, pane('permission-bash'));
-    const e = await refusal(controls.answer('k-1', 1));
-    expect([e.status, e.message]).toEqual([409, CHANGED]);
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
     expect(tmux.log()).toEqual(['capture']);
     expect(source.marks).toEqual([]);
   });
 
   it('no prompt on screen any more (answered in the terminal) → 409, no keys', async () => {
     const { tmux, controls } = setup(target(), idle(''));
-    const e = await refusal(controls.answer('k-1', 1));
-    expect([e.status, e.message]).toEqual([409, CHANGED]);
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
     expect(tmux.log()).toEqual(['capture']);
   });
 
   it('a permission question answered while the screen shows the trust screen → 409', async () => {
     const { tmux, controls } = setup(target(), pane('trust'));
-    expect((await refusal(controls.answer('k-1', 1))).message).toBe(CHANGED);
+    expect((await refusal(controls.answer('k-1', 1, shown('k-1')))).message).toBe(QCHANGED);
     expect(tmux.log()).toEqual(['capture']);
   });
 
@@ -213,7 +224,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'trust',
     });
     const { tmux, source, controls } = setup(t, pane('trust'), trustOnYes());
-    await controls.answer('k-1', 2);
+    await controls.answer('k-1', 2, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture', 'keys Enter']);
     expectCaptureBeforeEveryKey(tmux);
     expect(source.marks).toEqual(['answered k-1']);
@@ -225,7 +236,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'trust',
     });
     const { tmux, controls } = setup(t, pane('trust'));
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys Enter']);
   });
 
@@ -235,7 +246,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'trust',
     });
     const { tmux, controls } = setup(t, trustOnYes(), pane('trust'));
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys Up', 'capture', 'keys Enter']);
   });
 
@@ -245,7 +256,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'trust',
     });
     const { tmux, source, controls } = setup(t, pane('trust'), pane('trust'));
-    const e = await refusal(controls.answer('k-1', 2));
+    const e = await refusal(controls.answer('k-1', 2, shown('k-1')));
     expect([e.status, e.message]).toEqual([409, CHANGED]);
     expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture']);
     expect(source.marks).toEqual([]);
@@ -257,7 +268,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'trust',
     });
     const { tmux, controls } = setup(t, pane('trust'), idle(''));
-    expect((await refusal(controls.answer('k-1', 2))).message).toBe(CHANGED);
+    expect((await refusal(controls.answer('k-1', 2, shown('k-1')))).message).toBe(CHANGED);
     expect(tmux.log()).not.toContain('keys Enter');
   });
 
@@ -270,7 +281,7 @@ describe('SessionControls.answer', () => {
       renderer,
       ' Try the new fullscreen renderer?\n\n ❯ 1. Yes, try it\n   2. Not now\n',
     );
-    await a.controls.answer('k-1', 2);
+    await a.controls.answer('k-1', 2, shown('k-1'));
     expect(a.tmux.log()).toEqual(['capture', 'keys 2']);
 
     const security = target({
@@ -281,7 +292,7 @@ describe('SessionControls.answer', () => {
       security,
       ' Security notes:\n\n 1. Claude can make mistakes\n\n Press Enter to continue…',
     );
-    await b.controls.answer('k-1', 1);
+    await b.controls.answer('k-1', 1, shown('k-1'));
     expect(b.tmux.log()).toEqual(['capture', 'keys Enter']);
   });
 
@@ -294,7 +305,7 @@ describe('SessionControls.answer', () => {
       security,
       ' Welcome.\n\n Choose the text style that looks best with your terminal\n\n ❯ Auto\n   Dark\n',
     );
-    expect((await refusal(controls.answer('k-1', 1))).message).toBe(CHANGED);
+    expect((await refusal(controls.answer('k-1', 1, shown('k-1')))).message).toBe(QCHANGED);
     expect(tmux.log()).toEqual(['capture']);
   });
 
@@ -304,7 +315,7 @@ describe('SessionControls.answer', () => {
       promptKind: 'login',
     });
     const { tmux, controls } = setup(t, ' Select login method:\n');
-    const e = await refusal(controls.answer('k-1', 1));
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
     expect([e.status, e.message]).toEqual([
       409,
       'Sign in to Claude Code in the terminal: tmux attach -t kage.',
@@ -314,7 +325,7 @@ describe('SessionControls.answer', () => {
 
   it('an option the prompt lacks → 409, no keys', async () => {
     const { tmux, controls } = setup(target(), pane('permission-bash'));
-    const e = await refusal(controls.answer('k-1', 5));
+    const e = await refusal(controls.answer('k-1', 5, shown('k-1')));
     expect([e.status, e.message]).toEqual([409, "There's no option 5."]);
     expect(tmux.calls).toEqual([]);
   });
@@ -327,7 +338,7 @@ describe('SessionControls.answer', () => {
       target({ promptKind: null }),
     ]) {
       const { tmux, controls } = setup(t, pane('permission-bash'));
-      const e = await refusal(controls.answer('k-1', 1));
+      const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
       expect([e.status, e.message]).toEqual([409, "This session isn't waiting for an answer."]);
       expect(tmux.calls).toEqual([]);
     }
@@ -336,7 +347,7 @@ describe('SessionControls.answer', () => {
   it('ended or windowless → 409 "This session has ended."', async () => {
     for (const t of [target({ status: 'ended' }), target({ windowId: null, paneId: null })]) {
       const { tmux, controls } = setup(t, pane('permission-bash'));
-      const e = await refusal(controls.answer('k-1', 1));
+      const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
       expect([e.status, e.message]).toEqual([409, 'This session has ended.']);
       expect(tmux.calls).toEqual([]);
     }
@@ -345,7 +356,7 @@ describe('SessionControls.answer', () => {
   it('an external session can be answered (only Stop is Kage-only)', async () => {
     const t = target({ id: 'ext-@5', kageId: null, external: true });
     const { tmux, controls } = setup(t, pane('permission-bash'));
-    await controls.answer('ext-@5', 1);
+    await controls.answer('ext-@5', 1, shown('ext-@5'));
     expect(tmux.log()).toEqual(['capture', 'keys 1']);
   });
 });
@@ -357,6 +368,7 @@ describe('SessionControls.reply', () => {
       pane('permission-bash'), // checked before Escape
       pane('permission-bash'), // 1st poll: still drawn
       DENIED, // 2nd poll: the box is back
+      DENIED, // re-read right before typing
       idle('use the other script'), // after typing
     );
     await controls.reply('k-1', 'use the other script');
@@ -365,13 +377,15 @@ describe('SessionControls.reply', () => {
       'keys Escape',
       'capture',
       'capture',
+      'capture',
       'text use the other script',
       'capture',
       'keys Enter',
     ]);
     expect(sleeps).toEqual([100, 100]);
     expectCaptureBeforeEveryKey(tmux);
-    expect(source.marks).toEqual(['replied k-1']);
+    // markReplying comes before the Escape, so its interrupt record is not read as a No.
+    expect(source.marks).toEqual(['replying k-1', 'replied k-1']);
   });
 
   it('at an AskUserQuestion: the same, Escape first', async () => {
@@ -384,6 +398,7 @@ describe('SessionControls.reply', () => {
     expect(tmux.log()).toEqual([
       'capture',
       'keys Escape',
+      'capture',
       'capture',
       'text neither, use camelCase',
       'capture',
@@ -568,7 +583,7 @@ describe('SessionControls: all actions', () => {
   it('an unknown session → 404 "No session with id <id>"', async () => {
     const { tmux, controls } = setup(null);
     for (const p of [
-      controls.answer('nope', 1),
+      controls.answer('nope', 1, shown('nope')),
       controls.reply('nope', 'hi'),
       controls.stop('nope'),
     ]) {
@@ -583,10 +598,10 @@ describe('SessionControls: all actions', () => {
     let second: Promise<ActionError> | null = null;
     tmux.duringKeys = async () => {
       tmux.duringKeys = null;
-      second = refusal(controls.answer('k-1', 1));
+      second = refusal(controls.answer('k-1', 1, shown('k-1')));
       await second;
     };
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     const e = await (second as unknown as Promise<ActionError>);
     expect([e.status, e.message]).toEqual([
       409,
@@ -603,7 +618,7 @@ describe('SessionControls: all actions', () => {
       stop = refusal(controls.stop('k-1'));
       await stop;
     };
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     expect((await (stop as unknown as Promise<ActionError>)).status).toBe(409);
     expect(tmux.log()).toEqual(['capture', 'keys 1']);
   });
@@ -611,16 +626,16 @@ describe('SessionControls: all actions', () => {
   it("a sendKeys rejection → 422 with tmux's first line, and the lock is released", async () => {
     const { tmux, source, controls } = setup(target(), pane('permission-bash'));
     tmux.keysError = Object.assign(new Error('Command failed'), {
-      stderr: "can't find pane: %2\nmore detail\n",
+      stderr: 'server exited unexpectedly\nmore detail\n',
     });
-    const e = await refusal(controls.answer('k-1', 1));
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
     expect([e.status, e.message]).toEqual([
       422,
-      "tmux couldn't send the keys: can't find pane: %2",
+      "tmux couldn't send the keys: server exited unexpectedly",
     ]);
     expect(source.marks).toEqual([]);
     tmux.keysError = null;
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     expect(source.marks).toEqual(['answered k-1']);
   });
 
@@ -628,13 +643,10 @@ describe('SessionControls: all actions', () => {
     const { tmux, controls } = setup(target());
     tmux.capturePane = async () => {
       tmux.calls.push({ op: 'capture' });
-      throw Object.assign(new Error('x'), { stderr: 'no server running on /tmp/tmux-1/kage\n' });
+      throw Object.assign(new Error('x'), { stderr: 'lost server\n' });
     };
-    const e = await refusal(controls.answer('k-1', 1));
-    expect([e.status, e.message]).toEqual([
-      422,
-      "tmux couldn't send the keys: no server running on /tmp/tmux-1/kage",
-    ]);
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([422, "tmux couldn't send the keys: lost server"]);
     expect(tmux.log()).toEqual(['capture']);
   });
 
@@ -655,10 +667,10 @@ describe('SessionControls: all actions', () => {
     let other: Promise<void> | null = null;
     tmux.duringKeys = async () => {
       tmux.duringKeys = null;
-      other = controls.answer('k-2', 1);
+      other = controls.answer('k-2', 1, shown('k-2'));
       await other;
     };
-    await controls.answer('k-1', 1);
+    await controls.answer('k-1', 1, shown('k-1'));
     await other;
     expect(source.marks.sort()).toEqual(['answered k-1', 'answered k-2']);
   });
@@ -670,5 +682,144 @@ describe('attachCommand', () => {
     expect(attachCommand('agents', 'kage-test-1')).toBe('tmux -L kage-test-1 attach -t agents');
     expect(attachCommand("my work's", null)).toBe(String.raw`tmux attach -t 'my work'\''s'`);
     expect(attachCommand('$(id)', 'a b')).toBe("tmux -L 'a b' attach -t '$(id)'");
+  });
+});
+
+describe('fix round 1: SessionControls', () => {
+  /** permission-bash.txt with another command: prompt B, with the same labels as prompt A. */
+  const promptB = (): string =>
+    pane('permission-bash')
+      .replaceAll(' npm test', ' npm run deploy')
+      .replace(
+        'Yes, and don’t ask again for: npm run deploy *',
+        'Yes, and don’t ask again for: npm test *',
+      );
+  const A_TEXT = 'Do you want to proceed? — npm test';
+
+  it('R36: prompt A answered in the terminal, prompt B with the same labels appears: the old click is 409, no key', async () => {
+    // The server already holds prompt B; the board still shows A.
+    const b = target({
+      question: { text: 'Do you want to proceed? — npm run deploy', options: BASH_OPTIONS },
+    });
+    const { tmux, source, controls } = setup(b, promptB());
+    const e = await refusal(controls.answer('k-1', 1, A_TEXT));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(tmux.calls).toEqual([]);
+    expect(source.marks).toEqual([]);
+  });
+
+  it('R36: the server still holds A but the screen shows B (same labels): 409 after the capture, no key', async () => {
+    const { tmux, controls } = setup(target(), promptB());
+    expect(promptB()).toContain('npm run deploy');
+    const e = await refusal(controls.answer('k-1', 1, A_TEXT));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(tmux.log()).toEqual(['capture']);
+  });
+
+  it('R36: the question text is compared with whitespace collapsed', async () => {
+    const { tmux, controls } = setup(target(), pane('permission-bash'));
+    await controls.answer('k-1', 1, '  Do you want   to proceed?  —  npm test ');
+    expect(tmux.log()).toEqual(['capture', 'keys 1']);
+  });
+
+  it('R39: "Yes, and switch to auto mode" is refused: 409 "Switch modes in the terminal.", no capture', async () => {
+    const { tmux, controls } = setup(target(), pane('permission-bash'));
+    const e = await refusal(controls.answer('k-1', 3, A_TEXT));
+    expect([e.status, e.message]).toEqual([409, 'Switch modes in the terminal.']);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('R39: the renderer offer refuses "Yes, try it"; "Not now" goes', async () => {
+    const renderer = target({
+      question: { text: 'Try the new fullscreen renderer?', options: ['Yes, try it', 'Not now'] },
+      promptKind: 'renderer',
+    });
+    const screen = ' Try the new fullscreen renderer?\n\n ❯ 1. Yes, try it\n   2. Not now\n';
+    const { tmux, controls } = setup(renderer, screen);
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect(e.status).toBe(409);
+    expect(tmux.calls).toEqual([]);
+    await controls.answer('k-1', 2, shown('k-1'));
+    expect(tmux.log()).toEqual(['capture', 'keys 2']);
+  });
+
+  it('a multi-select AskUserQuestion (multiSelect from the hook) → 409, no capture', async () => {
+    const t = target({
+      promptKind: 'ask',
+      multiSelect: true,
+      question: {
+        text: 'Should slug() use dashes or underscores as the word separator?',
+        options: ['Dashes', 'Underscores'],
+      },
+    });
+    const { tmux, controls } = setup(t, pane('ask'));
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([
+      409,
+      'This question allows several choices. Answer it in the terminal.',
+    ]);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('checkboxes on the options on screen → 409 multi-select, no key', async () => {
+    const t = target({
+      promptKind: 'ask',
+      question: {
+        text: 'Should slug() use dashes or underscores as the word separator?',
+        options: ['Dashes', 'Underscores'],
+      },
+    });
+    const boxed = pane('ask')
+      .replace('1. Dashes', '1. ☐ Dashes')
+      .replace('2. Underscores', '2. ☐ Underscores');
+    const { tmux, controls } = setup(t, boxed);
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect(e.message).toBe('This question allows several choices. Answer it in the terminal.');
+    expect(tmux.log()).toEqual(['capture']);
+  });
+
+  it('reply at done while the footer says Claude is working → 409, nothing typed', async () => {
+    const t = target({ status: 'done', question: null, promptKind: null });
+    const working = idle('').replace('? for shortcuts', 'esc to interrupt');
+    const { tmux, controls } = setup(t, working);
+    const e = await refusal(controls.reply('k-1', 'add a test'));
+    expect([e.status, e.message]).toEqual([409, "Claude is working. Wait until it's done."]);
+    expect(tmux.log()).toEqual(['capture']);
+  });
+
+  it('reply: a prompt that shows on the re-read right before typing → 409, nothing typed', async () => {
+    const { tmux, controls } = setup(
+      target(),
+      pane('permission-bash'),
+      DENIED,
+      pane('permission-edit'),
+    );
+    const e = await refusal(controls.reply('k-1', 'use the other script'));
+    expect([e.status, e.message]).toEqual([409, CHANGED]);
+    expect(tmux.log()).toEqual(['capture', 'keys Escape', 'capture', 'capture']);
+  });
+
+  it('a window that dies mid-action (tmux: can\'t find pane) → 409 "This session has ended."', async () => {
+    const { tmux, source, controls } = setup(target(), pane('permission-bash'));
+    tmux.keysError = Object.assign(new Error('Command failed'), {
+      stderr: "can't find pane: %2\n",
+    });
+    const e = await refusal(controls.answer('k-1', 1, shown('k-1')));
+    expect([e.status, e.message]).toEqual([409, 'This session has ended.']);
+    expect(source.marks).toEqual([]);
+    const s2 = setup(target());
+    s2.tmux.capturePane = async () => {
+      throw Object.assign(new Error('x'), { stderr: 'no server running on /tmp/tmux-1/kage\n' });
+    };
+    expect((await refusal(s2.controls.answer('k-1', 1, shown('k-1')))).status).toBe(409);
+  });
+
+  it('an error that is not a failed tmux run is not dressed up as 422 (the route answers 500)', async () => {
+    const { tmux, controls } = setup(target(), pane('permission-bash'));
+    tmux.keysError = new TypeError('key not allowed: "C-u"');
+    await expect(controls.answer('k-1', 1, shown('k-1'))).rejects.toThrow(TypeError);
+    // The lock is still released.
+    tmux.keysError = null;
+    await controls.answer('k-1', 1, shown('k-1'));
   });
 });

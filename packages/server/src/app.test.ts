@@ -679,7 +679,7 @@ describe('POST /api/sessions', () => {
 });
 
 describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
-  type Call = [string, string, unknown?];
+  type Call = [string, string, unknown?, unknown?];
   const withControls = (fail: Error | null = null, token = '') => {
     const calls: Call[] = [];
     const act = async (call: Call) => {
@@ -693,7 +693,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
       allowed,
       token,
       controls: {
-        answer: (id, option) => act(['answer', id, option]),
+        answer: (id, option, question) => act(['answer', id, option, question]),
         reply: (id, text) => act(['reply', id, text]),
         stop: (id) => act(['stop', id]),
       },
@@ -701,11 +701,13 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     return { a, calls };
   };
 
-  it('answer {option} → 204 and calls answer(id, option)', async () => {
+  it('answer {option, question} → 204 and calls answer(id, option, question) (R36)', async () => {
     const { a, calls } = withControls();
-    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/answer', { option: 2 }));
+    const res = await a.fetch(
+      mutate('POST', '/api/sessions/k-1/answer', { option: 2, question: 'Proceed?' }),
+    );
     expect(res.status).toBe(204);
-    expect(calls).toEqual([['answer', 'k-1', 2]]);
+    expect(calls).toEqual([['answer', 'k-1', 2, 'Proceed?']]);
   });
 
   it('reply {text} → 204 with the trimmed text', async () => {
@@ -728,10 +730,15 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
   it('validates the bodies (400) before any action', async () => {
     const { a, calls } = withControls();
     for (const [path, body] of [
-      ['answer', { option: 0 }],
-      ['answer', { option: '1' }],
-      ['answer', { option: 1, enter: true }],
+      ['answer', { option: 0, question: 'Q?' }],
+      ['answer', { option: '1', question: 'Q?' }],
+      ['answer', { option: 1, question: 'Q?', enter: true }],
+      ['answer', { option: 1 }],
+      ['answer', { option: 1, question: '' }],
       ['answer', undefined],
+      ['reply', { text: '!rm -rf ~' }],
+      ['reply', { text: '/exit' }],
+      ['reply', { text: '1' }],
       ['reply', { text: 'a\nb' }],
       ['reply', { text: 'a\u001b[2J' }],
       ['reply', { text: 'x'.repeat(4001) }],
@@ -757,7 +764,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     for (const status of [403, 404, 409, 422] as const) {
       const { a } = withControls(new ActionError(status, `Problem ${status}.`));
       for (const [path, body] of [
-        ['answer', { option: 1 }],
+        ['answer', { option: 1, question: 'Q?' }],
         ['reply', { text: 'hi' }],
         ['stop', undefined],
       ] as const) {
@@ -777,7 +784,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
 
   it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
     for (const [path, body] of [
-      ['answer', { option: 1 }],
+      ['answer', { option: 1, question: 'Q?' }],
       ['reply', { text: 'hi' }],
       ['stop', undefined],
     ] as const) {
@@ -800,7 +807,9 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
           req(`/api/sessions/k-1/${path}`, {
             method: 'POST',
             headers,
-            body: JSON.stringify(path === 'answer' ? { option: 1 } : { text: 'hi' }),
+            body: JSON.stringify(
+              path === 'answer' ? { option: 1, question: 'Q?' } : { text: 'hi' },
+            ),
           }),
         );
         expect(res.status).toBe(403);
@@ -809,7 +818,11 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     const t = withControls(null, 'x'.repeat(20));
     for (const path of ['answer', 'reply', 'stop']) {
       const body =
-        path === 'answer' ? { option: 1 } : path === 'reply' ? { text: 'hi' } : undefined;
+        path === 'answer'
+          ? { option: 1, question: 'Q?' }
+          : path === 'reply'
+            ? { text: 'hi' }
+            : undefined;
       expect((await t.a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body))).status).toBe(401);
     }
     expect(calls).toEqual([]);
