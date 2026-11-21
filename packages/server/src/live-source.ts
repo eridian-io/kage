@@ -22,7 +22,7 @@ import {
 import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
 import type { SessionRecord, StateStore } from './state/store.ts';
 import type { TmuxClient } from './tmux/client.ts';
-import type { TmuxWindow } from './tmux/format.ts';
+import { isClaude, type TmuxWindow } from './tmux/format.ts';
 import type { TmuxWatcher, WatchEvent } from './tmux/watcher.ts';
 import type { TranscriptTail } from './transcript/tail.ts';
 
@@ -96,9 +96,6 @@ const SHELLS = new Set([
 ]);
 const atShell = (command: string): boolean =>
   SHELLS.has(command.startsWith('-') ? command.slice(1) : command);
-/** `claude`, or the version string Claude Code may set as its process title (e.g. `2.1.330`). */
-const isClaude = (command: string): boolean =>
-  command === 'claude' || /^\d+\.\d+\.\d+$/.test(command);
 /** R22: ensureSession's placeholder window, hidden while it sits at a shell. */
 const hiddenPlaceholder = (w: TmuxWindow): boolean => w.placeholder && atShell(w.command);
 
@@ -176,6 +173,11 @@ export class LiveSource implements SessionSource {
   readonly #clock: () => number;
   /** Hook panes found in no window by the last re-list, until (monotonic ms). */
   readonly #ignoredPanes = new Map<string, number>();
+  /**
+   * B14: panes that sent hooks. Listings prefer them when a window has several panes; one that
+   * the next listing does not pick for any window is dropped.
+   */
+  readonly #hookPanes = new Set<string>();
   readonly #listeners = new Set<(e: SourceEvent) => void>();
   readonly #sessions = new Map<string, Live>();
   readonly #records = new Map<string, SessionRecord>();
@@ -264,7 +266,7 @@ export class LiveSource implements SessionSource {
     }
     let windows: TmuxWindow[] = [];
     try {
-      windows = await this.#d.tmux.listWindows();
+      windows = await this.#listWindows();
     } catch {}
     if (!this.#running) return;
     await this.#reconcile(windows);
@@ -344,6 +346,18 @@ export class LiveSource implements SessionSource {
     };
   }
 
+  /**
+   * Lists windows, each by its hook pane when it has one (B14). Hook panes the listing asked
+   * about and found in no window are forgotten; ones that arrived meanwhile stay.
+   */
+  async #listWindows(): Promise<TmuxWindow[]> {
+    const asked = new Set(this.#hookPanes);
+    const windows = await this.#d.tmux.listWindows(asked);
+    const listed = new Set(windows.map((w) => w.paneId));
+    for (const p of asked) if (!listed.has(p)) this.#hookPanes.delete(p);
+    return windows;
+  }
+
   /** Re-lists windows; calls during a listing run once more after it. */
   #relist(): Promise<void> {
     if (this.#listing) {
@@ -356,7 +370,7 @@ export class LiveSource implements SessionSource {
           this.#listAgain = false;
           let windows: TmuxWindow[];
           try {
-            windows = await this.#d.tmux.listWindows();
+            windows = await this.#listWindows();
           } catch {
             continue; // a failed listing changes nothing; the watcher reports a dead server
           }
@@ -477,9 +491,11 @@ export class LiveSource implements SessionSource {
   /**
    * Spec §5.3 and R17: a session whose `claude` is gone is ended. True when the pane is back at
    * a shell and the session had a Claude: it linked a Claude session, or it is Kage's and its
-   * pane ran something other than a shell. (The listing has no `pane_dead`, so that part is skipped.)
+   * pane ran something other than a shell. A dead pane (its process exited and `remain-on-exit`
+   * keeps it shown) is gone too, whatever command it still names.
    */
   #claudeGone(st: Live, w: TmuxWindow): boolean {
+    if (w.dead) return st.sessionId !== null || st.record !== null || st.sawClaude;
     if (!atShell(w.command)) {
       st.sawClaude = true;
       return false;
@@ -618,6 +634,7 @@ export class LiveSource implements SessionSource {
       return;
     }
     if (e.pane === null) return;
+    this.#hookPanes.add(e.pane);
     const st = this.#byPane(e.pane);
     if (!st) {
       // A hooks-enabled Claude outside the kage session: one re-list per 5 s, not per burst.

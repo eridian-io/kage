@@ -15,7 +15,7 @@ import {
 } from './live-source.ts';
 import type { SourceEvent } from './source.ts';
 import type { SessionRecord } from './state/store.ts';
-import type { TmuxWindow } from './tmux/format.ts';
+import { pickPanes, type TmuxPane, type TmuxWindow } from './tmux/format.ts';
 import type { WatchEvent } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
 
@@ -56,8 +56,18 @@ class FakeTmux implements TmuxClientLike {
     this.cleared.push(windowId);
     for (const w of this.windows) if (w.windowId === windowId) w.placeholder = false;
   }
-  async listWindows(): Promise<TmuxWindow[]> {
+  /** When set, listWindows picks one of these per window (B14) instead of returning `windows`. */
+  panes: TmuxPane[] | null = null;
+  /** The hook panes each listWindows call was given. */
+  hookPanesSeen: string[][] = [];
+  async listWindows(hookPanes: ReadonlySet<string> = new Set()): Promise<TmuxWindow[]> {
     this.listCalls++;
+    this.hookPanesSeen.push([...hookPanes]);
+    if (this.panes)
+      return pickPanes(
+        this.panes.map((p) => ({ ...p })),
+        hookPanes,
+      );
     return this.windows.map((w) => ({ ...w }));
   }
   /** Each call takes the next queued capture; the last one repeats. */
@@ -201,6 +211,7 @@ const win = (over: Partial<TmuxWindow> = {}): TmuxWindow => ({
   name: 'demo',
   activity: Math.floor(T0 / 1000) - 60,
   placeholder: false,
+  dead: false,
   ...over,
 });
 
@@ -778,6 +789,68 @@ describe('LiveSource: hooks and status', () => {
     expect(tmux.listCalls).toBe(lists + 2);
     expect(source.get('k-1')?.status).toBe('running');
     expect(source.list()).toHaveLength(1);
+  });
+});
+
+describe('LiveSource: split windows (B14) and dead panes', () => {
+  const twoPanes = (): TmuxPane[] => [
+    { ...kageWin({ paneId: '%2', command: 'bash' }), active: true },
+    { ...kageWin({ paneId: '%7', command: 'node' }), active: false },
+  ];
+
+  it("a hook from a pane that isn't the window's first pane maps to that window", async () => {
+    const { source, hooks, tmux } = setup({ records: [rec()] });
+    tmux.panes = twoPanes();
+    await source.start();
+    // Before any hook the active pane stands for the window.
+    expect(source.get('k-1')?.status).not.toBe('ended');
+    hooks.fire(hook('SessionStart', '%7'));
+    hooks.fire(hook('PreToolUse', '%7'));
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(tmux.hookPanesSeen.at(-1)).toEqual(['%7']);
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(source.list()).toHaveLength(1);
+    // The window now follows the hook pane: the next hook applies without a re-list.
+    const lists = tmux.listCalls;
+    hooks.fire(hook('Stop', '%7'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    expect(tmux.listCalls).toBe(lists);
+  });
+
+  it('a hook pane found in no window is not passed to later listings', async () => {
+    const { source, hooks, tmux, watcher } = setup({ windows: [win()] });
+    await source.start();
+    hooks.fire(hook('Stop', '%9'));
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(tmux.hookPanesSeen.at(-1)).toEqual(['%9']);
+    tmux.windows = [win(), win({ windowId: '@3', paneId: '%3' })];
+    watcher.emit({ type: 'windows-changed' });
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(tmux.hookPanesSeen.at(-1)).toEqual([]);
+  });
+
+  it('a Kage window whose pane is dead (remain-on-exit) is ended although it shows claude', async () => {
+    const { source } = setup({ windows: [kageWin({ dead: true })], records: [rec()] });
+    await source.start();
+    expect(source.get('k-1')?.status).toBe('ended');
+  });
+
+  it('a running session whose pane dies is ended', async () => {
+    const { source, hooks, tmux } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+    (tmux.windows[0] as TmuxWindow).dead = true;
+    hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
   });
 });
 

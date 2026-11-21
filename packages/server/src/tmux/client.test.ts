@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest';
-import { EXEC_OPTIONS, type ExecFn, parseTmuxVersion, TmuxClient, tmuxArgs } from './client.ts';
+import {
+  EXEC_OPTIONS,
+  type ExecFn,
+  type Key,
+  parseTmuxVersion,
+  SEND_TEXT_MAX_BYTES,
+  TmuxClient,
+  tmuxArgs,
+} from './client.ts';
 
 const fail = (stderr: string): Error => Object.assign(new Error('failed'), { stderr });
 
@@ -7,7 +15,7 @@ function client(
   exec: ExecFn,
   extra: { configFile?: string; env?: Record<string, string>; warn?: (m: string) => void } = {},
 ) {
-  return new TmuxClient({ session: 'kage', socket: 'sock', exec, ...extra });
+  return new TmuxClient({ session: 'kage', socket: 'sock', exec, launchCheckMs: 0, ...extra });
 }
 
 describe('TmuxClient.listWindows', () => {
@@ -35,6 +43,300 @@ describe('TmuxClient.listWindows', () => {
       throw new Error('spawn tmux ENOENT');
     });
     await expect(c.listWindows()).rejects.toThrow('ENOENT');
+  });
+});
+
+describe('TmuxClient.listWindows (list-panes, B14)', () => {
+  const TAB = '\t';
+  const paneLine = (pane: string, cmd: string, active: string) =>
+    ['@1', '', pane, '10', cmd, '/tmp', 'w', '5', active, '0', ''].join(TAB);
+
+  it('lists every pane of the session with list-panes -s and picks one per window', async () => {
+    const seen: string[][] = [];
+    const c = client(async (_cmd, args) => {
+      seen.push(args.slice(2));
+      return {
+        stdout: `${paneLine('%1', 'bash', '1')}\n${paneLine('%2', 'bash', '0')}\n`,
+        stderr: '',
+      };
+    });
+    expect((await c.listWindows()).map((w) => w.paneId)).toEqual(['%1']);
+    expect((await c.listWindows(new Set(['%2']))).map((w) => w.paneId)).toEqual(['%2']);
+    expect(seen[0]?.slice(0, 5)).toEqual(['list-panes', '-s', '-t', '=kage', '-F']);
+    expect(seen[0]?.[5]).toContain(`#{pane_active}${TAB}#{pane_dead}`);
+  });
+});
+
+/** A fake tmux that answers each subcommand and records the argument arrays (after -L sock). */
+function scripted(answers: Record<string, string | Error> = {}) {
+  const seen: string[][] = [];
+  const exec: ExecFn = async (_cmd, args) => {
+    const a = args.slice(2);
+    seen.push(a);
+    const answer = answers[a[0] as string];
+    if (answer instanceof Error) throw answer;
+    return { stdout: answer ?? '', stderr: '' };
+  };
+  return { seen, c: client(exec) };
+}
+
+const LAUNCH = {
+  'new-window': '@3\t%4\n',
+  'list-panes': '%4\t0\tclaude\n',
+};
+
+const hostileArgv = [
+  '/x/claude',
+  '--settings',
+  '/s',
+  '--permission-mode',
+  'default',
+  '--',
+  '$(rm -rf ~); echo',
+];
+
+const launch = (o: { argv?: string[]; env?: Record<string, string> } = {}) => ({
+  name: 'x',
+  cwd: '/x',
+  env: o.env ?? {},
+  argv: o.argv ?? ['sleep', '1'],
+  kageId: 'k',
+});
+
+describe('TmuxClient.newWindow', () => {
+  it('runs new-window with argument arrays, the argv after --, then tags in a second call (K1)', async () => {
+    const { seen, c } = scripted(LAUNCH);
+    const r = await c.newWindow({
+      name: 'fix-login',
+      cwd: '/repo/.worktrees/fix login',
+      env: { KAGE_SOCKET: '/run/k.sock', PATH: '/usr/bin:/bin' },
+      argv: hostileArgv,
+      kageId: '0b7e5f0e-1111-2222-3333-444455556666',
+    });
+    expect(r).toEqual({ windowId: '@3', paneId: '%4' });
+    expect(seen[0]).toEqual([
+      'new-window',
+      '-d',
+      '-P',
+      '-F',
+      '#{window_id}\t#{pane_id}',
+      '-t',
+      '=kage:',
+      '-n',
+      'fix-login',
+      '-c',
+      '/repo/.worktrees/fix login',
+      '-e',
+      'KAGE_SOCKET=/run/k.sock',
+      '-e',
+      'PATH=/usr/bin:/bin',
+      '--',
+      ...hostileArgv,
+    ]);
+    // The format holds a real tab, not a backslash-t (F16).
+    expect(seen[0]?.[4]).toBe(`#{window_id}${String.fromCharCode(9)}#{pane_id}`);
+    // The hostile last element is one argument, after the `--` that ends tmux's options.
+    expect(seen[0]?.at(-1)).toBe('$(rm -rf ~); echo');
+    expect(seen[0]?.indexOf('--')).toBe(15);
+    expect(seen[1]).toEqual([
+      'set-option',
+      '-w',
+      '-t',
+      '@3',
+      '@kage_id',
+      '0b7e5f0e-1111-2222-3333-444455556666',
+    ]);
+    // K4: then it checks that the window is still there and its pane alive.
+    expect(seen[2]).toEqual([
+      'list-panes',
+      '-t',
+      '@3',
+      '-F',
+      '#{pane_id}\t#{pane_dead}\t#{pane_current_command}',
+    ]);
+    expect(seen).toHaveLength(3);
+  });
+
+  it.each(['A=B', 'lower', '1ABC', '', 'A-B', 'A B'])('an env key %j throws', async (key) => {
+    const { seen, c } = scripted(LAUNCH);
+    await expect(c.newWindow(launch({ env: { [key]: 'v' } }))).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
+  });
+
+  it('an empty argv throws', async () => {
+    const { seen, c } = scripted(LAUNCH);
+    await expect(c.newWindow(launch({ argv: [] }))).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
+  });
+
+  it.each(['@3', '%4', '@3\t', 'x\ty', '@a\t%4', '@3\t%4\t%5'])(
+    'a malformed new-window result %j throws',
+    async (out) => {
+      const { c } = scripted({ ...LAUNCH, 'new-window': out });
+      await expect(c.newWindow(launch())).rejects.toThrow(/unexpected/);
+    },
+  );
+
+  it('K4: a window that closed at once (argv[0] missing) throws', async () => {
+    const { seen, c } = scripted({
+      ...LAUNCH,
+      'list-panes': Object.assign(new Error('failed'), { stderr: "can't find window: @3" }),
+    });
+    await expect(c.newWindow(launch({ argv: ['/no/such'] }))).rejects.toThrow(
+      "the window closed at once: /no/such didn't start",
+    );
+    // Best-effort cleanup of whatever is left.
+    expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
+  });
+
+  it('K4: a dead pane throws and the window is killed', async () => {
+    const { seen, c } = scripted({ ...LAUNCH, 'list-panes': '%4\t1\tclaude\n' });
+    await expect(c.newWindow(launch({ argv: ['/x/claude'] }))).rejects.toThrow(
+      "the window closed at once: /x/claude didn't start",
+    );
+    expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
+  });
+
+  it('a failed tag on a live window kills the window and rethrows', async () => {
+    const tagErr = Object.assign(new Error('failed'), { stderr: 'invalid option: @kage_id' });
+    const { seen, c } = scripted({ ...LAUNCH, 'set-option': tagErr });
+    await expect(c.newWindow(launch())).rejects.toBe(tagErr);
+    expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
+  });
+
+  it('K4: a tag that fails because the window already closed reports the failed start', async () => {
+    const { seen, c } = scripted({
+      ...LAUNCH,
+      'set-option': Object.assign(new Error('failed'), { stderr: 'no such window: @3' }),
+      'list-panes': Object.assign(new Error('failed'), { stderr: "can't find window: @3" }),
+    });
+    await expect(c.newWindow(launch({ argv: ['/no/such'] }))).rejects.toThrow(
+      "the window closed at once: /no/such didn't start",
+    );
+    expect(seen.at(-1)).toEqual(['kill-window', '-t', '@3']);
+  });
+});
+
+describe('TmuxClient.sendKeys', () => {
+  it('sends allowed keys as separate arguments', async () => {
+    const { seen, c } = scripted();
+    await c.sendKeys('%1', ['Escape', '2', 'Down', 'Up', 'Enter']);
+    expect(seen).toEqual([['send-keys', '-t', '%1', 'Escape', '2', 'Down', 'Up', 'Enter']]);
+  });
+
+  it.each(['1', '2', '3', '4', '5', '6', '7', '8', '9', 'Enter', 'Escape', 'Up', 'Down'])(
+    'allows %s',
+    async (k) => {
+      const { seen, c } = scripted();
+      await c.sendKeys('%12', [k as Key]);
+      expect(seen).toEqual([['send-keys', '-t', '%12', k]]);
+    },
+  );
+
+  it.each(['C-c', 'C-u', '0', '10', 'Tab', 'enter', 'Left', '-l', ';', 'Escape Escape', ''])(
+    'throws on the key %j',
+    async (k) => {
+      const { seen, c } = scripted();
+      await expect(c.sendKeys('%1', [k as Key])).rejects.toThrow(TypeError);
+      expect(seen).toEqual([]);
+    },
+  );
+
+  it('throws on a bad pane id', async () => {
+    const { seen, c } = scripted();
+    await expect(c.sendKeys('1; kill-server', ['1'])).rejects.toThrow(TypeError);
+    await expect(c.sendKeys('@1', ['1'])).rejects.toThrow(TypeError);
+    await expect(c.sendKeys('%1 ', ['1'])).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
+  });
+
+  it('K8: never sends Escape twice in one call', async () => {
+    const { seen, c } = scripted();
+    await expect(c.sendKeys('%1', ['Escape', 'Escape'])).rejects.toThrow(TypeError);
+    await expect(c.sendKeys('%1', ['Escape', '1', 'Escape'])).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
+  });
+
+  it('an empty key list sends nothing', async () => {
+    const { seen, c } = scripted();
+    await c.sendKeys('%1', []);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('TmuxClient.sendText', () => {
+  const bytes = (s: string) => Buffer.byteLength(s, 'utf8');
+
+  it('sends text literally with -l --', async () => {
+    const { seen, c } = scripted();
+    const text = '-x $(rm -rf ~); `echo` "q" \\ é';
+    await c.sendText('%1', text);
+    expect(seen).toEqual([['send-keys', '-t', '%1', '-l', '--', text]]);
+  });
+
+  it('4,500 bytes of mixed ASCII and emoji go in one -l -- call (ruling K10)', async () => {
+    const { seen, c } = scripted();
+    let text = '';
+    while (bytes(text) < 4500) text += bytes(text) % 7 === 0 ? '🙂' : 'a';
+    await c.sendText('%1', text);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.slice(0, 5)).toEqual(['send-keys', '-t', '%1', '-l', '--']);
+    expect(seen[0]?.[5]).toBe(text);
+  });
+
+  it(`over ${SEND_TEXT_MAX_BYTES} bytes splits on code points into calls that join back`, async () => {
+    const { seen, c } = scripted();
+    let text = '';
+    // Mixed widths push the 4-byte emoji across the chunk boundaries.
+    while (bytes(text) < SEND_TEXT_MAX_BYTES * 2 + 500) text += 'abc🙂é🚀';
+    await c.sendText('%1', text);
+    expect(seen).toHaveLength(3);
+    for (const a of seen) {
+      expect(a.slice(0, 5)).toEqual(['send-keys', '-t', '%1', '-l', '--']);
+      expect(bytes(a[5] as string)).toBeLessThanOrEqual(SEND_TEXT_MAX_BYTES);
+      expect(a[5]).not.toMatch(/[\uD800-\uDBFF]$/);
+      expect(a[5]).not.toMatch(/^[\uDC00-\uDFFF]/);
+    }
+    expect(seen.map((a) => a[5]).join('')).toBe(text);
+  });
+
+  it('empty text sends nothing', async () => {
+    const { seen, c } = scripted();
+    await c.sendText('%1', '');
+    expect(seen).toEqual([]);
+  });
+
+  it('throws on a bad pane id', async () => {
+    const { seen, c } = scripted();
+    await expect(c.sendText('1; kill-server', 'hi')).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('TmuxClient.windowKageId and killWindow', () => {
+  it('reads @kage_id with show-options -q (K5)', async () => {
+    const { seen, c } = scripted({ 'show-options': '0b7e5f0e-1111\n' });
+    expect(await c.windowKageId('@3')).toBe('0b7e5f0e-1111');
+    expect(seen).toEqual([['show-options', '-w', '-q', '-v', '-t', '@3', '@kage_id']]);
+  });
+
+  it('returns null for empty output', async () => {
+    expect(await scripted({ 'show-options': '' }).c.windowKageId('@3')).toBeNull();
+    expect(await scripted({ 'show-options': '\n' }).c.windowKageId('@3')).toBeNull();
+  });
+
+  it('killWindow kills that window', async () => {
+    const { seen, c } = scripted();
+    await c.killWindow('@3');
+    expect(seen).toEqual([['kill-window', '-t', '@3']]);
+  });
+
+  it('both refuse a bad window id', async () => {
+    const { seen, c } = scripted();
+    await expect(c.windowKageId('=kage')).rejects.toThrow(TypeError);
+    await expect(c.killWindow('@3; kill-server')).rejects.toThrow(TypeError);
+    await expect(c.killWindow('%3')).rejects.toThrow(TypeError);
+    expect(seen).toEqual([]);
   });
 });
 
