@@ -13,6 +13,15 @@ const HARD_CAP = 8 * MAX_BODY;
 
 const isPipe = (path: string) => path.startsWith('\\\\.\\pipe\\') || path.startsWith('//./pipe/');
 
+/** Sets the process umask; null where it can't be set (worker threads). */
+function setUmask(mask: number): number | null {
+  try {
+    return process.umask(mask);
+  } catch {
+    return null;
+  }
+}
+
 /** True when something accepts connections on the socket. */
 function probe(path: string): Promise<boolean> {
   return new Promise((resolve) => {
@@ -36,10 +45,13 @@ export class HookServer {
   #now: () => number;
   #listeners = new Set<(e: HookEvent) => void>();
   #server: Server | null = null;
+  #uid: number | undefined;
 
-  constructor(path: string, opts: { now?: () => number } = {}) {
+  /** `uid` is the owner the socket's directory must have (default: this process's). */
+  constructor(path: string, opts: { now?: () => number; uid?: number } = {}) {
     this.path = path;
     this.#now = opts.now ?? Date.now;
+    this.#uid = opts.uid ?? process.getuid?.();
   }
 
   on(fn: (e: HookEvent) => void): () => void {
@@ -55,18 +67,39 @@ export class HookServer {
     const server = createServer((req, res) => this.#handle(req, res));
     server.headersTimeout = 5000;
     server.requestTimeout = 10_000;
-    await new Promise<void>((resolve, reject) => {
-      const onError = (err: NodeJS.ErrnoException) => {
-        reject(err.code === 'EADDRINUSE' ? new Error(`Hook socket ${this.path} is in use.`) : err);
-      };
-      server.once('error', onError);
-      server.listen(this.path, () => {
-        server.off('error', onError);
-        resolve();
+    // The socket is created 0600 from the start (umask 0177), so there is no window in which
+    // others could connect; the chmod after listening stays as a second guard.
+    const oldMask = isPipe(this.path) ? null : setUmask(0o177);
+    const restore = () => {
+      if (oldMask !== null) process.umask(oldMask);
+    };
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const onError = (err: NodeJS.ErrnoException) => {
+          restore();
+          reject(
+            err.code === 'EADDRINUSE' ? new Error(`Hook socket ${this.path} is in use.`) : err,
+          );
+        };
+        server.once('error', onError);
+        server.listen(this.path, () => {
+          restore();
+          server.off('error', onError);
+          resolve();
+        });
       });
-    });
+    } finally {
+      restore();
+    }
     this.#server = server;
-    if (!isPipe(this.path)) await chmod(this.path, 0o600);
+    if (!isPipe(this.path)) {
+      try {
+        await chmod(this.path, 0o600);
+      } catch (err) {
+        await this.close();
+        throw err;
+      }
+    }
   }
 
   async close(): Promise<void> {
@@ -79,9 +112,19 @@ export class HookServer {
     });
   }
 
-  /** Makes the parent directory (0700) and removes a stale socket left by a crash. */
+  /**
+   * Makes sure the parent directory is ours and 0700 (creating it, or tightening a looser one),
+   * then removes a stale socket left by a crash.
+   */
   async #prepareSocketPath(): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    const parent = dirname(this.path);
+    await mkdir(parent, { recursive: true, mode: 0o700 });
+    const dir = await lstat(parent);
+    if (!dir.isDirectory()) throw new Error(`Hook socket directory ${parent} is not a directory.`);
+    if (this.#uid !== undefined && dir.uid !== this.#uid) {
+      throw new Error(`Hook socket directory ${parent} is not owned by this user.`);
+    }
+    if ((dir.mode & 0o077) !== 0) await chmod(parent, 0o700);
     let st: Awaited<ReturnType<typeof lstat>>;
     try {
       st = await lstat(this.path);

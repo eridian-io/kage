@@ -7,12 +7,13 @@ import type { HookEnvelope } from './event.ts';
 /** Sends one envelope; may reject or hang — the caller bounds it. */
 export type PostFn = (socket: string, body: string, signal: AbortSignal) => Promise<void>;
 
-/** The whole `kage hook` run, stdin included, ends within this. */
-export const HOOK_DEADLINE_MS = 2000;
+/** The whole `kage hook` run, stdin included, ends within this; Node startup fits in the rest of 2 s. */
+export const HOOK_DEADLINE_MS = 1500;
 const MAX_STDIN = 1024 * 1024;
 
 /**
  * Where the hook socket lives: `KAGE_SOCKET`, else `$XDG_RUNTIME_DIR/kage.sock`, else
+ * `$XDG_STATE_HOME/kage/kage.sock`, else
  * `~/.local/state/kage/kage.sock`. On Windows (dev only) a per-user named pipe.
  */
 export function socketPath(
@@ -25,6 +26,7 @@ export function socketPath(
     return `\\\\.\\pipe\\kage-${user}`;
   }
   if (env.XDG_RUNTIME_DIR) return posix.join(env.XDG_RUNTIME_DIR, 'kage.sock');
+  if (env.XDG_STATE_HOME) return posix.join(env.XDG_STATE_HOME, 'kage', 'kage.sock');
   const home = env.HOME || homedir();
   return posix.join(home, '.local', 'state', 'kage', 'kage.sock');
 }
@@ -111,7 +113,7 @@ async function deliver(
 
 /**
  * `kage hook <event>`: forwards Claude's hook JSON to the Kage server. It must never disturb
- * Claude, so it prints nothing, swallows every error and resolves 0 within 2 s.
+ * Claude, so it prints nothing, swallows every error and resolves 0 within HOOK_DEADLINE_MS.
  */
 export async function runHookCli(
   event: string,

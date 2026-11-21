@@ -65,7 +65,7 @@ describe('runHookCli', () => {
     expect(JSON.parse(body).pane).toBeNull();
   });
 
-  it('resolves 0 within 2.1 s when post hangs, silently', async () => {
+  it('resolves 0 within 1.6 s when post hangs, silently', async () => {
     let signal: AbortSignal | undefined;
     const t0 = performance.now();
     const code = await runHookCli('Stop', {
@@ -78,17 +78,17 @@ describe('runHookCli', () => {
     });
     const ms = performance.now() - t0;
     expect(code).toBe(0);
-    expect(ms).toBeLessThan(2100);
-    expect(ms).toBeGreaterThanOrEqual(1900);
+    expect(ms).toBeLessThan(1600);
+    expect(ms).toBeGreaterThanOrEqual(1400);
     expect(signal?.aborted).toBe(true);
     silent();
   });
 
-  it('resolves 0 within 2.1 s when stdin never ends', async () => {
+  it('resolves 0 within 1.6 s when stdin never ends', async () => {
     const post = vi.fn<PostFn>(async () => {});
     const t0 = performance.now();
     expect(await runHookCli('Stop', { stdin: stdinOf(null), env: {}, post })).toBe(0);
-    expect(performance.now() - t0).toBeLessThan(2100);
+    expect(performance.now() - t0).toBeLessThan(1600);
     expect(post).not.toHaveBeenCalled();
     silent();
   });
@@ -187,7 +187,7 @@ describe('runHookCli with the default post, end to end', () => {
     silent();
   });
 
-  it('a server that never answers still resolves 0 within 2.1 s', async () => {
+  it('a server that never answers still resolves 0 within 1.6 s', async () => {
     const { createServer } = await import('node:net');
     const conns = new Set<import('node:net').Socket>();
     const hang = createServer((s) => {
@@ -206,7 +206,7 @@ describe('runHookCli with the default post, end to end', () => {
         env: { KAGE_SOCKET: hangPath },
       }),
     ).toBe(0);
-    expect(performance.now() - t0).toBeLessThan(2100);
+    expect(performance.now() - t0).toBeLessThan(1600);
     for (const s of conns) s.destroy();
     await new Promise<void>((r) => hang.close(() => r()));
     silent();
@@ -223,6 +223,14 @@ describe('socketPath', () => {
     expect(socketPath({ XDG_RUNTIME_DIR: '/run/user/1000', HOME: '/home/d' }, 'linux')).toBe(
       '/run/user/1000/kage.sock',
     );
+  });
+  it('then $XDG_STATE_HOME/kage/kage.sock (R13)', () => {
+    expect(socketPath({ XDG_STATE_HOME: '/s', HOME: '/home/d' }, 'linux')).toBe(
+      '/s/kage/kage.sock',
+    );
+    expect(
+      socketPath({ XDG_RUNTIME_DIR: '/run/user/1', XDG_STATE_HOME: '/s', HOME: '/h' }, 'linux'),
+    ).toBe('/run/user/1/kage.sock');
   });
   it('then ~/.local/state/kage/kage.sock', () => {
     expect(socketPath({ HOME: '/home/d' }, 'linux')).toBe('/home/d/.local/state/kage/kage.sock');

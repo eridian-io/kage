@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -200,6 +208,37 @@ describe.runIf(!isWin)('HookServer on a Unix socket', () => {
     const h = new HookServer(nested);
     await h.listen();
     expect(statSync(join(dir, 'state', 'kage')).mode & 0o777).toBe(0o700);
+    await h.close();
+  });
+
+  it('tightens an existing parent directory of ours to 0700', async () => {
+    const parent = join(dir, 'loose');
+    mkdirSync(parent, { mode: 0o755 });
+    chmodSync(parent, 0o755);
+    const h = new HookServer(join(parent, 'kage.sock'));
+    await h.listen();
+    expect(statSync(parent).mode & 0o777).toBe(0o700);
+    expect(statSync(join(parent, 'kage.sock')).mode & 0o777).toBe(0o600);
+    await h.close();
+  });
+
+  it('refuses a parent directory owned by someone else', async () => {
+    const parent = join(dir, 'theirs');
+    mkdirSync(parent, { mode: 0o755 });
+    chmodSync(parent, 0o755);
+    const uid = (process.getuid?.() ?? 0) + 1;
+    const h = new HookServer(join(parent, 'kage.sock'), { uid });
+    await expect(h.listen()).rejects.toThrow(/not owned/);
+    expect(statSync(parent).mode & 0o777).toBe(0o755);
+  });
+
+  it('restores the umask after listen, and after a failed listen', async () => {
+    const before = process.umask();
+    const h = new HookServer(join(dir, 'u.sock'));
+    await h.listen();
+    expect(process.umask()).toBe(before);
+    await expect(new HookServer(path).listen()).rejects.toThrow(/in use/);
+    expect(process.umask()).toBe(before);
     await h.close();
   });
 });
