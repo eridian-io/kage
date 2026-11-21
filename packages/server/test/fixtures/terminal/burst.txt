@@ -18,4 +18,5 @@ parse error: yacc stack overflow
 %window-add @7
 %unlinked-window-close @6
 %window-close @5
+%sessions-changed
 %exit

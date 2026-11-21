@@ -13,7 +13,7 @@ Fixtures: `packages/server/test/fixtures/ports/ss.txt` and `ps.txt` keep the obs
 3. **`resize-window -A` sets `window-size` back to `manual`.** It must not be in the restore sequence. `set-option -w -u -t @W window-size` alone restores normal sizing. `refresh-client -S` changes nothing.
 4. **With no normal client attached** (Kage's usual detached `kage` session), the restore leaves the window at the terminal's last size. Nothing resizes it until a normal client attaches. Kage's pane parsers therefore read prompts at whatever width the browser last used; the 60- and 160-column fixtures cover that.
 5. **F13, the one value to assert:** `show-options -w -q -v -t @W window-size` prints `manual` while a terminal has the window resized, and the empty string after the restore.
-6. **F7: `git merge-tree --write-tree` runs a repository's merge driver.** The driver came from a committed `.gitattributes` or from `info/attributes`, with `merge.<name>.driver` in the repo config, and it ran (marker file written). `git --attr-source=<empty tree>` blocks the committed `.gitattributes` but not `info/attributes`. Task 3's merge-tree check needs the controller's ruling. A path comparison that runs no driver gave the same answer as merge-tree in every case tried (§5).
+6. **F7: `git merge-tree --write-tree` runs a repository's merge driver.** The driver came from a committed `.gitattributes` or from `info/attributes`, with `merge.<name>.driver` in the repo config, and it ran (marker file written). `git --attr-source=<empty tree>` blocks the committed `.gitattributes` but not `info/attributes`. Task 3's merge-tree check needs the controller's ruling. A path comparison that runs no driver agreed with merge-tree in 9 cases, plus 1 n/a (a branch with no commits; §5.5).
 7. **F1: xterm.js 6.0.0 has no nonce option, and a nonce wouldn't be enough.** The DOM renderer writes truecolor cells through `setAttribute('style', …)`, and a nonce never covers style attributes. `@xterm/addon-canvas` has no release for xterm 6. The WebGL addon puts the chunk at 123 KB gzipped, over the 100 KB budget, and still needs one `<style>`. A 370-byte CSSOM shim gives zero violations under Kage's CSP as it is now (§4.7).
 8. **`ws`: the newest release at least two weeks old (8.22.2, 2026-11-08) has a remote memory-exhaustion DoS, which 8.23.0 (2026-11-12) fixes.** See §4.8.
 
@@ -129,7 +129,7 @@ Setup: `tmux -L <socket> -f /dev/null -C attach -t =s`, started with Node's `spa
 | `refresh-client -f no-output` | Stops all `%output`. `refresh-client -A '%1:on'` (exit 0) does not bring pane `%1` back while the flag is set. `-f '!no-output'` restores output. |
 | `refresh-client -A '%N:off'` without `no-output` | Works: that pane's output stops and other panes' output continues. `'%N:on'` turns it back on. It is an opt-out per known pane only; there is no opt-in. |
 | `%layout-change` | `%layout-change @<win> <layout> <visible-layout> <flags>`, for example `%layout-change @0 aafd,120x40,0,0,0 aafd,120x40,0,0,0 *` after a resize, and `c196,80x24,0,0[80x12,0,0,0,80x11,0,13,3] … *` after a split. The window flags field can be empty, which leaves a trailing space (`… 0,13,3] `). |
-| Closing a window | `%unlinked-window-close @<win>` in every case tried, also for windows of the attached session (see Read first 1). `%window-add @<win>` appears for new windows of the session, `%unlinked-window-add` for windows of other sessions. |
+| Closing a window | `%unlinked-window-close @<win>` in every case tried, also for windows of the attached session (see Read first 1). `%window-add @<win>` appears for new windows of the session, `%unlinked-window-add` for windows of other sessions. The `%window-close @5` line in `burst.txt` is **synthetic**: tmux 3.4 sent only `%unlinked-window-close` here, but the documented `%window-close` form stays in the fixture so the parser handles both. |
 | `%exit` | `%sessions-changed`, then `%exit`, after `kill-session` of the attached session or `kill-server`. The client process then exits with code 0. |
 | Other lines seen | `%window-renamed @<win> <name>` (automatic rename follows the running command), `%session-window-changed $<s> @<win>`, `%sessions-changed`. |
 | Two commands on one line (`a ; b`) | Two blocks, `%begin`/`%end` each, with consecutive numbers. |
@@ -220,6 +220,58 @@ The CSSOM shim, installed by the terminal chunk before `new Terminal()`:
 - `document.createElement('style')` returns an inert `<template>` whose `textContent` setter calls `replaceSync` on a constructable `CSSStyleSheet` added to `document.adoptedStyleSheets`, and whose `remove()` drops that sheet. (An empty real `<style>` still reports a violation, with the hash of the empty string.)
 - `Element.prototype.setAttribute('style', v)` on an `HTMLElement` sets `el.style.cssText = v` instead. CSSOM writes are not checked by CSP.
 
+The full source as tested (spike code; the 370-byte figure is this logic, minified and gzipped):
+
+```js
+// Before `new Terminal()`. xterm 6.0.0 creates three <style> elements (one in the core viewport,
+// two in the DOM renderer) and writes truecolor cells with setAttribute('style', …).
+const origCreate = Document.prototype.createElement;
+document.createElement = function (t, o) {
+  const isStyle = String(t).toLowerCase() === 'style';
+  // An inert <template> instead of a <style>: even an empty <style> reports a violation.
+  const el = origCreate.call(this, isStyle ? 'template' : t, o);
+  if (isStyle) {
+    const sheet = new CSSStyleSheet();
+    document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    let text = '';
+    Object.defineProperty(el, 'textContent', {
+      get: () => text,
+      set: (v) => { text = String(v); sheet.replaceSync(text); },
+    });
+    const rm = el.remove.bind(el);
+    el.remove = () => {
+      document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+      rm();
+    };
+  }
+  return el;
+};
+const origSet = Element.prototype.setAttribute;
+Element.prototype.setAttribute = function (n, v) {
+  if (n === 'style' && this instanceof HTMLElement) { this.style.cssText = v; return; }
+  return origSet.call(this, n, v);
+};
+```
+
+How the colours were checked. The page wrote 30 plain rows, then one line holding:
+- `ESC[38;2;215;119;87mTRUECOLOR` (24-bit foreground);
+- `ESC[48;2;40;80;40mTRUEBG` (24-bit background);
+- `ESC[38;5;70mCOLOR256`;
+- `ESC[1mBOLD`.
+
+After 800 ms the page read the rendered spans:
+
+| Check | With the shim | Without it (nonce variant) |
+|---|---|---|
+| `getComputedStyle(TRUECOLOR span).color` | `rgb(215, 119, 87)` | `rgb(208, 208, 208)`, the theme default |
+| TRUECOLOR span's `style` | `color: rgb(215, 119, 87); letter-spacing: …` | `letter-spacing: …` only |
+| `getComputedStyle(TRUEBG span).backgroundColor` | `rgb(40, 80, 40)` | `rgba(0, 0, 0, 0)` |
+| COLOR256 span's class | `xterm-fg-70` | the same |
+| Row heights | one value (18.0 px) | the same |
+| `securitypolicyviolation` events | 0 | 4 (`style-src-attr`) |
+
+Screenshots of the 800×300 terminal area were also compared by eye. With the shim, the monospace font, the theme colours and the orange/green truecolor text showed. The unshimmed DOM renderer showed a serif font with dark text on the dark background.
+
 Measured total for the terminal chunk: about 88.0 + 0.4 KB JS and 1.9 KB CSS gzipped, about 90.3 KB, inside the 100 KB budget. Other facts: no `script-src` violation in any run (xterm needs no `eval`). `term.modes.bracketedPasteMode` turned true after `?2004h`, so xterm wraps pastes itself once the snapshot replays the mode.
 
 **F9, Shift+Esc in Chrome: not observed.** Playwright's `keyboard.press('Shift+Escape')` reached the page as `keydown` `Shift` then `Escape` with `shiftKey`, and no other page opened. Playwright injects keys into the page through the DevTools protocol, past Chrome's own shortcut handling, so this says nothing about whether Chrome's Task Manager (Shift+Esc on Windows and Linux) takes the key first. Only a real key press in a desktop Chrome window can settle it.
@@ -261,6 +313,8 @@ Temp repos with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `LC_ALL=
 | after deleting that remote branch again (`push --delete`, `fetch --prune`) | 2 |
 | the first of the two commits also on branch `other` | 1 |
 | the tip tagged | 0 |
+| both commits also on branch `other` (`other` = `kage/x`) | 0 |
+| both commits on branch `other2`, which has one more commit of its own | 0 |
 | after `merge --no-ff kage/x` into `main` | 0 |
 | a branch named `-x` | `fatal: ambiguous argument 'refs/heads/-x': unknown revision …` (Kage refuses such names first, `SAFE_REF`) |
 
@@ -270,7 +324,23 @@ Temp repos with `GIT_CONFIG_NOSYSTEM=1`, `GIT_CONFIG_GLOBAL=/dev/null`, `LC_ALL=
 
 ### 5.5 Merged detection
 
-Branch `kage/x` with two commits from base `B`; `main` moved on with another file unless stated. "path-equal": every path that `git diff --no-ext-diff --no-textconv --no-renames --name-only -z B kage/x` lists is identical in `kage/x` and `main` (`git diff --quiet --no-ext-diff --no-textconv --no-renames kage/x main -- <paths>`).
+Branch `kage/x` has two commits from base `B`; `main` moved on with another file unless stated.
+
+"path-equal" means every path the branch changed since `B` is identical in `kage/x` and `main`. The exact commands, as run (bash, with the environment above and `-c core.fsmonitor=false` on every call):
+
+```sh
+# B = the branch's base commit (Kage's baseCommit); exit 0 from the second command = merged
+mapfile -d '' files < <(git diff --no-ext-diff --no-textconv --no-renames --name-only -z "$B" kage/x)
+if [ ${#files[@]} -eq 0 ]; then echo "n/a (no changes)"
+else git diff --quiet --no-ext-diff --no-textconv --no-renames kage/x main -- "${files[@]}" && echo yes || echo no
+fi
+```
+
+- The first command lists the branch's changed paths, NUL-separated. A rename counts as a delete plus an add, because of `--no-renames`.
+- The second exits 0 when every listed path has the same content (or is absent) in both trees, and 1 otherwise.
+- With no listed paths there is nothing to compare, so the result is "n/a". Kage's "a commit past `baseCommit`" rule decides that case first.
+
+Result: path-equal agreed with `merge-tree` in **9 cases, plus 1 n/a** (no commits).
 
 | Case | `merge-base --is-ancestor kage/x main` | `merge-tree --write-tree refs/heads/main kage/x` = `main^{tree}` | path-equal | `git cherry main kage/x` |
 |---|---|---|---|---|
@@ -283,7 +353,7 @@ Branch `kage/x` with two commits from base `B`; `main` moved on with another fil
 | squash, then `main` changes the same file | no | no | no | `+ +` |
 | conflicting branch | no | no (exit **1**, conflict listing) | no | `+ +` |
 | only the first of two commits merged | no | no | no | `- +` |
-| no commits past the base | yes | yes | (no paths) | (empty) |
+| no commits past the base | yes | yes | **n/a** (no paths) | (empty) |
 
 - A branch with no commits is an ancestor, so "a commit past `baseCommit`" must be checked first (as planned).
 - `git cherry` finds rebase merges but not squash merges.
@@ -302,7 +372,22 @@ Setup: `merge.evil.driver` set in the repo config to a command that writes a mar
 | none | none | no |
 | (comparison) `git merge kage/x` | none | yes |
 
-The path comparison of §5.5 and `git cherry` never ran the merge driver, a textconv or an external diff in the same hostile repo (no marker). The driver command itself must come from git config (the repo's `.git/config` or the user's), not from a cloned tree: a cloned `.gitattributes` alone names a driver but can't define one.
+The table above configured only the merge driver. A separate check used one hostile repo with all three:
+- `.gitattributes`: `* merge=evil diff=evil`;
+- `merge.evil.driver`, `diff.evil.textconv` and `diff.evil.command`, each writing its own marker file.
+
+`main` and `kage/x` changed `f.txt` on different lines.
+
+| Command | Markers written |
+|---|---|
+| path-equal (§5.5, with `--no-ext-diff --no-textconv --no-renames`), exit 1 | none |
+| `git cherry main kage/x` | none |
+| control: `git diff kage/x main` (no flags) | `ext-diff` |
+| control: `git diff --no-ext-diff kage/x main` (textconv allowed) | `textconv` |
+| control: `git diff --quiet kage/x main` (no flags), exit 1 | none (`--quiet` compares object ids) |
+| control: `git merge-tree --write-tree refs/heads/main kage/x` | `merge-driver` |
+
+So the configured programs are live in that repo, and the path comparison and `git cherry` still run none of them. The driver command itself must come from git config (the repo's `.git/config` or the user's), not from a cloned tree: a cloned `.gitattributes` alone names a driver but can't define one.
 
 ### 5.7 What changes in the git common directory, and `fs.watch`
 
