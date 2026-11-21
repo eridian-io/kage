@@ -99,6 +99,8 @@ interface Live extends SessionView {
   transcriptPath: string | null;
   /** The window's pane has been seen running `claude`. */
   sawClaude: boolean;
+  /** Ended because the pane went back to a shell (not by SessionEnd): a non-shell command revives it. */
+  shellEnded: boolean;
   tail: TailLike | null;
   tailPath: string | null;
   tailOff: (() => void)[];
@@ -264,6 +266,7 @@ export class LiveSource implements SessionSource {
       sessionId: record?.sessionId ?? null,
       transcriptPath: record?.transcriptPath ?? null,
       sawClaude: false,
+      shellEnded: false,
       tail: null,
       tailPath: null,
       tailOff: [],
@@ -324,6 +327,9 @@ export class LiveSource implements SessionSource {
         st.lastActivity = Math.max(st.lastActivity, w.activity * 1000);
         if (this.#claudeGone(st, w)) {
           if (st.status !== 'ended') this.#endInWindow(st);
+        } else if (st.status === 'ended' && st.shellEnded) {
+          // Ctrl+Z then fg: claude is in front again. Re-attach, which restarts the tail.
+          attaching.push(this.#attach(st, w));
         } else if (!st.record && (old.name !== w.name || old.cwd !== w.cwd)) {
           // Only an external session shows window fields (task, project, worktree).
           this.#emitNow(st);
@@ -390,6 +396,7 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['idle', 'capture', 'retry']);
     st.mode = 'hooks';
     this.#setStatus(st, 'ended');
+    st.shellEnded = true;
     st.pending = false;
     st.question = null;
     this.#retireTailSoon(st);
@@ -462,7 +469,8 @@ export class LiveSource implements SessionSource {
       this.#scheduleIdle(st);
       this.#emitThrottled(st);
     }
-    if (st.mode === 'hooks' && st.status !== 'ended') this.#recheckSoon(0);
+    // Re-list to see claude exit, or come back after Ctrl+Z (a shell-ended session revives).
+    if (st.mode === 'hooks' && (st.status !== 'ended' || st.shellEnded)) this.#recheckSoon(0);
     this.#requestCapture(st);
   }
 
@@ -822,6 +830,7 @@ export class LiveSource implements SessionSource {
   #setStatus(st: Live, status: SessionStatus): void {
     if (status === st.status) return;
     st.status = status;
+    st.shellEnded = false;
     st.statusSince = this.#now();
     st.gen++;
     if (status !== 'needs-you') {

@@ -1158,3 +1158,63 @@ describe('LiveSource: fix round 1', () => {
     expect(source.get('k-1')?.status).toBe('done');
   });
 });
+
+describe('LiveSource: Task 10 carried minors', () => {
+  const linked = () => rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT });
+
+  it('setViewed before start() takes effect at start', async () => {
+    const { source, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', '$ make\nok\n');
+    source.setViewed(new Set(['ext-@1']));
+    await source.start();
+    await flush();
+    expect(
+      lineEvents('ext-@1')
+        .at(-1)
+        ?.lines.map((l) => l.text),
+    ).toEqual(['$ make', 'ok']);
+  });
+
+  it('Ctrl+Z then fg: a session ended at its shell revives when claude is back, with its tail', async () => {
+    const lines: DisplayLine[] = [{ kind: 'say', text: 'Working on it.' }];
+    const { source, tmux, tails, watcher } = setup({
+      windows: [kageWin()],
+      records: [linked()],
+      tails: { [TRANSCRIPT]: { lines } },
+    });
+    await source.start();
+    expect(source.get('k-1')?.status).not.toBe('ended');
+    // Ctrl+Z: claude is suspended and the shell is in front.
+    (tmux.windows[0] as TmuxWindow).command = 'bash';
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(tails[0]?.stopped).toBe(true);
+    // fg: claude is in front again. Typing in the shell is activity, which re-checks.
+    (tmux.windows[0] as TmuxWindow).command = 'claude';
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('k-1')?.status).not.toBe('ended');
+    expect(tails).toHaveLength(2);
+    expect(tails[1]?.started).toBe(true);
+    expect(tails[1]?.stopped).toBe(false);
+    expect(source.lines('k-1')).toEqual(lines);
+    await source.stop();
+  });
+
+  it('a session ended by SessionEnd is not revived while claude is still exiting', async () => {
+    const { source, hooks, tmux } = setup({ windows: [kageWin()], records: [linked()] });
+    await source.start();
+    hooks.fire(hook('SessionEnd', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    // The 300 ms re-list still sees claude in the pane.
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(tmux.windows[0]?.command).toBe('claude');
+    expect(source.get('k-1')?.status).toBe('ended');
+    await source.stop();
+  });
+});
