@@ -10,6 +10,8 @@ export type { HookEvent, HookEventName } from './event.ts';
 export const MAX_BODY = 1024 * 1024;
 /** Past this many bytes the connection is cut instead of drained for a 413 answer. */
 const HARD_CAP = 8 * MAX_BODY;
+/** Events kept for the first listener while nobody listens yet. */
+const MAX_EARLY = 256;
 
 const isPipe = (path: string) => path.startsWith('\\\\.\\pipe\\') || path.startsWith('//./pipe/');
 
@@ -44,6 +46,8 @@ export class HookServer {
   readonly path: string;
   #now: () => number;
   #listeners = new Set<(e: HookEvent) => void>();
+  /** Events received before the first listener; null once one subscribed. */
+  #early: HookEvent[] | null = [];
   #server: Server | null = null;
   #uid: number | undefined;
 
@@ -54,8 +58,21 @@ export class HookServer {
     this.#uid = opts.uid ?? process.getuid?.();
   }
 
+  /**
+   * Subscribes. The first listener also gets, at once and in order, the events that arrived
+   * before anyone listened (at most MAX_EARLY), so none is lost while Kage starts up.
+   */
   on(fn: (e: HookEvent) => void): () => void {
     this.#listeners.add(fn);
+    const early = this.#early;
+    this.#early = null;
+    for (const e of early ?? []) {
+      try {
+        fn(e);
+      } catch {
+        // as for live events: a throwing listener stops nothing
+      }
+    }
     return () => {
       this.#listeners.delete(fn);
     };
@@ -187,6 +204,10 @@ export class HookServer {
       const event = parseHookEvent(body, this.#now());
       if (!event) return reply(400);
       reply(204);
+      if (this.#early) {
+        if (this.#early.length < MAX_EARLY) this.#early.push(event);
+        return;
+      }
       for (const fn of [...this.#listeners]) {
         try {
           fn(event);

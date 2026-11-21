@@ -97,6 +97,31 @@ describe('HookServer', () => {
     expect(got).toEqual([]);
   });
 
+  it('keeps events that arrive before the first listener and hands them to it, in order', async () => {
+    const stop = JSON.stringify({ event: 'Stop', pane: '%1', payload: payload('stop.json') });
+    const end = JSON.stringify({
+      event: 'SessionEnd',
+      pane: '%1',
+      payload: payload('session-end.json'),
+    });
+    expect((await send(path, stop)).status).toBe(204);
+    expect((await send(path, end)).status).toBe(204);
+    const got: string[] = [];
+    server.on((e) => got.push(e.event));
+    expect(got).toEqual(['Stop', 'SessionEnd']);
+    const later: string[] = [];
+    server.on((e) => later.push(e.event));
+    expect(later).toEqual([]);
+  });
+
+  it('keeps at most 256 early events', async () => {
+    const stop = JSON.stringify({ event: 'Stop', pane: '%1', payload: payload('stop.json') });
+    for (let i = 0; i < 260; i++) await send(path, stop);
+    let n = 0;
+    server.on(() => n++);
+    expect(n).toBe(256);
+  });
+
   it('a throwing listener does not stop the others or the response', async () => {
     const got: HookEvent[] = [];
     server.on(() => {
