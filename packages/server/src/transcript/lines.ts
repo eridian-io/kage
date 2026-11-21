@@ -1,5 +1,5 @@
 import type { DisplayLine, Question } from '@kage/shared';
-import { stripAnsi } from '../pane/prompt.ts';
+import { stripAnsi } from '../text/ansi.ts';
 
 /** Turns Claude Code transcript records (one JSON object per JSONL line) into board lines. */
 

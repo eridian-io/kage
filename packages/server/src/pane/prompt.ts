@@ -1,13 +1,11 @@
 import type { DisplayLine, Question } from '@kage/shared';
+import { stripAnsi } from '../text/ansi.ts';
 
 /**
  * Reads `tmux capture-pane -p -J` text: permission prompts, AskUserQuestion panes and startup
  * screens (formats recorded in docs/specs/claude-code-integration.md §2, §3, §5, §6), and the
  * fallback lines shown when there is no transcript. Everything returned is plain text.
  */
-
-const ESC = 0x1b;
-const BEL = 0x07;
 
 /** Longest fallback line and longest command shown in a prompt's text, in characters. */
 const MAX_LINE = 200;
@@ -16,37 +14,6 @@ const MAX_COMMAND = 120;
 const STARTUP_WINDOW = 15;
 /** Most lines between numbered options (descriptions, rules) and between the last one and the footer. */
 const MAX_GAP = 6;
-
-/** Removes terminal escape sequences (CSI, OSC including OSC 8 links, others) and control characters other than tab. */
-export function stripAnsi(text: string): string {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    const c = text.charCodeAt(i);
-    const next = text[i + 1];
-    if (c === ESC && next === '[') {
-      // CSI: parameter and intermediate bytes, then one final byte in @–~.
-      i += 2;
-      while (i < text.length && (text.charCodeAt(i) < 0x40 || text.charCodeAt(i) > 0x7e)) i++;
-      i++;
-    } else if (c === ESC && (next === ']' || next === 'P' || next === '_' || next === '^')) {
-      // OSC, DCS, APC, PM: up to BEL or ESC \.
-      i += 2;
-      while (i < text.length && text.charCodeAt(i) !== BEL && text.charCodeAt(i) !== ESC) i++;
-      if (text.charCodeAt(i) === ESC && text[i + 1] === '\\') i += 2;
-      else if (text.charCodeAt(i) === BEL) i++;
-    } else if (c === ESC) {
-      // Other escapes: intermediate bytes (space to /), then one final byte.
-      i++;
-      while (i < text.length && text.charCodeAt(i) >= 0x20 && text.charCodeAt(i) <= 0x2f) i++;
-      i++;
-    } else {
-      if (c === 0x09 || (c >= 0x20 && c < 0x7f) || c > 0x9f) out += text[i];
-      i++;
-    }
-  }
-  return out;
-}
 
 /** The pane as clean, trimmed lines (nothing is dropped, so indexes keep their place). */
 function cleanLines(pane: string): string[] {
