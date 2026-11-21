@@ -1,6 +1,6 @@
 import type { DisplayLine, Question } from '@kage/shared';
 import { stripAnsi } from '../text/ansi.ts';
-import { boundQuestion, clip } from '../text/bounds.ts';
+import { boundQuestion, clip, MAX_QUESTION, plainLine } from '../text/bounds.ts';
 
 /**
  * Reads `tmux capture-pane -p -J` text: permission prompts, AskUserQuestion panes and startup
@@ -11,9 +11,8 @@ import { boundQuestion, clip } from '../text/bounds.ts';
  * labels, question lines and startup phrases are joined back here.
  */
 
-/** Longest fallback line and longest command shown in a prompt's text, in characters. */
+/** Longest fallback line, in characters. */
 const MAX_LINE = 200;
-const MAX_COMMAND = 120;
 /**
  * Startup screens are small: a phrase must sit within the last non-empty lines and within the
  * last text blocks (runs of non-empty lines). A long path or paragraph wrapped over many lines
@@ -160,7 +159,11 @@ function parsePrompt(raw: string[]): Question | null {
   let top = q - 1;
   while (top >= 0 && !FULL_RULE.test(lines[top] as string)) top--;
   const detail = detailOf(lines.slice(top + 1, q));
-  return boundQuestion(detail ? `${question} — ${clip(detail, MAX_COMMAND)}` : question, labels);
+  // R52: the command takes the whole question bound, so commands alike at the start still differ.
+  const text = detail ? `${question} — ${detail}` : question;
+  const bounded = boundQuestion(text, labels);
+  if (plainLine(text, MAX_QUESTION + 1).length > MAX_QUESTION) bounded.cut = true;
+  return bounded;
 }
 
 const IDLE_FOOTER = /(\? for shortcuts|manual mode on|auto mode on)/;

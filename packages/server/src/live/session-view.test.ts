@@ -27,6 +27,14 @@ describe('toSession', () => {
       expect(toSession(view({ status }))).not.toHaveProperty('now');
     }
   });
+  it('carries a cut question’s flag (R52), and none otherwise', () => {
+    const cut = { text: 'Do you want to proceed? — x…', options: ['Yes'], cut: true };
+    expect(toSession(view({ status: 'needs-you', question: cut })).question?.cut).toBe(true);
+    const whole = { text: 'Do you want to proceed?', options: ['Yes'] };
+    expect(toSession(view({ status: 'needs-you', question: whole })).question).not.toHaveProperty(
+      'cut',
+    );
+  });
 });
 
 describe('toSession v3', () => {
@@ -93,6 +101,12 @@ describe('sameSession', () => {
     const a = { ...base, question: q };
     expect(sameSession(a, { ...base, question: { ...q } })).toBe(true);
     expect(sameSession(a, { ...base, question: { ...q, startup: true } })).toBe(false);
+  });
+  it('compares question.cut (R52)', () => {
+    const q = { text: 'Run it?', options: ['Yes'] };
+    expect(sameSession({ ...base, question: q }, { ...base, question: { ...q, cut: true } })).toBe(
+      false,
+    );
   });
   it('still sees a changed status', () => {
     expect(sameSession(base, { ...base, status: 'done' })).toBe(false);

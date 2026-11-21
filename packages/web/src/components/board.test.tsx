@@ -1022,6 +1022,23 @@ describe('controls', () => {
       expect(rule).not.toMatch(/--(amber|lime|red)|#/);
     });
 
+    it('a long command wraps on the card; a cut one points at the terminal (R52)', async () => {
+      const long = `Do you want to proceed? — ${'x'.repeat(300)}`;
+      withQuestion({ text: long, options: ['Yes', 'No'] });
+      const { container, unmount } = render(<Board />);
+      expect(q(container, '.k-ask .k-q').textContent).toBe(`Waiting for you${long}`);
+      expect(container.querySelector('.k-ask .k-cut')).toBeNull();
+      const rule = /\.k-q\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+      expect(rule).toMatch(/overflow-wrap:\s*anywhere/);
+      unmount();
+      const cut = `Do you want to proceed? — ${'x'.repeat(472)}…`;
+      withQuestion({ text: cut, options: ['Yes', 'No'], cut: true });
+      const again = render(<Board />);
+      expect(q(again.container, '.k-ask .k-cut').textContent).toBe(
+        '… see the terminal for the full command',
+      );
+    });
+
     it('a 401 returns to the login screen without an error line', async () => {
       replies = [[401, 'Sign in to Kage']];
       const { container } = render(<Board />);

@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { parsePermissionPrompt } from '../pane/prompt.ts';
 import type { Key } from '../tmux/client.ts';
 import { ActionError, attachCommand, type ControlTarget, SessionControls } from './actions.ts';
 
@@ -194,6 +195,45 @@ describe('SessionControls.answer', () => {
     const { tmux, controls } = setup(t, pane('ask'));
     await controls.answer('k-1', 2, shown('k-1'));
     expect(tmux.log()).toEqual(['capture', 'keys 2']);
+  });
+
+  it('R52: a card for a command alike in its first 120 characters is stale → 409, no keys', async () => {
+    const rule = '╌'.repeat(40);
+    const head = `rm -rf ${'a'.repeat(113)}`;
+    const prompt = (cmd: string) =>
+      [
+        ' Bash command',
+        ' Run it',
+        rule,
+        ...(cmd.match(/.{1,78}/g) ?? []).map((l) => ` ${l}`),
+        rule,
+        '',
+        ' Do you want to proceed?',
+        ' ❯ 1. Yes',
+        '   2. No',
+        '',
+        ' Esc to cancel',
+      ].join('\n');
+    const oldScreen = prompt(`${head} /safe/build`);
+    const newScreen = prompt(`${head} /home/dev`);
+    const oldQ = parsePermissionPrompt(oldScreen);
+    const newQ = parsePermissionPrompt(newScreen);
+    if (!oldQ || !newQ) throw new Error('no prompt');
+    // The card still shows the earlier command: same first 120 characters, another tail.
+    const one = setup(target({ question: newQ }), newScreen);
+    const e = await refusal(one.controls.answer('k-1', 1, oldQ.text));
+    expect([e.status, e.message]).toEqual([409, QCHANGED]);
+    expect(one.tmux.log()).toEqual([]);
+    expect(one.source.marks).toEqual([]);
+    // The server still holds the old question but the screen shows the new one → 409 too.
+    const two = setup(target({ question: oldQ }), newScreen);
+    const e2 = await refusal(two.controls.answer('k-1', 1, oldQ.text));
+    expect([e2.status, e2.message]).toEqual([409, QCHANGED]);
+    expect(two.tmux.log()).toEqual(['capture']);
+    // The card that matches answers.
+    const three = setup(target({ question: newQ }), newScreen);
+    await three.controls.answer('k-1', 1, newQ.text);
+    expect(three.tmux.log()).toEqual(['capture', 'keys 1']);
   });
 
   it('different options on screen → 409, no keys', async () => {

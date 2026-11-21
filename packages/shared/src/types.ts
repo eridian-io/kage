@@ -16,6 +16,11 @@ export interface Question {
    * switch to auto mode" or the renderer offer's "Yes, try it". The server refuses them too.
    */
   disabledOptions?: number[];
+  /**
+   * R52: the text was cut at its bound (a command longer than the 500-character question); the
+   * card says the full command is in the terminal.
+   */
+  cut?: boolean;
 }
 export interface Port {
   port: number;

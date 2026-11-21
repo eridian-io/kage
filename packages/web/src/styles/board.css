@@ -575,6 +575,8 @@ button {
 .k-q {
   color: var(--fg-strong);
   font-size: 15px;
+  /* R52: a long command (up to 500 characters, often without spaces) wraps inside the card. */
+  overflow-wrap: anywhere;
 }
 .k-q small {
   display: block;

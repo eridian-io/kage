@@ -43,11 +43,53 @@ describe('parsePermissionPrompt', () => {
       options: ['Dash', 'Underscore'],
     });
   });
-  it('truncates a long command to 120 characters', () => {
-    const cmd = 'x'.repeat(300);
+  describe('long commands (R52)', () => {
     const rule = '╌'.repeat(40);
-    const p = ` Bash command\n Run it\n${rule}\n ${cmd}\n${rule}\n\n Do you want to proceed?\n ❯ 1. Yes\n   2. No\n\n Esc to cancel`;
-    expect(parsePermissionPrompt(p)?.text).toBe(`Do you want to proceed? — ${'x'.repeat(119)}…`);
+    /** A Bash prompt whose command Claude wrapped over lines of 80. */
+    const wrap = (cmd: string) => cmd.match(/.{1,78}/g) ?? [];
+    /** The command as the parser joins its wrapped lines back (a space at each wrap). */
+    const joined = (cmd: string) => wrap(cmd).join(' ');
+    const bash = (cmd: string) => {
+      const wrapped = wrap(cmd).map((l) => ` ${l}`);
+      return [
+        ' Bash command',
+        ' Run it',
+        rule,
+        ...wrapped,
+        rule,
+        '',
+        ' Do you want to proceed?',
+        ' ❯ 1. Yes',
+        '   2. No',
+        '',
+        ' Esc to cancel',
+      ].join('\n');
+    };
+    const LEAD = 'Do you want to proceed? — ';
+
+    it('keeps a 300-character command whole, joined from its wrapped lines', () => {
+      const cmd = 'x'.repeat(300);
+      const q = parsePermissionPrompt(bash(cmd));
+      expect(q?.text).toBe(`${LEAD}${joined(cmd)}`);
+      expect(q?.cut).toBeUndefined();
+    });
+
+    it('two commands alike for 120 characters read as different questions', () => {
+      const head = `rm -rf ${'a'.repeat(113)}`;
+      expect(head).toHaveLength(120);
+      const a = parsePermissionPrompt(bash(`${head} /safe/build`))?.text;
+      const b = parsePermissionPrompt(bash(`${head} /home/dev`))?.text;
+      expect(a).toBe(`${LEAD}${joined(`${head} /safe/build`)}`);
+      expect(b).toBe(`${LEAD}${joined(`${head} /home/dev`)}`);
+      expect(a).not.toBe(b);
+    });
+
+    it('cuts at the 500-character question bound and says so', () => {
+      const q = parsePermissionPrompt(bash('y'.repeat(700)));
+      expect(q?.text).toHaveLength(500);
+      expect(q?.text.endsWith('…')).toBe(true);
+      expect(q?.cut).toBe(true);
+    });
   });
   it('returns null without numbered choices, or after the exit', () => {
     expect(parsePermissionPrompt('hello\nworld\n')).toBeNull();

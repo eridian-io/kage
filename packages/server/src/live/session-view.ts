@@ -54,6 +54,7 @@ export function toSession(v: SessionView): Session {
   if (v.question) {
     s.question = { text: v.question.text, options: v.question.options.slice() };
     if (v.question.startup) s.question.startup = true;
+    if (v.question.cut) s.question.cut = true;
     const off = disabledOptions(v.promptKind ?? null, v.question.options);
     if (off.length > 0) s.question.disabledOptions = off;
   }
@@ -88,7 +89,8 @@ const sameQuestion = (a: Question | undefined, b: Question | undefined): boolean
     a.options.length === b.options.length &&
     a.options.every((o, i) => o === b.options[i]) &&
     (a.disabledOptions ?? []).join() === (b.disabledOptions ?? []).join() &&
-    (a.startup ?? false) === (b.startup ?? false));
+    (a.startup ?? false) === (b.startup ?? false) &&
+    (a.cut ?? false) === (b.cut ?? false));
 
 /**
  * Shallow compare of two sessions (the question by value; lines by length). Ports, files and

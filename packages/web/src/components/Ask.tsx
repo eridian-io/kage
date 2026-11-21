@@ -24,6 +24,7 @@ export function Ask({ session: s, question: q }: { session: Session; question: Q
         <small>Waiting for you</small>
         {q.text}
       </div>
+      {q.cut && <div class="k-hint k-cut">… see the terminal for the full command</div>}
       {q.startup && q.options.length === 0 ? (
         <div class="k-hint">Open the session's terminal (tmux attach) and sign in there.</div>
       ) : (
