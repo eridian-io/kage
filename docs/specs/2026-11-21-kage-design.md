@@ -150,7 +150,7 @@ The design shows Claude's prose in the sans font, tool calls as muted monospace 
 
 ### 5.5 Live updates
 
-- **One SSE stream** (`GET /api/events`) per browser tab. The server pushes `snapshot` on connect, then small events: `session.updated` (status, counts, the "now doing" line), `session.lines` (new display lines, only for the session the tab has selected), `session.files`, `session.ports`, and `session.removed`. The tab tells the server which session it's viewing with `POST /api/view {id}`.
+- **One SSE stream** (`GET /api/events`) per browser tab. The server pushes `snapshot` on connect, then small events: `session.updated` (status, counts, the "now doing" line), `session.lines` (new display lines, only for the session the tab has selected), `session.files`, `session.ports`, and `session.removed`. The `snapshot` carries a `streamId` for that tab and the `projectsRoot`, and its sessions carry no lines (`lines: []`) — lines come only through `session.lines` for the viewed session. The tab tells the server which session it's viewing with `POST /api/view {streamId, id}`; the server answers on that stream with `session.lines {id, lines, reset: true}` (the last 200 lines), then appends new lines as they arrive. A stream whose queue backs up (a stalled tab) is dropped; the tab reconnects and gets a fresh snapshot.
 - **Nothing is polled while nobody watches.** Hooks and `fs.watch` drive everything. The only timers are the port scan (every 5 s, only while a tab is viewing a session that's running) and a 30 s heartbeat comment on the SSE stream.
 - **Actions** are small JSON POSTs: new task, answer, reply, stop, pin, archive, delete. Each action returns at once, and its result arrives as an event.
 
@@ -223,7 +223,7 @@ Kage can run commands on the machine, so the defaults are strict:
 |---|---|
 | `GET /` | The board (HTML, CSS and JS inlined or preloaded) |
 | `GET /api/events` | SSE stream (§5.5) |
-| `POST /api/view` | `{id}`: which session this tab shows |
+| `POST /api/view` | `{streamId, id}`: which session this tab shows (`id: null` for none) |
 | `GET /api/projects` | Projects and their branches, for New task |
 | `POST /api/sessions` | `{project, base, task, acceptEdits}`: start a task |
 | `POST /api/sessions/:id/answer` | `{option}` (1–9) |
