@@ -1,7 +1,7 @@
 import { demoSessions } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connect } from './sse.ts';
-import { connection, host, selectedId, sessions } from './store.ts';
+import { connection, hadSnapshot, host, selectedId, sessions } from './store.ts';
 
 type Listener = (e: MessageEvent) => void;
 
@@ -42,6 +42,7 @@ beforeEach(() => {
   FakeEventSource.all = [];
   vi.stubGlobal('EventSource', FakeEventSource);
   host.value = '';
+  hadSnapshot.value = false;
   sessions.value = [];
   selectedId.value = null;
   connection.value = 'connecting';
@@ -82,9 +83,11 @@ describe('connect', () => {
     expect(FakeEventSource.all).toHaveLength(2);
     expect(connection.value).toBe('reconnecting');
 
-    // A second failure before any snapshot keeps retrying.
+    // A second failure before any snapshot keeps retrying, after twice the wait.
     latest().fail();
-    vi.advanceTimersByTime(250);
+    vi.advanceTimersByTime(499);
+    expect(FakeEventSource.all).toHaveLength(2);
+    vi.advanceTimersByTime(1);
     expect(FakeEventSource.all).toHaveLength(3);
 
     const fresh = demoSessions(NOW).slice(0, 2);
@@ -101,6 +104,24 @@ describe('connect', () => {
     expect(FakeEventSource.all).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('backs off 1 s, doubling to a 10 s cap, and resets to 1 s after a snapshot', () => {
+    const stop = connect();
+    const waitFor = (ms: number) => {
+      const n = FakeEventSource.all.length;
+      latest().fail();
+      vi.advanceTimersByTime(ms - 1);
+      expect(FakeEventSource.all).toHaveLength(n);
+      vi.advanceTimersByTime(1);
+      expect(FakeEventSource.all).toHaveLength(n + 1);
+    };
+    for (const ms of [1000, 2000, 4000, 8000, 10_000, 10_000]) waitFor(ms);
+    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    expect(connection.value).toBe('live');
+    waitFor(1000);
+    waitFor(2000);
     stop();
   });
 

@@ -5,6 +5,8 @@ export const host: Signal<string> = signal('');
 export const sessions: Signal<Session[]> = signal([]);
 export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
+/** False until the first snapshot: until then the board knows nothing, not "no sessions". */
+export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
 /** The deleted session's name (`project · task`) while the toast shows, else null. */
 export const toast: Signal<string | null> = signal(null);
@@ -28,10 +30,13 @@ export const pendingDeletes: Signal<ReadonlySet<string>> = signal(new Set());
 
 export const nameOf = (s: Session) => `${s.project} · ${s.task}`;
 
-/** Selects a session; a new selection drops the confirmation and the toast, as in the target. */
+/**
+ * Selects a session. Every selection, even of the selected row, drops the confirmation and the
+ * toast, as in the target.
+ */
 export function select(id: string | null): void {
   batch(() => {
-    if (id !== selectedId.value) toast.value = null;
+    toast.value = null;
     selectedId.value = id;
     confirmingDelete.value = false;
   });
@@ -51,6 +56,7 @@ export function applyEvent(e: ServerEvent): void {
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
+      hadSnapshot.value = true;
       sessions.value = e.sessions;
       // A removal missed while disconnected is never announced, so its toast entry goes.
       for (const id of [...deleting.keys()]) {

@@ -92,7 +92,8 @@ test.describe('reconnecting', () => {
       await expect(bar).toHaveCount(0);
 
       await stop();
-      await expect(bar).toHaveText('Reconnecting to my-pc…');
+      // Review focus 4: the bar shows within 2 s of the stream dropping.
+      await expect(bar).toHaveText('Reconnecting to my-pc…', { timeout: 2000 });
 
       await start();
       await expect(bar).toHaveCount(0, { timeout: 15_000 });

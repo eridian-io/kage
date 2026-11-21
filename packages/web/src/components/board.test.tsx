@@ -11,6 +11,7 @@ import {
   confirmingDelete,
   connection,
   endDelete,
+  hadSnapshot,
   host,
   now,
   selectedId,
@@ -29,6 +30,7 @@ const board = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'ut
 
 function reset(list: Session[] = demoSessions(NOW)) {
   host.value = '';
+  hadSnapshot.value = false;
   sessions.value = [];
   selectedId.value = null;
   confirmingDelete.value = false;
@@ -289,6 +291,18 @@ describe('session panel', () => {
     fireEvent.click(row(container, 'shop'));
     expect(container.querySelector('.k-toast')).toBeNull();
   });
+
+  it('clears the toast when the already-selected row is clicked', async () => {
+    const { container } = render(<Board />);
+    expect(selectedId.value).toBe('web');
+    toast.value = 'docs · update README';
+    await Promise.resolve();
+    expect(container.querySelector('.k-toast')).not.toBeNull();
+    fireEvent.click(row(container, 'web'));
+    expect(toast.value).toBeNull();
+    expect(container.querySelector('.k-toast')).toBeNull();
+    expect(selectedId.value).toBe('web');
+  });
 });
 
 describe('review focus', () => {
@@ -410,11 +424,59 @@ describe('reconnect bar', () => {
     expect(q(container, '.k-reconnect').textContent).toBe('Reconnecting to my-pc…');
   });
 
-  it('stays hidden before the first snapshot', () => {
+  const beforeFirstSnapshot = () => {
     host.value = '';
+    hadSnapshot.value = false;
+    sessions.value = [];
+    selectedId.value = null;
     connection.value = 'connecting';
+  };
+
+  it('stays hidden during the first attempt', () => {
+    beforeFirstSnapshot();
     const { container } = render(<Board />);
     expect(container.querySelector('.k-reconnect')).toBeNull();
+  });
+
+  it('says "Connecting to Kage…" when the first connect fails, the host after a snapshot', async () => {
+    beforeFirstSnapshot();
+    const { container } = render(<Board />);
+    connection.value = 'reconnecting';
+    await Promise.resolve();
+    const bar = q(container, '.k-reconnect');
+    expect(bar.textContent).toBe('Connecting to Kage…');
+    expect(bar.getAttribute('role')).toBe('status');
+    applyEvent({ type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    connection.value = 'live';
+    await Promise.resolve();
+    expect(container.querySelector('.k-reconnect')).toBeNull();
+    connection.value = 'reconnecting';
+    await Promise.resolve();
+    expect(q(container, '.k-reconnect').textContent).toBe('Reconnecting to my-pc…');
+  });
+});
+
+describe('before the first snapshot', () => {
+  it('is neutral: no empty state, no "0 sessions", no counts', async () => {
+    host.value = '';
+    hadSnapshot.value = false;
+    sessions.value = [];
+    selectedId.value = null;
+    connection.value = 'connecting';
+    const { container } = render(<Board />);
+    expect(container.textContent).not.toContain('No sessions yet');
+    expect(container.textContent).not.toContain('0 sessions');
+    expect(container.querySelector('.k-host')).toBeNull();
+    expect(container.querySelector('.k-counts')).toBeNull();
+    expect(container.querySelector('.k-main')).not.toBeNull();
+    expect(container.querySelectorAll('.k-side .k-it')).toHaveLength(0);
+    expect(q(container, '.k-logo').textContent).toBe('kage');
+
+    // An empty first snapshot is a real answer: now it says so.
+    applyEvent({ type: 'snapshot', host: 'my-pc', sessions: [] });
+    await Promise.resolve();
+    expect(container.textContent).toContain('No sessions yet');
+    expect(q(container, '.k-host').textContent).toBe('my-pc · 0 sessions');
   });
 
   it('uses quiet styling from the tokens', () => {

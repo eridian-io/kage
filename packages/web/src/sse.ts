@@ -6,11 +6,17 @@ const TYPES: ServerEvent['type'][] = ['snapshot', 'session.updated', 'session.re
 
 /**
  * Opens the server's event stream and keeps it open. On an error the board shows
- * "reconnecting" at once and a fresh stream opens after `retryMs`; the server's next
- * snapshot replaces the sessions and makes the board live again. Returns the stopper.
+ * "reconnecting" at once and a fresh stream opens after a backoff: `retryMs` (1 s), doubling
+ * with each failure up to `maxRetryMs` (10 s), and back to `retryMs` after a snapshot. The
+ * server's next snapshot replaces the sessions and makes the board live again. Returns the stopper.
  */
-export function connect(url = '/api/events', opts: { retryMs?: number } = {}): () => void {
+export function connect(
+  url = '/api/events',
+  opts: { retryMs?: number; maxRetryMs?: number } = {},
+): () => void {
   const retryMs = opts.retryMs ?? 1000;
+  const maxRetryMs = opts.maxRetryMs ?? 10_000;
+  let delay = retryMs;
   let es: EventSource | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
@@ -24,7 +30,10 @@ export function connect(url = '/api/events', opts: { retryMs?: number } = {}): (
     }
     if (!TYPES.includes(e?.type)) return;
     batch(() => {
-      if (e.type === 'snapshot') connection.value = 'live';
+      if (e.type === 'snapshot') {
+        connection.value = 'live';
+        delay = retryMs;
+      }
       applyEvent(e);
     });
   };
@@ -41,7 +50,8 @@ export function connect(url = '/api/events', opts: { retryMs?: number } = {}): (
       if (es !== s || stopped) return;
       es = null;
       connection.value = 'reconnecting';
-      retry = setTimeout(open, retryMs);
+      retry = setTimeout(open, delay);
+      delay = Math.min(delay * 2, maxRetryMs);
     };
   };
 
