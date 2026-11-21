@@ -123,6 +123,49 @@ describe('HookServer', () => {
     expect(got).toEqual([]);
   });
 
+  it('a chunked body (no Content-Length) over 1 MB → 413', async () => {
+    const got: HookEvent[] = [];
+    server.on((e) => got.push(e));
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request({ socketPath: path, path: '/hook', method: 'POST' }, (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      });
+      req.on('error', reject);
+      req.write('x'.repeat(700 * 1024));
+      req.end('x'.repeat(700 * 1024));
+    });
+    expect(status).toBe(413);
+    expect(got).toEqual([]);
+  });
+
+  it('a declared Content-Length over 1 MB → 413 at once, before any body is sent', async () => {
+    const got: HookEvent[] = [];
+    server.on((e) => got.push(e));
+    const status = await new Promise<number>((resolve, reject) => {
+      const req = request(
+        {
+          socketPath: path,
+          path: '/hook',
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'content-length': 2 * 1024 * 1024 },
+        },
+        (res) => {
+          res.resume();
+          resolve(res.statusCode ?? 0);
+          req.destroy();
+        },
+      );
+      req.on('error', (err) => {
+        if (!req.destroyed) reject(err);
+      });
+      // Only the headers go out: the server must answer without waiting for 2 MB.
+      req.flushHeaders();
+    });
+    expect(status).toBe(413);
+    expect(got).toEqual([]);
+  });
+
   it('a body of exactly 1 MB is accepted', async () => {
     const base = JSON.stringify({
       event: 'Stop',

@@ -156,6 +156,14 @@ export class HookServer {
       reply(405);
       return;
     }
+    // A declared size over the limit is refused before reading any of it; the connection
+    // closes after the answer, so the unread body is never drained.
+    const declared = Number(req.headers['content-length']);
+    if (Number.isFinite(declared) && declared > MAX_BODY) {
+      res.setHeader('connection', 'close');
+      reply(413);
+      return;
+    }
     const chunks: Buffer[] = [];
     let size = 0;
     req.on('data', (chunk: Buffer) => {
