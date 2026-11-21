@@ -1,9 +1,9 @@
-import { demoSessions } from '@kage/shared';
+import { demoSessions, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { answer, apiDelete, login } from './api.ts';
 import { Board } from './main.tsx';
-import { applyEvent, authRequired, hadSnapshot, sessions } from './store.ts';
+import { applyEvent, authRequired, connection, hadSnapshot, sessions } from './store.ts';
 
 class FakeEventSource {
   static all: FakeEventSource[] = [];
@@ -135,7 +135,13 @@ describe('api', () => {
 
   it('answer posts the option and the question text the card showed (R36)', async () => {
     replies = [204];
-    expect((await answer('ext-@3', 2, 'Do you want to proceed? — npm test')).status).toBe(204);
+    connection.value = 'live';
+    const s = {
+      ...demoSessions(0)[0],
+      id: 'ext-@3',
+      question: { text: 'Do you want to proceed? — npm test', options: ['Yes', 'No'] },
+    } as Session;
+    expect(await answer(s, 2)).toBe(true);
     const [url, init] = fetchMock.mock.calls.at(-1) as [string, RequestInit];
     expect(url).toBe('/api/sessions/ext-%403/answer');
     expect(init.method).toBe('POST');

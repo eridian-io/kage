@@ -617,15 +617,23 @@ button {
   color: #d4d8de;
   font-size: 13.5px;
 }
-.k-opts button:hover {
+.k-opts button:not(:disabled):hover {
   border-color: #4a515c;
+}
+/* While a send is in flight or the stream is down, and options the board refuses (R39). */
+.k-opts button:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 .k-opts button kbd {
   color: var(--fg-3);
   margin-right: 6px;
   font-size: 11px;
 }
-.k-or {
+/* The reply hint is a button (it opens the reply field) that looks like the target's plain text. */
+.k-opts .k-or {
+  padding: 0;
+  border: 0;
   color: #565d68;
   font-size: 13px;
   margin-left: 6px;
@@ -812,4 +820,74 @@ button {
 }
 .k-nt-err {
   color: var(--fg);
+}
+
+/* Not in the target: the board's controls (phase 3). */
+/* The follow-up and reply fields: a real input inside the target's .k-follow row, identical at rest. */
+/* Focus shows on the row's border (:focus-within), as on the login field. */
+.k-follow input {
+  flex: 1;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  outline: none;
+  background: none;
+  font: inherit;
+  color: var(--fg-strong);
+}
+.k-follow input::placeholder {
+  color: var(--fg-3);
+  opacity: 1;
+}
+.k-follow input[aria-busy] {
+  opacity: 0.6;
+}
+.k-follow:focus-within {
+  border-color: #4a515c;
+}
+.k-ask .k-follow {
+  margin: 0;
+}
+.k-ask .k-hint {
+  font-size: 13px;
+  color: var(--fg-3);
+}
+.k-foot .k-hint {
+  align-self: center;
+  font-size: 12.5px;
+  color: var(--fg-2);
+}
+/* An action's failure: one line above the footer. */
+.k-err {
+  margin: 0 0 10px;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  overflow-wrap: anywhere;
+}
+/* Port cards: a link, or a card that only names the tunnel when the port is loopback-only. */
+a.k-port {
+  text-decoration: none;
+}
+.k-port.local {
+  cursor: default;
+}
+.k-port.local:hover {
+  border-color: #23272e;
+}
+.k-port .only {
+  font-family: var(--sans);
+  color: var(--fg-3);
+}
+.k-ssh {
+  margin: -2px 0 8px;
+  font: 11.5px var(--mono);
+  color: var(--fg-3);
+  overflow-wrap: anywhere;
+  user-select: all;
+}
+.k-more {
+  padding: 3px 0;
+  font: 12px var(--mono);
+  color: var(--fg-3);
 }

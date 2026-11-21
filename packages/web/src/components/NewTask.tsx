@@ -1,23 +1,11 @@
 import { LIMITS, type NewTaskResponse, type Project, type ProjectsResponse } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { apiGet, apiPost } from '../api.ts';
+import { apiGet, apiPost, errorOf, NO_ANSWER } from '../api.ts';
 import { connection, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
 
-const NO_ANSWER = "Kage didn't answer.";
 const COUNT_FROM = 3600;
 const fmt = (n: number) => n.toLocaleString('en-US');
 const encoder = new TextEncoder();
-
-/** The server's one-sentence error, or a fallback naming the status. */
-async function errorOf(res: Response): Promise<string> {
-  try {
-    const body = (await res.json()) as { error?: unknown };
-    if (typeof body.error === 'string' && body.error !== '') return body.error;
-  } catch {
-    // Not JSON: fall through.
-  }
-  return `Kage answered ${res.status}.`;
-}
 
 /** The project's branches, with its default branch first if the list lacks it. */
 function branchesOf(p: Project | undefined): string[] {

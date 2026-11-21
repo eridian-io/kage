@@ -1,4 +1,7 @@
-import { authRequired } from './store.ts';
+import type { Session } from '@kage/shared';
+import { actionError, answered, authRequired, busy, connection } from './store.ts';
+
+export const NO_ANSWER = "Kage didn't answer.";
 
 /** Every state-changing request carries `X-Kage: 1`; the server refuses those without it. */
 const HEADERS = { 'X-Kage': '1' };
@@ -19,17 +22,29 @@ export function apiDelete(path: string): Promise<Response> {
   return send(path, { method: 'DELETE', headers: HEADERS });
 }
 
+/** A POST with a JSON body; without a body (Stop) it sends none. */
 export function apiPost(
   path: string,
-  body: unknown,
+  body?: unknown,
   init: { signal?: AbortSignal } = {},
 ): Promise<Response> {
   return send(path, {
     method: 'POST',
     headers: { ...HEADERS, 'Content-Type': 'application/json' },
-    body: JSON.stringify(body),
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     ...(init.signal ? { signal: init.signal } : {}),
   });
+}
+
+/** The server's one-sentence error, or a fallback naming the status. */
+export async function errorOf(res: Response): Promise<string> {
+  try {
+    const body = (await res.json()) as { error?: unknown };
+    if (typeof body.error === 'string' && body.error !== '') return body.error;
+  } catch {
+    // Not JSON: fall through.
+  }
+  return `Kage answered ${res.status}.`;
 }
 
 /**
@@ -52,9 +67,44 @@ export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' |
 }
 
 /**
- * POST /api/sessions/:id/answer with the option and the question text the card showed (R36):
- * the server answers only that question. Task 10 wires it to the card.
+ * Sends an answer, reply or stop for a session. One action per session at a time, and only while
+ * live: the result arrives as an event. True on success; otherwise the server's sentence goes to
+ * actionError (a 401 has sent the board to the login screen instead).
  */
-export function answer(id: string, option: number, question: string): Promise<Response> {
-  return apiPost(`/api/sessions/${encodeURIComponent(id)}/answer`, { option, question });
+export async function act(
+  id: string,
+  path: 'answer' | 'reply' | 'stop',
+  body?: unknown,
+): Promise<boolean> {
+  if (busy.value.has(id) || connection.value !== 'live') return false;
+  busy.value = new Set(busy.value).add(id);
+  actionError.value = null;
+  let error: string | null = null;
+  try {
+    const res = await apiPost(`/api/sessions/${encodeURIComponent(id)}/${path}`, body);
+    if (res.ok) return true;
+    if (res.status !== 401) error = await errorOf(res);
+  } catch {
+    error = NO_ANSWER;
+  } finally {
+    const left = new Set(busy.value);
+    left.delete(id);
+    busy.value = left;
+  }
+  if (error !== null) actionError.value = { id, text: `Couldn't send: ${error}` };
+  return false;
+}
+
+/**
+ * Answers option n (1-based) of the session's question, with the question text the card showed
+ * (R36): the server answers only that question. Options it lacks or disables (R39), and a
+ * question already answered from here, send nothing.
+ */
+export async function answer(s: Session, n: number): Promise<boolean> {
+  const q = s.question;
+  if (!q || q === answered.value || n < 1 || n > q.options.length) return false;
+  if (q.disabledOptions?.includes(n)) return false;
+  const ok = await act(s.id, 'answer', { option: n, question: q.text });
+  if (ok) answered.value = q;
+  return ok;
 }

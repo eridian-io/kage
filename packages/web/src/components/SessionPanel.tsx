@@ -1,15 +1,20 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
-import { apiDelete } from '../api.ts';
+import { act, apiDelete } from '../api.ts';
 import {
+  actionError,
   beginDelete,
+  busy,
   confirmingDelete,
   connection,
   endDelete,
   now,
   pendingDeletes,
   projectsRoot,
+  stopArmed,
 } from '../store.ts';
+import { Ask } from './Ask.tsx';
+import { FollowUp } from './FollowUp.tsx';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
 import { Toast } from './Toast.tsx';
@@ -149,6 +154,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const confirming = done && own && confirmingDelete.value;
   const chip = ended ? 'ended' : group;
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
+  const error = actionError.value?.id === s.id ? actionError.value.text : null;
   return (
     <main class="k-main">
       <div class="k-head">
@@ -181,29 +187,17 @@ export function SessionPanel({ session: s }: { session: Session }) {
       </div>
       <Toast />
       <Output session={s} />
-      {s.question && (
-        <div class="k-ask">
-          <div class="k-q">
-            <small>Waiting for you</small>
-            {s.question.text}
-          </div>
-          <div class="k-opts">
-            {s.question.options.map((o, i) => (
-              <button type="button" key={`${i}`} {...INERT}>
-                <kbd>{i + 1}</kbd>
-                {o}
-              </button>
-            ))}
-            <span class="k-or">or press R to reply</span>
-          </div>
-        </div>
-      )}
+      {/* Keyed by session, so a half-typed reply never carries over to another session. */}
+      {s.question && <Ask key={s.id} session={s} question={s.question} />}
       {done && !ended && !confirming && (
-        <div class="k-follow" {...INERT}>
-          Follow up in this session…<kbd>R</kbd>
-        </div>
+        <FollowUp key={s.id} id={s.id} placeholder="Follow up in this session…" hotkey="R" />
       )}
       {confirming && <Confirm s={s} />}
+      {error !== null && (
+        <div class="k-err" role="alert">
+          {error}
+        </div>
+      )}
       <div class="k-foot">
         <div class="l">
           {/* Kage resumes only sessions it launched; an external window keeps its Terminal. */}
@@ -228,7 +222,21 @@ export function SessionPanel({ session: s }: { session: Session }) {
               />
             </>
           ) : (
-            <Act label="Stop" hotkey="X" cls="stop" icon={ICON.stop} />
+            <>
+              {stopArmed.value === s.id && (
+                <span class="k-hint" role="status">
+                  Press X again to stop
+                </span>
+              )}
+              <Act
+                label="Stop"
+                hotkey="X"
+                cls="stop"
+                icon={ICON.stop}
+                disabled={busy.value.has(s.id) || connection.value !== 'live'}
+                onClick={() => act(s.id, 'stop')}
+              />
+            </>
           )}
         </div>
       </div>

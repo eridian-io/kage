@@ -1,10 +1,25 @@
 import { demoSessions } from '@kage/shared';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installKeys } from './keys.ts';
-import { applyEvent, confirmingDelete, newTaskOpen, selectedId, sessions } from './store.ts';
+import {
+  applyEvent,
+  busy,
+  confirmingDelete,
+  connection,
+  newTaskOpen,
+  replyOpen,
+  select,
+  selectedId,
+  sessions,
+  stopArmed,
+} from './store.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
 let uninstall: () => void = () => {};
+let fetchMock: ReturnType<typeof vi.fn>;
+/** The URLs posted so far. */
+const posted = () => (fetchMock.mock.calls as [string][]).map(([url]) => url);
+const flush = () => new Promise((r) => setTimeout(r, 0));
 
 const press = (key: string, target: EventTarget = document) =>
   target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
@@ -14,6 +29,12 @@ beforeEach(() => {
   selectedId.value = null;
   confirmingDelete.value = false;
   newTaskOpen.value = false;
+  replyOpen.value = false;
+  stopArmed.value = null;
+  busy.value = new Set();
+  connection.value = 'live';
+  fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
+  vi.stubGlobal('fetch', fetchMock);
   applyEvent({
     type: 'snapshot',
     host: 'my-pc',
@@ -26,6 +47,8 @@ beforeEach(() => {
 afterEach(() => {
   uninstall();
   document.body.innerHTML = '';
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
 });
 
 describe('installKeys', () => {
@@ -95,5 +118,93 @@ describe('installKeys: the New task form', () => {
     expect(selectedId.value).toBe('web');
     press('Escape');
     expect(confirmingDelete.value).toBe(true);
+  });
+});
+
+describe('installKeys: answering and Stop', () => {
+  it('1–9 answer the selected needs-you session, only options it has', async () => {
+    press('3');
+    press('0');
+    await flush();
+    expect(posted()).toEqual([]);
+    press('1');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/web/answer']);
+  });
+
+  it('digits do nothing for a session without a question', async () => {
+    select('shop');
+    press('1');
+    await flush();
+    expect(posted()).toEqual([]);
+  });
+
+  it('R opens the reply field for a question; Esc closes it', () => {
+    press('r');
+    expect(replyOpen.value).toBe(true);
+    press('Escape');
+    expect(replyOpen.value).toBe(false);
+  });
+
+  it('a single X sends nothing; a second within 2 s stops (R26)', async () => {
+    vi.useFakeTimers();
+    select('shop');
+    press('x');
+    expect(stopArmed.value).toBe('shop');
+    await vi.advanceTimersByTimeAsync(1900);
+    expect(posted()).toEqual([]);
+    press('x');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual(['/api/sessions/shop/stop']);
+    expect(stopArmed.value).toBeNull();
+  });
+
+  it('an X after 2 s arms again instead of stopping', async () => {
+    vi.useFakeTimers();
+    select('shop');
+    press('x');
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(stopArmed.value).toBeNull();
+    press('x');
+    expect(stopArmed.value).toBe('shop');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual([]);
+    press('x');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual(['/api/sessions/shop/stop']);
+  });
+
+  it('selecting another session disarms X', async () => {
+    select('shop');
+    press('x');
+    select('infra');
+    expect(stopArmed.value).toBeNull();
+    press('x');
+    await flush();
+    expect(posted()).toEqual([]);
+    expect(stopArmed.value).toBe('infra');
+  });
+
+  it('X stops a needs-you session too, but not a done one', async () => {
+    press('x');
+    press('x');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/web/stop']);
+    select('docs');
+    press('x');
+    press('x');
+    await flush();
+    expect(posted()).toHaveLength(1);
+  });
+
+  it('the form and the login screen own the keyboard', async () => {
+    newTaskOpen.value = true;
+    press('1');
+    press('x');
+    press('x');
+    press('r');
+    await flush();
+    expect(posted()).toEqual([]);
+    expect(replyOpen.value).toBe(false);
   });
 });

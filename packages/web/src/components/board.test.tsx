@@ -1,13 +1,17 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
-import { cleanup, fireEvent, render } from '@testing-library/preact';
+import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiDelete, apiPost } from '../api.ts';
 import { Board } from '../main.tsx';
 import {
+  actionError,
+  answered,
   applyEvent,
+  authRequired,
   beginDelete,
+  busy,
   confirmingDelete,
   connection,
   endDelete,
@@ -15,15 +19,30 @@ import {
   host,
   linesById,
   now,
+  replyOpen,
   selectedId,
   sessions,
+  stopArmed,
   toast,
 } from '../store.ts';
 
-vi.mock('../api.ts', () => ({
+// The board's own actions (act) use the real api module, so they reach the stubbed fetch below.
+vi.mock('../api.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api.ts')>()),
   apiDelete: vi.fn(async () => new Response(null, { status: 204 })),
   apiPost: vi.fn(async () => new Response(null, { status: 204 })),
 }));
+
+/** What the next requests answer, in order: a status and, unless 204, the server's error. */
+let replies: [number, string?][];
+let fetchMock: ReturnType<typeof vi.fn>;
+/** The requests the board sent: the URL, the X-Kage header and the parsed body. */
+const posts = () =>
+  (fetchMock.mock.calls as [string, RequestInit][]).map(([url, init]) => [
+    url,
+    (init.headers as Record<string, string>)['X-Kage'],
+    init.body === undefined ? undefined : JSON.parse(String(init.body)),
+  ]);
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
 const LATER = 'Available in a later version';
@@ -32,6 +51,12 @@ const board = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'ut
 function reset(list: Session[] = demoSessions(NOW)) {
   host.value = '';
   hadSnapshot.value = false;
+  authRequired.value = false;
+  busy.value = new Set();
+  actionError.value = null;
+  answered.value = null;
+  replyOpen.value = false;
+  stopArmed.value = null;
   sessions.value = [];
   selectedId.value = null;
   confirmingDelete.value = false;
@@ -76,11 +101,21 @@ beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.mocked(apiDelete).mockClear();
   vi.mocked(apiPost).mockClear();
+  replies = [];
+  fetchMock = vi.fn(async () => {
+    const [status, error] = replies.shift() ?? [204];
+    return status === 204
+      ? new Response(null, { status })
+      : new Response(JSON.stringify({ error }), { status });
+  });
+  vi.stubGlobal('fetch', fetchMock);
   reset();
 });
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe('top bar', () => {
@@ -141,23 +176,24 @@ describe('session panel', () => {
     );
   });
 
-  it('shows the question with inert answer buttons', () => {
+  it('shows the question with its answer buttons and the reply hint', () => {
     const { container } = render(<Board />);
     const ask = q(container, '.k-ask');
     expect(q(ask, '.k-q small').textContent).toBe('Waiting for you');
     expect(q(ask, '.k-q').textContent).toBe('Waiting for youWhich approach should I use?');
-    const opts = [...ask.querySelectorAll('.k-opts button')];
+    const opts = [...ask.querySelectorAll('.k-opts button:not(.k-or)')];
     expect(opts.map((b) => [b.querySelector('kbd')?.textContent, b.textContent])).toEqual([
       ['1', '1CSS variables'],
       ['2', '2Tailwind'],
     ]);
-    for (const b of opts) expectInert(b);
+    for (const b of opts) {
+      expect(b.hasAttribute('aria-disabled')).toBe(false);
+      expect((b as HTMLButtonElement).disabled).toBe(false);
+    }
     expect(q(ask, '.k-or').textContent).toBe('or press R to reply');
-    fireEvent.click(opts[0] as Element);
-    expect(apiPost).not.toHaveBeenCalled();
   });
 
-  it('shows Terminal and Stop in the footer, inert, and no Archive', () => {
+  it('shows Terminal (inert) and Stop in the footer, and no Archive', () => {
     const { container } = render(<Board />);
     const [term, stop, ...rest] = footButtons(container);
     expect(rest).toEqual([]);
@@ -168,10 +204,10 @@ describe('session panel', () => {
     expect(stop?.textContent).toBe('StopX');
     expect(stop?.classList.contains('stop')).toBe(true);
     expectInert(term as Element);
-    expectInert(stop as Element);
+    expect(stop?.hasAttribute('aria-disabled')).toBe(false);
     expect(container.textContent).not.toContain('Archive');
-    fireEvent.click(stop as Element);
-    expect(apiPost).not.toHaveBeenCalled();
+    fireEvent.click(term as Element);
+    expect(fetchMock).not.toHaveBeenCalled();
     expect(apiDelete).not.toHaveBeenCalled();
   });
 
@@ -231,8 +267,9 @@ describe('session panel', () => {
     expect(texts(container, '.k-meta > span')[2]).toBe('finished 1h ago');
     expect(container.querySelector('.k-tr .cursor')).toBeNull();
     const follow = q(container, '.k-follow');
-    expect(follow.textContent).toBe('Follow up in this session…R');
-    expectInert(follow);
+    expect(q<HTMLInputElement>(follow, 'input').placeholder).toBe('Follow up in this session…');
+    expect(follow.textContent).toBe('R');
+    expect(follow.hasAttribute('aria-disabled')).toBe(false);
     const [term, archive, del, ...rest] = footButtons(container);
     expect(rest).toEqual([]);
     expect(term?.textContent).toBe('TerminalT');
@@ -776,5 +813,466 @@ describe('board v2', () => {
     const { container } = render(<Board />);
     fireEvent.click(row(container, 'docs'));
     expect(container.querySelector('.k-tr .ln-think')).toBeNull();
+  });
+});
+
+describe('controls', () => {
+  const QUESTION = 'Which approach should I use?';
+  const withQuestion = (question: Session['question']) =>
+    reset(demoSessions(NOW).map((s) => (s.id === 'web' ? { ...s, question } : s)));
+  const optButtons = (c: Element) => [
+    ...c.querySelectorAll<HTMLButtonElement>('.k-opts button:not(.k-or)'),
+  ];
+  const key = (k: string, target: Document | Element = document) =>
+    fireEvent.keyDown(target, { key: k });
+  /** The next request waits until the returned function is called. */
+  const hold = () => {
+    let release: (r: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (release = r)));
+    return () => release(new Response(null, { status: 204 }));
+  };
+  const errLine = (c: Element) => c.querySelector('.k-err')?.textContent ?? null;
+  const replyInput = (c: Element) => c.querySelector<HTMLInputElement>('.k-ask .k-follow input');
+  const openReply = async (c: Element) => {
+    key('r');
+    await waitFor(() => expect(replyInput(c)).not.toBeNull());
+    return replyInput(c) as HTMLInputElement;
+  };
+  const CHANGED = 'The question changed. Look again before answering.';
+
+  describe('answer buttons and 1–9', () => {
+    it('clicking 2 posts the option and the question to the answer route with X-Kage', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[1] as Element);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([
+        ['/api/sessions/web/answer', '1', { option: 2, question: QUESTION }],
+      ]);
+      expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].method).toBe('POST');
+    });
+
+    it('key 2 does the same; key 5 with two options does nothing', async () => {
+      render(<Board />);
+      key('5');
+      key('2');
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([
+        ['/api/sessions/web/answer', '1', { option: 2, question: QUESTION }],
+      ]);
+    });
+
+    it('keys typed in a field do nothing', async () => {
+      render(<Board />);
+      const field = document.createElement('input');
+      document.body.append(field);
+      for (const k of ['1', 'r', 'x', 'x']) key(k, field);
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(replyOpen.value).toBe(false);
+      expect(stopArmed.value).toBeNull();
+      field.remove();
+    });
+
+    it('disables the buttons while the session is busy; a second click or key sends nothing', async () => {
+      const release = hold();
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(optButtons(container).every((b) => b.disabled)).toBe(true));
+      expect(busy.value.has('web')).toBe(true);
+      fireEvent.click(optButtons(container)[1] as Element);
+      key('2');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      release();
+      await waitFor(() => expect(optButtons(container).every((b) => !b.disabled)).toBe(true));
+      expect(busy.value.size).toBe(0);
+    });
+
+    it('keeps an answered question’s buttons disabled until the server replaces it', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      expect(optButtons(container).every((b) => b.disabled)).toBe(true);
+      fireEvent.click(optButtons(container)[1] as Element);
+      key('2');
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      // The next update brings a new question object: the buttons work again.
+      const web = sessions.value.find((s) => s.id === 'web') as Session;
+      applyEvent({
+        type: 'session.updated',
+        session: { ...web, question: { text: 'Next?', options: ['Yes', 'No'] } },
+      });
+      await Promise.resolve();
+      expect(optButtons(container).every((b) => !b.disabled)).toBe(true);
+    });
+
+    it('disables the buttons and the keys while disconnected', async () => {
+      const { container } = render(<Board />);
+      connection.value = 'reconnecting';
+      await Promise.resolve();
+      expect(optButtons(container).every((b) => b.disabled)).toBe(true);
+      key('1');
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('shows disabled options (R39) without sending them, by click or key', async () => {
+      withQuestion({
+        text: 'Do you want to proceed?',
+        options: ['Yes', 'Yes, and don’t ask again', 'Yes, and switch to auto mode', 'No'],
+        disabledOptions: [3],
+      });
+      const { container } = render(<Board />);
+      const opts = optButtons(container);
+      expect(opts.map((b) => b.disabled)).toEqual([false, false, true, false]);
+      fireEvent.click(opts[2] as Element);
+      key('3');
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      key('4');
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()[0]?.[2]).toEqual({ option: 4, question: 'Do you want to proceed?' });
+    });
+
+    it('shows the server’s sentence in one --fg-2 line above the footer', async () => {
+      replies = [[409, CHANGED]];
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send: ${CHANGED}`));
+      expect(q(container, '.k-err').nextElementSibling?.classList.contains('k-foot')).toBe(true);
+      const rule = /\.k-err\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+      expect(rule).toContain('var(--fg-2)');
+      expect(rule).not.toMatch(/--(amber|lime|red)|#/);
+    });
+
+    it('a 401 returns to the login screen without an error line', async () => {
+      replies = [[401, 'Sign in to Kage']];
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(container.querySelector('form.k-login')).not.toBeNull());
+      expect(actionError.value).toBeNull();
+    });
+
+    it('says when Kage did not answer', async () => {
+      fetchMock.mockRejectedValueOnce(new TypeError('offline'));
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(errLine(container)).toBe("Couldn't send: Kage didn't answer."));
+    });
+  });
+
+  describe('reply', () => {
+    it('R opens the field focused under the options; Enter posts the text and closes it', async () => {
+      const { container } = render(<Board />);
+      expect(replyInput(container)).toBeNull();
+      const input = await openReply(container);
+      expect(input.placeholder).toBe('Reply instead of choosing…');
+      expect(q(container, '.k-ask .k-follow kbd').textContent).toBe('Esc');
+      const field = input.closest('.k-follow') as Element;
+      expect(field.previousElementSibling?.classList.contains('k-opts')).toBe(true);
+      await waitFor(() => expect(document.activeElement).toBe(input));
+      fireEvent.input(input, { target: { value: 'Use CSS variables, keep the old names' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([
+        ['/api/sessions/web/reply', '1', { text: 'Use CSS variables, keep the old names' }],
+      ]);
+      await waitFor(() => expect(replyInput(container)).toBeNull());
+    });
+
+    it('clicking the hint opens the field', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(q(container, '.k-or'));
+      await waitFor(() => expect(replyInput(container)).not.toBeNull());
+    });
+
+    it('Esc closes the field and nothing else hears it', async () => {
+      const { container } = render(<Board />);
+      const input = await openReply(container);
+      const heard = vi.fn();
+      document.addEventListener('keydown', heard);
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      input.dispatchEvent(esc);
+      document.removeEventListener('keydown', heard);
+      expect(esc.defaultPrevented).toBe(true);
+      expect(heard).not.toHaveBeenCalled();
+      await waitFor(() => expect(replyInput(container)).toBeNull());
+      expect(replyOpen.value).toBe(false);
+    });
+
+    it('a refused reply keeps the text and shows the server’s sentence', async () => {
+      const refusal =
+        "Replies from the board can't start with !, # or /. Use the terminal for those.";
+      replies = [[400, refusal]];
+      const { container } = render(<Board />);
+      const input = await openReply(container);
+      fireEvent.input(input, { target: { value: '/compact' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send: ${refusal}`));
+      expect(input.value).toBe('/compact');
+      expect(replyInput(container)).toBe(input);
+    });
+
+    it('an empty reply sends nothing', async () => {
+      const { container } = render(<Board />);
+      const input = await openReply(container);
+      fireEvent.input(input, { target: { value: '   ' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a startup question has buttons but no hint, and R does nothing', async () => {
+      withQuestion({
+        text: 'Do you trust the files in this folder?',
+        options: ['Yes, I trust this folder', 'No, exit'],
+        startup: true,
+      });
+      const { container } = render(<Board />);
+      expect(optButtons(container)).toHaveLength(2);
+      expect(container.querySelector('.k-or')).toBeNull();
+      key('r');
+      await Promise.resolve();
+      expect(replyOpen.value).toBe(false);
+      expect(replyInput(container)).toBeNull();
+    });
+
+    it('the login screen shows its text and the terminal line, no buttons (F8)', () => {
+      withQuestion({ text: 'Sign in to Claude Code in the terminal', options: [], startup: true });
+      const { container } = render(<Board />);
+      expect(q(container, '.k-q').textContent).toBe(
+        'Waiting for youSign in to Claude Code in the terminal',
+      );
+      expect(optButtons(container)).toEqual([]);
+      expect(container.querySelector('.k-or')).toBeNull();
+      expect(q(container, '.k-ask .k-hint').textContent).toBe(
+        "Open the session's terminal (tmux attach) and sign in there.",
+      );
+      const rule = /\.k-ask \.k-hint\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+      expect(rule).toContain('var(--fg-3)');
+    });
+
+    it('closes when another session is selected', async () => {
+      const { container } = render(<Board />);
+      await openReply(container);
+      fireEvent.click(row(container, 'shop'));
+      fireEvent.click(row(container, 'web'));
+      await Promise.resolve();
+      expect(replyInput(container)).toBeNull();
+    });
+
+    it('closes when the question goes away', async () => {
+      const { container } = render(<Board />);
+      await openReply(container);
+      const web = sessions.value.find((s) => s.id === 'web') as Session;
+      applyEvent({ type: 'session.updated', session: { ...web, question: undefined as never } });
+      expect(replyOpen.value).toBe(false);
+    });
+  });
+
+  describe('follow-up', () => {
+    const open = () => {
+      const r = render(<Board />);
+      fireEvent.click(row(r.container, 'docs'));
+      return { ...r, input: q<HTMLInputElement>(r.container, '.k-follow input') };
+    };
+
+    it('R focuses it; Enter posts the text and clears it on 204', async () => {
+      const { input } = open();
+      key('r');
+      expect(document.activeElement).toBe(input);
+      fireEvent.input(input, { target: { value: 'Also add a FAQ section' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([
+        ['/api/sessions/docs/reply', '1', { text: 'Also add a FAQ section' }],
+      ]);
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('on 409 the text stays and the error line shows the server’s sentence', async () => {
+      replies = [[409, 'The session is busy.']];
+      const { container, input } = open();
+      fireEvent.input(input, { target: { value: 'Also add a FAQ section' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(errLine(container)).toBe("Couldn't send: The session is busy."));
+      expect(input.value).toBe('Also add a FAQ section');
+    });
+
+    it('a second Enter while the first is in flight sends nothing', async () => {
+      const release = hold();
+      const { input } = open();
+      fireEvent.input(input, { target: { value: 'Also add a FAQ section' } });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      fireEvent.keyDown(input, { key: 'Enter' });
+      await waitFor(() => expect(input.getAttribute('aria-busy')).toBe('true'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      release();
+      await waitFor(() => expect(input.value).toBe(''));
+    });
+
+    it('Esc leaves the field and goes no further', () => {
+      const { input } = open();
+      input.focus();
+      const esc = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+      input.dispatchEvent(esc);
+      expect(esc.defaultPrevented).toBe(true);
+      expect(document.activeElement).not.toBe(input);
+    });
+  });
+
+  describe('Stop', () => {
+    it('the button posts stop at once', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      fireEvent.click(button(container, 'Stop'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/shop/stop', '1', undefined]]);
+    });
+
+    it('is disabled while busy and while disconnected', async () => {
+      const release = hold();
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      fireEvent.click(button(container, 'Stop'));
+      await waitFor(() => expect(button(container, 'Stop').disabled).toBe(true));
+      fireEvent.click(button(container, 'Stop'));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      release();
+      await waitFor(() => expect(button(container, 'Stop').disabled).toBe(false));
+      connection.value = 'reconnecting';
+      await Promise.resolve();
+      expect(button(container, 'Stop').disabled).toBe(true);
+    });
+
+    it('X twice stops a running session; the first X asks for the second (R26)', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      key('x');
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(q(container, '.k-foot .k-hint').textContent).toBe('Press X again to stop');
+      const rule = /\.k-foot \.k-hint\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+      expect(rule).toContain('var(--fg-2)');
+      key('X');
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/shop/stop', '1', undefined]]);
+      await waitFor(() => expect(container.querySelector('.k-foot .k-hint')).toBeNull());
+    });
+
+    it('external sessions have no Stop and X does nothing', async () => {
+      reset(demoSessions(NOW).map((s) => (s.id === 'shop' ? { ...s, external: true } : s)));
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      expect(container.textContent).not.toContain('Stop');
+      key('x');
+      key('x');
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(stopArmed.value).toBeNull();
+    });
+
+    it('X does nothing on a done session', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      key('x');
+      key('x');
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('preview', () => {
+    const withPorts = (ports: Session['ports']) =>
+      reset(demoSessions(NOW).map((s) => (s.id === 'web' ? { ...s, ports } : s)));
+    const setURL = (url: string) =>
+      (window as unknown as { happyDOM: { setURL(u: string): void } }).happyDOM.setURL(url);
+    // The board opened from another machine: links go to the host in the address bar.
+    beforeEach(() => setURL('http://my-pc:4400/'));
+    afterEach(() => setURL('http://localhost:3000/'));
+
+    it('a port card is a link to this host', () => {
+      const { container } = render(<Board />);
+      const a = q<HTMLAnchorElement>(container, 'a.k-port');
+      expect(a.getAttribute('href')).toBe('http://my-pc:5173/');
+      expect(a.getAttribute('target')).toBe('_blank');
+      expect(a.getAttribute('rel')).toBe('noopener noreferrer');
+      expect(a.hasAttribute('aria-disabled')).toBe(false);
+      expect(a.textContent).toBe(':5173 viteOpen ↗');
+      expect(q(a, '.go').textContent).toBe('Open ↗');
+    });
+
+    it('a local-only card has no link and shows the ssh line', () => {
+      withPorts([{ port: 5432, process: 'postgres', localOnly: true }]);
+      const { container } = render(<Board />);
+      expect(container.querySelector('a.k-port')).toBeNull();
+      const card = q(container, '.k-port.local');
+      expect(card.tagName).toBe('DIV');
+      expect(card.textContent).toBe(':5432 postgresOnly on this machine');
+      expect(container.querySelector('.k-port .go')).toBeNull();
+      const ssh = q(container, '.k-ssh');
+      expect(ssh.textContent).toBe('ssh -L 5432:localhost:5432 my-pc');
+      expect(ssh.getAttribute('title')).toBe(
+        'Run this on your laptop, then open http://localhost:5432',
+      );
+      for (const sel of ['\\.k-port \\.only', '\\.k-ssh']) {
+        const rule = new RegExp(`${sel}\\s*\\{([^}]*)\\}`).exec(board)?.[1];
+        expect(rule, sel).toContain('var(--fg-3)');
+      }
+    });
+
+    it('an IPv6 host is bracketed in the link and bare in the ssh line', () => {
+      setURL('http://[fd7a:115c::1]:4400/');
+      withPorts([
+        { port: 5173, process: 'vite', localOnly: false },
+        { port: 5432, process: 'postgres', localOnly: true },
+      ]);
+      const { container } = render(<Board />);
+      expect(q(container, 'a.k-port').getAttribute('href')).toBe('http://[fd7a:115c::1]:5173/');
+      expect(q(container, '.k-ssh').textContent).toBe('ssh -L 5432:localhost:5432 fd7a:115c::1');
+    });
+
+    it('shows the total of changed files and how many are not listed', () => {
+      const files = Array.from({ length: 100 }, (_, i) => ({
+        path: `src/f${i}.ts`,
+        added: 1,
+        removed: 0,
+      }));
+      reset(demoSessions(NOW).map((s) => (s.id === 'web' ? { ...s, files, filesTotal: 150 } : s)));
+      const { container } = render(<Board />);
+      expect(texts(container, '.k-aside .k-sec h4')[1]).toBe('Files changed · 150');
+      expect(container.querySelectorAll('.k-file')).toHaveLength(100);
+      expect(q(container, '.k-more').textContent).toBe('and 50 more');
+      expectInert(q(container, '.k-diff'));
+    });
+
+    it('lists no "more" row when every file is listed', () => {
+      const { container } = render(<Board />);
+      expect(container.querySelector('.k-more')).toBeNull();
+    });
+  });
+
+  describe('the error line', () => {
+    it('belongs to its session and clears when another session is selected', async () => {
+      replies = [[409, CHANGED]];
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(errLine(container)).not.toBeNull());
+      fireEvent.click(row(container, 'shop'));
+      expect(actionError.value).toBeNull();
+      expect(errLine(container)).toBeNull();
+    });
+
+    it('clears on the next action', async () => {
+      replies = [[409, CHANGED]];
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(errLine(container)).not.toBeNull());
+      const release = hold();
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(errLine(container)).toBeNull());
+      release();
+    });
   });
 });

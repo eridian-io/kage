@@ -41,6 +41,21 @@ test('delete removes the session and shows the toast', async ({ page }) => {
   await expect(page.locator('.k-host')).toContainText('my-pc · 5 sessions');
 });
 
+test('keys typed right after R go into the reply field, never to the board', async ({ page }) => {
+  await page.goto('/');
+  await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
+  await page.keyboard.press('r');
+  // A digit reaching the board would answer the question.
+  await page.keyboard.type('1 Use CSS variables');
+  await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
+  // Demo mode refuses the send; the text stays and the server's sentence shows.
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.k-err')).toHaveText("Couldn't send: Demo mode can't run tasks.");
+  await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
+  await page.keyboard.press('Escape');
+  await expect(page.locator('.k-ask .k-follow')).toHaveCount(0);
+});
+
 test.describe('reconnecting', () => {
   const port = 4392;
   const base = `http://127.0.0.1:${port}`;

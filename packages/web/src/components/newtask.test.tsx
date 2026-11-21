@@ -16,7 +16,8 @@ import {
   toast,
 } from '../store.ts';
 
-vi.mock('../api.ts', () => ({
+vi.mock('../api.ts', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../api.ts')>()),
   apiGet: vi.fn(),
   apiPost: vi.fn(),
   apiDelete: vi.fn(async () => new Response(null, { status: 204 })),

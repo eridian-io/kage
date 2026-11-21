@@ -1,6 +1,7 @@
 import {
   type DisplayLine,
   groupOf,
+  type Question,
   type ServerEvent,
   type Session,
   sortSessions,
@@ -38,6 +39,19 @@ export const newTaskOpen: Signal<boolean> = signal(false);
  * keepSelection must not drop it first; the user's own selection meanwhile cancels it.
  */
 export const selectWhenSeen: Signal<string | null> = signal(null);
+/** The reply field under the selected session's question is open. */
+export const replyOpen: Signal<boolean> = signal(false);
+/** Session ids with an answer, reply or stop in flight; their controls are disabled. */
+export const busy: Signal<ReadonlySet<string>> = signal(new Set());
+/** The last action's failure, shown above that session's footer; cleared on select and the next action. */
+export const actionError: Signal<{ id: string; text: string } | null> = signal(null);
+/**
+ * The question last answered or replied to from this page. Its buttons stay disabled until the
+ * server's update replaces it, so a second click can't send another digit to an answered prompt.
+ */
+export const answered: Signal<Question | null> = signal(null);
+/** The session a first X armed for Stop (R26): a second X within 2 s stops it. */
+export const stopArmed: Signal<string | null> = signal(null);
 // The login screen replaces the board; a form left open behind it would reappear after sign-in.
 effect(() => {
   if (authRequired.value) newTaskOpen.value = false;
@@ -62,6 +76,10 @@ export const pendingDeletes: Signal<ReadonlySet<string>> = signal(new Set());
 
 export const nameOf = (s: Session) => `${s.project} · ${s.task}`;
 
+/** Stop is offered for Kage's own sessions that are running or waiting (spec §6.1, F2). */
+export const canStop = (s: Session): boolean =>
+  !s.external && (s.status === 'running' || s.status === 'needs-you');
+
 /**
  * Selects a session. Every selection, even of the selected row, drops the confirmation and the
  * toast, as in the target.
@@ -72,6 +90,9 @@ export function select(id: string | null): void {
     selectedId.value = id;
     confirmingDelete.value = false;
     selectWhenSeen.value = null;
+    replyOpen.value = false;
+    actionError.value = null;
+    stopArmed.value = null;
   });
 }
 
@@ -92,6 +113,9 @@ function keepSelection(): void {
   // The confirmation belongs to a done session; it ends when the session leaves that group.
   const s = selected.value;
   if (s === null || groupOf(s) !== 'done') confirmingDelete.value = false;
+  // The reply field belongs to a question that takes typed replies; it closes when that ends.
+  if (!s?.question || s.question.startup) replyOpen.value = false;
+  if (s === null || !canStop(s)) stopArmed.value = null;
 }
 
 /**
