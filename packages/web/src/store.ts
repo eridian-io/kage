@@ -5,7 +5,7 @@ import {
   type Session,
   sortSessions,
 } from '@kage/shared';
-import { batch, computed, type ReadonlySignal, type Signal, signal } from '@preact/signals';
+import { batch, computed, effect, type ReadonlySignal, type Signal, signal } from '@preact/signals';
 
 export const host: Signal<string> = signal('');
 export const sessions: Signal<Session[]> = signal([]);
@@ -38,6 +38,10 @@ export const newTaskOpen: Signal<boolean> = signal(false);
  * keepSelection must not drop it first; the user's own selection meanwhile cancels it.
  */
 export const selectWhenSeen: Signal<string | null> = signal(null);
+// The login screen replaces the board; a form left open behind it would reappear after sign-in.
+effect(() => {
+  if (authRequired.value) newTaskOpen.value = false;
+});
 /** Epoch ms, ticked once a minute by the board so ages re-render. */
 export const now: Signal<number> = signal(Date.now());
 

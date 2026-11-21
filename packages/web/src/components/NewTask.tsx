@@ -4,6 +4,9 @@ import { apiGet, apiPost } from '../api.ts';
 import { connection, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
 
 const NO_ANSWER = "Kage didn't answer.";
+const COUNT_FROM = 3600;
+const fmt = (n: number) => n.toLocaleString('en-US');
+const encoder = new TextEncoder();
 
 /** The server's one-sentence error, or a fallback naming the status. */
 async function errorOf(res: Response): Promise<string> {
@@ -38,7 +41,6 @@ export function NewTask() {
   const [acceptEdits, setAcceptEdits] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const formRef = useRef<HTMLFormElement>(null);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   // Read by the document listener and by submit before a re-render has happened.
   const busyRef = useRef(false);
@@ -72,9 +74,11 @@ export function NewTask() {
         }
       }
     })();
-    // Esc closes the form wherever focus is, except while a start is in flight.
+    // Esc closes the form wherever focus is, except while a start is in flight, inside a select
+    // (where it closes the open list) or when a field has handled it already.
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== 'Escape' || e.isComposing || busyRef.current) return;
+      if (e.key !== 'Escape' || e.isComposing || e.defaultPrevented || busyRef.current) return;
+      if ((e.target as Element | null)?.tagName === 'SELECT') return;
       e.preventDefault();
       close();
     };
@@ -87,7 +91,18 @@ export function NewTask() {
 
   const current = projects?.find((p) => p.name === project);
   const live = connection.value === 'live';
-  const canStart = !busy && live && current !== undefined && branch !== '' && task.trim() !== '';
+  // The server's limits (validate.ts): code points (F4) and UTF-8 bytes of the trimmed task.
+  const trimmed = task.trim();
+  const chars = [...trimmed].length;
+  const tooManyBytes = encoder.encode(trimmed).length > LIMITS.textBytes;
+  const fits = chars <= LIMITS.taskChars && !tooManyBytes;
+  const count = tooManyBytes
+    ? `Too long: over ${fmt(LIMITS.textBytes)} bytes.`
+    : chars >= COUNT_FROM
+      ? `${fmt(chars)} / ${fmt(LIMITS.taskChars)}`
+      : null;
+  const canStart =
+    !busy && live && current !== undefined && branch !== '' && trimmed !== '' && fits;
 
   const submit = async () => {
     if (!canStart || busyRef.current) return;
@@ -99,13 +114,17 @@ export function NewTask() {
       const res = await apiPost('/api/sessions', {
         project,
         base: branch,
-        task: task.trim(),
+        task: trimmed,
         acceptEdits,
       });
       if (res.status === 201) {
-        const { id } = (await res.json()) as NewTaskResponse;
+        // Started, even if the body is unreadable: then the form just closes.
+        const id = await res
+          .json()
+          .then((b: NewTaskResponse) => b.id)
+          .catch(() => null);
         close();
-        selectStarted(id);
+        if (typeof id === 'string' && id !== '') selectStarted(id);
         return;
       }
       // A 401 has already sent the board to the login screen; anything else is shown here.
@@ -127,26 +146,6 @@ export function NewTask() {
     wasBusy.current = busy;
   }, [busy]);
 
-  const onFormKey = (e: KeyboardEvent) => {
-    if (e.key !== 'Tab' || !formRef.current) return;
-    // Focus stays inside the form while it is open.
-    const els = [
-      ...formRef.current.querySelectorAll<HTMLElement & { disabled: boolean }>(
-        'textarea, select, input, button',
-      ),
-    ].filter((el) => !el.disabled);
-    const first = els[0];
-    const last = els.at(-1);
-    if (!first || !last) return;
-    if (e.shiftKey && document.activeElement === first) {
-      e.preventDefault();
-      last.focus();
-    } else if (!e.shiftKey && document.activeElement === last) {
-      e.preventDefault();
-      first.focus();
-    }
-  };
-
   const onAreaKey = (e: KeyboardEvent) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
       e.preventDefault();
@@ -160,10 +159,8 @@ export function NewTask() {
 
   return (
     <form
-      ref={formRef}
       class="k-nt"
       aria-label="New task"
-      onKeyDown={onFormKey}
       onSubmit={(e) => {
         e.preventDefault();
         void submit();
@@ -173,16 +170,23 @@ export function NewTask() {
         ref={areaRef}
         class="k-nt-task"
         rows={3}
-        maxLength={LIMITS.taskChars}
         placeholder="What should Claude do?"
         aria-label="Task"
         value={task}
         disabled={busy}
         onInput={(e) => setTask((e.target as HTMLTextAreaElement).value)}
         onKeyDown={onAreaKey}
+        aria-describedby={count ? 'k-nt-count' : undefined}
       />
+      {count && (
+        <p class="k-nt-count" id="k-nt-count">
+          {count}
+        </p>
+      )}
       {none ? (
-        <p class="k-nt-none">No git repositories in {projectsRoot.value}.</p>
+        <p class="k-nt-none" role="status">
+          No git repositories in {projectsRoot.value}.
+        </p>
       ) : (
         projects?.length !== 0 && (
           <>
@@ -191,6 +195,7 @@ export function NewTask() {
               <select
                 value={loading ? '' : project}
                 disabled={loading || busy}
+                aria-busy={loading || undefined}
                 onChange={(e) => {
                   const name = chosen(e);
                   setProject(name);
@@ -213,6 +218,7 @@ export function NewTask() {
               <select
                 value={loading ? '' : branch}
                 disabled={loading || busy}
+                aria-busy={loading || undefined}
                 onChange={(e) => setBranch(chosen(e))}
               >
                 {loading ? (

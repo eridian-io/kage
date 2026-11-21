@@ -795,13 +795,20 @@ button {
   color: var(--lime);
 }
 .k-nt-none,
+.k-nt-count,
 .k-nt-err {
   margin: 0;
   font-size: 12.5px;
   overflow-wrap: anywhere;
 }
-.k-nt-none {
+.k-nt-none,
+.k-nt-count {
   color: var(--fg-2);
+}
+.k-nt-count {
+  margin-top: -6px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 .k-nt-err {
   color: var(--fg);

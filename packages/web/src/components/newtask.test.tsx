@@ -5,6 +5,7 @@ import { apiGet, apiPost } from '../api.ts';
 import { Board } from '../main.tsx';
 import {
   applyEvent,
+  authRequired,
   confirmingDelete,
   connection,
   hadSnapshot,
@@ -81,6 +82,7 @@ beforeEach(() => {
   confirmingDelete.value = false;
   toast.value = null;
   newTaskOpen.value = false;
+  authRequired.value = false;
   hadSnapshot.value = false;
   connection.value = 'live';
   snapshot(demoSessions(NOW));
@@ -101,7 +103,8 @@ describe('opening the New task form', () => {
     expect(document.activeElement).toBe(t);
     expect(t.placeholder).toBe('What should Claude do?');
     expect(t.getAttribute('rows')).toBe('3');
-    expect(t.maxLength).toBe(4000);
+    // No maxLength: it counts UTF-16 units, the server counts code points and bytes.
+    expect(t.hasAttribute('maxlength')).toBe(false);
   });
 
   it('N opens it; n typed in the task field neither reopens nor closes it', async () => {
@@ -331,6 +334,48 @@ describe('starting a task', () => {
   });
 });
 
+describe('odd answers and accessibility', () => {
+  it('a 201 with an unreadable body still counts as started: the form closes, no error', async () => {
+    vi.mocked(apiPost).mockImplementation(async () => new Response('oops', { status: 201 }));
+    const { container } = render(<Board />);
+    await open(container);
+    type(area(container), 'fix it');
+    press(area(container), 'Enter');
+    await waitFor(() => expect(form(container)).toBeNull());
+    expect(selectWhenSeen.value).toBeNull();
+    expect(selectedId.value).toBe('web');
+  });
+
+  it('the no-repositories line is a status; Loading… is aria-busy', async () => {
+    let answer: (r: Response) => void = () => {};
+    vi.mocked(apiGet).mockImplementation(() => new Promise((r) => (answer = r)));
+    const { container } = render(<Board />);
+    fireEvent.click(q(container, '.k-side > .k-new'));
+    expect(select(container, 'Project').getAttribute('aria-busy')).toBe('true');
+    expect(select(container, 'Branch off').getAttribute('aria-busy')).toBe('true');
+    answer(json({ projects: [], last: null }, 200));
+    await waitFor(() => expect(q(container, '.k-nt-none').getAttribute('role')).toBe('status'));
+  });
+
+  it('lists the default branch first when the branches lack it', async () => {
+    vi.mocked(apiGet).mockImplementation(async () =>
+      json(
+        { projects: [{ name: 'api', defaultBranch: 'main', branches: ['dev', 'x'] }], last: null },
+        200,
+      ),
+    );
+    const { container } = render(<Board />);
+    await open(container);
+    expect([...select(container, 'Branch off').options].map((o) => o.value)).toEqual([
+      'main',
+      'dev',
+      'x',
+    ]);
+    expect(select(container, 'Branch off').value).toBe('main');
+    expect(select(container, 'Branch off').hasAttribute('aria-busy')).toBe(false);
+  });
+});
+
 describe('closing and reopening', () => {
   it('Esc closes; the next open is clean, with the checkbox unchecked', async () => {
     vi.mocked(apiPost).mockImplementation(async () => json({ error: 'nope' }, 422));
@@ -366,14 +411,39 @@ describe('closing and reopening', () => {
     expect(form(container)).toBeNull();
   });
 
-  it('traps focus: Tab from the last control goes to the task, Shift+Tab back', async () => {
+  it('does not trap focus (R45): Tab from Cancel is left to the browser', async () => {
     const { container } = render(<Board />);
     await open(container);
     cancel(container).focus();
-    press(cancel(container), 'Tab');
-    expect(document.activeElement).toBe(area(container));
-    press(area(container), 'Tab', { shiftKey: true });
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    cancel(container).dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
     expect(document.activeElement).toBe(cancel(container));
+  });
+
+  it('Esc inside a select, or one a field has handled, does not close it', async () => {
+    const { container } = render(<Board />);
+    await open(container);
+    press(select(container, 'Project'), 'Escape');
+    expect(form(container)).not.toBeNull();
+    const handled = new KeyboardEvent('keydown', {
+      key: 'Escape',
+      bubbles: true,
+      cancelable: true,
+    });
+    handled.preventDefault();
+    area(container).dispatchEvent(handled);
+    expect(form(container)).not.toBeNull();
+  });
+
+  it('closes when the server asks for sign-in', async () => {
+    const { container } = render(<Board />);
+    await open(container);
+    authRequired.value = true;
+    expect(newTaskOpen.value).toBe(false);
+    authRequired.value = false;
+    await waitFor(() => expect(container.querySelector('.k-side > .k-new')).not.toBeNull());
+    expect(form(container)).toBeNull();
   });
 
   it('the board keys are off while it is open', async () => {
@@ -382,6 +452,39 @@ describe('closing and reopening', () => {
     expect(selectedId.value).toBe('web');
     press(cancel(container), 'j');
     expect(selectedId.value).toBe('web');
+  });
+});
+
+describe('the task length (the server counts code points and bytes)', () => {
+  it('3,000 emoji post (12,000 bytes, at the limit)', async () => {
+    const { container } = render(<Board />);
+    await open(container);
+    type(area(container), '😀'.repeat(3000));
+    expect(start(container).disabled).toBe(false);
+    expect(container.querySelector('.k-nt-count')).toBeNull();
+    press(area(container), 'Enter');
+    expect(apiPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('4,001 code points disable Start and show the count', async () => {
+    const { container } = render(<Board />);
+    await open(container);
+    type(area(container), 'a'.repeat(3600));
+    expect(q(container, '.k-nt-count').textContent).toBe('3,600 / 4,000');
+    expect(start(container).disabled).toBe(false);
+    type(area(container), 'a'.repeat(4001));
+    expect(q(container, '.k-nt-count').textContent).toBe('4,001 / 4,000');
+    expect(start(container).disabled).toBe(true);
+    press(area(container), 'Enter');
+    expect(apiPost).not.toHaveBeenCalled();
+  });
+
+  it('over 12,000 bytes disables Start with its own line', async () => {
+    const { container } = render(<Board />);
+    await open(container);
+    type(area(container), `${'😀'.repeat(3000)}a`);
+    expect(q(container, '.k-nt-count').textContent).toBe('Too long: over 12,000 bytes.');
+    expect(start(container).disabled).toBe(true);
   });
 });
 
