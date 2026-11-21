@@ -20,10 +20,16 @@ const TYPES: Record<string, string> = {
   '.json': 'application/json',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.webp': 'image/webp',
   '.ico': 'image/x-icon',
   '.woff2': 'font/woff2',
   '.txt': 'text/plain; charset=utf-8',
 };
+
+/** Formats that are compressed already: served raw, never brotli/gzip. */
+const PRECOMPRESSED = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
 
 /** esbuild's `app-[hash]` names: their content never changes under the same name. */
 const HASHED = /^\/app-[A-Za-z0-9]+\.(js|css)$/;
@@ -51,7 +57,8 @@ async function files(dir: string): Promise<string[]> {
 }
 
 /**
- * Reads the built board into memory, precompressed (brotli quality 11, gzip level 9).
+ * Reads the built board into memory, precompressed (brotli quality 11, gzip level 9),
+ * except formats that are compressed already (fonts, images), which stay raw.
  * Keys are URL paths ('/index.html', '/fonts/…'); '/' maps to index.html.
  */
 export async function loadAssets(distDir: string): Promise<Map<string, Asset>> {
@@ -61,10 +68,13 @@ export async function loadAssets(distDir: string): Promise<Map<string, Asset>> {
       const path = `/${relative(distDir, file).split(sep).join('/')}`;
       const body = new Uint8Array(await readFile(file));
       const hash = createHash('sha256').update(body).digest('base64url').slice(0, 22);
+      const ext = extname(file).toLowerCase();
+      // Same bytes as the body, so serveAsset never picks an encoding for these.
+      const encoded = PRECOMPRESSED.has(ext) ? { gzip: body, br: body } : await compress(body);
       map.set(path, {
         body,
-        ...(await compress(body)),
-        type: TYPES[extname(file).toLowerCase()] ?? 'application/octet-stream',
+        ...encoded,
+        type: TYPES[ext] ?? 'application/octet-stream',
         etag: `"${hash}"`,
         immutable: HASHED.test(path),
       });

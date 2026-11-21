@@ -85,14 +85,16 @@ export function createApp(deps: AppDeps): Hono {
     bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }),
   );
 
-  app.get('/api/events', () => {
-    return new Response(hub.stream(), {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache, no-transform',
-        'X-Accel-Buffering': 'no',
-      },
-    });
+  app.get('/api/events', (c) => {
+    const headers = {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache, no-transform',
+      'X-Accel-Buffering': 'no',
+    };
+    // Hono routes HEAD here too, and a HEAD body is dropped without cancel: a stream
+    // would leave its client (heartbeat and queue) in the hub forever.
+    if (c.req.method === 'HEAD') return new Response(null, { headers });
+    return new Response(hub.stream(), { headers });
   });
 
   app.delete('/api/sessions/:id', async (c) => {

@@ -1,6 +1,8 @@
+import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_CONFIG } from './config.ts';
-import { ListenError, resolveListenAddress } from './listen.ts';
+import { displayHost, ListenError, resolveListenAddress, shortHostname } from './listen.ts';
+import { hostGuard } from './security.ts';
 
 const base = (over: { unsafeListenAll?: boolean; ip?: string | null } = {}) => ({
   unsafeListenAll: over.unsafeListenAll ?? false,
@@ -79,5 +81,67 @@ describe('resolveListenAddress', () => {
     );
     const r = await resolveListenAddress(cfg, { ...base({ unsafeListenAll: true }), lookup });
     expect(r.address).toBe('10.0.0.5');
+  });
+});
+
+describe('host names people type', () => {
+  it('accepts the short hostname and cfg.name next to the full os.hostname()', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null, name: 'studio' },
+      { ...base(), hostname: () => 'Box.local' },
+    );
+    expect(r.hostNames).toEqual(
+      expect.arrayContaining(['100.64.0.9', 'Box.local', 'box', 'studio']),
+    );
+  });
+  it('lets the short name through the host guard', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base(), hostname: () => 'Box.local' },
+    );
+    const app = new Hono();
+    app.use('*', hostGuard({ hostNames: r.hostNames, port: 8080 }));
+    app.get('/', (c) => c.text('ok'));
+    const res = await app.request('/', { headers: { Host: 'box:8080' } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('shortHostname', () => {
+  it.each([
+    ['Box.local', 'box'],
+    ['my-pc', 'my-pc'],
+    ['WORK.corp.example', 'work'],
+  ])('%s → %s', (full, short) => {
+    expect(shortHostname(full)).toBe(short);
+  });
+});
+
+describe('displayHost', () => {
+  const cfg = (over: Partial<typeof DEFAULT_CONFIG>) => ({ ...DEFAULT_CONFIG, ...over });
+  it('prints the configured host name', () => {
+    expect(
+      displayHost(cfg({ host: 'box.tail.ts.net', name: 'box' }), '100.64.0.7', 'Box.local'),
+    ).toBe('box.tail.ts.net');
+  });
+  it('prints cfg.name for a Tailscale bind, never the .local name', () => {
+    expect(displayHost(cfg({ host: null, name: 'studio' }), '100.64.0.9', 'Box.local')).toBe(
+      'studio',
+    );
+    expect(
+      displayHost(cfg({ host: '100.64.0.7', name: 'studio' }), '100.64.0.7', 'Box.local'),
+    ).toBe('studio');
+    expect(
+      displayHost(cfg({ host: 'fd7a:115c:a1e0::1', name: 'studio' }), 'fd7a:115c:a1e0::1', 'x'),
+    ).toBe('studio');
+  });
+  it('falls back to the short hostname when cfg.name is not a host name', () => {
+    expect(displayHost(cfg({ host: null, name: 'My Box' }), '100.64.0.9', 'Box.local')).toBe('box');
+  });
+  it('prints the IP for a loopback bind', () => {
+    expect(displayHost(cfg({ host: '127.0.0.1', name: 'studio' }), '127.0.0.1', 'Box.local')).toBe(
+      '127.0.0.1',
+    );
+    expect(displayHost(cfg({ host: '::1', name: 'studio' }), '::1', 'Box.local')).toBe('[::1]');
   });
 });

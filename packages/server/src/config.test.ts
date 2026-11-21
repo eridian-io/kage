@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, DEFAULT_CONFIG, loadConfig } from './config.ts';
+import { ConfigError, DEFAULT_CONFIG, loadConfig, startupWarnings } from './config.ts';
 
 let dir: string;
 beforeEach(async () => {
@@ -123,5 +123,16 @@ describe('loadConfig', () => {
     }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as Error).message).toContain('KAGE_PORT');
+  });
+});
+
+describe('startupWarnings', () => {
+  it('is quiet without a token', () => {
+    expect(startupWarnings(DEFAULT_CONFIG)).toEqual([]);
+  });
+  it('warns once that a token is not enforced yet', () => {
+    expect(startupWarnings({ ...DEFAULT_CONFIG, token: 's3cret' })).toEqual([
+      'Warning: "token" is set in the config but isn\'t enforced yet; anyone on your tailnet can open Kage.',
+    ]);
   });
 });

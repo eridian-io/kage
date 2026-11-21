@@ -32,6 +32,15 @@ export const DEFAULT_CONFIG: KageConfig = {
 
 export class ConfigError extends Error {}
 
+/** Lines `kage serve` prints at startup about settings that don't do what they suggest yet. */
+export function startupWarnings(cfg: KageConfig): string[] {
+  return cfg.token === ''
+    ? []
+    : [
+        `Warning: "token" is set in the config but isn't enforced yet; anyone on your tailnet can open Kage.`,
+      ];
+}
+
 type Obj = Record<string, unknown>;
 
 function isObj(v: unknown): v is Obj {

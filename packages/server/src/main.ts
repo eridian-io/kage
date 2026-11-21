@@ -1,16 +1,15 @@
 #!/usr/bin/env node
 import { existsSync, watch } from 'node:fs';
-import { isIP } from 'node:net';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
-import { ConfigError, loadConfig } from './config.ts';
+import { ConfigError, loadConfig, startupWarnings } from './config.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
-import { defaultTailscaleIp, ListenError, resolveListenAddress } from './listen.ts';
+import { defaultTailscaleIp, displayHost, ListenError, resolveListenAddress } from './listen.ts';
 
 const USAGE = 'Usage: kage serve [--demo] [--unsafe-listen-all] [--port N]';
 const DIST = join(import.meta.dirname, '../../web/dist');
@@ -18,15 +17,6 @@ const DIST = join(import.meta.dirname, '../../web/dist');
 function fail(message: string, code = 1): never {
   console.error(message);
   process.exit(code);
-}
-
-/** The address to print: a host name when there is one, else the IP (bracketed for IPv6). */
-function displayHost(address: string, hostNames: string[]): string {
-  // The machine's own name points at its LAN address, not at a loopback bind.
-  const loopback = address === '::1' || address.startsWith('127.');
-  const name = loopback ? undefined : hostNames.find((h) => isIP(h) === 0);
-  if (name) return name;
-  return isIP(address) === 6 ? `[${address}]` : address;
 }
 
 /** Under `node --watch`, reload the assets when the web build rewrites dist/. */
@@ -84,6 +74,7 @@ async function serveCommand(args: string[]): Promise<void> {
   }
 
   if (!values.demo) fail('Live sessions arrive in phase 2. Run with --demo for now.', 2);
+  for (const warning of startupWarnings(cfg)) console.warn(warning);
 
   let listen: Awaited<ReturnType<typeof resolveListenAddress>>;
   try {
@@ -115,7 +106,7 @@ async function serveCommand(args: string[]): Promise<void> {
 
   const server = serve({ fetch: app.fetch, hostname: listen.address, port: cfg.port }, () => {
     console.log(
-      `Kage is running at http://${displayHost(listen.address, listen.hostNames)}:${cfg.port}`,
+      `Kage is running at http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`,
     );
   });
   server.on('error', (err: NodeJS.ErrnoException) => {

@@ -56,9 +56,37 @@ function inV4(n: bigint, base: number, bits: number): boolean {
   return n >> BigInt(32 - bits) === BigInt(base) >> BigInt(32 - bits);
 }
 
+function isTailscale(p: Parsed): boolean {
+  if (p.v === 4) return inV4(p.n, 0x64400000, 10);
+  return p.n >> 80n === 0xfd7a115ca1e0n;
+}
+
 function isAllowedBind(p: Parsed): boolean {
-  if (p.v === 4) return inV4(p.n, 0x64400000, 10) || inV4(p.n, 0x7f000000, 8);
-  return p.n === 1n || p.n >> 80n === 0xfd7a115ca1e0n;
+  if (p.v === 4) return isTailscale(p) || inV4(p.n, 0x7f000000, 8);
+  return p.n === 1n || isTailscale(p);
+}
+
+/** The machine name as people type it: before the first dot, lowercased ("Box.local" → "box"). */
+export function shortHostname(full: string): string {
+  return (full.split('.')[0] ?? '').toLowerCase();
+}
+
+const LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
+
+/**
+ * The host to print in "Kage is running at …": the configured host name if one was given;
+ * else, for a Tailscale (or all-interfaces) bind, cfg.name when it is a usable host name,
+ * otherwise the short hostname; else the IP (loopback and other addresses; IPv6 bracketed).
+ * Never the full os.hostname(): "box.local" resolves via mDNS to the LAN address.
+ */
+export function displayHost(cfg: KageConfig, address: string, hostname: string): string {
+  const configured = cfg.host?.trim() ?? '';
+  if (configured !== '' && parseIp(configured) === null) return configured;
+  const p = parseIp(address);
+  if (p === null || p.n === 0n || isTailscale(p)) {
+    return LABEL.test(cfg.name) ? cfg.name : shortHostname(hostname);
+  }
+  return p.v === 6 ? `[${address.replace(/^\[|\]$/g, '')}]` : address;
 }
 
 /** Runs `tailscale ip -4` (argument array, no shell); null on error, empty or non-Tailscale output. */
@@ -128,5 +156,9 @@ export async function resolveListenAddress(
     }
     address = ip;
   }
-  return { address, hostNames: [...new Set([...names, address, opts.hostname()])] };
+  const full = opts.hostname();
+  const hostNames = [...names, address, full, shortHostname(full), cfg.name].filter(
+    (h) => h !== '',
+  );
+  return { address, hostNames: [...new Set(hostNames)] };
 }

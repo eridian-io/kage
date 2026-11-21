@@ -26,6 +26,11 @@ beforeAll(async () => {
   await writeFile(join(dist, 'app-ABC123.js'), JS);
   await writeFile(join(dist, 'app-DEF456.css'), `.k-app{color:red}${'.a{b:c}'.repeat(100)}`);
   await writeFile(join(dist, 'fonts', 'geist-latin-400-normal.woff2'), new Uint8Array([1, 2, 3]));
+  // Compressible bytes under already-compressed extensions: must still be served raw.
+  await writeFile(join(dist, 'fonts', 'big.woff2'), new Uint8Array(4096).fill(7));
+  await writeFile(join(dist, 'logo.png'), new Uint8Array(4096).fill(7));
+  await writeFile(join(dist, 'photo.jpg'), new Uint8Array(4096).fill(7));
+  await writeFile(join(dist, 'photo.webp'), new Uint8Array(4096).fill(7));
   assets = await loadAssets(dist);
 });
 afterAll(() => rm(dist, { recursive: true, force: true }));
@@ -133,6 +138,20 @@ describe('static assets', () => {
     expect([...new Uint8Array(await font.arrayBuffer())]).toEqual([1, 2, 3]);
   });
 
+  it.each([
+    ['/fonts/big.woff2', 'font/woff2'],
+    ['/logo.png', 'image/png'],
+    ['/photo.jpg', 'image/jpeg'],
+    ['/photo.webp', 'image/webp'],
+  ])('serves already-compressed %s raw, even when it would shrink', async (path, type) => {
+    const res = await app().fetch(req(path, { headers: { 'Accept-Encoding': 'br, gzip' } }));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toBe(type);
+    expect(res.headers.get('content-encoding')).toBeNull();
+    expect(res.headers.get('content-length')).toBe('4096');
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array(4096).fill(7));
+  });
+
   it('answers 404 for unknown paths', async () => {
     expect((await app().fetch(req('/nope.js'))).status).toBe(404);
     expect((await app().fetch(req('/api/nope'))).status).toBe(404);
@@ -160,6 +179,18 @@ describe('API', () => {
     expect(text.startsWith('event: snapshot\ndata: ')).toBe(true);
     expect(JSON.parse(text.slice('event: snapshot\ndata: '.length)).host).toBe('my-pc');
     await reader.cancel();
+  });
+
+  it('answers HEAD on the event stream with the SSE headers and no client', async () => {
+    const a = app();
+    for (let i = 0; i < 3; i++) {
+      const res = await a.request('/api/events', { method: 'HEAD', headers: { Host: HOST } });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('content-type')).toBe('text/event-stream');
+      expect(res.headers.get('cache-control')).toBe('no-cache, no-transform');
+      expect(res.body).toBeNull();
+    }
+    expect(hub.clientCount).toBe(0);
   });
 
   it('deletes a session, and answers 404 for an unknown one', async () => {
