@@ -7,8 +7,10 @@ import { apiDelete, apiPost } from '../api.ts';
 import { Board } from '../main.tsx';
 import {
   applyEvent,
+  beginDelete,
   confirmingDelete,
   connection,
+  endDelete,
   host,
   now,
   selectedId,
@@ -372,5 +374,147 @@ describe('store', () => {
     expect(row(container, 'shop').textContent).toContain('fix logout bug');
     expect(row(container, 'new').textContent).toContain('brand new');
     expect(sessions.value).toHaveLength(7);
+  });
+});
+
+describe('reconnect bar', () => {
+  it('is absent while live', () => {
+    const { container } = render(<Board />);
+    expect(container.querySelector('.k-reconnect')).toBeNull();
+    expect(container.textContent).not.toContain('Reconnecting');
+  });
+
+  it('shows under the top bar while not live, and disables Delete', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    connection.value = 'reconnecting';
+    await Promise.resolve();
+    const bar = q(container, '.k-reconnect');
+    expect(bar.textContent).toBe('Reconnecting to my-pc…');
+    expect(bar.getAttribute('role')).toBe('status');
+    expect(bar.previousElementSibling?.classList.contains('k-top')).toBe(true);
+    expect(button(container, 'Delete session').disabled).toBe(true);
+    fireEvent.click(button(container, 'Delete session'));
+    expect(apiDelete).not.toHaveBeenCalled();
+
+    connection.value = 'live';
+    await Promise.resolve();
+    expect(container.querySelector('.k-reconnect')).toBeNull();
+    expect(button(container, 'Delete session').disabled).toBe(false);
+
+    fireEvent.click(button(container, 'Cancel'));
+    connection.value = 'connecting';
+    await Promise.resolve();
+    expect(button(container, 'Delete…').disabled).toBe(true);
+    expect(q(container, '.k-reconnect').textContent).toBe('Reconnecting to my-pc…');
+  });
+
+  it('stays hidden before the first snapshot', () => {
+    host.value = '';
+    connection.value = 'connecting';
+    const { container } = render(<Board />);
+    expect(container.querySelector('.k-reconnect')).toBeNull();
+  });
+
+  it('uses quiet styling from the tokens', () => {
+    const rule = /\.k-reconnect\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+    expect(rule).not.toBe('');
+    expect(rule).not.toMatch(/--(amber|lime|red)|#/);
+  });
+});
+
+describe('pending delete', () => {
+  const deferred = () => {
+    let resolve!: (r: Response) => void;
+    const promise = new Promise<Response>((r) => {
+      resolve = r;
+    });
+    return { promise, resolve };
+  };
+
+  it('disables Delete… and Delete session while the request is pending', async () => {
+    const d = deferred();
+    vi.mocked(apiDelete).mockReturnValueOnce(d.promise);
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    fireEvent.click(button(container, 'Delete session'));
+    await Promise.resolve();
+    expect(apiDelete).toHaveBeenCalledTimes(1);
+    expect(button(container, 'Delete…').disabled).toBe(true);
+    // Escape and reopen is impossible while pending; the confirm can't be reached.
+    fireEvent.click(button(container, 'Delete…'));
+    expect(container.querySelector('.k-confirm')).toBeNull();
+
+    d.resolve(new Response(null, { status: 500 }));
+    await d.promise;
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(button(container, 'Delete…').disabled).toBe(false);
+  });
+
+  it('a failed second attempt keeps the first attempt’s toast', async () => {
+    const first = deferred();
+    const second = deferred();
+    vi.mocked(apiDelete).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    const s = sessions.value.find((x) => x.id === 'docs') as Session;
+    beginDelete(s);
+    beginDelete(s);
+    endDelete('docs', false);
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toBe('docs · update README');
+    endDelete('docs', true);
+  });
+
+  it('forgets a delete whose session is gone from the next snapshot', async () => {
+    const s = sessions.value.find((x) => x.id === 'docs') as Session;
+    beginDelete(s);
+    endDelete('docs', true);
+    // The removal happened while disconnected; the snapshot no longer has it.
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      sessions: demoSessions(NOW).filter((x) => x.id !== 'docs'),
+    });
+    // A later session with the same id is removed by someone else: no toast.
+    applyEvent({ type: 'session.updated', session: s });
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toBeNull();
+  });
+});
+
+describe('delete confirmation reset', () => {
+  it('resets when the selected session leaves the done group', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    expect(confirmingDelete.value).toBe(true);
+    const docs = sessions.value.find((x) => x.id === 'docs') as Session;
+    applyEvent({ type: 'session.updated', session: { ...docs, status: 'running' } });
+    expect(confirmingDelete.value).toBe(false);
+    applyEvent({ type: 'session.updated', session: docs });
+    await Promise.resolve();
+    expect(container.querySelector('.k-confirm')).toBeNull();
+  });
+
+  it('resets when the selected session is replaced by another', () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(selectedId.value).toBe('web');
+    expect(confirmingDelete.value).toBe(false);
+  });
+
+  it('stays while the selected session is updated but still done', () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    const docs = sessions.value.find((x) => x.id === 'docs') as Session;
+    applyEvent({ type: 'session.updated', session: { ...docs, unpushed: 3 } });
+    expect(confirmingDelete.value).toBe(true);
   });
 });

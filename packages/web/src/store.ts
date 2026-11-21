@@ -1,4 +1,4 @@
-import { type ServerEvent, type Session, sortSessions } from '@kage/shared';
+import { groupOf, type ServerEvent, type Session, sortSessions } from '@kage/shared';
 import { batch, computed, type ReadonlySignal, type Signal, signal } from '@preact/signals';
 
 export const host: Signal<string> = signal('');
@@ -21,6 +21,10 @@ export const selected: ReadonlySignal<Session | null> = computed(
 
 /** Deletes this page asked for, by id, with the name the toast will show. */
 const deleting = new Map<string, string>();
+/** DELETE requests in flight, by id, so a second attempt can't erase the first one's entry. */
+const inFlight = new Map<string, number>();
+/** The ids with a DELETE request in flight; Delete is disabled for them. */
+export const pendingDeletes: Signal<ReadonlySet<string>> = signal(new Set());
 
 export const nameOf = (s: Session) => `${s.project} · ${s.task}`;
 
@@ -38,6 +42,9 @@ function keepSelection(): void {
     selectedId.value = sorted.value[0]?.id ?? null;
     confirmingDelete.value = false;
   }
+  // The confirmation belongs to a done session; it ends when the session leaves that group.
+  const s = selected.value;
+  if (s === null || groupOf(s) !== 'done') confirmingDelete.value = false;
 }
 
 export function applyEvent(e: ServerEvent): void {
@@ -45,6 +52,10 @@ export function applyEvent(e: ServerEvent): void {
     if (e.type === 'snapshot') {
       host.value = e.host;
       sessions.value = e.sessions;
+      // A removal missed while disconnected is never announced, so its toast entry goes.
+      for (const id of [...deleting.keys()]) {
+        if (!e.sessions.some((s) => s.id === id)) deleting.delete(id);
+      }
     } else if (e.type === 'session.updated') {
       const list = sessions.value;
       const i = list.findIndex((s) => s.id === e.session.id);
@@ -69,11 +80,21 @@ export function selectNext(delta: 1 | -1): void {
   select(list[next]?.id ?? null);
 }
 
-/** Remembers that this page deleted the session, so its removal shows the toast. */
-export function markDeleting(s: Session): void {
-  deleting.set(s.id, nameOf(s));
+function setInFlight(id: string, n: number): void {
+  if (n > 0) inFlight.set(id, n);
+  else inFlight.delete(id);
+  pendingDeletes.value = new Set(inFlight.keys());
 }
 
-export function unmarkDeleting(id: string): void {
-  deleting.delete(id);
+/** A DELETE request starts: its removal will show the toast, and Delete is disabled meanwhile. */
+export function beginDelete(s: Session): void {
+  deleting.set(s.id, nameOf(s));
+  setInFlight(s.id, (inFlight.get(s.id) ?? 0) + 1);
+}
+
+/** A DELETE request ended. A failure forgets the toast only when no other request is in flight. */
+export function endDelete(id: string, ok: boolean): void {
+  const left = (inFlight.get(id) ?? 1) - 1;
+  setInFlight(id, left);
+  if (!ok && left === 0) deleting.delete(id);
 }

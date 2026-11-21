@@ -1,7 +1,14 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
 import { apiDelete } from '../api.ts';
-import { confirmingDelete, markDeleting, now, unmarkDeleting } from '../store.ts';
+import {
+  beginDelete,
+  confirmingDelete,
+  connection,
+  endDelete,
+  now,
+  pendingDeletes,
+} from '../store.ts';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
 import { Toast } from './Toast.tsx';
@@ -40,14 +47,16 @@ interface ActProps {
   cls?: string;
   icon?: ComponentChildren;
   onClick?: () => void;
+  disabled?: boolean;
 }
 
 /** A footer action. Without onClick it is shown but inert in this phase. */
-function Act({ label, hotkey, cls, icon, onClick }: ActProps) {
+function Act({ label, hotkey, cls, icon, onClick, disabled }: ActProps) {
   return (
     <button
       type="button"
       class={cls ? `k-act ${cls}` : 'k-act'}
+      disabled={disabled}
       {...(onClick ? { onClick } : INERT)}
     >
       {icon}
@@ -68,15 +77,20 @@ function unpushedWarning(n: number): string {
     : `${n} commits aren’t pushed and will be lost.`;
 }
 
+/** Delete needs a live connection (its result arrives as an event) and no request in flight. */
+const canDelete = (s: Session) => connection.value === 'live' && !pendingDeletes.value.has(s.id);
+
 async function deleteSession(s: Session): Promise<void> {
-  markDeleting(s);
+  if (!canDelete(s)) return;
+  beginDelete(s);
   confirmingDelete.value = false;
+  let ok = false;
   try {
-    const res = await apiDelete(`/api/sessions/${encodeURIComponent(s.id)}`);
-    if (!res.ok) unmarkDeleting(s.id);
+    ok = (await apiDelete(`/api/sessions/${encodeURIComponent(s.id)}`)).ok;
   } catch {
-    unmarkDeleting(s.id);
+    // ok stays false
   }
+  endDelete(s.id, ok);
 }
 
 function Confirm({ s }: { s: Session }) {
@@ -98,7 +112,12 @@ function Confirm({ s }: { s: Session }) {
         )}
       </div>
       <div class="row">
-        <button type="button" class="k-act danger-solid" onClick={() => deleteSession(s)}>
+        <button
+          type="button"
+          class="k-act danger-solid"
+          disabled={!canDelete(s)}
+          onClick={() => deleteSession(s)}
+        >
           Delete session
         </button>
         <button
@@ -187,6 +206,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
                 label="Delete…"
                 cls="stop"
                 icon={ICON.del}
+                disabled={!canDelete(s)}
                 onClick={() => {
                   confirmingDelete.value = true;
                 }}

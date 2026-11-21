@@ -1,0 +1,137 @@
+import { Hono } from 'hono';
+import { bodyLimit } from 'hono/body-limit';
+import type { Asset } from './assets.ts';
+import type { EventHub } from './events.ts';
+import { csrfGuard, hostGuard } from './security.ts';
+import { NotFoundError, type SessionSource } from './source.ts';
+
+export interface AppDeps {
+  source: SessionSource;
+  hub: EventHub;
+  assets: Map<string, Asset>;
+  allowed: { hostNames: string[]; port: number };
+  /** Demo mode only: registers POST /api/demo/reset, which calls this. */
+  demoReset?: () => void;
+}
+
+const CSP = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self'",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  "frame-ancestors 'none'",
+].join('; ');
+
+/** True when an Accept-Encoding header lists `coding` with a non-zero q. */
+function accepts(header: string, coding: string): boolean {
+  for (const part of header.split(',')) {
+    const [name = '', ...params] = part.split(';').map((p) => p.trim());
+    if (name.toLowerCase() !== coding) continue;
+    const q = params.find((p) => p.startsWith('q='));
+    return q === undefined || Number(q.slice(2)) > 0;
+  }
+  return false;
+}
+
+function matchesEtag(header: string, etag: string): boolean {
+  return header.split(',').some((t) => {
+    const tag = t.trim();
+    return tag === '*' || tag.replace(/^W\//, '') === etag;
+  });
+}
+
+function serveAsset(asset: Asset, req: Request): Response {
+  const headers = new Headers({
+    'Content-Type': asset.type,
+    'Cache-Control': asset.immutable ? 'public, max-age=31536000, immutable' : 'no-cache',
+    ETag: asset.etag,
+    Vary: 'Accept-Encoding',
+  });
+  const inm = req.headers.get('If-None-Match');
+  if (inm !== null && matchesEtag(inm, asset.etag))
+    return new Response(null, { status: 304, headers });
+  const ae = req.headers.get('Accept-Encoding') ?? '';
+  let body = asset.body;
+  if (accepts(ae, 'br') && asset.br.length < body.length) {
+    body = asset.br;
+    headers.set('Content-Encoding', 'br');
+  } else if (accepts(ae, 'gzip') && asset.gzip.length < body.length) {
+    body = asset.gzip;
+    headers.set('Content-Encoding', 'gzip');
+  }
+  headers.set('Content-Length', String(body.length));
+  return new Response(body as Uint8Array<ArrayBuffer>, { status: 200, headers });
+}
+
+export function createApp(deps: AppDeps): Hono {
+  const { source, hub, assets, allowed } = deps;
+  const app = new Hono();
+
+  app.use('*', async (c, next) => {
+    await next();
+    c.res.headers.set('X-Content-Type-Options', 'nosniff');
+    c.res.headers.set('Referrer-Policy', 'no-referrer');
+    c.res.headers.set('Content-Security-Policy', CSP);
+  });
+  app.use('*', hostGuard(allowed));
+  // Every method but GET and HEAD needs X-Kage: 1 and a matching Origin (ruling R1).
+  app.use('*', csrfGuard(allowed));
+  app.use(
+    '/api/*',
+    bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }),
+  );
+
+  app.get('/api/events', () => {
+    return new Response(hub.stream(), {
+      headers: {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'X-Accel-Buffering': 'no',
+      },
+    });
+  });
+
+  app.delete('/api/sessions/:id', async (c) => {
+    const id = c.req.param('id');
+    try {
+      await source.remove(id);
+    } catch (err) {
+      if (err instanceof NotFoundError) return c.json({ error: `No session with id ${id}` }, 404);
+      throw err;
+    }
+    return c.body(null, 204);
+  });
+
+  app.post('/api/view', async (c) => {
+    const body: unknown = await c.req.json().catch(() => undefined);
+    const id =
+      typeof body === 'object' && body !== null ? (body as { id?: unknown }).id : undefined;
+    if (typeof id !== 'string' && id !== null) {
+      return c.json({ error: 'Expected {"id": "<session id>"}' }, 400);
+    }
+    // Phase 1 has no per-session streams yet; the hint is accepted and not needed.
+    return c.body(null, 204);
+  });
+
+  const { demoReset } = deps;
+  if (demoReset) {
+    app.post('/api/demo/reset', (c) => {
+      demoReset();
+      return c.body(null, 204);
+    });
+  }
+
+  app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
+
+  app.get('*', (c) => {
+    const asset = assets.get(c.req.path);
+    if (!asset) return c.text('Not found', 404);
+    return serveAsset(asset, c.req.raw);
+  });
+
+  return app;
+}

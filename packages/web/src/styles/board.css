@@ -140,6 +140,14 @@ button {
   display: block;
   flex: none;
 }
+/* Only while the event stream is down; absent from the DOM when live. */
+.k-reconnect {
+  flex: none;
+  padding: 5px 20px;
+  border-bottom: 1px solid var(--line);
+  font: 12px var(--mono);
+  color: var(--fg-2);
+}
 .k-logo {
   display: flex;
   align-items: center;
@@ -374,6 +382,11 @@ button {
 .k-act.danger-solid:hover {
   background: #eb9a9a;
   color: #1a0d0d;
+}
+/* Delete while the connection is down or a delete is in flight. */
+.k-act:disabled {
+  opacity: 0.45;
+  pointer-events: none;
 }
 .k-main {
   position: relative;

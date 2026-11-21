@@ -1,0 +1,126 @@
+import { demoSessions } from '@kage/shared';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { connect } from './sse.ts';
+import { connection, host, selectedId, sessions } from './store.ts';
+
+type Listener = (e: MessageEvent) => void;
+
+class FakeEventSource {
+  static all: FakeEventSource[] = [];
+  readonly url: string;
+  closed = false;
+  onerror: ((e: Event) => void) | null = null;
+  private readonly listeners = new Map<string, Listener[]>();
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.all.push(this);
+  }
+  addEventListener(type: string, fn: Listener): void {
+    this.listeners.set(type, [...(this.listeners.get(type) ?? []), fn]);
+  }
+  close(): void {
+    this.closed = true;
+  }
+  emit(type: string, data: unknown): void {
+    const e = new MessageEvent(type, {
+      data: typeof data === 'string' ? data : JSON.stringify(data),
+    });
+    for (const fn of this.listeners.get(type) ?? []) fn(e);
+  }
+  fail(): void {
+    const e = new Event('error');
+    this.onerror?.(e);
+    for (const fn of this.listeners.get('error') ?? []) fn(e as MessageEvent);
+  }
+}
+
+const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
+const latest = () => FakeEventSource.all.at(-1) as FakeEventSource;
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  FakeEventSource.all = [];
+  vi.stubGlobal('EventSource', FakeEventSource);
+  host.value = '';
+  sessions.value = [];
+  selectedId.value = null;
+  connection.value = 'connecting';
+});
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+describe('connect', () => {
+  it('opens /api/events and goes live on the first snapshot', () => {
+    const stop = connect();
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(latest().url).toBe('/api/events');
+    expect(connection.value).toBe('connecting');
+    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    expect(connection.value).toBe('live');
+    expect(host.value).toBe('my-pc');
+    expect(sessions.value).toHaveLength(6);
+    latest().emit('session.removed', { type: 'session.removed', id: 'docs' });
+    expect(sessions.value.map((s) => s.id)).not.toContain('docs');
+    stop();
+  });
+
+  it('review focus 4: reconnects after an error and replaces the sessions on the next snapshot', () => {
+    const stop = connect('/api/events', { retryMs: 250 });
+    const first = latest();
+    first.emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: demoSessions(NOW) });
+    expect(connection.value).toBe('live');
+
+    first.fail();
+    expect(connection.value).toBe('reconnecting');
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.all).toHaveLength(1);
+    vi.advanceTimersByTime(249);
+    expect(FakeEventSource.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeEventSource.all).toHaveLength(2);
+    expect(connection.value).toBe('reconnecting');
+
+    // A second failure before any snapshot keeps retrying.
+    latest().fail();
+    vi.advanceTimersByTime(250);
+    expect(FakeEventSource.all).toHaveLength(3);
+
+    const fresh = demoSessions(NOW).slice(0, 2);
+    latest().emit('snapshot', { type: 'snapshot', host: 'my-pc', sessions: fresh });
+    expect(connection.value).toBe('live');
+    expect(sessions.value.map((s) => s.id)).toEqual(['web', 'shop']);
+    stop();
+  });
+
+  it('defaults to a one-second retry', () => {
+    const stop = connect();
+    latest().fail();
+    vi.advanceTimersByTime(999);
+    expect(FakeEventSource.all).toHaveLength(1);
+    vi.advanceTimersByTime(1);
+    expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('stops: closes the stream and cancels a pending retry', () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    stop();
+    vi.advanceTimersByTime(1000);
+    expect(FakeEventSource.all).toHaveLength(1);
+    const again = connect();
+    stop();
+    again();
+    expect(latest().closed).toBe(true);
+  });
+
+  it('ignores a malformed frame', () => {
+    const stop = connect();
+    latest().emit('snapshot', '{not json');
+    expect(connection.value).toBe('connecting');
+    expect(sessions.value).toEqual([]);
+    stop();
+  });
+});

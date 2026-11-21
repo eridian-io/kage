@@ -6,9 +6,20 @@ import { SessionPanel } from './components/SessionPanel.tsx';
 import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
-import { now, selected } from './store.ts';
+import { connect } from './sse.ts';
+import { connection, host, now, selected } from './store.ts';
 
 const MINUTE = 60_000;
+
+/** Shown once the board has had a snapshot and the stream is down. */
+function ReconnectBar() {
+  if (connection.value === 'live' || host.value === '') return null;
+  return (
+    <div class="k-reconnect" role="status">
+      Reconnecting to {host.value}…
+    </div>
+  );
+}
 
 export function Board() {
   useEffect(() => {
@@ -27,6 +38,7 @@ export function Board() {
     <div class="k-app">
       <div class="k-board">
         <TopBar />
+        <ReconnectBar />
         <div class="k-b">
           <SessionList />
           {s ? (
@@ -50,4 +62,7 @@ export function Board() {
 }
 
 const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
-if (root) render(<Board />, root);
+if (root) {
+  render(<Board />, root);
+  connect();
+}
