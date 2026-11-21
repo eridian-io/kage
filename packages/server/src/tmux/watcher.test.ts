@@ -40,7 +40,7 @@ describe('TmuxWatcher', () => {
   it('attaches in control mode, with -L when a socket is set', () => {
     const { w, calls } = setup();
     w.start();
-    expect(calls[0]).toEqual({ cmd: 'tmux', args: ['-C', 'attach', '-t', 'kage'] });
+    expect(calls[0]).toEqual({ cmd: 'tmux', args: ['-C', 'attach', '-t', '=kage'] });
     w.stop();
     const spawn = ((cmd: string, args: string[]) => {
       calls.push({ cmd, args });
@@ -48,7 +48,7 @@ describe('TmuxWatcher', () => {
     }) as never;
     const w2 = new TmuxWatcher({ session: 's', socket: 'sock', spawn });
     w2.start();
-    expect(calls[1]?.args).toEqual(['-L', 'sock', '-C', 'attach', '-t', 's']);
+    expect(calls[1]?.args).toEqual(['-L', 'sock', '-C', 'attach', '-t', '=s']);
     w2.stop();
   });
 
@@ -215,7 +215,49 @@ describe('TmuxWatcher', () => {
     }) as never;
     const w = new TmuxWatcher({ session: 's', socket: 'k', configFile: '/dev/null', spawn });
     w.start();
-    expect(calls[0]).toEqual(['-f', '/dev/null', '-L', 'k', '-C', 'attach', '-t', 's']);
+    expect(calls[0]).toEqual(['-f', '/dev/null', '-L', 'k', '-C', 'attach', '-t', '=s']);
+    w.stop();
+  });
+
+  it('drops %output lines whose pane id is not %<digits>', async () => {
+    const { w, procs, events } = setup();
+    w.start();
+    procs[0]?.say('%output %abc x\n%output %1x y\n%output 7 z\n%output %\n%output  %2 lead\n');
+    procs[0]?.say('%output %3 ok\n');
+    await flush();
+    expect(events.filter((e) => e.type === 'activity')).toEqual([
+      { type: 'activity', paneId: '%3' },
+    ]);
+    w.stop();
+  });
+
+  it('emits nothing after stop(), even for lines the old client still prints', async () => {
+    const { w, procs, events } = setup();
+    w.start();
+    procs[0]?.say('%begin 1 2 0\n');
+    await flush();
+    const before = events.length;
+    w.stop();
+    procs[0]?.say('%window-add @1\n%output %1 x\n');
+    procs[0]?.emit('exit', 0);
+    await flush();
+    expect(events).toHaveLength(before);
+  });
+
+  it('reads the control client as UTF-8, so a character split across chunks stays whole', async () => {
+    const { w, procs, events } = setup();
+    w.start();
+    expect(procs[0]?.stdout.readableEncoding).toBe('utf8');
+    const bytes = Buffer.from('%output %1 café\n%window-add @2\n');
+    const cut = bytes.indexOf(0xc3) + 1;
+    procs[0]?.stdout.write(bytes.subarray(0, cut));
+    procs[0]?.stdout.write(bytes.subarray(cut));
+    await flush();
+    expect(events).toEqual([
+      { type: 'up' },
+      { type: 'activity', paneId: '%1' },
+      { type: 'windows-changed' },
+    ]);
     w.stop();
   });
 });

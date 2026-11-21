@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { type ExecFn, TmuxClient, tmuxArgs } from './client.ts';
+import { EXEC_OPTIONS, type ExecFn, parseTmuxVersion, TmuxClient, tmuxArgs } from './client.ts';
 
 const fail = (stderr: string): Error => Object.assign(new Error('failed'), { stderr });
 
@@ -73,5 +73,27 @@ describe('configFile', () => {
 
   it('omits -f when unset', () => {
     expect(tmuxArgs({ socket: null }, ['x'])).toEqual(['x']);
+  });
+});
+
+describe('exec options', () => {
+  it('bounds every tmux call at 5 s', () => {
+    expect(EXEC_OPTIONS.timeout).toBe(5000);
+  });
+});
+
+describe('parseTmuxVersion', () => {
+  it.each([
+    ['tmux 3.4', '3.4', false],
+    ['tmux 3.2', '3.2', false],
+    ['tmux 3.3a', '3.3a', false],
+    ['tmux next-3.6', 'next-3.6', false],
+    ['tmux 10.0', '10.0', false],
+    ['tmux 3.1c', '3.1c', true],
+    ['tmux 2.9', '2.9', true],
+    ['tmux openbsd-7.5', 'openbsd-7.5', false],
+    ['tmux master', 'master', false],
+  ])('%s → %s, too old: %s', (out, version, tooOld) => {
+    expect(parseTmuxVersion(`${out}\n`)).toEqual({ version, tooOld });
   });
 });

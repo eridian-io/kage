@@ -5,25 +5,45 @@ export type { TmuxWindow } from './format.ts';
 
 export type ExecFn = (cmd: string, args: string[]) => Promise<{ stdout: string; stderr: string }>;
 
+/** Every tmux call ends within 5 s: a wedged server must not hang Kage. */
+export const EXEC_OPTIONS = { maxBuffer: 16 * 1024 * 1024, timeout: 5000 } as const;
+
 const defaultExec: ExecFn = (cmd, args) =>
   new Promise((resolve, reject) => {
-    execFile(cmd, args, { maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile(cmd, args, EXEC_OPTIONS, (err, stdout, stderr) => {
       if (err) reject(Object.assign(err, { stdout, stderr }));
       else resolve({ stdout, stderr });
     });
   });
 
-function detectTmux(): boolean {
+/**
+ * Reads `tmux -V` output ("tmux 3.4", "tmux 3.3a", "tmux next-3.6"). `tooOld` is true only for a
+ * numbered version below 3.2; builds without one ("master", "openbsd-7.5") get the benefit of the doubt.
+ */
+export function parseTmuxVersion(output: string): { version: string; tooOld: boolean } {
+  const version = output.trim().replace(/^tmux\s+/, '');
+  const m = /^(?:next-)?(\d+)\.(\d+)/.exec(version);
+  const tooOld = m !== null && (Number(m[1]) < 3 || (Number(m[1]) === 3 && Number(m[2]) < 2));
+  return { version, tooOld };
+}
+
+function detectTmux(): string | null {
   try {
-    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
-    return true;
+    return execFileSync('tmux', ['-V'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: EXEC_OPTIONS.timeout,
+    });
   } catch {
-    return false;
+    return null;
   }
 }
 
+/** `tmux -V` output, or null when tmux doesn't run (Windows, or not installed). */
+export const tmuxVersionOutput: string | null = detectTmux();
+
 /** True when `tmux -V` runs (false on Windows or without tmux). */
-export const hasTmux: boolean = detectTmux();
+export const hasTmux: boolean = tmuxVersionOutput !== null;
 
 export interface TmuxTarget {
   socket: string | null;

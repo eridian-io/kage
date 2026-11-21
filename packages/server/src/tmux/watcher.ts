@@ -19,6 +19,8 @@ export type SpawnFn = (cmd: string, args: string[]) => WatchedProcess;
 const defaultSpawn: SpawnFn = (cmd, args) =>
   nodeSpawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
+/** A tmux pane id as `%output` prints it. */
+const PANE_ID = /^%\d+$/;
 const WINDOW_EVENTS = new Set(['%window-add', '%window-close', '%unlinked-window-close']);
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 30_000;
@@ -113,12 +115,16 @@ export class TmuxWatcher {
 
   #spawnClient(): void {
     let first = true;
-    const args = tmuxArgs(this.#target, ['-C', 'attach', '-t', this.#session]);
+    const args = tmuxArgs(this.#target, ['-C', 'attach', '-t', `=${this.#session}`]);
     const proc = this.#spawn('tmux', args);
     this.#proc = proc;
     let buf = '';
     let ended = false;
+    // Decode as UTF-8 across chunks: a character split between two reads must stay whole.
+    proc.stdout?.setEncoding('utf8');
     proc.stdout?.on('data', (chunk: Buffer | string) => {
+      // A client that outlives stop() (or a replaced one) must not report anything.
+      if (!this.#running || this.#proc !== proc) return;
       buf += chunk.toString();
       let nl = buf.indexOf('\n');
       while (nl >= 0) {
@@ -154,7 +160,7 @@ export class TmuxWatcher {
     } else if (kind === '%output') {
       const rest = line.slice(sp + 1);
       const paneId = rest.slice(0, rest.indexOf(' ') < 0 ? rest.length : rest.indexOf(' '));
-      if (!paneId.startsWith('%')) return;
+      if (!PANE_ID.test(paneId)) return;
       const now = Date.now();
       const last = this.#lastActivity.get(paneId);
       if (last !== undefined && now - last < this.#throttleMs) return;
