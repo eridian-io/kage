@@ -691,6 +691,15 @@ describe('board v2', () => {
     expect(texts(container, '.k-side .k-g')).toEqual(['needs you', 'running', 'done']);
   });
 
+  it('an ended external session offers no Resume: Kage resumes only its own sessions', () => {
+    withSession({ status: 'ended', external: true });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    const buttons = footButtons(container);
+    expect(buttons.map((b) => b.textContent)).toEqual(['TerminalT']);
+    expect(container.textContent).not.toContain('Resume');
+  });
+
   it('marks an external session in the row and offers only Terminal', () => {
     withSession({ external: true }, 'shop');
     const { container } = render(<Board />);

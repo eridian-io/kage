@@ -206,7 +206,8 @@ export function SessionPanel({ session: s }: { session: Session }) {
       {confirming && <Confirm s={s} />}
       <div class="k-foot">
         <div class="l">
-          {ended ? (
+          {/* Kage resumes only sessions it launched; an external window keeps its Terminal. */}
+          {ended && own ? (
             <Act label="Resume" hotkey="U" icon={ICON.resume} />
           ) : (
             <Act label="Terminal" hotkey="T" icon={ICON.term} />
