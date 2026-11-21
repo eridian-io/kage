@@ -19,6 +19,7 @@
     "build": "tsc -b"
   },
   "dependencies": {
-    "@kage/shared": "workspace:*"
+    "@kage/shared": "workspace:*",
+    "hono": "^4.13.19"
   }
 }
