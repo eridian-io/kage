@@ -16,6 +16,7 @@ import {
   parsePermissionPrompt,
   parseStartupScreen,
   showsDenial,
+  showsIdleBox,
   showsPrompt,
 } from './pane/prompt.ts';
 import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
@@ -27,7 +28,10 @@ import type { TranscriptTail } from './transcript/tail.ts';
 
 export { NotImplementedError } from './source.ts';
 
-export type TmuxClientLike = Pick<TmuxClient, 'ensureSession' | 'listWindows' | 'capturePane'>;
+export type TmuxClientLike = Pick<
+  TmuxClient,
+  'ensureSession' | 'listWindows' | 'capturePane' | 'clearPlaceholder'
+>;
 export type TmuxWatcherLike = Pick<TmuxWatcher, 'on' | 'start' | 'stop'>;
 export type HookServerLike = Pick<HookServer, 'on'>;
 export type StateStoreLike = Pick<StateStore, 'load' | 'save'>;
@@ -45,7 +49,10 @@ export interface LiveSourceDeps {
   tail: (path: string) => TailLike;
   /** Not used by LiveSource itself yet; Task 10 passes it through for snapshot paths. */
   projectsRoot: string;
+  /** Wall clock (epoch ms) for statusSince and first-seen times. */
   now?: () => number;
+  /** Monotonic clock (ms) for throttles, idle and re-check timing (default performance.now). */
+  clock?: () => number;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -65,6 +72,12 @@ const STOP_RECHECK_MS = 300;
 const SAVE_MAX_MS = 30_000;
 /** Lines kept and scrollback captured. */
 const MAX_LINES = 200;
+/** A claude window still in its startup checks is captured once more this long after attach. */
+const STARTUP_RECHECK_MS = 1000;
+/** A hook pane still unknown after a re-list is dropped without re-listing for this long. */
+const UNKNOWN_PANE_MS = 5000;
+/** Pane fallback: a new capture continues the last one when they overlap by this many lines (or all of the last). */
+const MIN_OVERLAP = 3;
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -83,8 +96,30 @@ const SHELLS = new Set([
 ]);
 const atShell = (command: string): boolean =>
   SHELLS.has(command.startsWith('-') ? command.slice(1) : command);
+/** `claude`, or the version string Claude Code may set as its process title (e.g. `2.1.330`). */
+const isClaude = (command: string): boolean =>
+  command === 'claude' || /^\d+\.\d+\.\d+$/.test(command);
+/** R22: ensureSession's placeholder window, hidden while it sits at a shell. */
+const hiddenPlaceholder = (w: TmuxWindow): boolean => w.placeholder && atShell(w.command);
 
-type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire';
+/**
+ * Pane fallback deltas: when `next` continues `prev` (the tail of `prev` is the head of `next`),
+ * the lines appended after the overlap; null when they don't overlap (the screen was redrawn).
+ */
+function appended(prev: DisplayLine[], next: DisplayLine[]): DisplayLine[] | null {
+  if (prev.length === 0) return null;
+  const same = (a: DisplayLine | undefined, b: DisplayLine | undefined) =>
+    a !== undefined && b !== undefined && a.kind === b.kind && a.text === b.text;
+  const min = Math.min(prev.length, MIN_OVERLAP);
+  for (let k = Math.min(prev.length, next.length); k >= min; k--) {
+    let match = true;
+    for (let i = 0; i < k && match; i++) match = same(prev[prev.length - k + i], next[i]);
+    if (match) return next.slice(k);
+  }
+  return null;
+}
+
+type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire' | 'startup';
 
 interface Live extends SessionView {
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
@@ -99,6 +134,10 @@ interface Live extends SessionView {
   transcriptPath: string | null;
   /** The window's pane has been seen running `claude`. */
   sawClaude: boolean;
+  /** A hook arrived from this window: Claude is past its startup screens (no more R9 checks). */
+  hookSeen: boolean;
+  /** A capture showed Claude's idle input box: past its startup screens (no more R9 checks). */
+  idleSeen: boolean;
   /** Ended because the pane went back to a shell (not by SessionEnd): a non-shell command revives it. */
   shellEnded: boolean;
   tail: TailLike | null;
@@ -107,6 +146,7 @@ interface Live extends SessionView {
   tailQuestionKey: string | null;
   /** Pane fallback lines, or the last transcript lines once the tail stopped. */
   lines: DisplayLine[];
+  /** Monotonic ms of the last pane activity. */
   lastActivity: number;
   /** Bumped on each status change and on detach; stale async results check it. */
   gen: number;
@@ -126,6 +166,9 @@ interface Live extends SessionView {
 export class LiveSource implements SessionSource {
   readonly #d: LiveSourceDeps;
   readonly #now: () => number;
+  readonly #clock: () => number;
+  /** Hook panes found in no window by the last re-list, until (monotonic ms). */
+  readonly #ignoredPanes = new Map<string, number>();
   readonly #listeners = new Set<(e: SourceEvent) => void>();
   readonly #sessions = new Map<string, Live>();
   readonly #records = new Map<string, SessionRecord>();
@@ -147,6 +190,7 @@ export class LiveSource implements SessionSource {
   constructor(deps: LiveSourceDeps) {
     this.#d = deps;
     this.#now = deps.now ?? Date.now;
+    this.#clock = deps.clock ?? (() => performance.now());
   }
 
   // ------------------------------------------------------------ SessionSource
@@ -266,13 +310,15 @@ export class LiveSource implements SessionSource {
       sessionId: record?.sessionId ?? null,
       transcriptPath: record?.transcriptPath ?? null,
       sawClaude: false,
+      hookSeen: false,
+      idleSeen: false,
       shellEnded: false,
       tail: null,
       tailPath: null,
       tailOff: [],
       tailQuestionKey: null,
       lines: [],
-      lastActivity: 0,
+      lastActivity: Number.NEGATIVE_INFINITY,
       gen: 0,
       last: null,
       lastEmitAt: Number.NEGATIVE_INFINITY,
@@ -309,10 +355,23 @@ export class LiveSource implements SessionSource {
     return this.#listing;
   }
 
+  /** A listed window's last activity (epoch seconds) on the monotonic clock. */
+  #activityAt(w: TmuxWindow): number {
+    return this.#clock() - Math.max(0, this.#now() - w.activity * 1000);
+  }
+
   async #reconcile(windows: TmuxWindow[]): Promise<void> {
     const seen = new Set<string>();
     const attaching: Promise<void>[] = [];
     for (const w of windows) {
+      this.#ignoredPanes.delete(w.paneId);
+      // R22: Kage's placeholder stays hidden while it sits at a shell; once it runs anything
+      // else it is an ordinary window, so its tag goes.
+      if (hiddenPlaceholder(w)) continue;
+      if (w.placeholder) {
+        this.#d.tmux.clearPlaceholder(w.windowId).catch(() => {});
+        w.placeholder = false;
+      }
       const record = w.kageId ? this.#records.get(w.kageId) : undefined;
       const id = record ? record.kageId : `ext-${w.windowId}`;
       seen.add(id);
@@ -324,15 +383,22 @@ export class LiveSource implements SessionSource {
       if (st.window?.windowId === w.windowId) {
         const old = st.window;
         st.window = w;
-        st.lastActivity = Math.max(st.lastActivity, w.activity * 1000);
+        st.lastActivity = Math.max(st.lastActivity, this.#activityAt(w));
         if (this.#claudeGone(st, w)) {
           if (st.status !== 'ended') this.#endInWindow(st);
         } else if (st.status === 'ended' && st.shellEnded) {
           // Ctrl+Z then fg: claude is in front again. Re-attach, which restarts the tail.
           attaching.push(this.#attach(st, w));
-        } else if (!st.record && (old.name !== w.name || old.cwd !== w.cwd)) {
-          // Only an external session shows window fields (task, project, worktree).
-          this.#emitNow(st);
+        } else {
+          if (!st.record && (old.name !== w.name || old.cwd !== w.cwd)) {
+            // Only an external session shows window fields (task, project, worktree).
+            this.#emitNow(st);
+          }
+          // claude started in a shell window: look for its startup screens (F2).
+          if (old.command !== w.command && this.#startupEligible(st)) {
+            this.#requestCapture(st);
+            this.#scheduleStartupCheck(st);
+          }
         }
       } else {
         attaching.push(this.#attach(st, w));
@@ -351,7 +417,7 @@ export class LiveSource implements SessionSource {
     st.window = w;
     st.gen++;
     this.#clearTimers(st, ['retire']);
-    st.lastActivity = Math.max(st.lastActivity, w.activity * 1000);
+    st.lastActivity = Math.max(st.lastActivity, this.#activityAt(w));
     if (st.record && st.record.windowId !== w.windowId) {
       st.record.windowId = w.windowId;
       this.#saveSoon();
@@ -375,7 +441,21 @@ export class LiveSource implements SessionSource {
     const text = await this.#capture(st);
     if (!this.#running || st.window !== w) return;
     if (text !== null) this.#processCapture(st, text, gen, true);
+    this.#scheduleStartupCheck(st);
     this.#emitNow(st);
+  }
+
+  /**
+   * F2: a window seen before Claude has drawn anything (or whose output arrived before it was
+   * listed) may show a startup screen that then sits still, with no activity to trigger a
+   * capture. Look once more a second later while it still needs startup checks.
+   */
+  #scheduleStartupCheck(st: Live): void {
+    if (!this.#running || st.timers.startup || st.startup || !this.#startupEligible(st)) return;
+    st.timers.startup = setTimeout(() => {
+      delete st.timers.startup;
+      if (!st.startup) this.#requestCapture(st);
+    }, STARTUP_RECHECK_MS);
   }
 
   /**
@@ -406,11 +486,11 @@ export class LiveSource implements SessionSource {
   /** pane_current_command changes fire no tmux event: re-list, at most once per second. */
   #recheckSoon(delay: number): void {
     if (!this.#running || this.#recheckTimer) return;
-    const now = this.#now();
+    const now = this.#clock();
     const wait = Math.max(delay, this.#lastRecheckAt + RECHECK_MS - now);
     this.#recheckTimer = setTimeout(() => {
       this.#recheckTimer = null;
-      this.#lastRecheckAt = this.#now();
+      this.#lastRecheckAt = this.#clock();
       if (this.#running) void this.#relist();
     }, wait);
   }
@@ -462,31 +542,41 @@ export class LiveSource implements SessionSource {
 
   #onActivity(paneId: string): void {
     const st = this.#byPane(paneId);
-    if (!st) return;
-    st.lastActivity = this.#now();
+    if (!st) {
+      // A hidden placeholder (R22), or a window not listed yet: re-list to see what runs there.
+      this.#recheckSoon(0);
+      return;
+    }
+    st.lastActivity = this.#clock();
     if (st.mode === 'activity' && !st.startup) {
       this.#setStatus(st, 'running');
       this.#scheduleIdle(st);
       this.#emitThrottled(st);
     }
-    // Re-list to see claude exit, or come back after Ctrl+Z (a shell-ended session revives).
-    if (st.mode === 'hooks' && (st.status !== 'ended' || st.shellEnded)) this.#recheckSoon(0);
+    // Re-list to see claude exit, or come back after Ctrl+Z (a shell-ended session revives), or
+    // a shell window start claude (pane_current_command changes fire no tmux event).
+    if (
+      (st.mode === 'hooks' && (st.status !== 'ended' || st.shellEnded)) ||
+      (st.mode === 'activity' && st.window !== null && atShell(st.window.command))
+    ) {
+      this.#recheckSoon(0);
+    }
     this.#requestCapture(st);
   }
 
   #activityStatus(st: Live): SessionStatus {
-    return this.#now() - st.lastActivity < ACTIVE_MS ? 'running' : 'done';
+    return this.#clock() - st.lastActivity < ACTIVE_MS ? 'running' : 'done';
   }
 
   /** Activity mode: running turns done 5 s after the last activity (one timer, re-armed lazily). */
   #scheduleIdle(st: Live): void {
     if (!this.#running) return;
     if (st.timers.idle || st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
-    const wait = Math.max(0, st.lastActivity + ACTIVE_MS - this.#now());
+    const wait = Math.max(0, st.lastActivity + ACTIVE_MS - this.#clock());
     st.timers.idle = setTimeout(() => {
       delete st.timers.idle;
       if (st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
-      if (this.#now() - st.lastActivity >= ACTIVE_MS) {
+      if (this.#clock() - st.lastActivity >= ACTIVE_MS) {
         this.#setStatus(st, 'done');
         this.#emitNow(st);
       } else this.#scheduleIdle(st);
@@ -503,6 +593,12 @@ export class LiveSource implements SessionSource {
     }
     if (e.pane === null) return;
     const st = this.#byPane(e.pane);
+    if (!st) {
+      // A hooks-enabled Claude outside the kage session: one re-list per 5 s, not per burst.
+      const until = this.#ignoredPanes.get(e.pane);
+      if (until !== undefined && this.#clock() < until) return;
+      this.#ignoredPanes.delete(e.pane);
+    }
     // Keep a pane's events in order while an earlier one waits for the re-list.
     if (!st || this.#unknown.some((u) => u.pane === e.pane)) {
       this.#unknown.push(e);
@@ -519,15 +615,21 @@ export class LiveSource implements SessionSource {
     const queued = this.#unknown;
     this.#unknown = [];
     for (const e of queued) {
-      const st = e.pane === null ? undefined : this.#byPane(e.pane);
-      if (st && this.#running) this.#applyHook(st, e);
+      if (e.pane === null || !this.#running) continue;
+      const st = this.#byPane(e.pane);
+      if (st) this.#applyHook(st, e);
+      else this.#ignoredPanes.set(e.pane, this.#clock() + UNKNOWN_PANE_MS);
     }
   }
 
   #applyHook(st: Live, e: HookEvent): void {
     // R12: a permission Notification counts only while a tool is pending.
     const counts = !(e.event === 'Notification' && e.notification === 'permission' && !st.pending);
-    if (e.event === 'SessionStart') this.#link(st, e);
+    // Every hook names its session and transcript: link on any of them, so a pane whose
+    // SessionStart Kage missed (a restart, a hook lost) still gets its tail.
+    this.#link(st, e);
+    st.hookSeen = true;
+    this.#clearTimers(st, ['startup']);
     if (e.event === 'PreToolUse' || e.event === 'PermissionRequest') st.pending = true;
     if (
       e.event === 'PostToolUse' ||
@@ -561,15 +663,20 @@ export class LiveSource implements SessionSource {
     this.#emitNow(st);
   }
 
-  /** SessionStart: link the pane to Claude's session and follow its transcript. */
+  /**
+   * Links the pane to the hook's Claude session and follows its transcript. A hook without a
+   * transcript path keeps the one in use unless the session changed.
+   */
   #link(st: Live, e: HookEvent): void {
-    const changed = e.sessionId !== st.sessionId || e.transcriptPath !== st.transcriptPath;
+    const newSession = e.sessionId !== st.sessionId;
+    const path = e.transcriptPath ?? (newSession ? null : st.transcriptPath);
+    const changed = newSession || path !== st.transcriptPath;
     if (changed) {
       st.sessionId = e.sessionId;
-      st.transcriptPath = e.transcriptPath;
+      st.transcriptPath = path;
       if (st.record) {
         st.record.sessionId = e.sessionId;
-        st.record.transcriptPath = e.transcriptPath;
+        st.record.transcriptPath = path;
         this.#saveSoon();
       }
     }
@@ -581,7 +688,10 @@ export class LiveSource implements SessionSource {
       }
       return;
     }
-    if (changed || !st.tail) void this.#ensureTail(st);
+    // An ended session's tail is retired; only a SessionStart (a resume) follows it again.
+    if ((changed || !st.tail) && (st.status !== 'ended' || e.event === 'SessionStart')) {
+      void this.#ensureTail(st);
+    }
   }
 
   // ------------------------------------------------------------ transcript tails
@@ -685,7 +795,7 @@ export class LiveSource implements SessionSource {
   async #capture(st: Live): Promise<string | null> {
     const paneId = st.window?.paneId;
     if (!paneId) return null;
-    st.lastCaptureAt = this.#now();
+    st.lastCaptureAt = this.#clock();
     try {
       return await this.#d.tmux.capturePane(paneId, MAX_LINES);
     } catch {
@@ -693,11 +803,18 @@ export class LiveSource implements SessionSource {
     }
   }
 
+  /**
+   * R9 startup checks: a Kage window, or one running claude, with no Claude session linked yet.
+   * They stop for good once a hook arrived or the idle input box showed, so a claude window is
+   * not captured on every activity forever.
+   */
   #startupEligible(st: Live): boolean {
     return (
       st.window !== null &&
       st.sessionId === null &&
-      (st.record !== null || st.window.command === 'claude')
+      !st.hookSeen &&
+      !st.idleSeen &&
+      (st.record !== null || isClaude(st.window.command))
     );
   }
 
@@ -722,7 +839,7 @@ export class LiveSource implements SessionSource {
       return;
     }
     if (st.timers.capture) return;
-    const wait = st.lastCaptureAt + THROTTLE_MS - this.#now();
+    const wait = st.lastCaptureAt + THROTTLE_MS - this.#clock();
     if (wait <= 0) void this.#runCapture(st);
     else {
       st.timers.capture = setTimeout(() => {
@@ -751,8 +868,11 @@ export class LiveSource implements SessionSource {
     if (!st.tail && this.#viewed.has(st.id)) {
       const lines = paneLines(text, MAX_LINES);
       if (!sameLines(lines, st.lines)) {
+        // A capture that continues the last one sends only what was appended.
+        const added = appended(st.lines, lines);
         st.lines = lines;
-        this.#emitLines(st, lines, true);
+        if (added === null) this.#emitLines(st, lines, true);
+        else this.#emitLines(st, added, false);
       }
     }
     // The status changed while the capture ran: what it shows may predate that change.
@@ -760,11 +880,16 @@ export class LiveSource implements SessionSource {
     if (this.#startupEligible(st)) {
       const screen = parseStartupScreen(text);
       if (screen) {
+        this.#clearTimers(st, ['startup']);
         this.#setStatus(st, 'needs-you');
         st.startup = true;
         st.question = screen;
         this.#emitNow(st);
         return;
+      }
+      if (showsIdleBox(text)) {
+        st.idleSeen = true;
+        this.#clearTimers(st, ['startup']);
       }
       if (st.startup) {
         st.startup = false;
@@ -878,14 +1003,14 @@ export class LiveSource implements SessionSource {
     const s = toSession(st);
     if (sameSession(st.last, s)) return;
     st.last = s;
-    st.lastEmitAt = this.#now();
+    st.lastEmitAt = this.#clock();
     this.#emit({ type: 'session.updated', session: s });
   }
 
   /** Activity- and transcript-driven updates: at most one per 250 ms per session. */
   #emitThrottled(st: Live): void {
     if (!this.#running || st.timers.emit) return;
-    const wait = st.lastEmitAt + THROTTLE_MS - this.#now();
+    const wait = st.lastEmitAt + THROTTLE_MS - this.#clock();
     if (wait <= 0) this.#emitNow(st);
     else {
       st.timers.emit = setTimeout(() => {

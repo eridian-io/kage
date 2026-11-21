@@ -1,4 +1,5 @@
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DisplayLine, Question, Session } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -16,6 +17,7 @@ import type { SourceEvent } from './source.ts';
 import type { SessionRecord } from './state/store.ts';
 import type { TmuxWindow } from './tmux/format.ts';
 import type { WatchEvent } from './tmux/watcher.ts';
+import { TranscriptTail } from './transcript/tail.ts';
 
 const pane = (name: string): string =>
   readFileSync(join(import.meta.dirname, '../test/fixtures/panes', `${name}.txt`), 'utf8');
@@ -47,7 +49,13 @@ class FakeTmux implements TmuxClientLike {
   listCalls = 0;
   /** While set, captures wait for it. */
   gate: Promise<void> | null = null;
+  /** Windows whose @kage_placeholder was cleared (R22). */
+  cleared: string[] = [];
   async ensureSession(): Promise<void> {}
+  async clearPlaceholder(windowId: string): Promise<void> {
+    this.cleared.push(windowId);
+    for (const w of this.windows) if (w.windowId === windowId) w.placeholder = false;
+  }
   async listWindows(): Promise<TmuxWindow[]> {
     this.listCalls++;
     return this.windows.map((w) => ({ ...w }));
@@ -244,6 +252,8 @@ function setup(
     windows?: TmuxWindow[];
     records?: SessionRecord[];
     tails?: Record<string, TailContent>;
+    /** A real tail instead of FakeTail. */
+    tail?: (path: string) => TailLike;
   } = {},
 ) {
   const tmux = new FakeTmux();
@@ -257,11 +267,13 @@ function setup(
     watcher,
     hooks,
     store,
-    tail: (path) => {
-      const t = new FakeTail(path, opts.tails?.[path]);
-      tails.push(t);
-      return t;
-    },
+    tail:
+      opts.tail ??
+      ((path) => {
+        const t = new FakeTail(path, opts.tails?.[path]);
+        tails.push(t);
+        return t;
+      }),
     projectsRoot: ROOT,
   });
   const events: SourceEvent[] = [];
@@ -1265,5 +1277,271 @@ describe('LiveSource: Task 10 carried minors', () => {
     expect(tmux.windows[0]?.command).toBe('claude');
     expect(source.get('k-1')?.status).toBe('ended');
     await source.stop();
+  });
+});
+
+describe('LiveSource: final fix wave', () => {
+  const RULE80 = '─'.repeat(80);
+  const IDLE = `● Done.\n\n${RULE80}\n❯ \n${RULE80}\n  ⏸ manual mode on · ? for shortcuts\n`;
+
+  it('any hook links the pane: after a restart, a PreToolUse starts the tail and now and lines flow', async () => {
+    const { source, hooks, tails, lineEvents } = setup({
+      windows: [win({ command: 'claude' })],
+    });
+    await source.start();
+    expect(tails).toHaveLength(0);
+    hooks.fire(hook('PreToolUse', '%1'));
+    await flush();
+    expect(tails).toHaveLength(1);
+    expect(tails[0]?.path).toBe(TRANSCRIPT);
+    expect(tails[0]?.started).toBe(true);
+    tails[0]?.push([{ kind: 'tool', text: 'Bash', detail: 'npm test' }], {
+      now: 'Running npm test',
+    });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(source.get('ext-@1')).toMatchObject({ status: 'running', now: 'Running npm test' });
+    expect(lineEvents('ext-@1').at(-1)?.lines).toEqual([
+      { kind: 'tool', text: 'Bash', detail: 'npm test' },
+    ]);
+    // The same session and transcript on the next hook keep the one tail.
+    hooks.fire(hook('PostToolUse', '%1'));
+    await flush();
+    expect(tails).toHaveLength(1);
+  });
+
+  it('a hook with a new session id moves the tail; one without a transcript path keeps it', async () => {
+    const { source, hooks, tails } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    hooks.fire(hook('Stop', '%2', { transcriptPath: null }));
+    await flush();
+    expect(tails).toHaveLength(1);
+    hooks.fire(
+      hook('UserPromptSubmit', '%2', { sessionId: 's-2', transcriptPath: '/t/s-2.jsonl' }),
+    );
+    await flush();
+    expect(tails).toHaveLength(2);
+    expect(tails[0]?.stopped).toBe(true);
+    expect(tails[1]?.path).toBe('/t/s-2.jsonl');
+  });
+
+  it('a hooked claude window is not captured on every activity', async () => {
+    const { source, hooks, watcher, tmux } = setup({ windows: [win({ command: 'claude' })] });
+    await source.start();
+    hooks.fire(hook('Notification', '%1', { notification: 'idle' }));
+    await flush();
+    const n = tmux.captureCalls.length;
+    for (let i = 0; i < 10; i++) {
+      watcher.emit({ type: 'activity', paneId: '%1' });
+      await vi.advanceTimersByTimeAsync(300);
+    }
+    expect(tmux.captureCalls.length).toBe(n);
+  });
+
+  it('a claude window without hooks stops the startup checks once its idle box shows', async () => {
+    const { source, watcher, tmux } = setup({ windows: [win({ command: 'claude' })] });
+    tmux.setCapture('%1', IDLE);
+    await source.start();
+    await vi.advanceTimersByTimeAsync(2000);
+    const n = tmux.captureCalls.length;
+    expect(n).toBeGreaterThan(0);
+    for (let i = 0; i < 10; i++) {
+      watcher.emit({ type: 'activity', paneId: '%1' });
+      await vi.advanceTimersByTimeAsync(300);
+    }
+    expect(tmux.captureCalls.length).toBe(n);
+  });
+
+  it('F2: a startup screen drawn after the first capture is still found', async () => {
+    const { source, tmux } = setup({ windows: [win({ command: 'claude' })] });
+    // Claude is still loading at the first capture; the trust screen comes a moment later and
+    // then sits still, so no further activity arrives.
+    tmux.setCapture('%1', '', pane('real-trust-80'));
+    await source.start();
+    expect(source.get('ext-@1')?.status).not.toBe('needs-you');
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('ext-@1')).toMatchObject({
+      status: 'needs-you',
+      question: { text: 'Trust this folder?' },
+    });
+  });
+
+  it('F2: a shell window that starts claude is re-listed on activity and checked for startup screens', async () => {
+    const { source, tmux, watcher } = setup({ windows: [win({ command: 'bash' })] });
+    tmux.setCapture('%1', pane('real-trust-80'));
+    await source.start();
+    expect(source.get('ext-@1')?.status).toBe('done');
+    (tmux.windows[0] as TmuxWindow).command = 'claude';
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('ext-@1')?.status).toBe('needs-you');
+  });
+
+  it('rebuild: a finished turn without turn_duration is not running (real transcript)', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kage-live-'));
+    try {
+      const path = join(dir, 's.jsonl');
+      const r = (o: unknown) => `${JSON.stringify(o)}\n`;
+      writeFileSync(
+        path,
+        r({ type: 'user', message: { role: 'user', content: 'Run the tests' } }) +
+          r({
+            type: 'assistant',
+            message: {
+              stop_reason: 'tool_use',
+              content: [
+                { type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } },
+              ],
+            },
+          }) +
+          r({
+            type: 'user',
+            message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: 'ok' }] },
+          }) +
+          r({
+            type: 'assistant',
+            message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'All green.' }] },
+          }),
+      );
+      const { source } = setup({
+        windows: [kageWin()],
+        records: [rec({ sessionId: 's-1', transcriptPath: path })],
+        tail: (p) => new TranscriptTail(p, { watch: false }),
+      });
+      await source.start();
+      expect(source.get('k-1')?.status).toBe('done');
+      expect(source.get('k-1')?.now).toBeUndefined();
+      expect(source.lines('k-1').at(-1)).toEqual({ kind: 'say', text: 'All green.' });
+      await source.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('pane fallback: a capture that extends the last one sends only the new lines', async () => {
+    const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', '$ make\nstep 1\n', '$ make\nstep 1\nstep 2\nstep 3\n');
+    source.setViewed(new Set(['ext-@1']));
+    await source.start();
+    await flush();
+    expect(lineEvents('ext-@1').at(-1)).toMatchObject({ reset: true });
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(lineEvents('ext-@1').at(-1)).toEqual({
+      type: 'session.lines',
+      id: 'ext-@1',
+      lines: [
+        { kind: 'out', text: 'step 2' },
+        { kind: 'out', text: 'step 3' },
+      ],
+      reset: false,
+    });
+    expect(source.lines('ext-@1').map((l) => l.text)).toEqual([
+      '$ make',
+      'step 1',
+      'step 2',
+      'step 3',
+    ]);
+  });
+
+  it('pane fallback: a capture that scrolled the head away still sends only the new lines', async () => {
+    const before = Array.from({ length: 200 }, (_, i) => `line ${i}`);
+    const after = [...before.slice(2), 'line 200', 'line 201'];
+    const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', `${before.join('\n')}\n`, `${after.join('\n')}\n`);
+    source.setViewed(new Set(['ext-@1']));
+    await source.start();
+    await flush();
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(lineEvents('ext-@1').at(-1)).toMatchObject({
+      lines: [
+        { kind: 'out', text: 'line 200' },
+        { kind: 'out', text: 'line 201' },
+      ],
+      reset: false,
+    });
+  });
+
+  it('pane fallback: a capture with no overlap (a cleared screen) resets', async () => {
+    const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', '$ make\nstep 1\nstep 2\n', '$ vim\n');
+    source.setViewed(new Set(['ext-@1']));
+    await source.start();
+    await flush();
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(300);
+    expect(lineEvents('ext-@1').at(-1)).toEqual({
+      type: 'session.lines',
+      id: 'ext-@1',
+      lines: [{ kind: 'out', text: '$ vim' }],
+      reset: true,
+    });
+  });
+
+  it('R22: the placeholder window is hidden while it sits at a shell', async () => {
+    const { source } = setup({
+      windows: [win({ placeholder: true, command: 'bash' }), kageWin()],
+      records: [rec()],
+    });
+    await source.start();
+    expect(source.list().map((s) => s.id)).toEqual(['k-1']);
+  });
+
+  it('R22: once the placeholder runs something else its tag is cleared and it shows', async () => {
+    const { source, tmux, watcher } = setup({
+      windows: [win({ placeholder: true, command: 'bash' })],
+    });
+    await source.start();
+    expect(source.list()).toHaveLength(0);
+    (tmux.windows[0] as TmuxWindow).command = 'claude';
+    // Activity in a hidden window re-lists (at most once a second) to see what it runs.
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(tmux.cleared).toEqual(['@1']);
+    expect(source.list().map((s) => s.id)).toEqual(['ext-@1']);
+  });
+
+  it('hooks from a pane outside the kage session re-list at most once per 5 s', async () => {
+    const { source, hooks, tmux } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    const lists = tmux.listCalls;
+    hooks.fire(hook('PreToolUse', '%9'));
+    hooks.fire(hook('PostToolUse', '%9'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(tmux.listCalls).toBe(lists + 1);
+    hooks.fire(hook('PreToolUse', '%9'));
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(tmux.listCalls).toBe(lists + 1);
+    await vi.advanceTimersByTimeAsync(1000);
+    hooks.fire(hook('PreToolUse', '%9'));
+    await vi.advanceTimersByTimeAsync(100);
+    expect(tmux.listCalls).toBe(lists + 2);
+  });
+
+  it('idle and throttle use a monotonic clock: the wall clock stepping back changes nothing', async () => {
+    const { source, watcher } = setup({ windows: [win()] });
+    await source.start();
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    expect(source.get('ext-@1')?.status).toBe('running');
+    vi.setSystemTime(Date.now() - 3_600_000);
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(source.get('ext-@1')?.status).toBe('done');
+  });
+
+  it('the now line is not on the wire after Stop (F3)', async () => {
+    const { source, hooks, tails } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    tails[0]?.push([], { now: 'Running npm test' });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(source.get('k-1')?.now).toBe('Running npm test');
+    hooks.fire(hook('Stop', '%2'));
+    expect(source.get('k-1')?.now).toBeUndefined();
   });
 });
