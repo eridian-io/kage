@@ -15,6 +15,7 @@ import {
   paneLines,
   parsePermissionPrompt,
   parseStartupScreen,
+  showsDenial,
   showsPrompt,
 } from './pane/prompt.ts';
 import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
@@ -781,9 +782,16 @@ export class LiveSource implements SessionSource {
         st.question ??= prompt;
         this.#emitNow(st);
       } else if (st.promptSeen && !showsPrompt(text)) {
-        // R11 fallback: the prompt went away without a hook (No or Esc).
-        this.#setStatus(st, 'done');
-        st.pending = false;
+        // R11 fallback: the prompt went away without a hook. No or Esc leaves Claude's denial
+        // line and ends the turn. Otherwise it was a Yes: the tool runs, and no hook fires until
+        // its PostToolUse, which may be minutes away for a long command.
+        if (showsDenial(text)) {
+          this.#setStatus(st, 'done');
+          st.pending = false;
+        } else {
+          this.#setStatus(st, 'running');
+          this.#scheduleIdle(st);
+        }
         this.#emitNow(st);
       }
       return;

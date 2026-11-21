@@ -172,6 +172,19 @@ export function showsPrompt(pane: string): boolean {
   return parsePrompt(lines) !== null || parseStartup(lines) !== null;
 }
 
+/** What Claude shows under the tool line after No or Esc on a prompt (spec §1, R11). */
+const DENIAL = /^⎿\s+Interrupted · What should Claude do instead\?/;
+/** The denial must be live: within this many non-empty lines of the bottom, above the input box. */
+const DENIAL_WINDOW = 8;
+
+/** True when the bottom of the pane shows Claude's denial line: a prompt was answered No or Esc. */
+export function showsDenial(pane: string): boolean {
+  return cleanLines(pane)
+    .filter((l) => l !== '')
+    .slice(-DENIAL_WINDOW)
+    .some((l) => DENIAL.test(l));
+}
+
 /** Cuts the input box (rule, `❯ …`, rule) and the footer under it from the bottom of the lines. */
 function withoutInputBox(lines: string[]): string[] {
   let end = lines.length;

@@ -20,6 +20,20 @@ import type { WatchEvent } from './tmux/watcher.ts';
 const pane = (name: string): string =>
   readFileSync(join(import.meta.dirname, '../test/fixtures/panes', `${name}.txt`), 'utf8');
 
+const RULE = '─'.repeat(60);
+/** The pane after No or Esc on a prompt (spec §1, "Denial, cancel and failure"). */
+const DENIED_PANE = [
+  '● Bash(npm test)',
+  '  ⎿  Interrupted · What should Claude do instead?',
+  '',
+  RULE,
+  '❯ ',
+  RULE,
+  '',
+].join('\n');
+/** The pane right after Yes: the command runs and no hook has fired yet. */
+const APPROVED_PANE = ['● Bash(npm test)', '  ⎿  Running…', '', RULE, '❯ ', RULE, ''].join('\n');
+
 const T0 = 1_800_000_000_000;
 const ROOT = '/home/dev/projects';
 const TRANSCRIPT = '/home/dev/.claude/projects/-home-dev-projects-shop/s-1.jsonl';
@@ -664,7 +678,7 @@ describe('LiveSource: hooks and status', () => {
     expect(source.get('k-1')?.status).toBe('done');
   });
 
-  it('pane fallback: activity while needs-you with no prompt on screen any more means done (R11)', async () => {
+  it('pane fallback: the prompt gone and the denial on screen means done (R11, No or Esc)', async () => {
     const { source, hooks, tmux, watcher } = setup({ windows: [kageWin()], records: [rec()] });
     tmux.setCapture('%2', pane('permission-bash'));
     await source.start();
@@ -678,11 +692,38 @@ describe('LiveSource: hooks and status', () => {
     await flush();
     expect(source.get('k-1')?.status).toBe('needs-you');
     await vi.advanceTimersByTimeAsync(300);
-    tmux.setCapture('%2', pane('after-exit'));
+    tmux.setCapture('%2', DENIED_PANE);
     watcher.emit({ type: 'activity', paneId: '%2' });
     await flush();
     expect(source.get('k-1')?.status).toBe('done');
     expect(source.get('k-1')?.question).toBeUndefined();
+  });
+
+  it('pane fallback: the prompt gone without a denial is an answered Yes: running until the Stop', async () => {
+    // Found by the live e2e: a long approved command fires no hook until its PostToolUse.
+    const { source, hooks, tmux, watcher } = setup({ windows: [kageWin()], records: [rec()] });
+    tmux.setCapture('%2', pane('permission-bash'));
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(300);
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    tmux.setCapture('%2', APPROVED_PANE);
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(source.get('k-1')?.question).toBeUndefined();
+    // Still running while the command runs, with more output and no hook.
+    await vi.advanceTimersByTimeAsync(6000);
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+    hooks.fire(hook('PostToolUse', '%2'));
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
   });
 
   it('SessionEnd stops the tail after a final flush window', async () => {

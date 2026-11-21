@@ -1,7 +1,13 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { paneLines, parsePermissionPrompt, parseStartupScreen, showsPrompt } from './prompt.ts';
+import {
+  paneLines,
+  parsePermissionPrompt,
+  parseStartupScreen,
+  showsDenial,
+  showsPrompt,
+} from './prompt.ts';
 
 const pane = (name: string): string =>
   readFileSync(join(import.meta.dirname, '../../test/fixtures/panes', `${name}.txt`), 'utf8');
@@ -143,6 +149,37 @@ describe('showsPrompt', () => {
   it('is false otherwise', () => {
     expect(showsPrompt(pane('after-exit'))).toBe(false);
     expect(showsPrompt('')).toBe(false);
+  });
+});
+
+/** The pane after No or Esc on a prompt, as the spec records it (§1, "Denial, cancel and failure"). */
+const RULE = '─'.repeat(60);
+const DENIED = [
+  '● Bash(npm run clean)',
+  '  ⎿  Interrupted · What should Claude do instead?',
+  '',
+  RULE,
+  '❯ ',
+  RULE,
+  '  ? for shortcuts',
+  '',
+].join('\n');
+/** The pane right after Yes: the tool runs and no hook has fired yet. */
+const APPROVED = ['● Bash(npm run clean)', '  ⎿  Running…', '', RULE, '❯ ', RULE, ''].join('\n');
+
+describe('showsDenial', () => {
+  it('is true when the denial line sits at the bottom, above the input box', () => {
+    expect(showsDenial(DENIED)).toBe(true);
+  });
+  it('is false for a running tool, a prompt, an exited pane or an empty one', () => {
+    expect(showsDenial(APPROVED)).toBe(false);
+    expect(showsDenial(pane('permission-bash'))).toBe(false);
+    expect(showsDenial(pane('after-exit'))).toBe(false);
+    expect(showsDenial('')).toBe(false);
+  });
+  it('ignores an old denial further up the scrollback', () => {
+    const later = Array.from({ length: 12 }, (_, i) => `  ⎿  line ${i + 1}`).join('\n');
+    expect(showsDenial(`${DENIED}\n● Bash(npm test)\n${later}\n${APPROVED}`)).toBe(false);
   });
 });
 
