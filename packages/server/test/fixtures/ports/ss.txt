@@ -1,0 +1,9 @@
+LISTEN 0      4096        127.0.0.1:9323 0.0.0.0:*                                        
+LISTEN 0      1000   10.200.200.200:53   0.0.0.0:*                                        
+LISTEN 0      4096    127.0.0.53%lo:53   0.0.0.0:*                                        
+LISTEN 0      5           127.0.0.1:8765 0.0.0.0:* users:(("python3",pid=4202,fd=3))    
+LISTEN 0      4096       127.0.0.54:53   0.0.0.0:*                                        
+LISTEN 0      5             0.0.0.0:8768 0.0.0.0:* users:(("python3",pid=4205,fd=3))    
+LISTEN 0      5               [::1]:8767    [::]:* users:(("python3",pid=4204,fd=3))    
+LISTEN 0      511                 *:8769       *:* users:(("MainThread",pid=4206,fd=21))
+LISTEN 0      511                 *:8766       *:* users:(("MainThread",pid=4203,fd=21))

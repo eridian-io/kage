@@ -1,0 +1,40 @@
+ ▐▛███▛█   Claude Code v2.1.330
+▝▜██████▀  Opus 5.5 · Claude Pro
+ ▝▝   ▝▝   /home/dev/projects/notes
+
+
+────────────────────────────────────────────────────────────────────────────────
+❯ fix the typo in notes
+────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on
+  tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -1,0 +1,13 @@
+      1       0 /sbin/init
+      2       1 /init
+   3900       1 tmux new-session -s main
+   3950    3900 -bash
+   4100    3900 /home/dev/.local/bin/claude --settings /home/dev/.local/state/kage/claude-settings.json --permission-mode default -- Start the preview servers
+   4150    4100 /bin/bash -c python3 -m http.server 8765 --bind 127.0.0.1 & node -e "require('http').createServer().listen(8766)" & wait
+   4202    4150 python3 -m http.server 8765 --bind 127.0.0.1
+   4203    4150 node -e require('http').createServer().listen(8766)
+   4204    4150 python3 -m http.server 8767 --bind ::1
+   4205    4150 python3 -m http.server 8768 --bind 0.0.0.0
+   4206    4150 node -e require('http').createServer().listen(8769,'::')
+   4300    3950 vim notes.txt
+   4400       1 node /home/dev/other/server.js

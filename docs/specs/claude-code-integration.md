@@ -22,7 +22,7 @@ Recorded on 2026-11-21 against **Claude Code 2.1.330** (WSL Ubuntu 24.04, tmux 3
 6. **Onboarding blocks a fresh `claude` before any hook fires.** The screens are described in "Startup screens" below.
    - `SessionStart` fires only after the folder-trust prompt is answered.
    - A Kage window stuck on one of these screens therefore has no hooks. Kage should fall back to reading the pane.
-   - Open question: does a new worktree folder (`<repo>/.worktrees/<slug>`) trigger the trust prompt again? Not tested.
+   - A new worktree folder (`<repo>/.worktrees/<slug>`) does **not** show the trust prompt when the repo root is trusted; see §7.
 7. **The transcript file is created lazily.** `transcript_path` arrives with `SessionStart`, but the file may not exist yet.
    - A session killed before its first prompt never had a file.
    - A session that only ran `/exit` got one at exit.
@@ -201,4 +201,70 @@ Each screen appeared before `SessionStart`:
 | Folder trust | "Accessing workspace: <path> … Is this a project you created or one you trust?". At 80 columns the question sits mid-paragraph: `Quick safety check: Is this a project you created or one you trust? (Like your` (it can wrap at other widths). `Accessing workspace:` and `Yes, I trust this folder` each render on a line of their own. The options are unnumbered: `❯ No, exit` (the default) and `Yes, I trust this folder`. | `Down`, then `Enter` |
 | Renderer offer | "Try the new fullscreen renderer?", options `1. Yes, try it` and `2. Not now` | `2` (no Enter). Saying yes would change what `capture-pane` returns. |
 
-The theme, security notes and renderer offer appeared once per install. The trust prompt is per folder.
+The theme, security notes and renderer offer appeared once per install. The trust prompt is per folder, and a trusted folder also covers the folders inside it (§7).
+
+## 7. Starting and answering
+
+Recorded on 2026-11-21 (phase 3 spike) against 2.1.330 in WSL Ubuntu 24.04 and tmux 3.4, at 80x40.
+- Claude was started the way Kage will start it: `tmux new-window -d … -c <worktree> -e KAGE_SOCKET=… -e PATH=… -- <claude> --settings <kage hooks-path> --permission-mode default -- "<task>"`, with no shell in between.
+- Six prompts were used in all.
+- The git, tmux and port facts are in `host-integration.md`.
+
+Fixtures, all with invented paths and the observed layout:
+- `panes/trust.txt`;
+- `panes/ask.txt`, a live AskUserQuestion with its conversation above it;
+- `panes/idle-typed.txt`;
+- `panes/idle-pasted.txt`.
+
+### Starting
+
+| Question | Answer |
+|---|---|
+| Is `--` before the task accepted? | Yes. `claude --settings <f> --permission-mode default -- "say hi in one word"` submitted the task as the first prompt, and Claude answered "Hi". |
+| What does `#{pane_current_command}` show? | `claude`. In 2.1.330, `~/.local/node/bin/claude` is a native ELF executable, not a Node script. |
+| How fast does the screen appear? | The idle box with the running prompt showed 0.8 s after `new-window` (trusted folder, no startup screens). |
+| Does a new worktree show the folder-trust screen? | **No, when the repo root is trusted.** `<repo>/.worktrees/hi` started straight into the task. Claude wrote no trust entry for the worktree path; only the root's `hasTrustDialogAccepted: true` exists. Trust covers the folders below a trusted folder. |
+| A worktree of an untrusted repo | The trust screen appears and names the worktree path (`Accessing workspace:` / `/…/other/.worktrees/t`). So Kage meets the trust screen only for a project whose root was never trusted. |
+| Trust screen layout and option order | As in `panes/trust.txt`. The options are unnumbered, in this order: `❯ No, exit` (the default, selected first), then `Yes, I trust this folder`. The footer is ` Enter to confirm · Esc to cancel`. |
+| Trust screen keys | `Down` moves `❯` to `Yes, I trust this folder`. **`Down` on the last option wraps** to `No, exit`, and `Up` on the first wraps to the last. A digit (`2`) does nothing. `Enter` on `Yes` accepts, and the idle box appears about 1 s later. `Escape` on the trust screen exits Claude, and the window closes. |
+
+### Answering a prompt
+
+| Question | Answer |
+|---|---|
+| AskUserQuestion pane | As in `panes/ask.txt` and §3: ` ☐ <header>`, the question, then `❯ 1. <label>` with indented descriptions, `N+1. Type something.`, a `─` rule, `N+2. Chat about this`, and ` Enter to select · ↑/↓ to navigate · Esc to cancel`. |
+| Does a digit answer it? | **Yes.** `send-keys 2` picked option 2 (not the one under `❯`) and submitted at once, with no Enter. The pane showed `● Answered Claude's questions:` / `⎿  · <question> → Underscores`, and the transcript recorded `"<question>"="Underscores"`. |
+| Escape at a Bash permission prompt | The pane shows `⎿  Interrupted · What should Claude do instead?` under the tool line, then the empty idle box. **The idle box was back at the first poll, 113 ms after `Escape`.** |
+| Escape at an AskUserQuestion | The pane shows **`● Declined to answer Claude's questions:`** / `⎿  · <question>` / `(<label> / <label>)`, not "Interrupted". The idle box was back after 115 ms. The transcript is the same as for a Bash denial: a `tool_result` with `is_error: true`, `toolDenialKind: "user-rejected"`, `toolUseResult: "User rejected tool use"`, then the text `[Request interrupted by user for tool use]`. |
+| Escape, then `send-keys -l -- "<text>"`, then `Enter` | The text became the next prompt, verbatim, as the transcript's next user string (`promptSource: "typed"`). It worked after both kinds of prompt. After the AskUserQuestion, Claude went on to run `b.sh` ("use the other script"). |
+| Text typed while a permission prompt is showing | It doesn't reach the input box. 200 letters typed at a Read prompt did nothing, and after `Escape` the box was empty. |
+
+### The idle box
+
+| Question | Answer |
+|---|---|
+| The `❯` in the idle box | It is followed by a **no-break space (U+00A0)**, not a plain space: `❯ fix the typo`. The `❯ ` in the conversation above (old prompts, option lines) uses a plain space. |
+| Ghost suggestion | The box can show a suggestion such as `Try "edit <filepath> to…"` or `commit this`. In a plain capture it looks exactly like typed text. Only `capture-pane -e` tells them apart: the ghost is dim (`ESC[2m`). Typing replaces the ghost at once, and the typed text shows after `❯ ` (`panes/idle-typed.txt`). When the box is emptied, the ghost comes back. |
+| Is the box visible while Claude works? | Yes. The empty `❯ ` box stays between its rules, and the footer reads `⏸ manual mode on · esc to interrupt`. |
+| Footer variants | The second line under the bottom rule changes with state, so `? for shortcuts` is not a reliable idle marker. Seen: `⏸ manual mode on · ? for shortcuts · ← for agents` (with `◐ medium · /effort` on the right), `ctrl+y to paste deleted text`, `esc again to clear`, `paste again to expand` and `esc to interrupt`. A tip line can follow it: `tmux focus-events off · add 'set -g focus-events on' to ~/.tmux.conf and re…`. |
+
+### Clearing typed text (Ctrl+U and Escape)
+
+| Keys | Effect |
+|---|---|
+| `send-keys C-u` | Deletes from the cursor to the start of the **current visual row** and never submits. With one row of text the box is empty again: the ghost returns, and the footer shows `ctrl+y to paste deleted text`. **A wrapped multi-row text needs one `C-u` per row:** 200 characters at 80 columns took three. `C-u` on an empty box is harmless. |
+| One `Escape` with text in the box | Nothing is cleared. The footer shows `esc again to clear`. |
+| `send-keys Escape Escape` (one call), or two `Escape` calls 0.2 s apart | Clears the whole box, including `[Pasted text #N]` placeholders, without submitting. Two `Escape` calls several seconds apart don't clear (the second only re-arms). |
+| Two `Escape` on an empty idle box | Nothing visible happened (no rewind menu) in this session. |
+
+### Paste placeholder
+
+`send-keys -l` delivers its text in one burst, and Claude treats a burst as a paste.
+
+| Question | Answer |
+|---|---|
+| When does the placeholder replace the text? | When one burst is **longer than 800 UTF-16 code units** (JavaScript string length). 800 ASCII characters showed as text, and 801 as `[Pasted text #1]`. 400 emoji (800 units) showed as text, and 401 (802 units, 1,604 bytes) as a placeholder. 801 `é` (801 units) gave a placeholder too. |
+| Placeholder forms | `[Pasted text #N]` for one line, and `[Pasted text #N +K lines]` when the text has newlines. `N` counts up per Claude session (it reached #19 in one session) and restarts in a new one. Placeholders sit inline with typed text: `❯ short words typed first here: [Pasted text #9]`. While one shows, the footer reads `paste again to expand` (`panes/idle-pasted.txt`). |
+| Chunked sends (Kage's ≤ 2,000-byte `send-keys -l` calls, sent back to back) | Each chunk over 800 units becomes its own placeholder, **but bursts that arrive close together merge**, so the number of placeholders depends on timing. 2,000 + 2,000 + 500 bytes gave `[Pasted text #14][Pasted text #15]` twice, with the 500 merged into the second; the third run gave two placeholders plus the 500 as plain text. Chunks of 400 and 500 sent 0.3 s apart showed as plain text. |
+| Is the content intact? | Yes, as far as tested. A 3,907-character reply (4,207 bytes: ASCII plus 100 emoji), sent in chunks of 2,000, 1,998 and 209 bytes, showed `[Pasted text #1][Pasted text #2]`. By a script mistake, two multi-line text files followed in the same send; they became `[Pasted text #3 +21 lines][Pasted text #4 +38 lines]` and are left out of this check. In the transcript the first placeholder held chunk 1 exactly, and the second held chunks 2 and 3 joined. Nothing was lost or reordered. |
+| **How the transcript records a pasted prompt** | The user record's `message.content` is still a string. Each placeholder is expanded as `\n\n<pasted_content id="<n>">\n<text>\n</pasted_content id="<n>">\n`, and all the blocks of one prompt carried the same id. Typed text keeps its place between the blocks. A reader that shows the user's prompt sees these wrappers unless it unwraps them. |
