@@ -27,6 +27,10 @@ describe('stripAnsi', () => {
   it('removes other two-character escapes', () => {
     expect(stripAnsi('a\x1b7b\x1b(Bc\x1bcd')).toBe('abcd');
   });
+  it('drops a lone trailing ESC and C1 controls', () => {
+    expect(stripAnsi('ab\x1b')).toBe('ab');
+    expect(stripAnsi('a\x80b\x9bc\x9fd\u00a0e')).toBe('abcd\u00a0e');
+  });
   it('keeps hostile markup as plain text', () => {
     expect(stripAnsi('<img src=x onerror=alert(1)>')).toBe('<img src=x onerror=alert(1)>');
   });
@@ -86,6 +90,25 @@ describe('parsePermissionPrompt', () => {
   it('keeps hostile text as plain text', () => {
     const q = parsePermissionPrompt('<b>Q?</b>\n 1. <img onerror=x>\n 2. No\n Esc to cancel');
     expect(q).toEqual({ text: '<b>Q?</b>', options: ['<img onerror=x>', 'No'] });
+  });
+});
+
+describe('live screen only', () => {
+  const rule = '─'.repeat(80);
+  const idle = `${rule}\n❯ commit this\n${rule}\n  ⏸ manual mode on · ? for shortcuts\n`;
+  it('ignores a dismissed prompt above Claude output and an idle input box', () => {
+    const old = 'Do you want to proceed?\n ❯ 1. Yes\n   2. No\n Esc to cancel · Tab to amend\n';
+    const p = `${old}\n● Ran it.\n\n${idle}`;
+    expect(parsePermissionPrompt(p)).toBeNull();
+    expect(showsPrompt(p)).toBe(false);
+  });
+  it('still finds a prompt followed only by blank lines', () => {
+    expect(parsePermissionPrompt('Q?\n 1. A\n 2. B\n Esc to cancel\n\n\n')).not.toBeNull();
+  });
+  it('ignores a startup phrase quoted above an idle input box', () => {
+    const p = `● The screen says "Select login method" on first run.\n\n${idle}`;
+    expect(parseStartupScreen(p)).toBeNull();
+    expect(showsPrompt(p)).toBe(false);
   });
 });
 

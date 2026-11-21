@@ -12,8 +12,8 @@ const BEL = 0x07;
 /** Longest fallback line and longest command shown in a prompt's text, in characters. */
 const MAX_LINE = 200;
 const MAX_COMMAND = 120;
-/** Startup screens are small: only the last lines of the pane can be one. */
-const STARTUP_WINDOW = 30;
+/** Startup screens are small: the phrase must sit within the last non-empty lines. */
+const STARTUP_WINDOW = 15;
 /** Most lines between numbered options (descriptions, rules) and between the last one and the footer. */
 const MAX_GAP = 6;
 
@@ -62,7 +62,10 @@ const TITLE = /^(Bash command|\w+ file)$/;
 const UI_OPTION = /^(Type something\.?|Chat about this)$/;
 
 /** Option text after "N. ", without a trailing " · hint". */
-const optionLabel = (text: string): string => text.replace(/\s+·\s.*$/, '').trim();
+const optionLabel = (text: string): string => {
+  const at = text.indexOf(' · ');
+  return (at === -1 ? text : text.slice(0, at)).trim();
+};
 
 /** Cuts to `max` characters, ending with "…" when cut. */
 function clip(text: string, max: number): string {
@@ -99,9 +102,13 @@ function detailOf(segment: string[]): string {
  * followed by the Esc/Enter footer, so numbered lists in Claude's own output don't match.
  */
 export function parsePermissionPrompt(pane: string): Question | null {
-  const lines = cleanLines(pane);
-  const footer = lines.findLastIndex((l) => FOOTER.test(l));
-  if (footer === -1) return null;
+  return parsePrompt(cleanLines(pane));
+}
+
+function parsePrompt(lines: string[]): Question | null {
+  // The footer must be the live bottom of the screen: only blank lines may follow it.
+  const footer = lines.findLastIndex((l) => l !== '');
+  if (footer === -1 || !FOOTER.test(lines[footer] as string)) return null;
 
   // Walk up from the footer collecting n, n-1, … 1; other lines (descriptions, rules) are skipped.
   const labels: string[] = [];
@@ -141,25 +148,43 @@ export function parsePermissionPrompt(pane: string): Question | null {
   };
 }
 
-/** Recognises Claude Code's startup screens (R9) by their recorded key phrases. */
-export function parseStartupScreen(pane: string): Question | null {
-  const lines = cleanLines(pane)
-    .filter((l) => l !== '')
-    .slice(-STARTUP_WINDOW);
-  const text = lines.join('\n');
-  if (/Select login method/.test(text)) {
+const IDLE_FOOTER = /(\? for shortcuts|manual mode on|auto mode on)/;
+
+/** True when Claude's idle input box (`❯` between two rules, or its footer) is on screen after `from`. */
+function idleBoxBelow(lines: string[], from: number): boolean {
+  for (let i = from + 1; i < lines.length; i++) {
+    const l = lines[i] as string;
+    if (IDLE_FOOTER.test(l)) return true;
+    if (
+      l.startsWith('❯') &&
+      FULL_RULE.test(lines[i - 1] ?? '') &&
+      FULL_RULE.test(lines[i + 1] ?? '')
+    ) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function parseStartup(all: string[]): Question | null {
+  const lines = all.filter((l) => l !== '').slice(-STARTUP_WINDOW);
+  /** Index of the last line matching `re`, or -1. */
+  const find = (re: RegExp): number => lines.findLastIndex((l) => re.test(l));
+  const live = (...at: number[]): boolean =>
+    at.every((i) => i >= 0) && !idleBoxBelow(lines, Math.min(...at));
+  if (live(find(/Select login method/))) {
     return { text: 'Sign in to Claude Code in the terminal', options: [] };
   }
-  if (/Is this a project you created or one you trust\?/.test(text)) {
+  if (live(find(/Is this a project you created or one you trust\?/))) {
     return { text: 'Trust this folder?', options: ['No, exit', 'Yes, I trust this folder'] };
   }
-  if (/Try the new fullscreen renderer\?/.test(text)) {
+  if (live(find(/Try the new fullscreen renderer\?/))) {
     return { text: 'Try the new fullscreen renderer?', options: ['Yes, try it', 'Not now'] };
   }
-  if (/Security notes/.test(text) && /Press Enter to continue/.test(text)) {
+  if (live(find(/Security notes/), find(/Press Enter to continue/))) {
     return { text: 'Security notes', options: ['Continue'] };
   }
-  if (/Choose the text style/.test(text)) {
+  if (live(find(/Choose the text style/))) {
     const numbered = lines.flatMap((l) => {
       const m = OPTION.exec(l);
       return m ? [optionLabel(m[3] as string)] : [];
@@ -169,9 +194,15 @@ export function parseStartupScreen(pane: string): Question | null {
   return null;
 }
 
+/** Recognises Claude Code's startup screens (R9) by their recorded key phrases. */
+export function parseStartupScreen(pane: string): Question | null {
+  return parseStartup(cleanLines(pane));
+}
+
 /** True when the pane shows a permission prompt, a question or a startup screen. */
 export function showsPrompt(pane: string): boolean {
-  return parsePermissionPrompt(pane) !== null || parseStartupScreen(pane) !== null;
+  const lines = cleanLines(pane);
+  return parsePrompt(lines) !== null || parseStartup(lines) !== null;
 }
 
 /** Cuts the input box (rule, `❯ …`, rule) and the footer under it from the bottom of the lines. */
