@@ -103,6 +103,12 @@ export function applyEvent(e: ServerEvent): void {
       const next = [...prev, ...e.lines].slice(-MAX_LINES);
       lineCount.set(e.id, (lineCount.get(e.id) ?? 0) + e.lines.length);
       linesById.value = new Map(linesById.value).set(e.id, next);
+    } else if (e.type === 'session.ports') {
+      sessions.value = sessions.value.map((s) => (s.id === e.id ? { ...s, ports: e.ports } : s));
+    } else if (e.type === 'session.files') {
+      sessions.value = sessions.value.map((s) =>
+        s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,
+      );
     } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
       lineCount.delete(e.id);

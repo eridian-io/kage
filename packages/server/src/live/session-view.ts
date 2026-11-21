@@ -41,8 +41,12 @@ export function toSession(v: SessionView): Session {
     lines: [],
     ports: [],
     files: [],
+    filesTotal: 0,
   };
-  if (v.question) s.question = { text: v.question.text, options: v.question.options.slice() };
+  if (v.question) {
+    s.question = { text: v.question.text, options: v.question.options.slice() };
+    if (v.question.startup) s.question.startup = true;
+  }
   // The now line says what a running turn is doing; a finished or waiting one shows none (F3).
   if (v.now && v.status === 'running') s.now = v.now;
   return s;
@@ -54,13 +58,17 @@ const sameQuestion = (a: Question | undefined, b: Question | undefined): boolean
     b !== undefined &&
     a.text === b.text &&
     a.options.length === b.options.length &&
-    a.options.every((o, i) => o === b.options[i]));
+    a.options.every((o, i) => o === b.options[i]) &&
+    (a.startup ?? false) === (b.startup ?? false));
 
-/** Shallow compare of two sessions (the question by value; lines, ports and files by length). */
+/**
+ * Shallow compare of two sessions (the question by value; lines by length). Ports, files and
+ * filesTotal are left out: they travel in their own events.
+ */
 export function sameSession(a: Session | null, b: Session): boolean {
   if (!a) return false;
   for (const key of Object.keys(b) as (keyof Session)[]) {
-    if (key === 'question') continue;
+    if (key === 'question' || key === 'ports' || key === 'files' || key === 'filesTotal') continue;
     const x = a[key];
     const y = b[key];
     if (Array.isArray(x) && Array.isArray(y)) {

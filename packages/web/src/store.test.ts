@@ -1,6 +1,6 @@
 import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyEvent, lineKeyBase, linesById, projectsRoot, streamId } from './store.ts';
+import { applyEvent, lineKeyBase, linesById, projectsRoot, sessions, streamId } from './store.ts';
 
 const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
@@ -70,5 +70,36 @@ describe('protocol v2 store', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
     applyEvent({ type: 'session.removed', id: 'a' });
     expect(linesById.value.has('a')).toBe(false);
+  });
+});
+
+describe('protocol v3 store', () => {
+  const seed = () =>
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [{ ...(demoSessions(1)[0] as Session), id: 'a', filesTotal: 1 }],
+    });
+  it('session.ports replaces that session’s ports only', () => {
+    seed();
+    const ports = [{ port: 5173, process: 'vite', localOnly: false }];
+    applyEvent({ type: 'session.ports', id: 'a', ports });
+    expect(sessions.value[0]?.ports).toEqual(ports);
+  });
+  it('session.files replaces files and filesTotal', () => {
+    seed();
+    const files = [{ path: 'x.ts', added: 2, removed: 1 }];
+    applyEvent({ type: 'session.files', id: 'a', files, filesTotal: 250 });
+    expect(sessions.value[0]).toMatchObject({ files, filesTotal: 250 });
+  });
+  it('both are ignored for an unknown id', () => {
+    seed();
+    const before = sessions.value;
+    applyEvent({ type: 'session.ports', id: 'zzz', ports: [] });
+    applyEvent({ type: 'session.files', id: 'zzz', files: [], filesTotal: 0 });
+    expect(sessions.value).toEqual(before);
+    expect(sessions.value.length).toBe(1);
   });
 });

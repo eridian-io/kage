@@ -196,6 +196,27 @@ describe('toDisplayLines', () => {
     expect(prompt?.text.length).toBe(2000);
   });
 
+  it('K10b: a pasted-content wrapper shows as "[pasted text] <first line>"', () => {
+    const user = (content: string) => toDisplayLines({ type: 'user', message: { content } });
+    const block = (id: string, body: string) =>
+      `<pasted_content id="${id}">\n${body}\n</pasted_content id="${id}">\n`;
+    const paste = block('7', 'first pasted line\nsecond pasted line');
+    expect(user(`\n\n${paste}`)).toEqual([
+      { kind: 'say', text: '> [pasted text] first pasted line' },
+    ]);
+    expect(user(`see this:\n\n${paste}`)).toEqual([
+      { kind: 'say', text: '> see this:\n\n[pasted text] first pasted line' },
+    ]);
+    // Blocks of one prompt share an id: one marker.
+    expect(user(`${block('2', 'aaa\nbbb')}\n${block('2', 'ccc')}`)[0]?.text).toBe(
+      '> [pasted text] aaa',
+    );
+    // A long first line is clipped like other say text.
+    const long = user(block('1', 'x'.repeat(5000)))[0]?.text ?? '';
+    expect(long.length).toBe(2000);
+    expect(long.endsWith('…')).toBe(true);
+  });
+
   it('strips escape sequences and control characters from say, diff and detail text', () => {
     expect(
       toDisplayLines(

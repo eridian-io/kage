@@ -52,6 +52,26 @@ function sayText(text: string): string {
   return clip(lines.map((l) => stripAnsi(l)).join('\n'), MAX_SAY);
 }
 
+/** One pasted block, as Claude Code writes it: `<pasted_content id="n">`, text, `</pasted_content id="n">`. */
+const PASTED = /<pasted_content id="([^"]*)">\n?([\s\S]*?)\n?<\/pasted_content id="\1">\n?/g;
+
+/**
+ * K10b: a prompt's pasted blocks become "[pasted text] <first line>", one marker per paste id
+ * (a long paste arrives as several blocks with the same id); typed text keeps its place.
+ */
+function unwrapPasted(text: string): string {
+  if (!text.includes('<pasted_content')) return text;
+  const seen = new Set<string>();
+  return text
+    .replace(PASTED, (_m, id: string, body: string) => {
+      if (seen.has(id)) return '';
+      seen.add(id);
+      const first = body.split('\n').find((l) => l.trim() !== '') ?? '';
+      return `[pasted text] ${first.trim()} `;
+    })
+    .trim();
+}
+
 /** Path relative to cwd when inside it; otherwise unchanged. */
 function relative(path: string, cwd: unknown): string {
   if (typeof cwd !== 'string' || cwd === '') return path;
@@ -153,7 +173,7 @@ export function toDisplayLines(record: unknown): DisplayLine[] {
     const c = content(record, 'user');
     if (typeof c === 'string') {
       if (isLocal(record, c) || c.startsWith(INTERRUPT_PREFIX)) return [];
-      return [{ kind: 'say', text: sayText(`> ${c}`) }];
+      return [{ kind: 'say', text: sayText(`> ${unwrapPasted(c)}`) }];
     }
     return blocks(record, 'user').flatMap((b) =>
       b.type === 'tool_result' ? resultLines(record, b) : [],

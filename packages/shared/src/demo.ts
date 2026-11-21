@@ -173,5 +173,6 @@ export function demoSessions(now: number): Session[] {
     lines: seed.lines.map((l) => ({ ...l })),
     ports: seed.ports.map((p) => ({ ...p })),
     files: seed.files.map((f) => ({ ...f })),
+    filesTotal: seed.files.length,
   }));
 }

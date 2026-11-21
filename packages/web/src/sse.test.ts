@@ -155,6 +155,29 @@ describe('connect', () => {
     stop();
   });
 
+  it('listens for session.ports and session.files', () => {
+    const stop = connect();
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW),
+    });
+    const ports = [{ port: 8080, process: 'node', localOnly: true }];
+    latest().emit('session.ports', { type: 'session.ports', id: 'docs', ports });
+    latest().emit('session.files', {
+      type: 'session.files',
+      id: 'docs',
+      files: [],
+      filesTotal: 7,
+    });
+    const docs = sessions.value.find((s) => s.id === 'docs');
+    expect(docs?.ports).toEqual(ports);
+    expect(docs).toMatchObject({ files: [], filesTotal: 7 });
+    stop();
+  });
+
   it('review focus 4: reconnects after an error and replaces the sessions on the next snapshot', () => {
     const stop = connect('/api/events', { retryMs: 250 });
     const first = latest();

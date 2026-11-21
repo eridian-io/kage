@@ -47,4 +47,8 @@ describe('demoSessions', () => {
     ]);
     expect(s.every((x) => !x.archived && !x.external)).toBe(true);
   });
+
+  it('gives every session filesTotal equal to its file count', () => {
+    for (const x of s) expect(x.filesTotal).toBe(x.files.length);
+  });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { questionFromToolInput, type SessionView, toSession } from './session-view.ts';
+import { questionFromToolInput, type SessionView, sameSession, toSession } from './session-view.ts';
 
 const view = (over: Partial<SessionView> = {}): SessionView => ({
   id: 'ext-@1',
@@ -19,6 +19,34 @@ describe('toSession', () => {
     for (const status of ['done', 'needs-you', 'ended'] as const) {
       expect(toSession(view({ status }))).not.toHaveProperty('now');
     }
+  });
+});
+
+describe('toSession v3', () => {
+  it('fills filesTotal 0 until real data arrives', () => {
+    expect(toSession(view())).toMatchObject({ files: [], filesTotal: 0 });
+  });
+});
+
+describe('sameSession', () => {
+  const base = toSession(view());
+  it('ignores ports, files and filesTotal, which have their own events', () => {
+    const b = {
+      ...base,
+      ports: [{ port: 3000, process: 'node', localOnly: false }],
+      files: [{ path: 'a', added: 1, removed: 0 }],
+      filesTotal: 1,
+    };
+    expect(sameSession(base, b)).toBe(true);
+  });
+  it('compares question.startup', () => {
+    const q = { text: 'Theme?', options: ['Dark'] };
+    const a = { ...base, question: q };
+    expect(sameSession(a, { ...base, question: { ...q } })).toBe(true);
+    expect(sameSession(a, { ...base, question: { ...q, startup: true } })).toBe(false);
+  });
+  it('still sees a changed status', () => {
+    expect(sameSession(base, { ...base, status: 'done' })).toBe(false);
   });
 });
 

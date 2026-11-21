@@ -8,6 +8,8 @@ const TYPES: ServerEvent['type'][] = [
   'session.updated',
   'session.lines',
   'session.removed',
+  'session.ports',
+  'session.files',
 ];
 
 /** The current connection's stopper. */

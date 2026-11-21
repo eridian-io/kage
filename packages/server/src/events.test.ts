@@ -164,6 +164,27 @@ describe('EventHub', () => {
       }
       hub.close();
     });
+    it('session.ports and session.files reach every stream, whatever it views', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const b = await open(hub);
+      hub.view(a.streamId, 'shop');
+      await read(a.reader);
+      const ports: SourceEvent = { type: 'session.ports', id: 'shop', ports: [] };
+      const files: SourceEvent = { type: 'session.files', id: 'shop', files: [], filesTotal: 3 };
+      source.emit(ports);
+      source.emit(files);
+      for (const r of [a.reader, b.reader]) {
+        const p = await read(r);
+        expect(p.startsWith('event: session.ports\ndata: ')).toBe(true);
+        expect(JSON.parse(p.split('data: ')[1] ?? '')).toEqual(ports);
+        const f = await read(r);
+        expect(f.startsWith('event: session.files\ndata: ')).toBe(true);
+        expect(JSON.parse(f.split('data: ')[1] ?? '')).toEqual(files);
+      }
+      hub.close();
+    });
     it('a removed session stops being viewed: its later lines reach nobody', async () => {
       const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');
