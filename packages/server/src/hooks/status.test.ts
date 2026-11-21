@@ -20,7 +20,7 @@ function fixture(file: string) {
 const ALL: (SessionStatus | undefined)[] = [undefined, 'running', 'needs-you', 'done', 'ended'];
 const LIVE: (SessionStatus | undefined)[] = [undefined, 'running', 'needs-you', 'done'];
 
-describe('nextStatus (spec §5.3 with R6, R6b, R7, R12)', () => {
+describe('nextStatus (spec §5.3 with R6, R6b, R7, R12, R21)', () => {
   it.each([
     ['user-prompt-submit.json'],
     ['pre-tool-use.json'],
@@ -33,9 +33,9 @@ describe('nextStatus (spec §5.3 with R6, R6b, R7, R12)', () => {
     for (const prev of LIVE) expect(nextStatus(prev, e)).toBe('running');
   });
 
-  it('SessionStart → running from any status, ended included (a resumed session)', () => {
+  it('SessionStart → done (waiting for input) from any status, ended included (R21)', () => {
     const e = fixture('session-start.json');
-    for (const prev of ALL) expect(nextStatus(prev, e)).toBe('running');
+    for (const prev of ALL) expect(nextStatus(prev, e)).toBe('done');
   });
 
   it('PermissionRequest → needs-you', () => {

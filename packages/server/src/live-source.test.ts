@@ -453,12 +453,16 @@ describe('LiveSource: hooks and status', () => {
     await source.start();
     hooks.fire(hook('SessionStart', '%2'));
     await flush();
-    expect(source.get('k-1')?.status).toBe('running');
+    // R21: a new session waits for input.
+    expect(source.get('k-1')).toMatchObject({ status: 'done', statusSince: T0 });
+    await vi.advanceTimersByTimeAsync(1000);
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    expect(source.get('k-1')).toMatchObject({ status: 'running', statusSince: T0 + 1000 });
     await vi.advanceTimersByTimeAsync(1000);
     hooks.fire(hook('PreToolUse', '%2'));
-    expect(source.get('k-1')?.statusSince).toBe(T0);
+    expect(source.get('k-1')?.statusSince).toBe(T0 + 1000);
     hooks.fire(hook('Stop', '%2'));
-    expect(source.get('k-1')).toMatchObject({ status: 'done', statusSince: T0 + 1000 });
+    expect(source.get('k-1')).toMatchObject({ status: 'done', statusSince: T0 + 2000 });
     hooks.fire(hook('SessionEnd', '%2'));
     expect(source.get('k-1')?.status).toBe('ended');
   });
@@ -467,6 +471,7 @@ describe('LiveSource: hooks and status', () => {
     const { source, hooks, updates } = setup({ windows: [kageWin()], records: [rec()] });
     await source.start();
     hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
     await flush();
     const n = updates('k-1').length;
     hooks.fire(hook('PreToolUse', '%2'));

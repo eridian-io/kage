@@ -6,14 +6,15 @@ import type { HookEvent } from './event.ts';
  * PermissionRequest is the primary needs-you trigger, Notification(permission) the fallback,
  * and AskUserQuestion is seen on its PreToolUse. Any other in-turn event means running,
  * which also clears needs-you. Idle and other notifications leave the status as it is, and
- * so does a late permission Notification once the turn is done. Ended is terminal; only a
- * SessionStart (a resumed session) brings it back to running.
+ * so does a late permission Notification once the turn is done. SessionStart means Claude is
+ * waiting for input (R21): done. Ended is terminal; only a SessionStart (a resumed session)
+ * brings it back, as done.
  */
 export function nextStatus(
   prev: SessionStatus | undefined,
   e: HookEvent,
 ): SessionStatus | undefined {
-  if (prev === 'ended') return e.event === 'SessionStart' ? 'running' : 'ended';
+  if (prev === 'ended') return e.event === 'SessionStart' ? 'done' : 'ended';
   switch (e.event) {
     case 'PermissionRequest':
       return 'needs-you';
@@ -22,6 +23,7 @@ export function nextStatus(
     case 'PreToolUse':
       return e.toolName === 'AskUserQuestion' ? 'needs-you' : 'running';
     case 'SessionStart':
+      return 'done';
     case 'UserPromptSubmit':
     case 'PostToolUse':
     case 'PostToolUseFailure':
