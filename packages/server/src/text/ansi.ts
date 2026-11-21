@@ -6,31 +6,35 @@ const LF = 0x0a;
 
 /**
  * Unicode bidi controls and invisible format characters that can make text read differently
- * from what it is (Trojan Source): U+200B–U+200F, U+202A–U+202E, U+2066–U+2069, and the line
- * and paragraph separators U+2028 and U+2029.
+ * from what it is (Trojan Source): U+061C, U+180E, U+200B–U+200F, U+202A–U+202E,
+ * U+2060–U+2064, U+2066–U+2069, U+FEFF, and the line and paragraph separators U+2028 and U+2029.
  */
 export function isFormatChar(c: number): boolean {
   return (
+    c === 0x061c ||
+    c === 0x180e ||
     (c >= 0x200b && c <= 0x200f) ||
     (c >= 0x202a && c <= 0x202e) ||
+    (c >= 0x2060 && c <= 0x2064) ||
     (c >= 0x2066 && c <= 0x2069) ||
     c === 0x2028 ||
-    c === 0x2029
+    c === 0x2029 ||
+    c === 0xfeff
   );
 }
 
 export interface StripOptions {
-  /** One line: a line feed becomes a space, and bidi and format characters go too. */
+  /** One line: a line feed becomes a space (otherwise it is dropped like other controls). */
   oneLine?: boolean;
   /** Stop once the output has this many characters (bounds the work on huge input). */
   limit?: number;
 }
 
 /**
- * Removes terminal escape sequences (CSI, OSC including OSC 8 links, others) and control
- * characters other than tab. With `oneLine`, the character filter that runs after the escape
- * parsing also turns line feeds into spaces and drops bidi and format characters, so they can
- * neither hide an escape sequence nor be left over from one.
+ * Removes terminal escape sequences (CSI, OSC including OSC 8 links, others), control
+ * characters other than tab, and bidi and format characters (R28: every displayed text path).
+ * The character filter runs after the escape parsing, so a format character can neither hide an
+ * escape sequence nor be left over from one. With `oneLine`, line feeds become spaces.
  */
 export function stripAnsi(text: string, opts: StripOptions = {}): string {
   const oneLine = opts.oneLine === true;
@@ -58,7 +62,7 @@ export function stripAnsi(text: string, opts: StripOptions = {}): string {
       i++;
     } else {
       if (oneLine && c === LF) out += ' ';
-      else if (oneLine && isFormatChar(c)) {
+      else if (isFormatChar(c)) {
         // dropped
       } else if (c === 0x09 || (c >= 0x20 && c < 0x7f) || c > 0x9f) out += text[i];
       i++;

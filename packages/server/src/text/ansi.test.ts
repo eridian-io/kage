@@ -64,3 +64,24 @@ describe('plainLine: bidi and format characters (Trojan Source)', () => {
     expect(plainLine(`\x1b[1m${'x'.repeat(60)}`, 10)).toBe(`${'x'.repeat(9)}…`);
   });
 });
+
+describe('stripAnsi: bidi and format characters (R28)', () => {
+  it('strips them always, and keeps line feeds unless oneLine', () => {
+    for (const c of [
+      '\u061C',
+      '\u180E',
+      '\u2060',
+      '\u2061',
+      '\u2062',
+      '\u2063',
+      '\u2064',
+      '\uFEFF',
+      '\u202E',
+      '\u200B',
+    ]) {
+      expect(stripAnsi(`a${c}b`)).toBe('ab');
+      expect(plainLine(`a${c}b`, 10)).toBe('ab');
+    }
+    expect(stripAnsi('a\u202E\nb', { oneLine: true })).toBe('a b');
+  });
+});

@@ -300,3 +300,12 @@ describe('paneLines', () => {
     expect(paneLines('', 5)).toEqual([]);
   });
 });
+
+describe('paneLines: bidi and format characters (R28)', () => {
+  it('a pane line comes out without U+202E (and U+FEFF, U+2061)', () => {
+    expect(paneLines('rm \u202Etxt.exe\uFEFF\nok\u2061\n', 5)).toEqual([
+      { kind: 'out', text: 'rm txt.exe' },
+      { kind: 'out', text: 'ok' },
+    ]);
+  });
+});

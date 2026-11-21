@@ -401,3 +401,27 @@ describe('bounds (review minor)', () => {
     expect(nowLine(toolUse('Grep', { pattern: `${link}needle` }))).toBe('Searching needle');
   });
 });
+
+describe('bidi and format characters on every text path (R28)', () => {
+  it('a say line, its line breaks kept, comes out without U+202E', () => {
+    const lines = toDisplayLines(
+      assistant({ type: 'text', text: 'safe \u202Etxt.exe\nnext \uFEFFline' }),
+    );
+    expect(lines).toEqual([{ kind: 'say', text: 'safe txt.exe\nnext line' }]);
+  });
+  it('tool out lines and diff lines come out without them', () => {
+    expect(toDisplayLines(toolResult('ok\u202E\u2060 \u061Cdone\u180E'))).toEqual([
+      { kind: 'out', text: 'ok done' },
+    ]);
+    expect(
+      toDisplayLines(
+        toolResult('ok', {
+          toolUseResult: { structuredPatch: [{ lines: ['-a\u202Eb', '+c\u2064d'] }] },
+        }),
+      ),
+    ).toEqual([
+      { kind: 'del', text: 'ab' },
+      { kind: 'add', text: 'cd' },
+    ]);
+  });
+});
