@@ -1,0 +1,16 @@
+# The Linux test image: `pnpm test:linux` (scripts/test-linux.sh) copies the tracked files into a
+# fresh container of this image and runs the whole check there, tmux tests and live e2e included.
+# The Playwright version matches @playwright/test in package.json; its browsers are preinstalled.
+FROM mcr.microsoft.com/playwright:v1.64.1-noble
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tmux \
+  && rm -rf /var/lib/apt/lists/*
+
+# Node 25+ ships without corepack. --force replaces the image's yarn link with corepack's;
+# pnpm's version comes from packageManager in package.json (run as `corepack pnpm`).
+RUN npm install -g --force corepack@0.36.0
+
+ENV CI=1 \
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /work

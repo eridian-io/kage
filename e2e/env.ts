@@ -17,3 +17,7 @@ export async function resetDemo(base = BASE): Promise<void> {
   });
   if (res.status !== 204) throw new Error(`Demo reset failed: ${res.status} ${await res.text()}`);
 }
+
+/** The live e2e's `kage serve` (real tmux); KAGE_E2E_LIVE_PORT overrides it on a dev box. */
+export const LIVE_PORT = Number(process.env.KAGE_E2E_LIVE_PORT) || 4393;
+export const LIVE_BASE = `http://127.0.0.1:${LIVE_PORT}`;

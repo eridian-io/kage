@@ -28,11 +28,14 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      # tmux for the tmux integration tests and the live e2e project.
+      - run: sudo apt-get update -q && sudo apt-get install -y tmux
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
       - run: pnpm build
       - run: pnpm exec playwright install --with-deps chromium
+      # Every project: the demo board (chromium) and live sessions against real tmux (live).
       - run: pnpm test:e2e
       - if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
