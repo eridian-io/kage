@@ -1,0 +1,671 @@
+<title>Kage Mock-ups</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: a single reading column of sections; each section holds a framed mock-up (scrolls sideways on phones) plus a short "good at / costs" note. Kage is a dark product, so the page commits to one dark look. */
+:root{
+  --bg:#0b0d10; --panel:#111419; --panel-2:#161a20; --raise:#1c2129; --line:#242a33; --line-2:#2f3640;
+  --fg:#eceff4; --fg-2:#a7afbc; --fg-3:#6c7584;
+  --lime:#cdf35a; --lime-dim:rgba(205,243,90,.12); --amber:#f2b544; --amber-dim:rgba(242,181,68,.13); --red:#ff7a7a; --grey:#5d6573;
+  --term:#07080a; --term-fg:#d5dbe4;
+  --sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{max-width:1180px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:64px}
+h1,h2,h3{text-wrap:balance;margin:0;letter-spacing:-.01em}
+h1{font-size:clamp(30px,5vw,44px);font-weight:700}
+h2{font-size:26px;font-weight:650}
+h3{font-size:15px;font-weight:600}
+p{margin:0;max-width:68ch;color:var(--fg-2)}
+code,kbd{font-family:var(--mono);font-size:.88em}
+kbd{border:1px solid var(--line-2);border-bottom-width:2px;border-radius:4px;padding:0 5px;color:var(--fg);background:var(--panel-2)}
+a{color:var(--lime)}
+:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+
+/* intro */
+.intro{display:grid;gap:18px}
+.brand{display:flex;align-items:center;gap:10px;font-family:var(--mono);font-size:13px;color:var(--fg-3);letter-spacing:.04em;text-transform:uppercase}
+.brand b{font-family:var(--sans);text-transform:none;letter-spacing:-.02em;font-size:18px;color:var(--fg)}
+.legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:13px;color:var(--fg-2)}
+.legend span{display:inline-flex;align-items:center;gap:7px}
+nav.jump{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);margin:0 -4px;padding:10px 4px;display:flex;gap:8px;overflow-x:auto;border-bottom:1px solid var(--line)}
+nav.jump a{flex:none;text-decoration:none;color:var(--fg-2);font-size:13px;padding:5px 11px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}
+nav.jump a:hover{color:var(--fg);border-color:var(--line-2)}
+nav.jump a b{color:var(--lime);font-weight:600;margin-right:4px}
+
+/* sections */
+section{display:grid;gap:18px;scroll-margin-top:70px}
+.sec-head{display:grid;gap:8px}
+.tag{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--lime)}
+.tag.a{color:var(--fg-3)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px 28px}
+.notes div{min-width:0}
+.notes h3{font-size:13px;color:var(--fg-3);font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}
+.notes ul{margin:0;padding-left:18px;color:var(--fg-2);font-size:14px;display:grid;gap:4px}
+.scroll{overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+.hint{font-size:12.5px;color:var(--fg-3)}
+
+/* status dots */
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.d-run{background:var(--lime);box-shadow:0 0 0 3px var(--lime-dim)}
+.d-wait{background:var(--amber);box-shadow:0 0 0 3px var(--amber-dim);animation:pulse 1.6s ease-in-out infinite}
+.d-done{background:var(--grey)}
+.d-err{background:var(--red)}
+@keyframes pulse{50%{box-shadow:0 0 0 6px transparent}}
+
+/* browser frame */
+.win{min-width:980px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);box-shadow:0 30px 60px -30px rgba(0,0,0,.7)}
+.chrome{height:34px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#0e1115;border-bottom:1px solid var(--line)}
+.chrome i{width:10px;height:10px;border-radius:50%;background:#2a3039}
+.url{margin-left:14px;flex:1;max-width:340px;height:22px;border-radius:6px;background:#161a20;color:var(--fg-3);font:12px var(--mono);display:flex;align-items:center;padding:0 10px}
+.app{height:600px;display:flex;flex-direction:column;background:var(--panel)}
+
+/* app header (shared) */
+.ahead{height:48px;flex:none;display:flex;align-items:center;gap:14px;padding:0 16px;border-bottom:1px solid var(--line)}
+.logo{font-weight:700;font-size:19px;letter-spacing:-.04em;display:flex;align-items:center;gap:8px}
+.logo svg{width:22px;height:22px}
+.host{display:inline-flex;align-items:center;gap:7px;font:12px var(--mono);color:var(--fg-2);border:1px solid var(--line);padding:3px 9px;border-radius:999px}
+.counts{display:flex;gap:14px;font-size:12.5px;color:var(--fg-2);margin-left:6px}
+.counts span{display:inline-flex;align-items:center;gap:6px}
+.sp{flex:1}
+.kbtn{font:12px var(--mono);color:var(--fg-3);border:1px solid var(--line);border-radius:7px;padding:4px 8px;display:inline-flex;gap:6px;align-items:center;background:var(--panel-2)}
+.btn{font:500 13px var(--sans);color:var(--fg);background:var(--raise);border:1px solid var(--line-2);border-radius:8px;padding:6px 11px;display:inline-flex;align-items:center;gap:7px;cursor:pointer;white-space:nowrap}
+.btn:hover{border-color:#3d4652}
+.btn.pri{background:var(--lime);color:#11140a;border-color:var(--lime);font-weight:600}
+.btn.ghost{background:transparent}
+.btn.danger{color:var(--red)}
+.btn small{font:11px var(--mono);color:var(--fg-3)}
+.btn.pri small{color:#3d4a12}
+
+/* terminal */
+.term{background:var(--term);color:var(--term-fg);font:12.5px/1.6 var(--mono);white-space:pre-wrap;overflow:auto}
+.t-dim{color:#6c7584}.t-lime{color:var(--lime)}.t-amb{color:var(--amber)}.t-add{color:#8fd694}.t-del{color:#ff8f8f}.t-b{color:#fff;font-weight:500}
+.cursor{display:inline-block;width:8px;height:15px;background:var(--lime);vertical-align:-3px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ===== A: terminal-first ===== */
+.a-tabs{height:38px;flex:none;display:flex;align-items:stretch;background:#0e1115;border-bottom:1px solid var(--line);padding-left:6px}
+.a-tab{display:flex;align-items:center;gap:8px;padding:0 14px;font-size:13px;color:var(--fg-2);border-right:1px solid var(--line);white-space:nowrap}
+.a-tab.on{background:var(--term);color:var(--fg);box-shadow:inset 0 2px 0 var(--lime)}
+.a-tab .x{color:var(--fg-3);font-size:11px}
+.a-tab.plus{color:var(--fg-3);border-right:0}
+.a-term{flex:1;padding:14px 18px}
+.a-bar{height:26px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px;background:#0e1115;border-top:1px solid var(--line);font:11.5px var(--mono);color:var(--fg-3)}
+.a-bar b{color:var(--lime);font-weight:500}
+
+/* ===== C1: board ===== */
+.c1{flex:1;display:flex;min-height:0}
+.c1-side{width:300px;flex:none;border-right:1px solid var(--line);display:flex;flex-direction:column;min-height:0}
+.newtask{padding:12px;border-bottom:1px solid var(--line);display:grid;gap:8px}
+.field{display:flex;align-items:center;gap:8px;background:var(--panel-2);border:1px solid var(--line-2);border-radius:8px;padding:8px 10px;color:var(--fg-3);font-size:13px}
+.field .k{margin-left:auto}
+.newtask .row{display:flex;gap:6px;font-size:12px;color:var(--fg-3);align-items:center}
+.chip{font:11.5px var(--mono);border:1px solid var(--line-2);border-radius:6px;padding:2px 7px;color:var(--fg-2);background:var(--panel-2)}
+.list{overflow:auto;flex:1}
+.grp{font:11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3);padding:12px 14px 6px}
+.item{display:grid;grid-template-columns:auto 1fr auto;gap:2px 10px;align-items:center;padding:9px 14px;cursor:pointer;border-left:2px solid transparent}
+.item:hover{background:var(--panel-2)}
+.item.on{background:var(--raise);border-left-color:var(--lime)}
+.item .nm{font-size:13.5px;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item .tm{font:11.5px var(--mono);color:var(--fg-3)}
+.item .sub{grid-column:2/4;font:11.5px var(--mono);color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.item.wait .sub{color:var(--amber)}
+.c1-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0}
+.dhead{padding:14px 18px 12px;border-bottom:1px solid var(--line);display:grid;gap:6px}
+.dhead .t{display:flex;align-items:center;gap:10px}
+.dhead h3{font-size:17px}
+.meta{display:flex;flex-wrap:wrap;gap:6px 16px;font:12px var(--mono);color:var(--fg-3)}
+.meta b{color:var(--fg-2);font-weight:400}
+.dbody{flex:1;min-height:0;display:grid;grid-template-columns:1fr 250px}
+.dleft{min-width:0;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--line)}
+.tail{flex:1;padding:12px 16px;min-height:0}
+.tailbar{display:flex;align-items:center;gap:8px;padding:6px 12px;background:var(--term);border-bottom:1px solid #15181d;font:11px var(--mono);color:var(--fg-3)}
+.tailbar .live{display:inline-flex;align-items:center;gap:6px;color:var(--lime)}
+.ask{margin:0;padding:14px 16px;border-top:1px solid var(--line);background:linear-gradient(0deg,var(--amber-dim),transparent);display:grid;gap:10px}
+.ask .q{display:flex;gap:9px;align-items:flex-start;font-size:14px;color:var(--fg)}
+.ask .opts{display:flex;flex-wrap:wrap;gap:8px}
+.ask .reply{display:flex;gap:8px}
+.ask .reply .field{flex:1}
+.actions{display:flex;flex-wrap:wrap;gap:8px;padding:12px 16px;border-top:1px solid var(--line)}
+.dright{padding:14px;display:grid;gap:16px;align-content:start;overflow:auto}
+.blk h4{margin:0 0 8px;font:11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3);font-weight:400}
+.file{display:flex;gap:8px;font:12px var(--mono);color:var(--fg-2);padding:3px 0;align-items:center}
+.file .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file .a{color:#8fd694}.file .r{color:#ff8f8f}
+.port{display:flex;align-items:center;justify-content:space-between;font:12px var(--mono);color:var(--fg-2);padding:6px 8px;border:1px solid var(--line);border-radius:7px;margin-bottom:6px}
+.port a{text-decoration:none;font-size:12px}
+.fullterm{flex:1;display:flex;flex-direction:column;min-height:0}
+.ft-note{display:flex;align-items:center;gap:10px;padding:7px 14px;background:var(--lime-dim);color:var(--lime);font:12px var(--mono);border-bottom:1px solid var(--line)}
+.ft-note .sp{flex:1}
+.ft-note button{all:unset;cursor:pointer;color:var(--fg);font:12px var(--mono);border:1px solid var(--line-2);padding:2px 8px;border-radius:6px}
+.ft-term{flex:1;padding:14px 18px;min-height:0}
+.grp{display:flex;align-items:center;gap:8px}
+.grp-r{margin-left:auto;text-transform:none;letter-spacing:0;color:var(--fg-2);font-size:11.5px}
+.star{color:var(--lime)}
+.c1-main{position:relative}
+.confirm{margin:0 16px 14px;padding:12px 14px;border:1px solid rgba(255,122,122,.4);background:rgba(255,122,122,.07);border-radius:10px;display:grid;gap:10px;font-size:13px;color:var(--fg-2)}
+.confirm code{color:var(--fg)}
+.confirm b{color:var(--red);font-weight:500}
+.confirm .row{display:flex;gap:8px}
+.btn.pri-danger{background:var(--red);border-color:var(--red);color:#1a0b0b;font-weight:600}
+.toast{position:absolute;left:50%;bottom:18px;transform:translateX(-50%);background:#232933;border:1px solid var(--line-2);border-radius:10px;padding:9px 14px;display:flex;gap:12px;align-items:center;font-size:13px;box-shadow:0 12px 30px rgba(0,0,0,.5);white-space:nowrap}
+.toast button{all:unset;cursor:pointer;color:var(--lime);font-weight:600}
+
+/* ===== C2: inbox ===== */
+.c2{flex:1;overflow:auto;display:flex;justify-content:center;background:radial-gradient(1200px 400px at 50% -200px,rgba(205,243,90,.05),transparent)}
+.c2-col{width:720px;padding:22px 0 30px;display:grid;gap:22px;align-content:start}
+.c2 .grp{padding:0 2px 8px;display:flex;align-items:center;gap:8px}
+.card{border:1px solid var(--line);background:var(--panel-2);border-radius:12px;overflow:hidden}
+.card.needs{border-color:rgba(242,181,68,.45);box-shadow:0 0 0 4px var(--amber-dim)}
+.card-h{display:flex;align-items:center;gap:10px;padding:12px 14px}
+.card-h .nm{font-weight:600;font-size:14.5px}
+.card-h .br{font:12px var(--mono);color:var(--fg-3)}
+.card-h .tm{margin-left:auto;font:12px var(--mono);color:var(--fg-3)}
+.card .snip{margin:0 14px;border-radius:8px;padding:10px 12px;font-size:12px}
+.card .q{padding:12px 14px 4px;font-size:15px;color:var(--fg)}
+.card .opts{display:flex;flex-wrap:wrap;gap:8px;padding:8px 14px 14px}
+.rowc{display:grid;grid-template-columns:auto 200px 1fr auto;gap:12px;align-items:center;padding:11px 14px;border-top:1px solid var(--line);font-size:13.5px}
+.rowc:first-child{border-top:0}
+.rowc .last{font:12px var(--mono);color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.rowc .tm{font:12px var(--mono);color:var(--fg-3)}
+.done-r{display:flex;align-items:center;gap:10px;padding:11px 14px;font-size:13.5px}
+.done-r .sp{flex:1}
+
+/* ===== C3: keyboard-first ===== */
+.c3{flex:1;position:relative;display:flex;flex-direction:column;min-height:0;font-family:var(--mono)}
+.tbl{width:100%;border-collapse:collapse;font-size:12.5px}
+.tbl th{text-align:left;font-weight:400;color:var(--fg-3);font-size:11px;letter-spacing:.06em;text-transform:uppercase;padding:9px 12px;border-bottom:1px solid var(--line)}
+.tbl td{padding:8px 12px;border-bottom:1px solid #1a1e25;white-space:nowrap;color:var(--fg-2);font-variant-numeric:tabular-nums}
+.tbl td.nm{color:var(--fg)}
+.tbl td.ln{max-width:300px;overflow:hidden;text-overflow:ellipsis}
+.tbl tr.sel td{background:var(--raise);color:var(--fg)}
+.tbl tr.sel td:first-child{box-shadow:inset 2px 0 0 var(--lime)}
+.c3-preview{flex:1;min-height:0;border-top:1px solid var(--line);display:flex;flex-direction:column}
+.c3-preview .term{flex:1;padding:10px 14px}
+.keys{height:30px;flex:none;display:flex;align-items:center;gap:16px;padding:0 12px;border-top:1px solid var(--line);background:#0e1115;font-size:11.5px;color:var(--fg-3);overflow:hidden;white-space:nowrap}
+.keys kbd{font-size:11px;margin-right:4px}
+.pal{position:absolute;left:50%;top:70px;transform:translateX(-50%);width:560px;border:1px solid var(--line-2);border-radius:12px;background:#151920;box-shadow:0 30px 80px rgba(0,0,0,.65);overflow:hidden;font-family:var(--sans)}
+.pal .in{display:flex;align-items:center;gap:10px;padding:13px 14px;border-bottom:1px solid var(--line);font-size:15px}
+.pal .in .pfx{font:12px var(--mono);color:#11140a;background:var(--lime);border-radius:5px;padding:1px 6px}
+.pal .opt{display:flex;align-items:center;gap:10px;padding:9px 14px;font-size:13.5px;color:var(--fg-2)}
+.pal .opt.on{background:var(--raise);color:var(--fg)}
+.pal .opt .k{margin-left:auto;font:11.5px var(--mono);color:var(--fg-3)}
+.pal .sec{font:11px var(--mono);letter-spacing:.07em;text-transform:uppercase;color:var(--fg-3);padding:9px 14px 3px}
+
+/* ===== phones ===== */
+.phones{display:flex;gap:28px;min-width:max-content;padding:6px 2px 10px}
+.ph{display:grid;gap:10px;justify-items:center}
+.ph-cap{font-size:13px;color:var(--fg-2);text-align:center;max-width:280px}
+.ph-cap b{color:var(--fg);display:block;font-weight:600}
+.phone{width:280px;height:580px;border-radius:38px;border:8px solid #1d2128;background:var(--panel);overflow:hidden;position:relative;display:flex;flex-direction:column;box-shadow:0 30px 60px -30px rgba(0,0,0,.8)}
+.ph-stat{height:30px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 20px;font:600 11.5px var(--sans);color:var(--fg)}
+.ph-head{display:flex;align-items:center;gap:8px;padding:6px 14px 10px;border-bottom:1px solid var(--line)}
+.ph-head .logo{font-size:17px}
+.ph-body{flex:1;overflow:hidden;display:flex;flex-direction:column;min-height:0}
+.ph-tabs{display:flex;gap:6px;padding:8px 10px;overflow:hidden;border-bottom:1px solid var(--line);background:#0e1115}
+.ph-tabs span{flex:none;display:inline-flex;align-items:center;gap:6px;font-size:11.5px;color:var(--fg-2);padding:4px 9px;border-radius:7px;border:1px solid var(--line)}
+.ph-tabs span.on{background:var(--term);color:var(--fg);border-color:var(--line-2)}
+.ph-term{flex:1;padding:9px 10px;font-size:10.5px;line-height:1.5}
+.keyrow{display:flex;gap:4px;padding:6px;background:#1a1e25;border-top:1px solid var(--line)}
+.keyrow span{flex:1;text-align:center;font:11px var(--mono);color:var(--fg);background:#2a3039;border-radius:5px;padding:7px 0}
+.kb{height:150px;flex:none;background:#1a1e25;display:grid;grid-template-rows:repeat(4,1fr);gap:6px;padding:6px 4px 10px}
+.kb div{display:flex;gap:4px;justify-content:center}
+.kb i{flex:1;max-width:23px;background:#2e343e;border-radius:5px}
+.kb div:last-child i{max-width:none}
+.kb div:last-child i:nth-child(2){flex:5}
+.ph-list{padding:10px;display:grid;gap:10px;align-content:start;overflow:hidden}
+.ph-list .card .q{font-size:13.5px;padding:10px 12px 2px}
+.ph-list .card .opts{padding:8px 12px 12px;gap:6px}
+.ph-list .card .opts .btn{flex:1;justify-content:center;padding:9px 8px}
+.ph-list .card-h{padding:10px 12px}
+.ph-list .card-h .nm{font-size:13.5px}
+.mini{display:flex;align-items:center;gap:9px;padding:10px 12px;border-top:1px solid var(--line);font-size:12.5px}
+.mini:first-child{border-top:0}
+.mini .l{font:10.5px var(--mono);color:var(--fg-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.mini > div{min-width:0;flex:1;display:grid}
+.fab{position:absolute;right:16px;bottom:22px;width:48px;height:48px;border-radius:16px;background:var(--lime);color:#11140a;display:grid;place-items:center;font-size:26px;font-weight:500;box-shadow:0 10px 24px rgba(0,0,0,.5)}
+.notif{position:absolute;left:8px;right:8px;top:34px;background:rgba(40,45,54,.96);border-radius:16px;padding:10px 12px;display:grid;grid-template-columns:auto 1fr;gap:2px 10px;z-index:2;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.notif .ic{grid-row:1/3;width:32px;height:32px;border-radius:8px;background:#0b0d10;display:grid;place-items:center}
+.notif .ic svg{width:18px;height:18px}
+.notif b{font-size:12px}.notif span{font-size:12px;color:var(--fg-2)}
+.ph-detail{display:flex;flex-direction:column;flex:1;min-height:0}
+.ph-detail .term{flex:1;padding:9px 12px;font-size:10.5px}
+.ph-detail .ask{padding:12px}
+.ph-detail .ask .q{font-size:13px}
+.ph-detail .ask .opts .btn{flex:1;justify-content:center;padding:9px 6px;font-size:12.5px}
+.ph-actions{display:flex;justify-content:space-around;padding:8px 6px 14px;border-top:1px solid var(--line);font-size:10.5px;color:var(--fg-2)}
+.ph-actions span{display:grid;justify-items:center;gap:3px}
+.ph-actions svg{width:18px;height:18px;stroke:var(--fg);fill:none;stroke-width:1.7}
+
+/* compare */
+.cmp{width:100%;min-width:700px;border-collapse:collapse;font-size:14px}
+.cmp th,.cmp td{text-align:left;padding:11px 14px;border-bottom:1px solid var(--line);vertical-align:top}
+.cmp th{font-weight:500;color:var(--fg-3);font-size:12px;text-transform:uppercase;letter-spacing:.06em}
+.cmp td:first-child{color:var(--fg);font-weight:500;width:26%}
+.cmp td{color:var(--fg-2)}
+.cmp td.win{color:var(--fg)}
+.cmp td.win::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;background:var(--lime);margin-right:8px;vertical-align:2px}
+.rec{border:1px solid rgba(205,243,90,.35);background:linear-gradient(135deg,rgba(205,243,90,.07),transparent 60%);border-radius:14px;padding:22px;display:grid;gap:12px}
+.rec ul,.qs{margin:0;padding-left:20px;color:var(--fg-2);display:grid;gap:6px;max-width:75ch}
+.qs li b{color:var(--fg);font-weight:600}
+@media (prefers-reduced-motion:reduce){.d-wait,.cursor{animation:none}}
+</style>
+
+<div class="wrap">
+
+<header class="intro">
+  <div class="brand"><b>kage</b> · UI direction · mock-ups for discussion</div>
+  <h1>How should Kage feel?</h1>
+  <p>Option A puts a full terminal at the centre of everything. Option C opens on a fast dashboard and loads a full terminal only when you ask for one. C comes in three takes below, so you can mix and match. All data is sample data.</p>
+  <div class="legend">
+    <span><i class="dot d-run"></i>Running</span>
+    <span><i class="dot d-wait"></i>Needs you</span>
+    <span><i class="dot d-done"></i>Done</span>
+    <span><i class="dot d-err"></i>Failed or stopped</span>
+  </div>
+</header>
+
+<nav class="jump" aria-label="Jump to">
+  <a href="#opt-a"><b>A</b>Terminal-first</a>
+  <a href="#opt-c1"><b>C1</b>Board</a>
+  <a href="#opt-c2"><b>C2</b>Inbox</a>
+  <a href="#opt-c3"><b>C3</b>Keyboard</a>
+  <a href="#phones"><b>📱</b>On the phone</a>
+  <a href="#compare"><b>⇄</b>A vs C</a>
+  <a href="#next"><b>?</b>Decide</a>
+</nav>
+
+<!-- ============ A ============ -->
+<section id="opt-a">
+  <div class="sec-head">
+    <span class="tag a">Option A</span>
+    <h2>Terminal-first</h2>
+    <p>The browser becomes your tmux. Each session is a tab, and the whole screen is a live, fully interactive terminal. You see exactly what you'd see over SSH, and you can type anything.</p>
+  </div>
+  <div class="scroll"><div class="win">
+    <div class="chrome"><i></i><i></i><i></i><div class="url">my-pc:8080</div></div>
+    <div class="app">
+      <div class="ahead">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 7v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" fill="#1c2129"/><rect x="7.5" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/><rect x="13.3" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/></svg>kage</div>
+        <span class="host"><i class="dot d-run"></i>my-pc</span>
+        <div class="sp"></div>
+        <span class="btn ghost">Preview <small>:3000 ↗</small></span>
+        <span class="btn ghost">Files <small>2</small></span>
+      </div>
+      <div class="a-tabs">
+        <div class="a-tab on"><i class="dot d-run"></i>shop-api · fix login bug <span class="x">✕</span></div>
+        <div class="a-tab"><i class="dot d-wait"></i>web · dark mode <span class="x">✕</span></div>
+        <div class="a-tab"><i class="dot d-run"></i>infra · node 24 <span class="x">✕</span></div>
+        <div class="a-tab"><i class="dot d-done"></i>docs · readme <span class="x">✕</span></div>
+        <div class="a-tab plus">＋ New</div>
+      </div>
+      <div class="term a-term"><span class="t-dim">~/projects/shop-api/.worktrees/fix-login</span> <span class="t-lime">❯</span> claude "fix login bug: users get logged out after refresh"
+
+<span class="t-b">⏺</span> I'll start by finding where the session token is refreshed.
+
+<span class="t-b">⏺</span> Read <span class="t-dim">src/auth/session.ts</span> <span class="t-dim">(142 lines)</span>
+<span class="t-b">⏺</span> Search <span class="t-dim">"refreshToken" in src/</span> <span class="t-dim">(4 matches)</span>
+
+<span class="t-b">⏺</span> Found it: <span class="t-b">isExpired()</span> compares seconds with milliseconds, so every
+  token looks expired after a page refresh.
+
+<span class="t-b">⏺</span> Update <span class="t-dim">src/auth/session.ts</span>
+  <span class="t-del">-   if (token.exp &lt; Date.now()) {</span>
+  <span class="t-add">+   if (token.exp * 1000 &lt; Date.now()) {</span>
+
+<span class="t-b">⏺</span> Bash <span class="t-dim">npm test -- auth</span>
+  <span class="t-add">PASS</span> test/auth.test.ts <span class="t-dim">(14 tests)</span>
+  <span class="t-add">PASS</span> test/session.test.ts <span class="t-dim">(6 tests)</span>
+
+<span class="t-lime">✻</span> Writing a regression test for the refresh case… <span class="t-dim">(38s · esc to interrupt)</span>
+
+<span class="t-dim">&gt;</span> <span class="cursor"></span></div>
+      <div class="a-bar"><b>[work]</b><span>0:shop-api*</span><span>1:web</span><span>2:infra</span><span>3:docs</span><span class="sp"></span><span>ctrl-b for tmux keys</span><span>14:32</span></div>
+    </div>
+  </div></div>
+  <div class="notes">
+    <div><h3>Good at</h3><ul><li>Nothing is hidden. Every key works, including Claude Code's own menus and shortcuts.</li><li>Feels like home to anyone who lives in tmux.</li><li>Least "Kage UI" to design, since the terminal is the UI.</li></ul></div>
+    <div><h3>Costs</h3><ul><li>The terminal engine (xterm.js) loads on every visit and streams every byte while a tab is open.</li><li>To see what needs you, you have to read the terminal yourself.</li><li>Rough on a phone: small text, and Ctrl and Esc need an extra key row.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============ C1 ============ -->
+<section id="opt-c1">
+  <div class="sec-head">
+    <span class="tag">Option C · take 1</span>
+    <h2>Board: list on the left, session on the right</h2>
+    <p>This is closest to your whiteboard. Sessions are grouped by what they need from you. The right side shows a read-only live tail, the question Claude is asking as buttons, and the session's ports and changed files. <b style="color:var(--fg)">Try it:</b> click a session, then <b style="color:var(--fg)">Open terminal</b> to see the on-demand full terminal from Option A appear in place.</p>
+  </div>
+  <div class="scroll"><div class="win">
+    <div class="chrome"><i></i><i></i><i></i><div class="url">my-pc:8080</div></div>
+    <div class="app">
+      <div class="ahead">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 7v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" fill="#1c2129"/><rect x="7.5" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/><rect x="13.3" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/></svg>kage</div>
+        <span class="host"><i class="dot d-run"></i>my-pc · 4 sessions</span>
+        <div class="counts"><span><i class="dot d-wait"></i>1 needs you</span><span><i class="dot d-run"></i>2 running</span></div>
+        <div class="sp"></div>
+        <span class="kbtn">⌘K</span>
+      </div>
+      <div class="c1">
+        <aside class="c1-side">
+          <div class="newtask">
+            <div class="field">＋ New task, e.g. fix the flaky checkout test <span class="k chip">N</span></div>
+            <div class="row">Project <span class="chip">shop-api ▾</span> Branch off <span class="chip">main ▾</span></div>
+          </div>
+          <div class="list" id="c1-list"></div>
+        </aside>
+        <div class="c1-main" id="c1-main"></div>
+      </div>
+    </div>
+  </div></div>
+  <div class="notes">
+    <div><h3>Good at</h3><ul><li>What needs you is clear at a glance: amber at the top, and the question shown as buttons.</li><li>The page loads small and fast. The full terminal costs nothing until you open it.</li><li>Everything per session is in one place: preview ports, changed files, Stop.</li></ul></div>
+    <div><h3>Costs</h3><ul><li>Kage must recognise Claude's questions to turn them into buttons. Hooks give the "waiting" signal; the options come from the screen text, with a free-text reply as the fallback.</li><li>Two panes need a wide screen. On a phone this becomes list → detail (see below).</li></ul></div>
+    <div><h3>Old sessions</h3><ul><li><b style="color:var(--fg)">Try it:</b> open a Done session and use Pin, Archive or Delete.</li><li>Pin keeps the sessions worth revisiting at the top. Archive hides the rest but keeps them searchable, and it can happen automatically once the PR is merged.</li><li>Delete removes the worktree and branch, and warns you first if any work isn't pushed.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============ C2 ============ -->
+<section id="opt-c2">
+  <div class="sec-head">
+    <span class="tag">Option C · take 2</span>
+    <h2>Inbox: what needs you comes first</h2>
+    <p>Treat sessions like an inbox. Anything waiting for you is a big card you can answer on the spot. Running sessions get one line each with their latest output, and finished ones offer the next step. It's built for a quick check-in, not for watching.</p>
+  </div>
+  <div class="scroll"><div class="win">
+    <div class="chrome"><i></i><i></i><i></i><div class="url">my-pc:8080</div></div>
+    <div class="app">
+      <div class="ahead">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 7v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" fill="#1c2129"/><rect x="7.5" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/><rect x="13.3" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/></svg>kage</div>
+        <span class="host"><i class="dot d-run"></i>my-pc</span>
+        <div class="sp"></div>
+        <span class="btn pri">＋ New task <small>N</small></span>
+      </div>
+      <div class="c2"><div class="c2-col">
+        <div>
+          <div class="grp"><i class="dot d-wait"></i>Needs you · 1</div>
+          <div class="card needs">
+            <div class="card-h"><span class="nm">web · dark mode</span><span class="br">feat/dark-mode</span><span class="tm">waiting 4m</span></div>
+            <div class="term snip"><span class="t-b">⏺</span> The app has 41 hard-coded colours. Two ways to add dark mode:
+  1. CSS variables in theme.css <span class="t-dim">(no new dependency)</span>
+  2. Tailwind's dark: variant <span class="t-dim">(needs a Tailwind config)</span></div>
+            <div class="q">Which approach should I use?</div>
+            <div class="opts"><span class="btn pri">1 · CSS variables</span><span class="btn">2 · Tailwind</span><span class="btn ghost">Reply…</span><span class="btn ghost">Open terminal</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="grp"><i class="dot d-run"></i>Running · 2</div>
+          <div class="card">
+            <div class="rowc"><i class="dot d-run"></i><span>shop-api · fix login bug</span><span class="last">✻ Writing a regression test for the refresh case…</span><span class="tm">12m</span></div>
+            <div class="rowc"><i class="dot d-run"></i><span>infra · node 24</span><span class="last">⏺ Bash pnpm install --frozen-lockfile</span><span class="tm">3m</span></div>
+          </div>
+        </div>
+        <div>
+          <div class="grp"><i class="dot d-done"></i>Done · 3<span class="grp-r">Archived 31 ›</span></div>
+          <div class="card">
+            <div class="done-r"><span class="star" title="Pinned">★</span><span>shop-api · rate limit v1</span><span class="hint">PR #57 merged · kept by pin</span><span class="sp"></span><span class="btn ghost">Diff <small>+150</small></span><span class="btn ghost">Unpin</span></div>
+            <div class="done-r" style="border-top:1px solid var(--line)"><i class="dot d-done"></i><span>docs · update README</span><span class="hint" style="color:var(--amber)">1 commit not pushed</span><span class="sp"></span><span class="btn ghost">Diff <small>+48 −12</small></span><span class="btn">Open PR</span><span class="btn ghost">Archive</span></div>
+            <div class="done-r" style="border-top:1px solid var(--line)"><i class="dot d-done"></i><span>web · fix footer links</span><span class="hint">PR #212 open · auto-archives when merged</span><span class="sp"></span><span class="btn ghost">Diff <small>+6 −6</small></span><span class="btn ghost">Archive</span></div>
+          </div>
+        </div>
+      </div></div>
+    </div>
+  </div></div>
+  <div class="notes">
+    <div><h3>Good at</h3><ul><li>The fastest path from a notification to an answer: one tap.</li><li>The same layout works on desktop and phone with no redesign.</li><li>Calm. Nothing moves unless something needs you.</li></ul></div>
+    <div><h3>Costs</h3><ul><li>Weaker for watching a session work. You open it to see more.</li><li>With 10+ sessions, the running list needs filtering or grouping by project.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============ C3 ============ -->
+<section id="opt-c3">
+  <div class="sec-head">
+    <span class="tag">Option C · take 3</span>
+    <h2>Keyboard-first: a dense table and a command palette</h2>
+    <p>For people who never touch the mouse. One row per session, like <code>htop</code>, with a live preview of the selected one underneath. Everything has a key, and <kbd>⌘K</kbd> opens a palette where you can start a task, jump to a session or open a port.</p>
+  </div>
+  <div class="scroll"><div class="win">
+    <div class="chrome"><i></i><i></i><i></i><div class="url">my-pc:8080</div></div>
+    <div class="app">
+      <div class="ahead">
+        <div class="logo"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2 4 7v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" fill="#1c2129"/><rect x="7.5" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/><rect x="13.3" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/></svg>kage</div>
+        <span class="host"><i class="dot d-run"></i>my-pc · load 1.8 · 41% mem</span>
+        <div class="sp"></div>
+        <span class="kbtn">⌘K command</span>
+      </div>
+      <div class="c3">
+        <table class="tbl">
+          <thead><tr><th></th><th>Session</th><th>Branch</th><th>State</th><th>Last output</th><th>Ports</th><th>Files</th><th>Age</th></tr></thead>
+          <tbody>
+            <tr><td><i class="dot d-wait"></i></td><td class="nm">web · dark mode</td><td>feat/dark-mode</td><td style="color:var(--amber)">needs you</td><td class="ln">Which approach should I use?</td><td>5173</td><td>1</td><td>18m</td></tr>
+            <tr class="sel"><td><i class="dot d-run"></i></td><td class="nm">shop-api · fix login bug</td><td>fix/login</td><td>running</td><td class="ln">✻ Writing a regression test…</td><td>3000</td><td>2</td><td>12m</td></tr>
+            <tr><td><i class="dot d-run"></i></td><td class="nm">infra · node 24</td><td>chore/node-24</td><td>running</td><td class="ln">⏺ Bash pnpm install</td><td>–</td><td>6</td><td>3m</td></tr>
+            <tr><td><i class="dot d-done"></i></td><td class="nm">docs · update README</td><td>docs/readme</td><td>done</td><td class="ln">⏺ Done. Ready for a PR.</td><td>4000</td><td>1</td><td>1h</td></tr>
+          </tbody>
+        </table>
+        <div class="c3-preview">
+          <div class="term"><span class="t-b">⏺</span> Bash <span class="t-dim">npm test -- auth</span>
+  <span class="t-add">PASS</span> test/auth.test.ts <span class="t-dim">(14 tests)</span>
+  <span class="t-add">PASS</span> test/session.test.ts <span class="t-dim">(6 tests)</span>
+<span class="t-lime">✻</span> Writing a regression test for the refresh case… <span class="t-dim">(38s)</span></div>
+        </div>
+        <div class="keys"><span><kbd>j</kbd><kbd>k</kbd>move</span><span><kbd>⏎</kbd>open</span><span><kbd>r</kbd>reply</span><span><kbd>t</kbd>terminal</span><span><kbd>p</kbd>preview</span><span><kbd>d</kbd>diff</span><span><kbd>n</kbd>new task</span><span><kbd>x</kbd>stop</span></div>
+        <div class="pal" role="presentation">
+          <div class="in"><span class="pfx">new</span><span>add rate limiting to /login</span><span class="cursor" style="height:17px"></span></div>
+          <div class="sec">Start in</div>
+          <div class="opt on">⑂ shop-api <span style="color:var(--fg-3);font-size:12px">new worktree from main</span><span class="k">⏎</span></div>
+          <div class="opt">⑂ web <span class="k">⌘2</span></div>
+          <div class="sec">Jump to</div>
+          <div class="opt"><i class="dot d-wait"></i>web · dark mode <span class="k">needs you</span></div>
+          <div class="opt">↗ Open preview :3000 <span class="k">shop-api</span></div>
+        </div>
+      </div>
+    </div>
+  </div></div>
+  <div class="notes">
+    <div><h3>Good at</h3><ul><li>The fastest to operate once you know the keys. Shows the most sessions per screen.</li><li>The lightest to render: one table and one small preview.</li><li>Developers love a good command palette.</li></ul></div>
+    <div><h3>Costs</h3><ul><li>Dense and cold for newcomers, and useless on a phone as is.</li><li>Works better as a layer on top of C1 or C2 than as the whole UI.</li></ul></div>
+  </div>
+</section>
+
+<!-- ============ PHONES ============ -->
+<section id="phones">
+  <div class="sec-head">
+    <span class="tag">On the phone</span>
+    <h2>A and C side by side at 390 px</h2>
+    <p>This is where the two options differ most. A gives you the real terminal on a small screen. C gives you a notification, then a card with buttons, and the terminal is still one tap away.</p>
+  </div>
+  <div class="scroll"><div class="phones">
+    <div class="ph">
+      <div class="phone">
+        <div class="ph-stat"><span>14:32</span><span>●●●</span></div>
+        <div class="ph-tabs"><span class="on"><i class="dot d-run"></i>shop-api</span><span><i class="dot d-wait"></i>web</span><span><i class="dot d-run"></i>infra</span></div>
+        <div class="term ph-term"><span class="t-b">⏺</span> Found it: isExpired()
+  compares seconds with
+  milliseconds, so every token
+  looks expired after a page
+  refresh.
+
+<span class="t-b">⏺</span> Update src/auth/session.t
+  <span class="t-del">-  if (token.exp &lt; Date.no</span>
+  <span class="t-add">+  if (token.exp * 1000 &lt; D</span>
+
+<span class="t-b">⏺</span> Bash npm test -- auth
+  <span class="t-add">PASS</span> test/auth.test.ts
+<span class="t-lime">✻</span> Writing a regression…
+<span class="t-dim">&gt;</span> <span class="cursor"></span></div>
+        <div class="keyrow"><span>esc</span><span>tab</span><span>ctrl</span><span>↑</span><span>↓</span><span>⏎</span></div>
+        <div class="kb"><div><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div><i></i><i></i><i></i></div></div>
+      </div>
+      <div class="ph-cap"><b>A · terminal on the phone</b>Real, but long lines get cut off or wrap badly, and the keyboard covers half the screen.</div>
+    </div>
+
+    <div class="ph">
+      <div class="phone">
+        <div class="ph-stat"><span>14:32</span><span>●●●</span></div>
+        <div class="notif"><div class="ic"><svg viewBox="0 0 24 24"><path d="M12 2 4 7v6c0 5 3.5 8 8 9 4.5-1 8-4 8-9V7z" fill="#1c2129"/><rect x="7.5" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/><rect x="13.3" y="10" width="3.2" height="1.8" rx=".5" fill="#cdf35a"/></svg></div><b>web · dark mode needs you</b><span>Which approach should I use?</span></div>
+        <div class="ph-head" style="margin-top:58px"><div class="logo">kage</div><span class="sp"></span><span class="host"><i class="dot d-run"></i>my-pc</span></div>
+        <div class="ph-body"><div class="ph-list">
+          <div class="card needs">
+            <div class="card-h"><i class="dot d-wait"></i><span class="nm">web · dark mode</span><span class="tm">4m</span></div>
+            <div class="q">Which approach should I use?</div>
+            <div class="opts"><span class="btn pri">1 · CSS vars</span><span class="btn">2 · Tailwind</span></div>
+          </div>
+          <div class="card">
+            <div class="mini"><i class="dot d-run"></i><div><span>shop-api · fix login</span><span class="l">✻ Writing a regression test…</span></div></div>
+            <div class="mini"><i class="dot d-run"></i><div><span>infra · node 24</span><span class="l">⏺ Bash pnpm install</span></div></div>
+            <div class="mini"><i class="dot d-done"></i><div><span>docs · update README</span><span class="l">Done · +48 −12</span></div></div>
+          </div>
+        </div></div>
+        <div class="fab">＋</div>
+      </div>
+      <div class="ph-cap"><b>C · notification → inbox</b>The ping takes you straight to the question. One tap answers it.</div>
+    </div>
+
+    <div class="ph">
+      <div class="phone">
+        <div class="ph-stat"><span>14:33</span><span>●●●</span></div>
+        <div class="ph-head"><span style="color:var(--fg-2)">‹</span><i class="dot d-wait"></i><span style="font-weight:600;font-size:14px">web · dark mode</span></div>
+        <div class="ph-detail">
+          <div class="term"><span class="t-b">⏺</span> Read src/styles/theme.css
+<span class="t-b">⏺</span> The app has 41 hard-coded
+  colours. Two ways to add
+  dark mode:
+  1. CSS variables in
+     theme.css <span class="t-dim">(no new dep)</span>
+  2. Tailwind's dark: variant
+     <span class="t-dim">(needs Tailwind config)</span></div>
+          <div class="ask">
+            <div class="q"><i class="dot d-wait" style="margin-top:6px"></i>Which approach should I use?</div>
+            <div class="opts"><span class="btn pri">1 · CSS vars</span><span class="btn">2 · Tailwind</span></div>
+            <div class="field">Reply to Claude…</div>
+          </div>
+          <div class="ph-actions">
+            <span><svg viewBox="0 0 24 24"><path d="M7 17 17 7M9 7h8v8"/></svg>:5173</span>
+            <span><svg viewBox="0 0 24 24"><path d="M5 5h14v14H5zM9 9h6M9 13h4"/></svg>Diff</span>
+            <span><svg viewBox="0 0 24 24"><path d="M4 6h16v12H4zM7 10l3 2-3 2M12 15h4"/></svg>Terminal</span>
+            <span><svg viewBox="0 0 24 24"><rect x="7" y="7" width="10" height="10" rx="1"/></svg>Stop</span>
+          </div>
+        </div>
+      </div>
+      <div class="ph-cap"><b>C · session detail</b>Output reflows to the phone's width, the answer is a button, and Terminal opens the full one when you need it.</div>
+    </div>
+  </div></div>
+</section>
+
+<!-- ============ COMPARE ============ -->
+<section id="compare">
+  <div class="sec-head">
+    <span class="tag">A vs C</span>
+    <h2>What you gain and give up</h2>
+    <p>The sizes are rough targets for planning, not measurements. C still contains everything A has; it just loads the terminal when you open it.</p>
+  </div>
+  <div class="scroll"><table class="cmp">
+    <thead><tr><th></th><th>A · Terminal-first</th><th>C · Dashboard + terminal on demand</th></tr></thead>
+    <tbody>
+      <tr><td>First load</td><td>~110 KB gzipped (app + xterm.js)</td><td class="win">~20 KB gzipped. The terminal adds ~90 KB once, when first opened, then stays cached</td></tr>
+      <tr><td>Data while watching</td><td>Every byte of every open terminal</td><td class="win">Small state events, plus output for the one session on screen</td></tr>
+      <tr><td>Seeing what needs you</td><td>Read each tab's output</td><td class="win">Amber at the top, with a phone notification</td></tr>
+      <tr><td>Answering a question</td><td>Switch tab, read, type <code>1</code> ⏎</td><td class="win">One tap on the option, from the notification or the list</td></tr>
+      <tr><td>Doing anything unusual</td><td class="win">Always possible</td><td>Possible, one click away (Open terminal)</td></tr>
+      <tr><td>Phone</td><td>Usable in a pinch</td><td class="win">Designed for it</td></tr>
+      <tr><td>Weak connection (train, 3G)</td><td>Laggy typing; reconnects redraw the screen</td><td class="win">Small updates; buttons work even on a slow link</td></tr>
+      <tr><td>Effort to build</td><td class="win">Lower UI work, since the terminal is the UI</td><td>More UI, plus parsing Claude's questions into buttons</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ============ NEXT ============ -->
+<section id="next">
+  <div class="rec">
+    <span class="tag">My recommendation</span>
+    <h2>C, built from all three takes</h2>
+    <ul>
+      <li><b style="color:var(--fg)">Desktop:</b> the C1 board, with the full terminal opening in place of the live tail.</li>
+      <li><b style="color:var(--fg)">Phone:</b> the C2 inbox, so a notification leads to a card and then to a one-tap answer.</li>
+      <li><b style="color:var(--fg)">Everywhere:</b> the C3 keyboard layer (<kbd>j</kbd>/<kbd>k</kbd>, <kbd>r</kbd>, <kbd>t</kbd>, <kbd>⌘K</kbd>), so power users never need the mouse.</li>
+    </ul>
+  </div>
+  <div class="sec-head">
+    <h2>Questions to settle</h2>
+    <ol class="qs">
+      <li><b>A or C?</b> And if C, does the mix above feel right, or does one take win outright?</li>
+      <li><b>Watching vs checking in.</b> Do you mostly glance and answer (C2 leans this way), or keep a session open and watch it work (C1 and A lean this way)?</li>
+      <li><b>Dark only, or a light theme too?</b> Dark only keeps the first version smaller.</li>
+      <li><b>Anything missing from the session view?</b> For example cost or tokens used, run time, or a "what Claude is doing now" summary line.</li>
+    </ol>
+  </div>
+</section>
+
+</div>
+
+<script>
+(function(){
+  var S = [
+    {id:'web',grp:'Needs you',st:'wait',nm:'web · dark mode',br:'feat/dark-mode',wt:'~/projects/web/.worktrees/dark-mode',tm:'4m',sub:'Which approach should I use?',
+     tail:'<span class="t-b">⏺</span> Read <span class="t-dim">src/styles/theme.css (310 lines)</span>\n<span class="t-b">⏺</span> Search <span class="t-dim">"#[0-9a-f]{6}" in src/ (41 matches)</span>\n\n<span class="t-b">⏺</span> The app has 41 hard-coded colours. Two ways to add dark mode:\n  1. CSS variables in theme.css <span class="t-dim">(no new dependency)</span>\n  2. Tailwind\'s dark: variant <span class="t-dim">(needs a Tailwind config)</span>',
+     ask:{q:'Which approach should I use?',o:['1 · CSS variables','2 · Tailwind']},ports:[['5173','vite']],files:[['src/styles/theme.css','+0','−0']]},
+    {id:'shop',grp:'Running',st:'run',nm:'shop-api · fix login bug',br:'fix/login',wt:'~/projects/shop-api/.worktrees/fix-login',tm:'12m',sub:'✻ Writing a regression test…',
+     tail:'<span class="t-b">⏺</span> Update <span class="t-dim">src/auth/session.ts</span>\n  <span class="t-del">-   if (token.exp &lt; Date.now()) {</span>\n  <span class="t-add">+   if (token.exp * 1000 &lt; Date.now()) {</span>\n\n<span class="t-b">⏺</span> Bash <span class="t-dim">npm test -- auth</span>\n  <span class="t-add">PASS</span> test/auth.test.ts <span class="t-dim">(14 tests)</span>\n  <span class="t-add">PASS</span> test/session.test.ts <span class="t-dim">(6 tests)</span>\n\n<span class="t-lime">✻</span> Writing a regression test for the refresh case… <span class="t-dim">(38s)</span>',
+     ports:[['3000','node']],files:[['src/auth/session.ts','+1','−1'],['test/session.test.ts','+24','−0']]},
+    {id:'infra',grp:'Running',st:'run',nm:'infra · node 24',br:'chore/node-24',wt:'~/projects/infra/.worktrees/node-24',tm:'3m',sub:'⏺ Bash pnpm install',
+     tail:'<span class="t-b">⏺</span> Update <span class="t-dim">.nvmrc, Dockerfile, package.json (engines)</span>\n<span class="t-b">⏺</span> Bash <span class="t-dim">pnpm install --frozen-lockfile</span>\n  <span class="t-dim">Progress: resolved 812, reused 790, downloaded 22</span>',
+     ports:[],files:[['.nvmrc','+1','−1'],['Dockerfile','+2','−2'],['package.json','+1','−1']]},
+    {id:'rate',grp:'Done',st:'done',pin:true,nm:'shop-api · rate limit v1',br:'feat/rate-limit',wt:'~/projects/shop-api/.worktrees/rate-limit',tm:'2d',sub:'PR #57 merged · kept by pin',
+     tail:'<span class="t-b">⏺</span> Added a sliding-window rate limiter to /login and /reset\n  (5 attempts per minute per IP), with tests.\n\n<span class="t-b">⏺</span> Done. PR #57 is merged.',
+     ports:[],files:[['src/middleware/rateLimit.ts','+86','−0'],['test/rateLimit.test.ts','+64','−0']]},
+    {id:'footer',grp:'Done',st:'done',nm:'web · fix footer links',br:'fix/footer',wt:'~/projects/web/.worktrees/footer',tm:'3h',sub:'Done · PR #212 open',
+     tail:'<span class="t-b">⏺</span> Fixed 6 footer links that pointed at the old /help pages.\n\n<span class="t-b">⏺</span> Done. Opened PR #212.',
+     ports:[],files:[['src/components/Footer.tsx','+6','−6']]},
+    {id:'docs',grp:'Done',st:'done',unpushed:1,nm:'docs · update README',br:'docs/readme',wt:'~/projects/docs/.worktrees/readme',tm:'1h',sub:'Done · 1 commit not pushed',
+     tail:'<span class="t-b">⏺</span> Updated README.md: install steps for Node 24, a new\n  configuration table and a troubleshooting section.\n\n<span class="t-b">⏺</span> Done. The branch is ready for a pull request.',
+     ports:[['4000','docs']],files:[['README.md','+48','−12']]}
+  ];
+  var cur = 'web', full = false, del = false, toast = null;
+  var L = document.getElementById('c1-list'), M = document.getElementById('c1-main');
+  function esc(s){return s.replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  function list(){
+    var h='', g='', o={'Needs you':0,'Running':1,'Done':2};
+    S.slice().sort(function(a,b){return (o[a.grp]-o[b.grp])||((b.pin?1:0)-(a.pin?1:0));}).forEach(function(s){
+      if(s.grp!==g){g=s.grp;h+='<div class="grp">'+g+(g==='Done'?'<span class="grp-r">Show all 14 · Archived 31</span>':'')+'</div>';}
+      h+='<div class="item '+s.st+(s.id===cur?' on':'')+'" data-id="'+s.id+'" tabindex="0" role="button"><i class="dot d-'+s.st+'"></i><span class="nm">'+(s.pin?'<span class="star" title="Pinned">★</span> ':'')+esc(s.nm)+'</span><span class="tm">'+s.tm+'</span><span class="sub">'+esc(s.sub)+'</span></div>';
+    });
+    L.innerHTML=h;
+  }
+  function main(){
+    var s=S.filter(function(x){return x.id===cur})[0];
+    var stLabel={wait:'needs you',run:'running',done:'done'}[s.st];
+    var h='<div class="dhead"><div class="t"><i class="dot d-'+s.st+'"></i><h3>'+esc(s.nm)+'</h3><span class="chip">'+stLabel+'</span></div><div class="meta"><span>branch <b>'+s.br+'</b></span><span>worktree <b>'+s.wt+'</b></span><span>started <b>'+s.tm+' ago</b></span></div></div>';
+    if(full){
+      h+='<div class="fullterm"><div class="ft-note">Full terminal · attached to tmux window · loaded on demand (~90 KB, once)<span class="sp"></span><button type="button" id="ft-close">Back to dashboard  Esc</button></div><div class="term ft-term">'+s.tail+'\n\n'+(s.ask?'<span class="t-amb">?</span> '+esc(s.ask.q)+'\n  <span class="t-lime">❯ 1.</span> CSS variables\n    2. Tailwind\n\n':'')+'<span class="t-dim">&gt;</span> <span class="cursor"></span></div></div>';
+    } else {
+      h+='<div class="dbody"><div class="dleft"><div class="tailbar"><span class="live">'+(s.st==='done'?'● ended':'● live')+'</span><span>last 40 lines · read-only</span></div><div class="term tail">'+s.tail+'</div>';
+      if(s.ask){h+='<div class="ask"><div class="q"><i class="dot d-wait" style="margin-top:7px"></i>'+esc(s.ask.q)+'</div><div class="opts">'+s.ask.o.map(function(o,i){return '<span class="btn'+(i===0?' pri':'')+'">'+esc(o)+' <small>'+(i+1)+'</small></span>'}).join('')+'</div><div class="reply"><div class="field">Or type a reply to Claude… <span class="k chip">R</span></div></div></div>';}
+      h+='<div class="actions"><button type="button" class="btn" id="ft-open">Open terminal <small>T</small></button>'+(s.st==='done'?'<span class="btn">Open PR</span><button type="button" class="btn ghost" id="act-pin">'+(s.pin?'<span class="star">★</span> Pinned':'☆ Pin')+' <small>S</small></button><button type="button" class="btn ghost" id="act-arch">Archive <small>E</small></button><button type="button" class="btn ghost danger" id="act-del">Delete…</button>':'<span class="btn ghost danger">Stop <small>X</small></span>')+'</div>';
+      if(del&&s.st==='done'){h+='<div class="confirm"><div>Delete removes the tmux window, the worktree <code>'+s.wt+'</code> and the branch <code>'+s.br+'</code>.'+(s.unpushed?' <b>The branch has '+s.unpushed+' commit that isn\'t pushed. It will be lost.</b>':' Everything on the branch is pushed, so nothing is lost.')+'</div><div class="row"><button type="button" class="btn pri-danger" id="del-yes">Delete session</button><button type="button" class="btn ghost" id="del-no">Cancel</button></div></div>';}
+      h+='</div>';
+      h+='<div class="dright"><div class="blk"><h4>Preview</h4>'+(s.ports.length?s.ports.map(function(p){return '<div class="port"><span>:'+p[0]+' <span style="color:var(--fg-3)">'+p[1]+'</span></span><a href="#opt-c1">Open ↗</a></div>'}).join(''):'<div class="hint">No ports open yet.</div>')+'</div><div class="blk"><h4>Files changed · '+s.files.length+'</h4>'+s.files.map(function(f){return '<div class="file"><span class="p">'+f[0]+'</span><span class="a">'+f[1]+'</span><span class="r">'+f[2]+'</span></div>'}).join('')+'<div style="margin-top:8px"><span class="btn ghost">View diff <small>D</small></span></div></div></div></div>';
+    }
+    if(toast){h+='<div class="toast" role="status">'+(toast.deleted?'Deleted ':'Archived ')+'<b>'+esc(toast.s.nm)+'</b>'+(toast.deleted?'<span style="color:var(--fg-3)">worktree and branch removed</span>':'<button type="button" id="undo">Undo</button>')+'</div>';}
+    M.innerHTML=h;
+    var o=document.getElementById('ft-open'); if(o) o.onclick=function(){full=true;main();};
+    var c=document.getElementById('ft-close'); if(c) c.onclick=function(){full=false;main();};
+    function drop(deleted){var i=S.indexOf(s);S.splice(i,1);toast={s:s,i:i,deleted:deleted};cur=S[0].id;del=false;list();main();}
+    var pn=document.getElementById('act-pin'); if(pn) pn.onclick=function(){s.pin=!s.pin;s.sub=s.pin?s.sub+' · kept by pin':s.sub.replace(' · kept by pin','');list();main();};
+    var ar=document.getElementById('act-arch'); if(ar) ar.onclick=function(){drop(false);};
+    var dl=document.getElementById('act-del'); if(dl) dl.onclick=function(){del=true;main();};
+    var dn=document.getElementById('del-no'); if(dn) dn.onclick=function(){del=false;main();};
+    var dy=document.getElementById('del-yes'); if(dy) dy.onclick=function(){drop(true);};
+    var un=document.getElementById('undo'); if(un) un.onclick=function(){S.splice(toast.i,0,toast.s);cur=toast.s.id;toast=null;list();main();};
+  }
+  function pick(id){cur=id;full=false;del=false;toast=null;list();main();}
+  L.addEventListener('click',function(e){var it=e.target.closest('.item'); if(it) pick(it.dataset.id);});
+  L.addEventListener('keydown',function(e){if(e.key==='Enter'){var it=e.target.closest('.item'); if(it) pick(it.dataset.id);}});
+  list(); main();
+})();
+</script>

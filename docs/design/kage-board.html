@@ -1,0 +1,235 @@
+<title>Kage Board</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of sections, one desktop mock-up each (scrolls sideways on narrow screens), with a short note under it. Kage is dark, so the page is dark by choice; variant 2 shows a light theme inside its own frame. */
+:root{
+  --bg:#0b0d10; --panel:#111419; --panel-2:#161a20; --raise:#1c2129; --line:#242a33; --line-2:#2f3640;
+  --fg:#eceff4; --fg-2:#a7afbc; --fg-3:#6c7584;
+  --lime:#cdf35a; --lime-dim:rgba(205,243,90,.12); --amber:#f2b544; --amber-dim:rgba(242,181,68,.13); --red:#ff7a7a; --grey:#5d6573;
+  --term:#07080a; --term-fg:#d5dbe4;
+  --sans:"Geist",ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+  --mono:"Geist Mono",ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  color-scheme:dark;
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:15px/1.55 var(--sans);-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0 0 auto;height:env(safe-area-inset-top,0px);z-index:10;background:var(--bg)}
+.wrap{max-width:1200px;margin:0 auto;padding-block:40px 80px;padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px));display:grid;gap:64px}
+h1,h2,h3,h4{text-wrap:balance;margin:0;letter-spacing:-.01em}
+h1{font-size:clamp(30px,5vw,44px);font-weight:700}
+h2{font-size:26px;font-weight:650}
+p{margin:0;max-width:70ch;color:var(--fg-2)}
+kbd,code{font-family:var(--mono);font-size:.88em}
+button{font:inherit;color:inherit}
+:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.intro{display:grid;gap:16px}
+.eyebrow{font-family:var(--mono);font-size:12.5px;color:var(--fg-3);letter-spacing:.05em;text-transform:uppercase}
+nav.jump{position:sticky;top:env(safe-area-inset-top,0px);z-index:5;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(8px);padding:10px 0;display:flex;gap:8px;overflow-x:auto;border-bottom:1px solid var(--line)}
+nav.jump a{flex:none;text-decoration:none;color:var(--fg-2);font-size:13px;padding:5px 11px;border:1px solid var(--line);border-radius:999px;white-space:nowrap}
+nav.jump a:hover{color:var(--fg);border-color:var(--line-2)}
+nav.jump a b{color:var(--lime);font-weight:600;margin-right:5px;font-family:var(--mono)}
+section{display:grid;gap:16px;scroll-margin-top:70px}
+.sec-head{display:grid;gap:8px}
+.tag{font-family:var(--mono);font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--lime)}
+.tag.base{color:var(--fg-3)}
+.notes{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:10px 28px}
+.notes div{min-width:0}
+.notes h3{font-size:12px;color:var(--fg-3);font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:5px}
+.notes p{font-size:14px}
+.scroll{overflow-x:auto;padding-bottom:6px}
+.win{min-width:1060px;border:1px solid var(--line);border-radius:12px;overflow:hidden;background:var(--panel);box-shadow:0 30px 60px -30px rgba(0,0,0,.7)}
+.chrome{height:32px;display:flex;align-items:center;gap:8px;padding:0 12px;background:#0e1115;border-bottom:1px solid var(--line)}
+.chrome i{width:10px;height:10px;border-radius:50%;background:#2a3039}
+.url{margin-left:14px;width:300px;height:21px;border-radius:6px;background:#161a20;color:var(--fg-3);font:12px var(--mono);display:flex;align-items:center;padding:0 10px}
+.app{height:620px;position:relative}
+.app > div{height:100%}
+.pickhint{font-size:12.5px;color:var(--fg-3)}
+.end{border:1px solid rgba(205,243,90,.3);border-radius:14px;padding:22px;display:grid;gap:12px;background:linear-gradient(135deg,rgba(205,243,90,.06),transparent 60%)}
+.end ul{margin:0;padding-left:20px;color:var(--fg-2);display:grid;gap:6px;max-width:80ch}
+.end li b{color:var(--fg)}
+@media (prefers-reduced-motion:reduce){*{animation:none!important}}
+
+/* ---------- shared bits ---------- */
+.dot{width:8px;height:8px;border-radius:50%;flex:none;display:inline-block}
+.d-run{background:var(--lime)}.d-wait{background:var(--amber)}.d-done{background:var(--grey)}
+.cursor{display:inline-block;width:7px;height:14px;background:var(--lime);vertical-align:-2px;animation:blink 1.1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+.sp{flex:1}
+.ln{white-space:pre-wrap;word-break:break-word}
+
+.klogo{width:24px;height:24px;border-radius:6px;display:block;flex:none}
+.v1-logo,.v2-logo,.v4-logo,.v5-logo{display:flex;align-items:center;gap:8px}
+.v1 .klogo{width:22px;height:22px}
+/* ================= V1 quiet ================= */
+.v1{display:flex;flex-direction:column;background:#0f1114;color:#c9ced6;font-size:14px}
+.v1-top{height:44px;flex:none;display:flex;align-items:center;gap:14px;padding:0 20px;border-bottom:1px solid #1b1e23}
+.v1-logo{font-weight:700;font-size:17px;letter-spacing:-.04em;color:#eef0f3}
+.v1-host{display:inline-flex;align-items:center;gap:7px;font:12px var(--mono);color:#8a919c;border:1px solid #20242a;padding:3px 9px;border-radius:999px}
+.v1-counts{display:flex;gap:14px;font-size:12.5px;color:#8a919c}
+.v1-counts span{display:inline-flex;align-items:center;gap:6px}
+.v1 .dot{width:7px;height:7px}
+.v1-head h3{display:flex;align-items:center;gap:10px}
+.v1-chip{font:500 11.5px var(--mono);letter-spacing:0;padding:2px 8px;border-radius:999px;border:1px solid #2a2f37;color:#8a919c}
+.v1-chip.wait{color:#d9a650;border-color:rgba(217,166,80,.35)}
+.v1-chip.run{color:var(--lime);border-color:rgba(205,243,90,.3)}
+.v1-k{font:12px var(--mono);color:#5f6672}
+.v1-b{flex:1;display:flex;min-height:0}
+.v1-side{width:250px;flex:none;padding:14px 10px;display:flex;flex-direction:column;gap:2px;border-right:1px solid #1b1e23;overflow:auto}
+.v1-new{all:unset;cursor:pointer;display:flex;align-items:center;gap:8px;padding:7px 10px;margin-bottom:12px;border-radius:7px;color:var(--lime);font-size:13.5px;font-weight:500}
+.v1-new:hover{background:rgba(205,243,90,.08)}
+.v1-new kbd{margin-left:auto;color:#5f6672;font-size:11px}
+.v1-g{font-size:12px;color:#5f6672;padding:14px 10px 4px}
+.v1-g:first-of-type{padding-top:0}
+.v1-it{display:grid;grid-template-columns:1fr auto;gap:1px 8px;padding:7px 10px;border-radius:7px;cursor:pointer;color:#aeb4be}
+.v1-it:hover{background:#15181c}
+.v1-it.on{background:#1a1d22;color:#eef0f3;box-shadow:inset 2px 0 0 var(--lime)}
+.v1-it .tm{font-size:12px;color:#565d68;font-variant-numeric:tabular-nums}
+.v1-it .w{grid-column:1/3;font-size:12px;color:#d9a650}
+.v1-it .pj{color:#5f6672}
+.v1-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;padding:16px 32px 0}
+.v1-head{display:flex;align-items:flex-start;gap:20px}
+.v1-head h3{font-size:18px;font-weight:500;color:#eef0f3;letter-spacing:-.015em}
+.v1-proj{color:#5f6672;font-weight:400;margin-right:-2px}
+.v1-tools{margin-left:auto;display:flex;gap:8px;padding-top:16px}
+.v1-act{all:unset;cursor:pointer;display:inline-flex;align-items:center;gap:7px;padding:6px 10px 6px 9px;border:1px solid #2a2f37;border-radius:7px;font-size:13px;color:#d4d8de;background:#14171b}
+.v1-act:hover{border-color:#4a515c;color:#fff;background:#181b20}
+.v1-act svg{width:14px;height:14px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
+.v1-act kbd{font-size:11px;color:#5f6672;margin-left:2px}
+.v1-act.stop{color:#e08a8a}
+.v1-act.stop:hover{border-color:rgba(224,138,138,.5);background:rgba(224,138,138,.06)}
+.v1-act.danger-solid{background:#e08a8a;border-color:#e08a8a;color:#1a0d0d;font-weight:600}
+.v1-act.danger-solid:hover{background:#eb9a9a;color:#1a0d0d}
+.v1-main{position:relative}
+.v1-confirm{margin-bottom:12px;padding:12px 14px;border:1px solid rgba(224,138,138,.35);background:rgba(224,138,138,.06);border-radius:9px;display:grid;gap:10px;font-size:13px;color:#aeb4be}
+.v1-confirm b{color:#eef0f3;font-weight:500}
+.v1-confirm code{color:#d4d8de;font-size:12px}
+.v1-confirm .warn{color:#e08a8a}
+.v1-confirm .row{display:flex;gap:8px}
+.v1-toast{position:absolute;left:50%;bottom:20px;transform:translateX(-50%);z-index:2;background:#20242a;border:1px solid #2f343c;border-radius:9px;padding:8px 14px;font-size:13px;color:#aeb4be;white-space:nowrap;box-shadow:0 12px 30px rgba(0,0,0,.5)}
+.v1-toast b{color:#eef0f3;font-weight:500}
+.v1-meta{display:flex;flex-wrap:wrap;gap:4px 18px;font:12px var(--mono);color:#565d68;margin-top:3px;padding-bottom:12px;border-bottom:1px solid #1b1e23}
+.v1-meta b{color:#8a919c;font-weight:400}
+.v1-tr{flex:1;min-height:0;overflow:auto;margin-top:12px;padding-right:10px;font:13px/1.75 var(--mono);color:#9aa1ac}
+.v1 .ln-say{color:#d4d8de;font-family:var(--sans);font-size:14px;margin:6px 0}
+.v1 .ln-tool{color:#6f7681}
+.v1 .ln-add{color:#9cc59f}.v1 .ln-del{color:#c98d8d}
+.v1 .ln-think{color:var(--lime)}
+.v1-aside{width:250px;flex:none;border-left:1px solid #1b1e23;padding:26px 20px;display:grid;gap:26px;align-content:start;overflow:auto}
+.v1-sec h4{font-size:12px;font-weight:400;color:#5f6672;margin:0 0 10px}
+.v1-port{display:flex;justify-content:space-between;align-items:center;padding:9px 11px;border:1px solid #23272e;border-radius:8px;font:12.5px var(--mono);color:#c9ced6;margin-bottom:6px;cursor:pointer}
+.v1-port:hover{border-color:rgba(205,243,90,.45)}
+.v1-port .dim{color:#5f6672}
+.v1-port .go{color:var(--lime);font-family:var(--sans);font-weight:500}
+.v1-none{font-size:12.5px;color:#565d68}
+.v1-file{display:flex;gap:8px;font:12px var(--mono);color:#9aa1ac;padding:3px 0}
+.v1-file .p{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.v1-file .a{color:#9cc59f}.v1-file .r{color:#c98d8d}
+.v1-diff{margin-top:8px;font-size:12.5px;color:#8a919c;cursor:pointer}
+.v1-diff:hover{color:var(--lime)}
+.v1-wt{font:12px var(--mono);color:#565d68;word-break:break-all}
+.v1-ask{border-top:1px solid #1b1e23;padding:16px 0 16px;display:grid;gap:12px}
+.v1-q{color:#eef0f3;font-size:15px}
+.v1-q small{display:block;font-size:12px;color:#d9a650;margin-bottom:3px}
+.v1-opts{display:flex;gap:10px;align-items:center}
+.v1-opts button{all:unset;cursor:pointer;padding:6px 12px;border:1px solid #2a2f37;border-radius:7px;color:#d4d8de;font-size:13.5px}
+.v1-opts button:hover{border-color:#4a515c}
+.v1-opts button kbd{color:#5f6672;margin-right:6px;font-size:11px}
+.v1-or{color:#565d68;font-size:13px;margin-left:6px}
+.v1-foot{border-top:1px solid #1b1e23;padding:12px 0 16px;display:flex;justify-content:space-between;gap:8px}
+.v1-foot .l,.v1-foot .r{display:flex;gap:8px}
+
+.spec{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px 28px}.spec h3{font-size:12px;color:var(--fg-3);font-weight:500;text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px}.spec ul{margin:0;padding-left:18px;color:var(--fg-2);font-size:14px;display:grid;gap:4px}
+.v1-follow{margin:0 0 12px;display:flex;align-items:center;gap:8px;padding:9px 12px;border:1px solid #23272e;border-radius:8px;color:#5f6672;font-size:13.5px;cursor:text}
+.v1-follow:hover{border-color:#353b45}
+.v1-follow kbd{margin-left:auto;font-size:11px;color:#5f6672}
+/* Frameless mode (#full): the board fills the viewport, as the real app does. Used to capture the reference screenshots. */
+body.full{margin:0;padding:0}
+.full .intro,.full .spec{display:none}
+.full .wrap{padding:0;max-width:none;gap:0}
+.full .scroll{padding:0;overflow:visible}
+.full .win{border:0;border-radius:0;min-width:0;box-shadow:none}
+.full .chrome{display:none}
+.full .app{height:100vh}
+</style>
+<div class="wrap">
+<header class="intro">
+  <div class="eyebrow">kage · design target · desktop board</div>
+  <h1>Kage board</h1>
+  <p>This is the approved desktop design (Variant 1, "Quiet", 2026-11-21). The real app must match it: the layout, the colours, the type and the behaviour shown here. Click the sessions to see each state. Open a finished session and try Delete. All data is sample data.</p>
+</header>
+<section>
+  <div class="scroll"><div class="win"><div class="chrome"><i></i><i></i><i></i><div class="url">my-pc:8080</div></div><div class="app" id="m1"></div></div></div>
+  <div class="spec">
+    <div><h3>States to check</h3><ul><li><b>web / dark mode</b>: needs you, with a question and answer buttons</li><li><b>shop-api / fix login bug</b>: running, with a live cursor and a thinking line</li><li><b>docs / update README</b>: done, with a follow-up field and an unpushed commit; try Delete…</li><li><b>shop-api / rate limit v1</b>: done and pinned</li></ul></div>
+    <div><h3>Colour rules</h3><ul><li>Lime only for what's alive or actionable: New task, the selected row's edge, the live cursor, the thinking line, preview links, the running chip</li><li>Amber only for "needs you"</li><li>Muted red only for Stop and Delete</li><li>The "kage" wordmark stays off-white</li></ul></div>
+    <div><h3>Layout rules</h3><ul><li>Three columns: session list 250 px, session, preview pane 250 px</li><li>Thin lines, no boxes, no glows or pulses</li><li>Every action sits in the footer under the output: Terminal on the left, Stop / Archive / Delete on the right</li></ul></div>
+  </div>
+</section>
+</div>
+<script>
+(function(){
+  var S=[
+    {id:'web',st:'wait',proj:'web',task:'dark mode',br:'feat/dark-mode',wt:'~/projects/web/.worktrees/dark-mode',tm:'4m',age:'18m',prompt:'Add dark mode to the web app. Keep the current colours as the light theme.',
+     lines:[{k:'tool',t:'Read',d:'src/styles/theme.css (310 lines)'},{k:'tool',t:'Search',d:'"#[0-9a-f]{6}" in src/ · 41 matches'},{k:'say',t:'The app has 41 hard-coded colours. There are two ways to add dark mode:'},{k:'out',t:'1. CSS variables in theme.css (no new dependency)'},{k:'out',t:'2. Tailwind’s dark: variant (needs a Tailwind config)'}],
+     ask:{q:'Which approach should I use?',o:['CSS variables','Tailwind']},ports:[['5173','vite']],files:[['src/styles/theme.css','+0','−0']]},
+    {id:'shop',st:'run',proj:'shop-api',task:'fix login bug',br:'fix/login',wt:'~/projects/shop-api/.worktrees/fix-login',tm:'12m',age:'12m',prompt:'Fix the login bug: users get logged out after a page refresh.',
+     lines:[{k:'tool',t:'Read',d:'src/auth/session.ts (142 lines)'},{k:'say',t:'Found it: isExpired() compares seconds with milliseconds, so every token looks expired after a refresh.'},{k:'tool',t:'Update',d:'src/auth/session.ts'},{k:'del',t:'if (token.exp < Date.now()) {'},{k:'add',t:'if (token.exp * 1000 < Date.now()) {'},{k:'tool',t:'Bash',d:'npm test -- auth'},{k:'out',t:'PASS test/auth.test.ts (14 tests)'},{k:'out',t:'PASS test/session.test.ts (6 tests)'},{k:'think',t:'Writing a regression test for the refresh case… (38s)'}],
+     ports:[['3000','node']],files:[['src/auth/session.ts','+1','−1'],['test/session.test.ts','+24','−0']]},
+    {id:'infra',st:'run',proj:'infra',task:'node 24',br:'chore/node-24',wt:'~/projects/infra/.worktrees/node-24',tm:'3m',age:'3m',prompt:'Upgrade the services to Node 24 LTS.',
+     lines:[{k:'tool',t:'Update',d:'.nvmrc, Dockerfile, package.json'},{k:'tool',t:'Bash',d:'pnpm install --frozen-lockfile'},{k:'out',t:'Progress: resolved 812, reused 790, downloaded 22'},{k:'think',t:'Installing dependencies… (1m 12s)'}],
+     ports:[],files:[['.nvmrc','+1','−1'],['Dockerfile','+2','−2'],['package.json','+1','−1']]},
+    {id:'rate',st:'done',pin:true,proj:'shop-api',task:'rate limit v1',br:'feat/rate-limit',wt:'~/projects/shop-api/.worktrees/rate-limit',tm:'2d',age:'2d',prompt:'Add rate limiting to /login and /reset.',
+     lines:[{k:'say',t:'Added a sliding-window rate limiter to /login and /reset (5 attempts per minute per IP), with tests.'},{k:'say',t:'Done. PR #57 is merged.'}],
+     ports:[],files:[['src/middleware/rateLimit.ts','+86','−0'],['test/rateLimit.test.ts','+64','−0']],note:'PR #57 merged'},
+    {id:'footer',st:'done',proj:'web',task:'fix footer links',br:'fix/footer',wt:'~/projects/web/.worktrees/footer',tm:'3h',age:'3h',prompt:'The footer links to the old help pages. Fix them.',
+     lines:[{k:'say',t:'Fixed 6 footer links that pointed at the old /help pages.'},{k:'say',t:'Done. Opened PR #212.'}],
+     ports:[],files:[['src/components/Footer.tsx','+6','−6']],note:'PR #212 open'},
+    {id:'docs',st:'done',proj:'docs',task:'update README',br:'docs/readme',wt:'~/projects/docs/.worktrees/readme',tm:'1h',age:'1h',prompt:'Update the README for Node 24 and the new config.',
+     lines:[{k:'say',t:'Updated README.md: install steps for Node 24, a configuration table and a troubleshooting section.'},{k:'say',t:'Done. 1 commit is not pushed yet.'}],
+     ports:[['4000','docs']],files:[['README.md','+48','−12']],note:'1 commit not pushed'}
+  ];
+  var LOGO='<img class="klogo" alt="" src="data:image/png;base64,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">';
+  function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]})}
+  function by(id){for(var i=0;i<S.length;i++)if(S[i].id===id)return S[i];return null}
+  var ORDER={wait:0,run:1,done:2}, GN={wait:'Needs you',run:'Running',done:'Done'};
+  function sorted(st){return S.filter(function(s){return !(st&&st.gone&&st.gone[s.id])}).sort(function(a,b){return (ORDER[a.st]-ORDER[b.st])||((b.pin?1:0)-(a.pin?1:0))})}
+  function groups(fn,st){var h='',g=null;sorted(st).forEach(function(s){if(s.st!==g){g=s.st;h+=fn.head(g)}h+=fn.item(s)});return h}
+  function nm(s){return s.proj+' · '+s.task}
+  function sub(s){return s.st==='wait'?s.ask.q:(s.st==='run'?(s.lines[s.lines.length-1].t):(s.note||'Done'))}
+  // generic line renderer: P = prefixes per kind
+  function lines(s,P,max){var L=s.lines;if(max)L=L.slice(-max);return L.map(function(l){var t=l.k==='tool'?esc(l.t)+' <span class="dim">'+esc(l.d)+'</span>':esc(l.t);return '<div class="ln ln-'+l.k+'">'+(P[l.k]||'')+t+'</div>'}).join('')}
+  var PT={tool:'⏺ ',say:'⏺ ',think:'✻ ',add:'  + ',del:'  − ',out:'  '};
+
+  /* ---------- V1 quiet ---------- */
+  function v1(st){var s=by(st.cur);
+    var list=groups({head:function(g){return '<div class="v1-g">'+GN[g].toLowerCase()+'</div>'},
+      item:function(x){return '<div class="v1-it'+(x.id===st.cur?' on':'')+'" data-id="'+x.id+'"><span>'+(x.pin?'★ ':'')+'<span class="pj">'+esc(x.proj)+' /</span> '+esc(x.task)+'</span><span class="tm">'+x.tm+'</span>'+(x.st==='wait'?'<span class="w">waiting for your reply</span>':'')+'</div>'}},st);
+    var IC={term:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 10 3 2-3 2M12 15h5"/></svg>',stop:'<svg viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>',arch:'<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10h14V9M10 13h4"/></svg>'};
+    IC.del='<svg viewBox="0 0 24 24"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13M10 11v6M14 11v6"/></svg>';
+    var tools=[['Terminal','T','',IC.term]];
+    if(s.st==='done'){tools.push(['Archive','E','',IC.arch]);tools.push(['Delete…','','stop',IC.del,'confirm-del'])}else{tools.push(['Stop','X','stop',IC.stop])}
+    function btn(t){return '<button type="button" class="v1-act '+t[2]+'"'+(t[4]?' data-act="'+t[4]+'"':'')+'>'+t[3]+t[0]+(t[1]?'<kbd>'+t[1]+'</kbd>':'')+'</button>'}
+    var foot='<div class="v1-foot"><div class="l">'+btn(tools[0])+'</div><div class="r">'+tools.slice(1).map(btn).join('')+'</div></div>';
+    var confirm=st.act==='confirm-del'?'<div class="v1-confirm"><div><b>Delete this session?</b> This removes the tmux window, the worktree <code>'+s.wt+'</code> and the branch <code>'+s.br+'</code>.'+(s.note&&/not pushed/.test(s.note)?' <span class="warn">1 commit isn’t pushed and will be lost.</span>':' Everything on the branch is pushed, so nothing is lost.')+'</div><div class="row"><button type="button" class="v1-act danger-solid" data-act="del-yes">Delete session</button><button type="button" class="v1-act" data-act="cancel">Cancel</button></div></div>':'';
+    return '<div class="v1"><div class="v1-top"><span class="v1-logo">'+LOGO+'kage</span><span class="v1-host"><i class="dot d-run"></i>my-pc · 6 sessions</span><span class="v1-counts"><span><i class="dot d-wait"></i>1 needs you</span><span><i class="dot d-run"></i>2 running</span></span><span class="sp"></span><span class="v1-k">⌘K</span></div><div class="v1-b"><aside class="v1-side"><button class="v1-new" type="button">＋ New task <kbd>N</kbd></button>'+list+'</aside>'+
+      '<main class="v1-main"><div class="v1-head"><div><h3><span class="v1-proj">'+esc(s.proj)+' /</span>'+esc(s.task)+' <span class="v1-chip '+s.st+'">'+GN[s.st].toLowerCase()+'</span></h3></div></div>'+
+      '<div class="v1-meta"><span>branch <b>'+s.br+'</b></span><span title="'+s.wt+'">worktree <b>'+s.wt.replace('~/projects/','')+'</b></span><span>'+(s.st==='done'?'finished <b>'+s.tm+' ago</b>':'started <b>'+s.age+' ago</b>')+'</span></div>'+
+      (st.toast?'<div class="v1-toast" role="status">Deleted <b>'+esc(st.toast)+'</b> · worktree and branch removed</div>':'')+
+      '<div class="v1-tr">'+lines(s,{tool:'',say:'',think:'',add:'+ ',del:'− ',out:'  '})+(s.st==='run'?'<span class="cursor"></span>':'')+'</div>'+
+      (s.ask?'<div class="v1-ask"><div class="v1-q"><small>Waiting for you</small>'+esc(s.ask.q)+'</div><div class="v1-opts">'+s.ask.o.map(function(o,i){return '<button type="button"><kbd>'+(i+1)+'</kbd>'+esc(o)+'</button>'}).join('')+'<span class="v1-or">or press R to reply</span></div></div>':
+       '')+
+      (s.st==='done'&&st.act!=='confirm-del'?'<div class="v1-follow">Follow up in this session…<kbd>R</kbd></div>':'')+confirm+foot+'</main><aside class="v1-aside"><div class="v1-sec"><h4>Preview</h4>'+(s.ports.length?s.ports.map(function(p){return '<div class="v1-port"><span>:'+p[0]+' <span class="dim">'+p[1]+'</span></span><span class="go">Open ↗</span></div>'}).join(''):'<div class="v1-none">No ports open yet.</div>')+'</div>'+
+      '<div class="v1-sec"><h4>Files changed · '+s.files.length+'</h4>'+s.files.map(function(f){return '<div class="v1-file"><span class="p">'+f[0]+'</span><span class="a">'+f[1]+'</span><span class="r">'+f[2]+'</span></div>'}).join('')+'<div class="v1-diff">View diff →</div></div>'+
+      '</aside></div></div>';
+  }
+
+  function mount(id,cur,fn){var el=document.getElementById(id),st={cur:cur};function draw(){el.innerHTML=fn(st)}
+    el.addEventListener('click',function(e){if(e.target.closest('[data-close]')){st.cur=null;draw();return}
+      var a=e.target.closest('[data-act]');if(a){var v=a.getAttribute('data-act');if(v==='del-yes'){st.gone=st.gone||{};st.gone[st.cur]=1;st.toast=nm(by(st.cur));st.cur=sorted(st)[0].id;st.act=null}else{st.act=(v==='cancel')?null:v}draw();return}
+      var t=e.target.closest('[data-id]');if(t){st.cur=t.getAttribute('data-id');st.act=null;st.toast=null;draw()}});draw()}
+  if(location.hash==='#full')document.body.classList.add('full');
+  mount('m1','web',v1);
+})();
+</script>

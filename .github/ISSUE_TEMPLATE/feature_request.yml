@@ -1,0 +1,20 @@
+name: Idea or feature request
+description: Suggest something Kage should do.
+labels: ["idea"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do?
+      description: Describe the situation and what gets in your way today.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What would help?
+      description: How you imagine it working. A sketch or screenshot is welcome.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: What have you tried instead?
