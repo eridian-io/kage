@@ -420,3 +420,51 @@ describe('TranscriptTail', () => {
     expect(t.now()).toBe('Running npm test');
   });
 });
+
+describe('TranscriptTail: turn end (fix wave)', () => {
+  const rec = (r: unknown) => `${JSON.stringify(r)}\n`;
+  const bash = rec({
+    type: 'assistant',
+    message: {
+      stop_reason: 'tool_use',
+      content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'npm test' } }],
+    },
+  });
+
+  it('real-short-turn.jsonl ends with no now line', async () => {
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, fixture('real-short-turn.jsonl'));
+    const t = tail(path);
+    await t.start();
+    expect(t.now()).toBeNull();
+    expect(t.lines().at(-1)).toEqual({
+      kind: 'say',
+      text: 'I changed `bravo` to `BRAVO` in `notes.txt`.',
+    });
+  });
+
+  it('an end_turn reply clears the now line without a turn_duration', async () => {
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, bash);
+    const t = tail(path);
+    await t.start();
+    expect(t.now()).toBe('Running npm test');
+    appendFileSync(
+      path,
+      rec({
+        type: 'assistant',
+        message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+      }),
+    );
+    await next(t);
+    expect(t.now()).toBeNull();
+  });
+
+  it('a stop_hook_summary clears the now line', async () => {
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, `${bash}${rec({ type: 'system', subtype: 'stop_hook_summary' })}`);
+    const t = tail(path);
+    await t.start();
+    expect(t.now()).toBeNull();
+  });
+});

@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { DisplayLine } from '@kage/shared';
 import { describe, expect, it } from 'vitest';
-import { interrupted, nowLine, questionFrom, toDisplayLines } from './lines.ts';
+import { endsTurn, interrupted, nowLine, questionFrom, toDisplayLines } from './lines.ts';
 
 const FIXTURES = join(import.meta.dirname, '../../test/fixtures/transcripts');
 
@@ -305,5 +305,89 @@ describe('interrupted (R11)', () => {
     expect(records('edit-and-test.jsonl').some(interrupted)).toBe(false);
     expect(records('noise.jsonl').some(interrupted)).toBe(false);
     expect(interrupted(null)).toBe(false);
+  });
+});
+
+describe('endsTurn', () => {
+  it('turn_duration, stop_hook_summary and an end_turn assistant record end the turn', () => {
+    expect(endsTurn({ type: 'system', subtype: 'turn_duration' })).toBe(true);
+    expect(endsTurn({ type: 'system', subtype: 'stop_hook_summary' })).toBe(true);
+    expect(
+      endsTurn({
+        type: 'assistant',
+        message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+      }),
+    ).toBe(true);
+  });
+  it('a tool_use assistant record, other system records and junk do not', () => {
+    expect(endsTurn({ type: 'assistant', message: { stop_reason: 'tool_use', content: [] } })).toBe(
+      false,
+    );
+    expect(endsTurn({ type: 'assistant', message: { stop_reason: null, content: [] } })).toBe(
+      false,
+    );
+    expect(endsTurn({ type: 'system', subtype: 'informational' })).toBe(false);
+    expect(endsTurn(null)).toBe(false);
+  });
+});
+
+describe('real-short-turn.jsonl (2.1.330, R23)', () => {
+  it('reads the prompt, Read, Update with its diff and the reply', () => {
+    expect(records('real-short-turn.jsonl').flatMap(toDisplayLines)).toEqual([
+      {
+        kind: 'say',
+        text: '> Use the Edit tool to change the line bravo to BRAVO in notes.txt. Do nothing else and reply with one short sentence.',
+      },
+      { kind: 'think', text: 'Thinking…' },
+      { kind: 'tool', text: 'Read', detail: 'notes.txt' },
+      { kind: 'tool', text: 'Update', detail: 'notes.txt' },
+      { kind: 'del', text: 'bravo' },
+      { kind: 'add', text: 'BRAVO' },
+      { kind: 'say', text: 'I changed `bravo` to `BRAVO` in `notes.txt`.' },
+    ]);
+  });
+  it('the reply (end_turn), stop_hook_summary and turn_duration each end the turn', () => {
+    const ends = records('real-short-turn.jsonl').filter(endsTurn) as {
+      type: string;
+      subtype?: string;
+    }[];
+    expect(ends.map((r) => r.subtype ?? r.type)).toEqual([
+      'assistant',
+      'stop_hook_summary',
+      'turn_duration',
+    ]);
+  });
+});
+
+describe('bounds (review minor)', () => {
+  it('questionFrom: 500-character text, at most 10 options of 200, plain text', () => {
+    const q = questionFrom(
+      assistant({
+        type: 'tool_use',
+        id: 't',
+        name: 'AskUserQuestion',
+        input: {
+          questions: [
+            {
+              question: `${'q'.repeat(700)}\x1b[31m`,
+              options: Array.from({ length: 12 }, () => ({ label: `${'o'.repeat(300)}\x07` })),
+            },
+          ],
+        },
+      }),
+    );
+    expect(q?.text).toHaveLength(500);
+    expect(q?.options).toHaveLength(10);
+    expect(q?.options.every((o) => o.length <= 200 && !o.includes('\x07'))).toBe(true);
+  });
+  it('nowLine: paths and commands are plain text and clipped', () => {
+    expect(nowLine(toolUse('Bash', { command: 'echo \x1b[31mred\x07\nnext' }))).toBe(
+      'Running echo red next',
+    );
+    const now = nowLine(toolUse('Read', { file_path: `${CWD}/${'d/'.repeat(300)}x.ts` }));
+    expect(now?.length).toBeLessThanOrEqual(208);
+    expect(nowLine(toolUse('Read', { file_path: `${CWD}/a\x1b]0;t\x07b.ts` }))).toBe(
+      'Reading ab.ts',
+    );
   });
 });

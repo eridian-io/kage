@@ -1,5 +1,6 @@
 import type { DisplayLine, Question } from '@kage/shared';
 import { stripAnsi } from '../text/ansi.ts';
+import { boundQuestion } from '../text/bounds.ts';
 
 /** Turns Claude Code transcript records (one JSON object per JSONL line) into board lines. */
 
@@ -202,7 +203,7 @@ export function questionFrom(record: unknown): Question | null {
   const options = Array.isArray(q.options)
     ? q.options.flatMap((o) => (isObj(o) && typeof o.label === 'string' ? [o.label] : []))
     : [];
-  return { text: q.question, options };
+  return boundQuestion(q.question, options);
 }
 
 /** The tool_use_ids answered by the tool_result blocks of a user record. */
@@ -212,9 +213,21 @@ export function answeredIds(record: unknown): string[] {
   );
 }
 
-/** True for a system/turn_duration record: the turn is over. */
+/**
+ * True for a record that closes the turn: system/turn_duration, system/stop_hook_summary (written
+ * when Stop hooks ran, just before turn_duration), or the assistant reply that ends it
+ * (`message.stop_reason` "end_turn"). Recorded on 2.1.330 (fixture real-short-turn.jsonl).
+ */
 export function endsTurn(record: unknown): boolean {
-  return isObj(record) && record.type === 'system' && record.subtype === 'turn_duration';
+  if (!isObj(record)) return false;
+  if (record.type === 'system') {
+    return record.subtype === 'turn_duration' || record.subtype === 'stop_hook_summary';
+  }
+  return (
+    record.type === 'assistant' &&
+    isObj(record.message) &&
+    record.message.stop_reason === 'end_turn'
+  );
 }
 
 /** The "now doing" line a record implies, or null when it implies none. */
@@ -229,20 +242,22 @@ export function nowLine(record: unknown): string | null {
     switch (b.name) {
       case 'Bash': {
         const command = str(input.command);
-        if (command) now = `Running ${command.replace(/\s+/g, ' ').trim().slice(0, NOW_COMMAND)}`;
+        if (command) {
+          now = `Running ${plain(command).replace(/\s+/g, ' ').trim().slice(0, NOW_COMMAND)}`;
+        }
         break;
       }
       case 'Edit':
       case 'Write':
-        if (path) now = `Editing ${relative(path, record.cwd)}`;
+        if (path) now = `Editing ${plain(relative(path, record.cwd))}`;
         break;
       case 'Read':
-        if (path) now = `Reading ${relative(path, record.cwd)}`;
+        if (path) now = `Reading ${plain(relative(path, record.cwd))}`;
         break;
       case 'Grep':
       case 'Glob': {
         const pattern = str(input.pattern);
-        if (pattern) now = `Searching ${pattern}`;
+        if (pattern) now = `Searching ${plain(pattern)}`;
         break;
       }
       case 'AskUserQuestion':
