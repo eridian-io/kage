@@ -45,13 +45,18 @@ beforeEach(() => {
 });
 afterEach(() => hub.close());
 
-const app = (demo = false, token = '') =>
+const PROJECTS = {
+  projects: [{ name: 'api', defaultBranch: 'main', branches: ['main'] }],
+  last: 'api',
+};
+const app = (demo = false, token = '', projects = false) =>
   createApp({
     source,
     hub,
     assets,
     allowed,
     token,
+    ...(projects ? { projects: async () => PROJECTS } : {}),
     ...(demo
       ? {
           demoReset: () => {
@@ -531,5 +536,26 @@ describe('token login (B13)', () => {
     const l = await a.fetch(login({ token: 'anything' }));
     expect(l.status).toBe(204);
     expect(l.headers.get('set-cookie')).toBeNull();
+  });
+});
+
+describe('GET /api/projects', () => {
+  it('returns the projects from the dep', async () => {
+    const res = await app(false, '', true).fetch(req('/api/projects'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual(PROJECTS);
+  });
+  it('is 501 without a projects dep', async () => {
+    const res = await app().fetch(req('/api/projects'));
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({ error: "Demo mode can't start tasks." });
+  });
+  it('needs the token when one is set', async () => {
+    const token = 'x'.repeat(20);
+    expect((await app(false, token, true).fetch(req('/api/projects'))).status).toBe(401);
+    const ok = await app(false, token, true).fetch(
+      req('/api/projects', { headers: { Cookie: `kage_auth=${authCookieValue(token)}` } }),
+    );
+    expect(ok.status).toBe(200);
   });
 });

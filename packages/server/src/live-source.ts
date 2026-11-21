@@ -211,6 +211,13 @@ export class LiveSource implements SessionSource {
     return st ? toSession(st) : undefined;
   }
 
+  /** The project of the newest record (by createdAt), or null. */
+  lastProject(): string | null {
+    let best: SessionRecord | null = null;
+    for (const r of this.#records.values()) if (!best || r.createdAt > best.createdAt) best = r;
+    return best?.project ?? null;
+  }
+
   lines(id: string): DisplayLine[] {
     const st = this.#sessions.get(id);
     if (!st) return [];

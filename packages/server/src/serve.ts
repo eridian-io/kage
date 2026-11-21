@@ -3,11 +3,13 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
+import type { ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import { listProjects } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
 import {
@@ -112,7 +114,7 @@ async function startLive(
   io: Io,
   cli: CliParts,
   cleanups: Cleanup[],
-): Promise<SessionSource> {
+): Promise<LiveSource> {
   const target = {
     session: cfg.tmuxSession,
     socket: cfg.tmuxSocket,
@@ -295,12 +297,18 @@ async function startServer(
 
   let source: SessionSource;
   let demoReset: (() => void) | undefined;
+  let projects: (() => Promise<ProjectsResponse>) | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
     demoReset = () => d.reset();
   } else {
-    source = await startLive(cfg, io, cli, cleanups);
+    const live = await startLive(cfg, io, cli, cleanups);
+    source = live;
+    projects = async () => ({
+      projects: await listProjects(cfg.projectsRoot),
+      last: live.lastProject(),
+    });
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -312,6 +320,7 @@ async function startServer(
     allowed: { hostNames: listen.hostNames, port: cfg.port },
     token: cfg.token,
     ...(demoReset ? { demoReset } : {}),
+    ...(projects ? { projects } : {}),
   });
 
   let server: ReturnType<typeof serve>;

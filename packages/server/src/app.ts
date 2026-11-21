@@ -1,3 +1,4 @@
+import type { ProjectsResponse } from '@kage/shared';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Asset } from './assets.ts';
@@ -23,6 +24,8 @@ export interface AppDeps {
   token: string;
   /** Demo mode only: registers POST /api/demo/reset, which calls this. */
   demoReset?: () => void;
+  /** Live mode: the projects under projectsRoot. Without it (demo mode) the route answers 501. */
+  projects?: () => Promise<ProjectsResponse>;
 }
 
 const CSP = [
@@ -152,6 +155,12 @@ export function createApp(deps: AppDeps): Hono {
     // would leave its client (heartbeat and queue) in the hub forever.
     if (c.req.method === 'HEAD') return new Response(null, { headers });
     return new Response(hub.stream(), { headers });
+  });
+
+  const { projects } = deps;
+  app.get('/api/projects', async (c) => {
+    if (!projects) return c.json({ error: "Demo mode can't start tasks." }, 501);
+    return c.json(await projects());
   });
 
   app.delete('/api/sessions/:id', async (c) => {

@@ -158,3 +158,27 @@ describe('token', () => {
     await expect(load(42)).rejects.toBeInstanceOf(ConfigError);
   });
 });
+
+describe('worktreeDir and branchPrefix', () => {
+  const load = async (obj: object) =>
+    loadConfig({ path: await write(JSON.stringify(obj)), env: env() });
+
+  it('refuses unsafe worktreeDir values', async () => {
+    for (const v of ['../out', '/abs', 'a/../b', '.', '', 'a b', 'x;y']) {
+      await expect(load({ worktreeDir: v })).rejects.toThrow(ConfigError);
+    }
+  });
+  it('accepts safe worktreeDir values', async () => {
+    for (const v of ['.worktrees', 'tmp/wt'])
+      expect((await load({ worktreeDir: v })).worktreeDir).toBe(v);
+  });
+  it('refuses unsafe branchPrefix values', async () => {
+    for (const v of ['-x/', 'a..b/', 'x.lock/', 'a b/', '.hid/', '/x', 'a//b/', '-x']) {
+      await expect(load({ branchPrefix: v })).rejects.toThrow(ConfigError);
+    }
+  });
+  it('accepts safe branchPrefix values', async () => {
+    for (const v of ['kage/', '', 'team/kage/'])
+      expect((await load({ branchPrefix: v })).branchPrefix).toBe(v);
+  });
+});

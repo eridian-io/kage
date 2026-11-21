@@ -80,6 +80,33 @@ function days(v: unknown, key: string): number {
   return v;
 }
 
+const SEGMENT = /^[A-Za-z0-9._-]+$/;
+
+/** A relative folder inside the repo: segments of safe characters, none "." or "..". */
+function worktreeDir(v: unknown, key: string): string {
+  const d = str(v, key);
+  const bad = d.split('/').some((s) => !SEGMENT.test(s) || s === '.' || s === '..');
+  if (bad) throw new ConfigError(`${key} must be a relative folder name like ".worktrees"`);
+  return d;
+}
+
+/** "" or safe segments separated by "/", optionally ending in "/", usable at the start of a branch name. */
+function branchPrefix(v: unknown, key: string): string {
+  const p = str(v, key);
+  if (p === '') return p;
+  const segs = (p.endsWith('/') ? p.slice(0, -1) : p).split('/');
+  const bad = segs.some(
+    (s) =>
+      !SEGMENT.test(s) ||
+      s.startsWith('-') ||
+      s.startsWith('.') ||
+      s.endsWith('.lock') ||
+      s.includes('..'),
+  );
+  if (bad) throw new ConfigError(`${key} must look like "kage/" (letters, digits, . _ - and /)`);
+  return p;
+}
+
 function expandHome(p: string, home: string): string {
   if (p === '~') return home;
   if (p.startsWith('~/') || p.startsWith('~\\')) return join(home, p.slice(2));
@@ -124,8 +151,9 @@ export async function loadConfig(
   if (raw.host === null) c.host = null;
   if (raw.port !== undefined) c.port = port(raw.port, 'port');
   if (raw.tmuxSession !== undefined) c.tmuxSession = str(raw.tmuxSession, 'tmuxSession');
-  if (raw.worktreeDir !== undefined) c.worktreeDir = str(raw.worktreeDir, 'worktreeDir');
-  if (raw.branchPrefix !== undefined) c.branchPrefix = str(raw.branchPrefix, 'branchPrefix');
+  if (raw.worktreeDir !== undefined) c.worktreeDir = worktreeDir(raw.worktreeDir, 'worktreeDir');
+  if (raw.branchPrefix !== undefined)
+    c.branchPrefix = branchPrefix(raw.branchPrefix, 'branchPrefix');
   if (raw.autoArchive !== undefined) {
     if (!isObj(raw.autoArchive)) throw new ConfigError('autoArchive must be an object');
     const a = raw.autoArchive;
