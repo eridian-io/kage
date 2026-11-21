@@ -50,11 +50,41 @@ const STATES: State[] = [
   },
 ];
 
-/** Freezes the blinking cursor, parks the mouse where nothing hovers, waits for fonts. */
-async function settle(page: Page): Promise<Buffer> {
+/** The faces both pages use; each must have loaded, not fallen back to a system font. */
+const FONTS: [family: string, weight: string, check: string][] = [
+  ['Geist', '400', '400 14px "Geist"'],
+  ['Geist', '500', '500 14px "Geist"'],
+  ['Geist Mono', '400', '400 12px "Geist Mono"'],
+];
+
+/**
+ * Fails unless Geist and Geist Mono really loaded on the page. fonts.ready also resolves when a
+ * load fails, and fonts.check() is true when no face matches at all, so each face's status counts.
+ */
+async function expectFontsLoaded(page: Page, label: string): Promise<void> {
+  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  const faces = await page.evaluate(() =>
+    [...document.fonts].map((f) => ({
+      family: f.family.replace(/^["']|["']$/g, ''),
+      weight: f.weight,
+      status: f.status,
+    })),
+  );
+  for (const [family, weight, check] of FONTS) {
+    const face = faces.find((f) => f.family === family && f.weight === weight);
+    expect(face?.status, `${label}: font ${family} ${weight} did not load`).toBe('loaded');
+    expect(
+      await page.evaluate((c) => document.fonts.check(c), check),
+      `${label}: document.fonts.check('${check}') is false`,
+    ).toBe(true);
+  }
+}
+
+/** Freezes the blinking cursor, parks the mouse where nothing hovers, checks the fonts. */
+async function settle(page: Page, label: string): Promise<Buffer> {
   await page.addStyleTag({ content: '.cursor{animation:none}' });
   await page.mouse.move(0, 0);
-  await page.evaluate(() => document.fonts.ready.then(() => undefined));
+  await expectFontsLoaded(page, label);
   return page.screenshot({ animations: 'disabled' });
 }
 
@@ -69,12 +99,12 @@ for (const state of STATES) {
     await page.goto(TARGET);
     await expect(page.locator('.v1-it')).toHaveCount(6);
     await state.target(page);
-    const want = PNG.sync.read(await settle(page));
+    const want = PNG.sync.read(await settle(page, 'design target'));
 
     await page.goto('/');
     await expect(page.locator('.k-it')).toHaveCount(6);
     await state.app(page);
-    const got = PNG.sync.read(await settle(page));
+    const got = PNG.sync.read(await settle(page, 'app'));
 
     expect([got.width, got.height]).toEqual([WIDTH, HEIGHT]);
     expect([want.width, want.height]).toEqual([WIDTH, HEIGHT]);
