@@ -29,12 +29,23 @@ function git(cwd: string, ...args: string[]): string {
   });
 }
 
+/** git with bytes on stdin (plumbing: hash-object, mktree). */
+function gitIn(cwd: string, input: Buffer | string, ...args: string[]): string {
+  return execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.invalid', ...args], {
+    cwd,
+    input,
+    stdio: ['pipe', 'pipe', 'pipe'],
+    encoding: 'utf8',
+  }).trim();
+}
+
 let n = 0;
 /**
  * A repo on main (base.txt, f.txt) with a local bare remote `origin` holding main, and branch
- * kage/x cut from main. Returns the repo and the branch's base commit.
+ * kage/x cut from main and checked out in its own worktree `wt` (as Kage's sessions are).
+ * Returns the repo, the worktree and the branch's base commit.
  */
-async function repo(): Promise<{ dir: string; base: string }> {
+async function repo(): Promise<{ dir: string; wt: string; base: string }> {
   const dir = join(root, `r${++n}`);
   const remote = join(root, `r${n}-remote.git`);
   await mkdir(dir);
@@ -47,20 +58,19 @@ async function repo(): Promise<{ dir: string; base: string }> {
   git(dir, 'remote', 'add', 'origin', remote);
   git(dir, 'push', '-q', 'origin', 'main');
   git(dir, 'fetch', '-q', 'origin');
-  git(dir, 'branch', 'kage/x');
-  return { dir, base: git(dir, 'rev-parse', 'main').trim() };
+  const wt = join(root, `r${n}-wt`);
+  git(dir, 'worktree', 'add', '-q', '-b', 'kage/x', wt, 'main');
+  return { dir, wt, base: git(dir, 'rev-parse', 'main').trim() };
 }
 
-/** Two commits on kage/x (new files), back on main afterwards. */
-async function twoCommits(dir: string): Promise<void> {
-  git(dir, 'checkout', '-q', 'kage/x');
-  await writeFile(join(dir, 'x1.txt'), 'x1\n');
-  git(dir, 'add', 'x1.txt');
-  git(dir, 'commit', '-q', '-m', 'x1');
-  await writeFile(join(dir, 'x2.txt'), 'x2\n');
-  git(dir, 'add', 'x2.txt');
-  git(dir, 'commit', '-q', '-m', 'x2');
-  git(dir, 'checkout', '-q', 'main');
+/** Two commits on kage/x (new files), made in its worktree. */
+async function twoCommits(wt: string): Promise<void> {
+  await writeFile(join(wt, 'x1.txt'), 'x1\n');
+  git(wt, 'add', 'x1.txt');
+  git(wt, 'commit', '-q', '-m', 'x1');
+  await writeFile(join(wt, 'x2.txt'), 'x2\n');
+  git(wt, 'add', 'x2.txt');
+  git(wt, 'commit', '-q', '-m', 'x2');
 }
 
 /** main moves on with another file, so a merge of kage/x isn't a fast-forward. */
@@ -70,8 +80,42 @@ async function mainMoves(dir: string): Promise<void> {
   git(dir, 'commit', '-q', '-m', 'main moves');
 }
 
-const merged = (dir: string, base: string) =>
-  isMerged(dir, { branch: 'kage/x', base: 'main', baseCommit: base });
+const merged = (wt: string, base: string) =>
+  isMerged(wt, { branch: 'kage/x', base: 'main', baseCommit: base });
+
+/** A tree entry for plumbing-built commits: a name as raw bytes, a mode and an object id. */
+type Entry = { name: Buffer | string; mode?: '100644' | '160000'; oid: string };
+
+/**
+ * A bare-bones repo built with plumbing (no checkout), so tree entries can have any bytes in
+ * their names and gitlinks need no submodule clone. HEAD points at refs/heads/kage/x.
+ */
+async function plumbingRepo(): Promise<{
+  dir: string;
+  blob: (content: string) => string;
+  commit: (entries: Entry[], parents: string[]) => string;
+  setRef: (ref: string, oid: string) => void;
+}> {
+  const dir = join(root, `p${++n}`);
+  await mkdir(dir);
+  git(dir, 'init', '-q', '-b', 'main');
+  const blob = (content: string) => gitIn(dir, content, 'hash-object', '-w', '--stdin');
+  const commit = (entries: Entry[], parents: string[]) => {
+    const lines = entries.map((e) => {
+      const mode = e.mode ?? '100644';
+      const head = Buffer.from(`${mode} ${mode === '160000' ? 'commit' : 'blob'} ${e.oid}\t`);
+      return Buffer.concat([head, Buffer.from(e.name), Buffer.from([0])]);
+    });
+    const tree = gitIn(dir, Buffer.concat(lines), 'mktree', '-z', '--missing');
+    const ps = parents.flatMap((p) => ['-p', p]);
+    return gitIn(dir, 'c', 'commit-tree', tree, ...ps);
+  };
+  const setRef = (ref: string, oid: string) => {
+    git(dir, 'update-ref', ref, oid);
+  };
+  git(dir, 'symbolic-ref', 'HEAD', 'refs/heads/kage/x');
+  return { dir, blob, commit, setRef };
+}
 
 beforeAll(async () => {
   root = await mkdtemp(join(tmpdir(), 'kage-branch-'));
@@ -142,23 +186,23 @@ describe('SAFE_REF', () => {
 
 describe('unpushedCount', REPO_TESTS, () => {
   it('counts commits only this branch reaches: 2, then 0 after push, 0 after a merge', async () => {
-    const { dir } = await repo();
-    await twoCommits(dir);
-    expect(await unpushedCount(dir, 'kage/x')).toBe(2);
+    const { dir, wt } = await repo();
+    await twoCommits(wt);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(2);
     git(dir, 'push', '-q', 'origin', 'kage/x');
-    expect(await unpushedCount(dir, 'kage/x')).toBe(0);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
     git(dir, 'push', '-q', 'origin', '--delete', 'kage/x');
     git(dir, 'fetch', '-q', '--prune', 'origin');
-    expect(await unpushedCount(dir, 'kage/x')).toBe(2);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(2);
     git(dir, 'merge', '-q', '--no-ff', '-m', 'merge', 'kage/x');
-    expect(await unpushedCount(dir, 'kage/x')).toBe(0);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
   });
 
   it('a commit also on another branch is not counted', async () => {
-    const { dir } = await repo();
-    await twoCommits(dir);
+    const { dir, wt } = await repo();
+    await twoCommits(wt);
     git(dir, 'branch', 'other', 'kage/x~1');
-    expect(await unpushedCount(dir, 'kage/x')).toBe(1);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(1);
   });
 
   it('a branch named -x is refused by SAFE_REF with no git call', async () => {
@@ -194,86 +238,93 @@ describe('uncommittedCount', REPO_TESTS, () => {
 
 describe('isMerged', REPO_TESTS, () => {
   it('false with no commits past baseCommit (the tip is trivially an ancestor)', async () => {
-    const { dir, base } = await repo();
-    expect(await merged(dir, base)).toBe(false);
+    const { wt, base } = await repo();
+    expect(await merged(wt, base)).toBe(false);
   });
 
   it('false for a branch that is not merged', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     await mainMoves(dir);
-    expect(await merged(dir, base)).toBe(false);
+    expect(await merged(wt, base)).toBe(false);
   });
 
   it('true after a fast-forward merge', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     git(dir, 'merge', '-q', '--ff-only', 'kage/x');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
   });
 
   it('true after a --no-ff merge', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     await mainMoves(dir);
     git(dir, 'merge', '-q', '--no-ff', '-m', 'merge', 'kage/x');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
   });
 
   it('true after a squash merge, also when main then changes another file', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     await mainMoves(dir);
     git(dir, 'merge', '-q', '--squash', 'kage/x');
     git(dir, 'commit', '-q', '-m', 'squash');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
     await writeFile(join(dir, 'later.txt'), 'later\n');
     git(dir, 'add', 'later.txt');
     git(dir, 'commit', '-q', '-m', 'later');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
   });
 
   it('false when main changes the same file after a squash merge', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     git(dir, 'merge', '-q', '--squash', 'kage/x');
     git(dir, 'commit', '-q', '-m', 'squash');
     await writeFile(join(dir, 'x1.txt'), 'x1 changed on main\n');
     git(dir, 'commit', '-q', '-am', 'main edits x1');
-    expect(await merged(dir, base)).toBe(false);
+    expect(await merged(wt, base)).toBe(false);
   });
 
   it('true after a rebase merge (copies of the commits on main)', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     await mainMoves(dir);
     git(dir, 'cherry-pick', 'kage/x~1', 'kage/x');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
   });
 
   it('true when only origin/main holds the merge (the local main is behind)', async () => {
-    const { dir, base } = await repo();
-    await twoCommits(dir);
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
     await mainMoves(dir);
     git(dir, 'merge', '-q', '--squash', 'kage/x');
     git(dir, 'commit', '-q', '-m', 'squash');
     git(dir, 'push', '-q', 'origin', 'main');
     git(dir, 'reset', '-q', '--hard', 'HEAD~1');
-    expect(await merged(dir, base)).toBe(true);
+    expect(await merged(wt, base)).toBe(true);
     // Without the remote ref, the local main alone doesn't hold it.
     git(dir, 'update-ref', '-d', 'refs/remotes/origin/main');
-    expect(await merged(dir, base)).toBe(false);
+    expect(await merged(wt, base)).toBe(false);
   });
 
   it('false for a conflicting branch', async () => {
-    const { dir, base } = await repo();
-    git(dir, 'checkout', '-q', 'kage/x');
-    await writeFile(join(dir, 'f.txt'), 'one\nBRANCH\nthree\nfour\nfive\n');
-    git(dir, 'commit', '-q', '-am', 'branch edits line 2');
-    git(dir, 'checkout', '-q', 'main');
+    const { dir, wt, base } = await repo();
+    await writeFile(join(wt, 'f.txt'), 'one\nBRANCH\nthree\nfour\nfive\n');
+    git(wt, 'commit', '-q', '-am', 'branch edits line 2');
     await writeFile(join(dir, 'f.txt'), 'one\nMAIN\nthree\nfour\nfive\n');
     git(dir, 'commit', '-q', '-am', 'main edits line 2');
-    expect(await merged(dir, base)).toBe(false);
+    expect(await merged(wt, base)).toBe(false);
+  });
+
+  it('R66: a merged-then-reverted branch still counts as merged (its commits stay reachable)', async () => {
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
+    git(dir, 'merge', '-q', '--no-ff', '-m', 'merge', 'kage/x');
+    git(dir, 'revert', '--no-edit', '-m', '1', 'HEAD');
+    expect(await merged(wt, base)).toBe(true);
+    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
   });
 
   it('false when baseCommit or base is null, or a name fails SAFE_REF, with no git call', async () => {
@@ -307,12 +358,121 @@ describe('isMerged', REPO_TESTS, () => {
   });
 });
 
+describe('fix round 1: what the path check must not miss', REPO_TESTS, () => {
+  it('a detached HEAD with an extra commit counts as unpushed, and the branch is not merged', async () => {
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
+    git(dir, 'merge', '-q', '--ff-only', 'kage/x');
+    expect(await merged(wt, base)).toBe(true);
+    git(wt, 'checkout', '-q', '--detach');
+    await writeFile(join(wt, 'lost.txt'), 'only on the detached HEAD\n');
+    git(wt, 'add', 'lost.txt');
+    git(wt, 'commit', '-q', '-m', 'detached work');
+    expect(await unpushedCount(wt, 'kage/x')).toBe(1);
+    expect(await merged(wt, base)).toBe(false);
+    expect(await branchState(wt, { branch: 'kage/x', base: 'main', baseCommit: base })).toEqual({
+      unpushed: 1,
+      uncommitted: 0,
+      merged: false,
+    });
+  });
+
+  it('a detached HEAD behind the tip (an ancestor of it) still allows merged', async () => {
+    const { dir, wt, base } = await repo();
+    await twoCommits(wt);
+    git(dir, 'merge', '-q', '--ff-only', 'kage/x');
+    git(wt, 'checkout', '-q', '--detach', 'kage/x~1');
+    expect(await merged(wt, base)).toBe(true);
+  });
+
+  it('a submodule pointer bump is not hidden by ignore=all: main took only the other file', async () => {
+    const p = await plumbingRepo();
+    const s1 = '1'.repeat(40);
+    const s2 = '2'.repeat(40);
+    const gm = p.blob('[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n');
+    const a1 = p.blob('a\n');
+    const a2 = p.blob('a2\n');
+    const tree = (sub: string, a: string): Entry[] => [
+      { name: '.gitmodules', oid: gm },
+      { name: 'a.txt', oid: a },
+      { name: 'sub', mode: '160000', oid: sub },
+    ];
+    const base = p.commit(tree(s1, a1), []);
+    const tip = p.commit(tree(s2, a2), [base]);
+    const main = p.commit(tree(s1, a2), [base]);
+    p.setRef('refs/heads/kage/x', tip);
+    p.setRef('refs/heads/main', main);
+    await writeFile(
+      join(p.dir, '.gitmodules'),
+      '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n',
+    );
+    git(p.dir, 'config', 'submodule.sub.ignore', 'all');
+    git(p.dir, 'config', 'diff.ignoreSubmodules', 'all');
+    expect(await merged(p.dir, base)).toBe(false);
+    // Once main has the pointer too, it is merged.
+    p.setRef('refs/heads/main', p.commit(tree(s2, a2), [base]));
+    expect(await merged(p.dir, base)).toBe(true);
+  });
+
+  it('a branch touching 1,500 paths still gives a correct result (no argument list limit)', async () => {
+    const p = await plumbingRepo();
+    const b = p.blob('base\n');
+    const x = p.blob('x\n');
+    const names = Array.from(
+      { length: 1500 },
+      (_, i) => `a-fairly-long-file-name-for-the-argv-limit-${String(i).padStart(4, '0')}.txt`,
+    );
+    const many: Entry[] = names.map((name) => ({ name, oid: x }));
+    const base = p.commit([{ name: 'base.txt', oid: b }], []);
+    const tip = p.commit([{ name: 'base.txt', oid: b }, ...many], [base]);
+    p.setRef('refs/heads/kage/x', tip);
+    const other = p.blob('other\n');
+    // A squash merge on main, next to a change of its own.
+    const squash = [{ name: 'base.txt', oid: b }, ...many, { name: 'zz-other.txt', oid: other }];
+    p.setRef('refs/heads/main', p.commit(squash, [base]));
+    expect(await merged(p.dir, base)).toBe(true);
+    // main then changes one of the branch's files: no longer merged.
+    const changed = squash.map((e) => (e.name === names[777] ? { ...e, oid: other } : e));
+    p.setRef('refs/heads/main', p.commit(changed, [base]));
+    expect(await merged(p.dir, base)).toBe(false);
+  });
+
+  it('non-UTF-8 names compare byte for byte', async () => {
+    const p = await plumbingRepo();
+    const b = p.blob('base\n');
+    const x = p.blob('x\n');
+    const y = p.blob('y\n');
+    const ff = Buffer.from([0x61, 0xff]); // "a\xff", not UTF-8
+    const fe = Buffer.from([0x61, 0xfe]); // "a\xfe": the same U+FFFD once decoded as UTF-8
+    const base = p.commit([{ name: 'base.txt', oid: b }], []);
+    const tip = p.commit(
+      [
+        { name: 'base.txt', oid: b },
+        { name: ff, oid: x },
+      ],
+      [base],
+    );
+    p.setRef('refs/heads/kage/x', tip);
+    // main lacks the branch's file entirely: not merged.
+    p.setRef('refs/heads/main', p.commit([{ name: 'base.txt', oid: b }], [base]));
+    expect(await merged(p.dir, base)).toBe(false);
+    // main took it, and has a different file whose name decodes the same: merged.
+    const both = [
+      { name: 'base.txt', oid: b },
+      { name: ff, oid: x },
+      { name: fe, oid: y },
+    ];
+    p.setRef('refs/heads/main', p.commit(both, [base]));
+    expect(await merged(p.dir, base)).toBe(true);
+  });
+});
+
 describe(
   'F7: a hostile repo (merge driver, textconv, ext-diff) runs none of them',
   REPO_TESTS,
   () => {
     it('isMerged and branchState write no marker; the same config is live for plain git', async () => {
-      const { dir } = await repo();
+      const { dir, wt } = await repo();
       const marks = join(root, `marks-${n}`);
       await mkdir(marks);
       const m = (name: string) => join(marks, name).replaceAll('\\', '/');
@@ -322,19 +482,17 @@ describe(
       await writeFile(join(dir, '.gitattributes'), '* merge=evil diff=evil\n');
       git(dir, 'add', '.gitattributes');
       git(dir, 'commit', '-q', '-m', 'attributes');
-      git(dir, 'branch', '-f', 'kage/x', 'main');
+      git(wt, 'merge', '-q', '--ff-only', 'main');
       const cut = git(dir, 'rev-parse', 'main').trim();
       // Both sides change f.txt on different lines, so a content merge would run the driver.
-      git(dir, 'checkout', '-q', 'kage/x');
-      await writeFile(join(dir, 'f.txt'), 'one\nBRANCH\nthree\nfour\nfive\n');
-      git(dir, 'commit', '-q', '-am', 'branch');
-      git(dir, 'checkout', '-q', 'main');
+      await writeFile(join(wt, 'f.txt'), 'one\nBRANCH\nthree\nfour\nfive\n');
+      git(wt, 'commit', '-q', '-am', 'branch');
       await writeFile(join(dir, 'f.txt'), 'one\ntwo\nthree\nfour\nMAIN\n');
       git(dir, 'commit', '-q', '-am', 'main');
-      await writeFile(join(dir, 'f.txt'), 'one\ntwo\nthree\nfour\nMAIN dirty\n');
+      await writeFile(join(wt, 'f.txt'), 'one\nBRANCH dirty\nthree\nfour\nfive\n');
 
-      expect(await merged(dir, cut)).toBe(false);
-      expect(await branchState(dir, { branch: 'kage/x', base: 'main', baseCommit: cut })).toEqual({
+      expect(await merged(wt, cut)).toBe(false);
+      expect(await branchState(wt, { branch: 'kage/x', base: 'main', baseCommit: cut })).toEqual({
         unpushed: 1,
         uncommitted: 1,
         merged: false,
@@ -359,41 +517,60 @@ describe(
 );
 
 describe('branchState', () => {
+  const NAMES = [
+    'diff',
+    '--no-ext-diff',
+    '--no-textconv',
+    '--no-renames',
+    '--ignore-submodules=none',
+    '--name-only',
+    '-z',
+  ];
+
   it('runs its three parts in parallel, with the exact arguments (fsmonitor is gitExec’s)', async () => {
     const sha = 'b'.repeat(40);
-    const calls: { args: string[]; cwd: string | undefined }[] = [];
+    const calls: { args: string[]; cwd: string | undefined; encoding?: string }[] = [];
     let release = () => {};
     const gate = new Promise<void>((r) => {
       release = r;
     });
     const exec: GitExec = async (args, opts) => {
-      calls.push({ args, cwd: opts?.cwd });
+      calls.push({
+        args,
+        cwd: opts?.cwd,
+        ...(opts?.encoding ? { encoding: opts.encoding } : {}),
+      });
       await gate;
       const a = args.join(' ');
-      if (a.startsWith('rev-list --count refs/heads/kage/x --not --exclude')) {
+      if (a.startsWith('rev-list --count refs/heads/kage/x HEAD --not')) {
         return { stdout: '3\n', stderr: '' };
       }
       if (a.startsWith('status')) return { stdout: ' M a.txt\0?? b.txt\0', stderr: '' };
+      if (a === 'symbolic-ref -q HEAD') return { stdout: 'refs/heads/kage/x\n', stderr: '' };
       if (a === `rev-list --count refs/heads/kage/x ^${sha}`) return { stdout: '3\n', stderr: '' };
-      if (a.startsWith('diff --no-ext-diff')) return { stdout: 'a.txt\0b c.txt\0', stderr: '' };
+      if (a.startsWith(`${NAMES.join(' ')} ${sha}`)) {
+        return { stdout: 'a.txt\0b c.txt\0', stderr: '' };
+      }
       if (a.startsWith('merge-base')) throw Object.assign(new Error('no'), { code: 1 });
-      if (a.includes('diff --quiet') && a.includes('refs/heads/main'))
-        throw Object.assign(new Error('differ'), { code: 1 });
-      if (a.includes('diff --quiet')) return { stdout: '', stderr: '' };
+      // Against main the branch's b c.txt differs; against origin/main only an unrelated file.
+      if (a.endsWith('refs/heads/main')) return { stdout: 'b c.txt\0zz.txt\0', stderr: '' };
+      if (a.endsWith('refs/remotes/origin/main')) return { stdout: 'zz.txt\0', stderr: '' };
       throw new Error(`unexpected git ${a}`);
     };
     const p = branchState('/w/x', { branch: 'kage/x', base: 'main', baseCommit: sha }, exec);
     await new Promise((r) => setTimeout(r, 0));
     // All three parts started before any finished.
-    expect(calls.map((c) => c.args[0])).toEqual(['rev-list', 'status', 'rev-list']);
+    expect(calls.map((c) => c.args[0])).toEqual(['rev-list', 'status', 'symbolic-ref']);
     release();
     expect(await p).toEqual({ unpushed: 3, uncommitted: 2, merged: true });
+    const tip = 'refs/heads/kage/x';
     expect(calls).toEqual([
       {
         args: [
           'rev-list',
           '--count',
-          'refs/heads/kage/x',
+          tip,
+          'HEAD',
           '--not',
           '--exclude=kage/x',
           '--branches',
@@ -402,61 +579,39 @@ describe('branchState', () => {
         ],
         cwd: '/w/x',
       },
-      { args: ['status', '--porcelain=v1', '-z', '--untracked-files=normal'], cwd: '/w/x' },
-      { args: ['rev-list', '--count', 'refs/heads/kage/x', `^${sha}`], cwd: '/w/x' },
       {
         args: [
-          'diff',
-          '--no-ext-diff',
-          '--no-textconv',
-          '--no-renames',
-          '--name-only',
+          'status',
+          '--porcelain=v1',
           '-z',
-          sha,
-          'refs/heads/kage/x',
+          '--untracked-files=normal',
+          '--ignore-submodules=none',
         ],
         cwd: '/w/x',
       },
-      {
-        args: ['merge-base', '--is-ancestor', 'refs/heads/kage/x', 'refs/heads/main'],
-        cwd: '/w/x',
-      },
-      {
-        args: [
-          '--literal-pathspecs',
-          'diff',
-          '--quiet',
-          '--no-ext-diff',
-          '--no-textconv',
-          '--no-renames',
-          'refs/heads/kage/x',
-          'refs/heads/main',
-          '--',
-          'a.txt',
-          'b c.txt',
-        ],
-        cwd: '/w/x',
-      },
-      {
-        args: ['merge-base', '--is-ancestor', 'refs/heads/kage/x', 'refs/remotes/origin/main'],
-        cwd: '/w/x',
-      },
-      {
-        args: [
-          '--literal-pathspecs',
-          'diff',
-          '--quiet',
-          '--no-ext-diff',
-          '--no-textconv',
-          '--no-renames',
-          'refs/heads/kage/x',
-          'refs/remotes/origin/main',
-          '--',
-          'a.txt',
-          'b c.txt',
-        ],
-        cwd: '/w/x',
-      },
+      { args: ['symbolic-ref', '-q', 'HEAD'], cwd: '/w/x' },
+      { args: ['rev-list', '--count', tip, `^${sha}`], cwd: '/w/x' },
+      { args: [...NAMES, sha, tip], cwd: '/w/x', encoding: 'latin1' },
+      { args: ['merge-base', '--is-ancestor', tip, 'refs/heads/main'], cwd: '/w/x' },
+      { args: [...NAMES, tip, 'refs/heads/main'], cwd: '/w/x', encoding: 'latin1' },
+      { args: ['merge-base', '--is-ancestor', tip, 'refs/remotes/origin/main'], cwd: '/w/x' },
+      { args: [...NAMES, tip, 'refs/remotes/origin/main'], cwd: '/w/x', encoding: 'latin1' },
+    ]);
+  });
+
+  it('a worktree on another branch is not merged, and asks no more of git', async () => {
+    const calls: string[][] = [];
+    const exec: GitExec = async (args) => {
+      calls.push(args);
+      if (args[0] === 'symbolic-ref') return { stdout: 'refs/heads/other\n', stderr: '' };
+      throw Object.assign(new Error('not an ancestor'), { code: 1 });
+    };
+    expect(
+      await isMerged('/w', { branch: 'kage/x', base: 'main', baseCommit: 'e'.repeat(40) }, exec),
+    ).toBe(false);
+    expect(calls).toEqual([
+      ['symbolic-ref', '-q', 'HEAD'],
+      ['merge-base', '--is-ancestor', 'HEAD', 'refs/heads/kage/x'],
     ]);
   });
 

@@ -21,9 +21,11 @@ const toCount = (out: string): number => {
 };
 
 /**
- * Commits only this branch reaches (host-integration §5.3):
- * `rev-list --count refs/heads/<b> --not --exclude=<b> --branches --remotes --tags`. A branch
- * failing SAFE_REF counts 0 with no git call. Rejects when git fails.
+ * Commits only this branch, or the worktree's HEAD, reaches (host-integration §5.3, plus HEAD):
+ * `rev-list --count refs/heads/<b> HEAD --not --exclude=<b> --branches --remotes --tags`, run in
+ * the session's worktree, so work on a detached HEAD counts too. `--exclude` takes the short
+ * name: with `--branches` a `refs/heads/` pattern matches nothing (checked on git 2.56). A
+ * branch failing SAFE_REF counts 0 with no git call. Rejects when git fails.
  */
 export async function unpushedCount(
   cwd: string,
@@ -36,6 +38,7 @@ export async function unpushedCount(
       'rev-list',
       '--count',
       `refs/heads/${branch}`,
+      'HEAD',
       '--not',
       `--exclude=${branch}`,
       '--branches',
@@ -48,14 +51,18 @@ export async function unpushedCount(
 }
 
 /**
- * Entries of `status --porcelain=v1 -z --untracked-files=normal` (§5.4): an untracked folder
+ * Entries of `status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none` (§5.4;
+ * a dirty submodule counts whatever `diff.ignoreSubmodules` or `.gitmodules` say): an untracked folder
  * counts once, ignored files don't count, and a rename or copy counts once (its old path follows
  * as an extra NUL-terminated field). Rejects when git fails.
  */
 export async function uncommittedCount(worktree: string, exec: GitExec = gitExec): Promise<number> {
-  const { stdout } = await exec(['status', '--porcelain=v1', '-z', '--untracked-files=normal'], {
-    cwd: worktree,
-  });
+  const { stdout } = await exec(
+    ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=none'],
+    {
+      cwd: worktree,
+    },
+  );
   const fields = stdout.split('\0');
   let n = 0;
   for (let i = 0; i < fields.length; i++) {
@@ -77,15 +84,45 @@ async function exitsZero(exec: GitExec, args: string[], cwd: string): Promise<bo
   }
 }
 
-/** The flags that keep a diff from running repository-configured programs (R65, F7). */
-const NO_PROGRAMS = ['--no-ext-diff', '--no-textconv', '--no-renames'];
+/**
+ * The flags that keep a diff from running repository-configured programs (R65, F7), and from
+ * hiding a submodule pointer change (`diff.ignoreSubmodules`, `.gitmodules` `ignore = all`).
+ */
+const DIFF_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-submodules=none'];
 
 /**
- * The branch has a commit past baseCommit, and its tip is an ancestor of refs/heads/<base> or of
- * refs/remotes/origin/<base>, or every path the branch changed since baseCommit is the same in
- * that ref (a squash or rebase merge): the driver-free path-equal check of host-integration §5.5
- * (R59/R65), never `merge-tree`, which can run a repository's merge driver. False for a null
- * baseCommit or base, a name failing SAFE_REF (no git call), and whenever git fails (closed).
+ * The paths a tree-to-tree diff lists, as raw bytes (latin1: one char per byte), so non-UTF-8
+ * names compare exactly.
+ */
+async function changedPaths(exec: GitExec, cwd: string, from: string, to: string) {
+  const { stdout } = await exec(['diff', ...DIFF_FLAGS, '--name-only', '-z', from, to], {
+    cwd,
+    encoding: 'latin1',
+  });
+  return stdout.split('\0').filter((p) => p !== '');
+}
+
+/**
+ * The worktree is on the branch: its HEAD is `refs/heads/<b>`, or (detached) an ancestor of the
+ * tip. A detached HEAD with commits of its own would lose them, so that is never merged.
+ */
+async function onBranch(exec: GitExec, cwd: string, tip: string): Promise<boolean> {
+  const head = await exec(['symbolic-ref', '-q', 'HEAD'], { cwd }).then(
+    (r) => r.stdout.trim(),
+    () => null,
+  );
+  if (head === tip) return true;
+  return exitsZero(exec, ['merge-base', '--is-ancestor', 'HEAD', tip], cwd);
+}
+
+/**
+ * The worktree (`cwd`) is on the branch, the branch has a commit past baseCommit, and its tip is
+ * an ancestor of refs/heads/<base> or of refs/remotes/origin/<base>, or no path the branch
+ * changed since baseCommit differs between the tip and that ref (a squash or rebase merge): the
+ * driver-free path-equal check of host-integration §5.5 (R59/R65), never `merge-tree`, which can
+ * run a repository's merge driver. The check intersects two tree diffs in JS (no pathspec, so no
+ * argument limit). False for a null baseCommit or base, a name failing SAFE_REF (no git call),
+ * and whenever git fails (closed).
  */
 export async function isMerged(
   cwd: string,
@@ -97,23 +134,23 @@ export async function isMerged(
   if (!SAFE_REF.test(branch) || !SAFE_REF.test(base) || !HEX_COMMIT.test(baseCommit)) return false;
   const tip = `refs/heads/${branch}`;
   try {
+    if (!(await onBranch(exec, cwd, tip))) return false;
     const past = await exec(['rev-list', '--count', tip, `^${baseCommit}`], { cwd });
     if (toCount(past.stdout) === 0) return false;
-    const changed = await exec(['diff', ...NO_PROGRAMS, '--name-only', '-z', baseCommit, tip], {
-      cwd,
-    });
-    const paths = changed.stdout.split('\0').filter((p) => p !== '');
+    const changed = new Set(await changedPaths(exec, cwd, baseCommit, tip));
     for (const target of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
+      // R66: an ancestor counts as merged even when the base later reverted the merge; nothing
+      // is lost, because the branch's commits stay reachable from the base.
       if (await exitsZero(exec, ['merge-base', '--is-ancestor', tip, target], cwd)) return true;
       // No changed paths: nothing to compare ("n/a" in §5.5), so only ancestry can say merged.
-      if (paths.length === 0) continue;
-      // Literal pathspecs: a file named "*" or ":(glob)x" stands for itself, not for a pattern.
-      const same = await exitsZero(
-        exec,
-        ['--literal-pathspecs', 'diff', '--quiet', ...NO_PROGRAMS, tip, target, '--', ...paths],
-        cwd,
-      );
-      if (same) return true;
+      if (changed.size === 0) continue;
+      let differs: string[];
+      try {
+        differs = await changedPaths(exec, cwd, tip, target);
+      } catch {
+        continue; // no such ref (no origin), or git failed: this target says nothing
+      }
+      if (!differs.some((p) => changed.has(p))) return true;
     }
     return false;
   } catch {

@@ -2,7 +2,15 @@ import { execFile } from 'node:child_process';
 
 export type GitExec = (
   args: string[],
-  opts?: { cwd?: string; timeoutMs?: number },
+  opts?: {
+    cwd?: string;
+    timeoutMs?: number;
+    /**
+     * 'latin1' maps each output byte to one char (U+0000–U+00FF), so names git prints compare
+     * byte for byte: nothing is decoded as UTF-8, and no two names collapse into U+FFFD.
+     */
+    encoding?: 'utf8' | 'latin1';
+  },
 ) => Promise<{ stdout: string; stderr: string }>;
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -36,6 +44,7 @@ export const gitExec: GitExec = (args, opts = {}) =>
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
+        encoding: opts.encoding ?? 'utf8',
         env: gitEnv(),
         windowsHide: true,
       },
