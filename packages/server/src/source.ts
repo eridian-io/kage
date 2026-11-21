@@ -16,6 +16,8 @@ export interface SessionSource {
   lines(id: string): DisplayLine[];
   /** Throws NotFoundError for an unknown id. */
   remove(id: string): Promise<void>;
+  /** The sessions some tab is viewing (the hub calls it whenever that set changes). */
+  setViewed?(ids: ReadonlySet<string>): void;
   /** Never emits 'snapshot'. */
   subscribe(fn: (e: SourceEvent) => void): () => void;
 }

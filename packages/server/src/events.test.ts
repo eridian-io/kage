@@ -134,5 +134,36 @@ describe('EventHub', () => {
       expect(await read(quick.reader)).toContain('session.lines');
       hub.close();
     });
+    it('tells the source the union of viewed sessions whenever it changes', async () => {
+      const source = new DemoSource(1);
+      const calls: string[][] = [];
+      Object.assign(source, {
+        setViewed: (ids: ReadonlySet<string>) => calls.push([...ids].sort()),
+      });
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const b = await open(hub);
+      hub.view(a.streamId, 'shop');
+      hub.view(b.streamId, 'shop'); // same union: no call
+      hub.view(b.streamId, 'docs');
+      hub.view(a.streamId, null);
+      expect(calls).toEqual([['shop'], ['docs', 'shop'], ['docs']]);
+      await b.reader.cancel(); // a dropped stream leaves the union
+      expect(calls.at(-1)).toEqual([]);
+      hub.close();
+    });
+    it('a removed session leaves the union', async () => {
+      const source = new DemoSource(1);
+      const calls: string[][] = [];
+      Object.assign(source, {
+        setViewed: (ids: ReadonlySet<string>) => calls.push([...ids].sort()),
+      });
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      hub.view(a.streamId, 'docs');
+      await source.remove('docs');
+      expect(calls).toEqual([['docs'], []]);
+      hub.close();
+    });
   });
 });

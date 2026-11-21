@@ -31,6 +31,8 @@ class FakeTmux implements TmuxClientLike {
   captures = new Map<string, string[]>();
   captureCalls: string[] = [];
   listCalls = 0;
+  /** While set, captures wait for it. */
+  gate: Promise<void> | null = null;
   async ensureSession(): Promise<void> {}
   async listWindows(): Promise<TmuxWindow[]> {
     this.listCalls++;
@@ -39,6 +41,7 @@ class FakeTmux implements TmuxClientLike {
   /** Each call takes the next queued capture; the last one repeats. */
   async capturePane(paneId: string): Promise<string> {
     this.captureCalls.push(paneId);
+    if (this.gate) await this.gate;
     const q = this.captures.get(paneId);
     if (!q || q.length === 0) return '';
     return (q.length > 1 ? q.shift() : q[0]) as string;
@@ -81,6 +84,10 @@ class FakeHooks implements HookServerLike {
 class FakeStore implements StateStoreLike {
   records: SessionRecord[];
   saves: SessionRecord[][] = [];
+  /** Save attempts (epoch ms), failed ones included. */
+  attempts: number[] = [];
+  /** This many saves fail before they succeed again. */
+  fail = 0;
   constructor(records: SessionRecord[]) {
     this.records = records;
   }
@@ -88,6 +95,11 @@ class FakeStore implements StateStoreLike {
     return this.records.map((r) => ({ ...r }));
   }
   async save(records: SessionRecord[]): Promise<void> {
+    this.attempts.push(Date.now());
+    if (this.fail > 0) {
+      this.fail--;
+      throw new Error('disk full');
+    }
     this.saves.push(records.map((r) => ({ ...r })));
   }
 }
@@ -713,6 +725,8 @@ describe('LiveSource: pane captures and throttling', () => {
     const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
     tmux.setCapture('%1', '$ ls\nREADME.md  src\n$ \n');
     await source.start();
+    source.setViewed(new Set(['ext-@1']));
+    await vi.advanceTimersByTimeAsync(250);
     const start = tmux.captureCalls.length;
     for (let i = 0; i < 20; i++) {
       watcher.emit({ type: 'activity', paneId: '%1' });
@@ -937,5 +951,172 @@ describe('LiveSource: lifecycle', () => {
     await source.start();
     expect(source.lines('nope')).toEqual([]);
     expect(source.get('nope')).toBeUndefined();
+  });
+});
+
+describe('LiveSource: fix round 1', () => {
+  const linked = () => rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT });
+
+  it('on restart, a linked Kage window that no longer runs claude is ended', async () => {
+    const lines: DisplayLine[] = [{ kind: 'say', text: 'Bye.' }];
+    const { source, tmux } = setup({
+      windows: [kageWin({ command: 'bash' })],
+      records: [linked()],
+      tails: { [TRANSCRIPT]: { lines } },
+    });
+    await source.start();
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).toEqual(lines);
+    expect(tmux.captureCalls).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a Kage window that never ran claude is not ended by its shell', async () => {
+    const { source } = setup({ windows: [kageWin({ command: 'bash' })], records: [rec()] });
+    await source.start();
+    expect(source.get('k-1')?.status).toBe('done');
+  });
+
+  it('a running session whose next listing shows a shell is ended (re-checked on activity)', async () => {
+    const { source, hooks, tmux, tails, watcher } = setup({
+      windows: [kageWin()],
+      records: [rec()],
+    });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    await flush();
+    const lists = tmux.listCalls;
+    for (let i = 0; i < 8; i++) {
+      watcher.emit({ type: 'activity', paneId: '%2' });
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    // Coalesced: at most one re-list per second.
+    expect(tmux.listCalls - lists).toBeGreaterThanOrEqual(1);
+    expect(tmux.listCalls - lists).toBeLessThanOrEqual(3);
+    expect(source.get('k-1')?.status).toBe('running');
+    (tmux.windows[0] as TmuxWindow).command = 'bash';
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    await vi.advanceTimersByTimeAsync(2500);
+    expect(tails[0]?.stopped).toBe(true);
+  });
+
+  it('Stop re-lists about 300 ms later', async () => {
+    const { source, hooks, tmux } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    const lists = tmux.listCalls;
+    (tmux.windows[0] as TmuxWindow).command = 'bash';
+    hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(299);
+    expect(tmux.listCalls).toBe(lists);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(tmux.listCalls).toBe(lists + 1);
+    expect(source.get('k-1')?.status).toBe('ended');
+  });
+
+  it('nothing happens after stop(): no emit, timer or capture from work in flight', async () => {
+    const { source, watcher, tmux, events } = setup({ windows: [win()] });
+    await source.start();
+    let open = () => {};
+    tmux.gate = new Promise<void>((r) => {
+      open = r;
+    });
+    tmux.windows.push(
+      win({ windowId: '@4', paneId: '%4', command: 'claude', activity: Math.floor(T0 / 1000) }),
+    );
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    await source.stop();
+    events.length = 0;
+    const captures = tmux.captureCalls.length;
+    open();
+    await flush();
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(events).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+    expect(tmux.captureCalls.length).toBe(captures);
+  });
+
+  it('pane fallback lines are captured only for viewed sessions', async () => {
+    const { source, watcher, tmux, lineEvents } = setup({ windows: [win()] });
+    tmux.setCapture('%1', '$ make\nok\n');
+    await source.start();
+    const n = tmux.captureCalls.length;
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tmux.captureCalls.length).toBe(n);
+    source.setViewed(new Set(['ext-@1']));
+    await vi.advanceTimersByTimeAsync(250);
+    expect(tmux.captureCalls.length).toBe(n + 1);
+    expect(
+      lineEvents('ext-@1')
+        .at(-1)
+        ?.lines.map((l) => l.text),
+    ).toEqual(['$ make', 'ok']);
+    source.setViewed(new Set());
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tmux.captureCalls.length).toBe(n + 1);
+  });
+
+  it('an ended session never gets pane fallback captures; its transcript lines stay', async () => {
+    const { source, hooks, tmux, tails, watcher } = setup({
+      windows: [kageWin()],
+      records: [rec()],
+    });
+    tmux.setCapture('%2', '$ \n');
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    await flush();
+    tails[0]?.push([{ kind: 'say', text: 'Done here.' }]);
+    hooks.fire(hook('SessionEnd', '%2'));
+    await vi.advanceTimersByTimeAsync(2500);
+    source.setViewed(new Set(['k-1']));
+    const n = tmux.captureCalls.length;
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(tmux.captureCalls.length).toBe(n);
+    expect(source.lines('k-1')).toEqual([{ kind: 'say', text: 'Done here.' }]);
+  });
+
+  it('a failed save is retried with backoff (500 ms doubling)', async () => {
+    const { source, store } = setup({ windows: [kageWin({ windowId: '@7' })], records: [rec()] });
+    store.fail = 2;
+    await source.start();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(store.attempts.map((t) => t - T0)).toEqual([500, 1000, 2000]);
+    expect(store.saves.at(-1)?.[0]?.windowId).toBe('@7');
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('save retries back off to at most 30 s', async () => {
+    const { source, store } = setup({ windows: [kageWin({ windowId: '@7' })], records: [rec()] });
+    store.fail = 1000;
+    await source.start();
+    await vi.advanceTimersByTimeAsync(300_000);
+    const gaps = store.attempts.slice(1).map((t, i) => t - (store.attempts[i] as number));
+    expect(gaps.slice(0, 6)).toEqual([500, 1000, 2000, 4000, 8000, 16_000]);
+    expect(Math.max(...gaps)).toBe(30_000);
+    await source.stop();
+  });
+
+  it('emits no session.updated for archived sessions', async () => {
+    const { source, hooks, updates } = setup({
+      windows: [kageWin()],
+      records: [rec({ archived: true })],
+    });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(updates('k-1')).toEqual([]);
+    expect(source.get('k-1')?.status).toBe('done');
   });
 });

@@ -21,6 +21,8 @@ export class EventHub {
   private readonly maxQueue: number;
   private readonly clients = new Map<string, Client>();
   private unsubscribe: (() => void) | null = null;
+  /** The union of every stream's viewed session, as last told to the source. */
+  private viewed = new Set<string>();
 
   constructor(
     source: SessionSource,
@@ -74,6 +76,7 @@ export class EventHub {
     const c = this.clients.get(streamId);
     if (!c) return false;
     c.viewing = id;
+    this.syncViewed();
     if (id !== null) {
       this.send(c, frame({ type: 'session.lines', id, lines: this.source.lines(id), reset: true }));
     }
@@ -105,7 +108,17 @@ export class EventHub {
         if (e.type === 'session.removed' && c.viewing === e.id) c.viewing = null;
         this.send(c, text);
       }
+      if (e.type === 'session.removed') this.syncViewed();
     });
+  }
+
+  /** Tells the source which sessions some stream views, when that set changed. */
+  private syncViewed(): void {
+    const ids = new Set<string>();
+    for (const c of this.clients.values()) if (c.viewing !== null) ids.add(c.viewing);
+    if (ids.size === this.viewed.size && [...ids].every((id) => this.viewed.has(id))) return;
+    this.viewed = ids;
+    this.source.setViewed?.(new Set(ids));
   }
 
   private send(c: Client, text: string): void {
@@ -124,6 +137,7 @@ export class EventHub {
   private drop(c: Client): void {
     clearInterval(c.timer);
     this.clients.delete(c.streamId);
+    this.syncViewed();
     if (this.clients.size === 0) {
       this.unsubscribe?.();
       this.unsubscribe = null;

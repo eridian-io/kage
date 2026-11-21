@@ -43,6 +43,7 @@ export interface LiveSourceDeps {
   hooks: HookServerLike;
   store: StateStoreLike;
   tail: (path: string) => TailLike;
+  /** Not used by LiveSource itself yet; Task 10 passes it through for snapshot paths. */
   projectsRoot: string;
   now?: () => number;
 }
@@ -56,6 +57,12 @@ const SAVE_DEBOUNCE_MS = 500;
 const RELIST_DEBOUNCE_MS = 50;
 /** After a session ends, the tail keeps reading this long (one 2 s poll) before it stops. */
 const FINAL_FLUSH_MS = 2500;
+/** Pane-command re-checks (claude gone → ended): at most one re-list per this many ms. */
+const RECHECK_MS = 1000;
+/** After Stop or SessionEnd, re-list this much later to see whether claude exited. */
+const STOP_RECHECK_MS = 300;
+/** A failed save retries after 500 ms, doubling up to this. */
+const SAVE_MAX_MS = 30_000;
 /** Lines kept and scrollback captured. */
 const MAX_LINES = 200;
 
@@ -72,6 +79,8 @@ interface Live extends SessionView {
   pending: boolean;
   sessionId: string | null;
   transcriptPath: string | null;
+  /** The window's pane has been seen running `claude`. */
+  sawClaude: boolean;
   tail: TailLike | null;
   tailPath: string | null;
   tailOff: (() => void)[];
@@ -109,7 +118,11 @@ export class LiveSource implements SessionSource {
   #listing: Promise<void> | null = null;
   #listAgain = false;
   #saveTimer: ReturnType<typeof setTimeout> | null = null;
+  #saveFailures = 0;
   #dirty = false;
+  #viewed = new Set<string>();
+  #recheckTimer: ReturnType<typeof setTimeout> | null = null;
+  #lastRecheckAt = Number.NEGATIVE_INFINITY;
 
   constructor(deps: LiveSourceDeps) {
     this.#d = deps;
@@ -135,6 +148,17 @@ export class LiveSource implements SessionSource {
 
   async remove(_id: string): Promise<void> {
     throw new NotImplementedError('Deleting sessions arrives in a later version');
+  }
+
+  /** Pane fallback lines are captured only for viewed sessions. */
+  setViewed(ids: ReadonlySet<string>): void {
+    const before = this.#viewed;
+    this.#viewed = new Set(ids);
+    if (!this.#running) return;
+    for (const id of this.#viewed) {
+      const st = this.#sessions.get(id);
+      if (st && !before.has(id)) this.#requestCapture(st);
+    }
   }
 
   subscribe(fn: (e: SourceEvent) => void): () => void {
@@ -189,6 +213,8 @@ export class LiveSource implements SessionSource {
     this.#d.watcher.stop();
     if (this.#unknownTimer) clearTimeout(this.#unknownTimer);
     this.#unknownTimer = null;
+    if (this.#recheckTimer) clearTimeout(this.#recheckTimer);
+    this.#recheckTimer = null;
     this.#unknown = [];
     this.#early = [];
     for (const st of this.#sessions.values()) {
@@ -219,6 +245,7 @@ export class LiveSource implements SessionSource {
       pending: false,
       sessionId: record?.sessionId ?? null,
       transcriptPath: record?.transcriptPath ?? null,
+      sawClaude: false,
       tail: null,
       tailPath: null,
       tailOff: [],
@@ -274,9 +301,15 @@ export class LiveSource implements SessionSource {
         this.#sessions.set(id, st);
       }
       if (st.window?.windowId === w.windowId) {
+        const old = st.window;
         st.window = w;
         st.lastActivity = Math.max(st.lastActivity, w.activity * 1000);
-        this.#emitNow(st);
+        if (this.#claudeGone(st, w)) {
+          if (st.status !== 'ended') this.#endInWindow(st);
+        } else if (!st.record && (old.name !== w.name || old.cwd !== w.cwd)) {
+          // Only an external session shows window fields (task, project, worktree).
+          this.#emitNow(st);
+        }
       } else {
         attaching.push(this.#attach(st, w));
       }
@@ -301,17 +334,59 @@ export class LiveSource implements SessionSource {
     }
     st.mode = 'activity';
     st.pending = false;
+    if (this.#claudeGone(st, w)) {
+      this.#endInWindow(st);
+      if (!st.tail && st.transcriptPath) await this.#readOnce(st);
+      if (this.#running) this.#emitNow(st);
+      return;
+    }
     this.#setStatus(st, this.#activityStatus(st));
     if (st.transcriptPath) {
       await this.#ensureTail(st);
-      if (st.window !== w) return;
+      if (!this.#running || st.window !== w) return;
       this.#rebuildFromTail(st);
     }
     this.#scheduleIdle(st);
     const gen = st.gen;
     const text = await this.#capture(st);
-    if (text !== null && st.window === w) this.#processCapture(st, text, gen, true);
+    if (!this.#running || st.window !== w) return;
+    if (text !== null) this.#processCapture(st, text, gen, true);
     this.#emitNow(st);
+  }
+
+  /**
+   * Spec §5.3: a session whose `claude` is gone is ended. True when the pane no longer runs
+   * claude and the session had one: it linked a Claude session, or it is Kage's and ran claude.
+   */
+  #claudeGone(st: Live, w: TmuxWindow): boolean {
+    if (w.command === 'claude') {
+      st.sawClaude = true;
+      return false;
+    }
+    return st.sessionId !== null || (st.record !== null && st.sawClaude);
+  }
+
+  /** Ended while the window lives on (claude exited to a shell); a SessionStart revives it. */
+  #endInWindow(st: Live): void {
+    this.#clearTimers(st, ['idle', 'capture', 'retry']);
+    st.mode = 'hooks';
+    this.#setStatus(st, 'ended');
+    st.pending = false;
+    st.question = null;
+    this.#retireTailSoon(st);
+    this.#emitNow(st);
+  }
+
+  /** pane_current_command changes fire no tmux event: re-list, at most once per second. */
+  #recheckSoon(delay: number): void {
+    if (!this.#running || this.#recheckTimer) return;
+    const now = this.#now();
+    const wait = Math.max(delay, this.#lastRecheckAt + RECHECK_MS - now);
+    this.#recheckTimer = setTimeout(() => {
+      this.#recheckTimer = null;
+      this.#lastRecheckAt = this.#now();
+      if (this.#running) void this.#relist();
+    }, wait);
   }
 
   /** The window is gone (or tmux is down): a Kage session is ended. */
@@ -368,6 +443,7 @@ export class LiveSource implements SessionSource {
       this.#scheduleIdle(st);
       this.#emitThrottled(st);
     }
+    if (st.mode === 'hooks' && st.status !== 'ended') this.#recheckSoon(0);
     this.#requestCapture(st);
   }
 
@@ -377,6 +453,7 @@ export class LiveSource implements SessionSource {
 
   /** Activity mode: running turns done 5 s after the last activity (one timer, re-armed lazily). */
   #scheduleIdle(st: Live): void {
+    if (!this.#running) return;
     if (st.timers.idle || st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
     const wait = Math.max(0, st.lastActivity + ACTIVE_MS - this.#now());
     st.timers.idle = setTimeout(() => {
@@ -453,6 +530,7 @@ export class LiveSource implements SessionSource {
       }
     }
     if (next === 'ended') this.#retireTailSoon(st);
+    if (e.event === 'Stop' || e.event === 'SessionEnd') this.#recheckSoon(STOP_RECHECK_MS);
     this.#emitNow(st);
   }
 
@@ -556,7 +634,7 @@ export class LiveSource implements SessionSource {
   }
 
   #retireTailSoon(st: Live): void {
-    if (!st.tail || st.timers.retire) return;
+    if (!this.#running || !st.tail || st.timers.retire) return;
     st.timers.retire = setTimeout(() => {
       delete st.timers.retire;
       if (st.status !== 'ended' || !st.tail) return;
@@ -596,13 +674,22 @@ export class LiveSource implements SessionSource {
     );
   }
 
+  /**
+   * Pane fallback lines only for viewed sessions without a transcript; prompt and startup
+   * checks for any session that needs them; never for an ended session.
+   */
   #needsCapture(st: Live): boolean {
-    return !st.tail || st.status === 'needs-you' || this.#startupEligible(st);
+    if (!st.window || st.status === 'ended') return false;
+    return (
+      (!st.tail && this.#viewed.has(st.id)) ||
+      st.status === 'needs-you' ||
+      this.#startupEligible(st)
+    );
   }
 
   /** Activity-driven capture: leading edge plus one trailing capture, at most one per 250 ms. */
   #requestCapture(st: Live): void {
-    if (!st.window || !this.#needsCapture(st)) return;
+    if (!this.#running || !this.#needsCapture(st)) return;
     if (st.capturing) {
       st.captureAgain = true;
       return;
@@ -633,7 +720,8 @@ export class LiveSource implements SessionSource {
 
   #processCapture(st: Live, text: string, gen: number, initial: boolean): void {
     if (!this.#running || !st.window || this.#sessions.get(st.id) !== st) return;
-    if (!st.tail) {
+    if (st.status === 'ended') return;
+    if (!st.tail && this.#viewed.has(st.id)) {
       const lines = paneLines(text, MAX_LINES);
       if (!sameLines(lines, st.lines)) {
         st.lines = lines;
@@ -675,7 +763,7 @@ export class LiveSource implements SessionSource {
       return;
     }
     // A prompt already on screen at start, or in a window without hooks.
-    if (prompt && st.status !== 'ended' && (initial || st.mode === 'activity')) {
+    if (prompt && (initial || st.mode === 'activity')) {
       this.#clearTimers(st, ['idle']);
       this.#setStatus(st, 'needs-you');
       st.question = prompt;
@@ -702,7 +790,7 @@ export class LiveSource implements SessionSource {
       st.question = fallback;
       this.#emitNow(st);
     }
-    if (!retried && !st.timers.retry) {
+    if (!retried && !st.timers.retry && this.#running) {
       st.timers.retry = setTimeout(() => {
         delete st.timers.retry;
         void this.#capturePrompt(st, true);
@@ -749,7 +837,9 @@ export class LiveSource implements SessionSource {
   /** Emits session.updated when a visible field changed. */
   #emitNow(st: Live): void {
     this.#clearTimers(st, ['emit']);
-    if (this.#sessions.get(st.id) !== st) return;
+    if (!this.#running || this.#sessions.get(st.id) !== st) return;
+    // Archived sessions are hidden from the board: no updates for them.
+    if (st.record?.archived) return;
     const s = toSession(st);
     if (sameSession(st.last, s)) return;
     st.last = s;
@@ -759,7 +849,7 @@ export class LiveSource implements SessionSource {
 
   /** Activity- and transcript-driven updates: at most one per 250 ms per session. */
   #emitThrottled(st: Live): void {
-    if (st.timers.emit) return;
+    if (!this.#running || st.timers.emit) return;
     const wait = st.lastEmitAt + THROTTLE_MS - this.#now();
     if (wait <= 0) this.#emitNow(st);
     else {
@@ -783,8 +873,16 @@ export class LiveSource implements SessionSource {
     this.#dirty = false;
     try {
       await this.#d.store.save([...this.#records.values()].map((r) => ({ ...r })));
+      this.#saveFailures = 0;
     } catch {
       this.#dirty = true;
+      this.#saveFailures++;
+      if (!this.#running || this.#saveTimer) return;
+      const wait = Math.min(SAVE_DEBOUNCE_MS * 2 ** (this.#saveFailures - 1), SAVE_MAX_MS);
+      this.#saveTimer = setTimeout(() => {
+        this.#saveTimer = null;
+        void this.#saveNow();
+      }, wait);
     }
   }
 }

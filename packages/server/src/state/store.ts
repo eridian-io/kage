@@ -1,5 +1,21 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rename } from 'node:fs/promises';
 import { dirname } from 'node:path';
+
+/** Directories can't be opened or fsynced on Windows (and some filesystems); that's fine. */
+const DIR_SYNC_UNSUPPORTED = new Set(['EPERM', 'EISDIR', 'EINVAL', 'EACCES', 'ENOTSUP']);
+
+/** Makes a rename in `dir` durable where the platform supports it. */
+async function syncDir(dir: string): Promise<void> {
+  let fh: Awaited<ReturnType<typeof open>> | undefined;
+  try {
+    fh = await open(dir, 'r');
+    await fh.sync();
+  } catch (err) {
+    if (!DIR_SYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+  } finally {
+    await fh?.close().catch(() => {});
+  }
+}
 
 /** What tmux and git can't tell Kage about a session it created (spec §5.1, §5.2). */
 export interface SessionRecord {
@@ -111,10 +127,19 @@ export class StateStore {
   }
 
   async #write(text: string): Promise<void> {
-    await mkdir(dirname(this.path), { recursive: true, mode: 0o700 });
+    const dir = dirname(this.path);
+    await mkdir(dir, { recursive: true, mode: 0o700 });
     const tmp = `${this.path}.tmp`;
-    await writeFile(tmp, text, { mode: 0o600 });
+    // The data reaches the disk before the rename makes it the state file.
+    const fh = await open(tmp, 'w', 0o600);
+    try {
+      await fh.writeFile(text);
+      await fh.sync();
+    } finally {
+      await fh.close();
+    }
     await rename(tmp, this.path);
+    await syncDir(dir);
   }
 
   async #setAside(): Promise<SessionRecord[]> {
