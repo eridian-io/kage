@@ -1884,6 +1884,31 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     expect(source.get('ext-@7')).toBeUndefined();
   });
 
+  it('hooks applied to ext-@7 before the claim are re-learned from the next hook', async () => {
+    const { source, tmux, watcher, hooks, store, tails } = setup();
+    await source.start();
+    await source.adopt(launched());
+    tmux.windows = [newWin()];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+    await flush();
+    expect(source.get('ext-@7')).toBeDefined();
+    source.claim('k-9', '@7');
+    await flush();
+    // The record's session has no Claude session yet; the next hook links it.
+    hooks.fire(hook('UserPromptSubmit', '%7'));
+    await flush();
+    expect(source.get('k-9')?.status).toBe('running');
+    expect(tails.some((t) => t.path === TRANSCRIPT && t.started)).toBe(true);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(store.saves.at(-1)?.find((r) => r.kageId === 'k-9')).toMatchObject({
+      windowId: '@7',
+      sessionId: 's-1',
+      transcriptPath: TRANSCRIPT,
+    });
+  });
+
   it('abandon removes the record and its session (session.removed) and saves', async () => {
     const { source, store, events } = setup();
     await source.start();

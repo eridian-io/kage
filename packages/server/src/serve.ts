@@ -343,7 +343,7 @@ async function startServer(
       settingsPath: live.settingsPath,
       hookSocket: live.hookSocket,
       // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.
-      windowPath: io.env.PATH ?? '',
+      windowPath: io.env.PATH ?? null,
     });
   }
 

@@ -280,6 +280,9 @@ export class LiveSource implements SessionSource {
    * The window `windowId` is this record's, even while a listing doesn't show its `@kage_id`
    * yet (hooks can arrive first: review focus 6). An `ext-<windowId>` session that a listing
    * made of it meanwhile goes (session.removed); then the windows are listed again.
+   * Hooks already applied to that `ext-<windowId>` session are not replayed: every hook names
+   * its Claude session and transcript, so the record's session re-learns them (link, tail,
+   * status) from the next hook its pane sends.
    */
   claim(kageId: string, windowId: string): void {
     if (!this.#records.has(kageId)) return;

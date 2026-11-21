@@ -87,7 +87,7 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
         claudeBin: bin,
         settingsPath: join(tmp, 'claude-settings.json'),
         hookSocket: join(tmp, 'kage.sock'),
-        windowPath: process.env.PATH ?? '',
+        windowPath: process.env.PATH ?? null,
       });
 
       const { id } = await launcher.start({

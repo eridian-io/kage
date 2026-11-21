@@ -1,6 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import { constants } from 'node:fs';
-import { access, appendFile, lstat, mkdir, readFile, realpath, stat } from 'node:fs/promises';
+import {
+  access,
+  appendFile,
+  lstat,
+  mkdir,
+  readdir,
+  readFile,
+  realpath,
+  stat,
+} from 'node:fs/promises';
 import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { NewTaskBody, NewTaskResponse } from '@kage/shared';
 import { firstLine, type GitExec } from '../git/exec.ts';
@@ -94,8 +103,8 @@ export interface LauncherDeps {
   claudeBin: string | null;
   settingsPath: string;
   hookSocket: string;
-  /** PATH inside the window. */
-  windowPath: string;
+  /** PATH inside the window (Kage's); null leaves it out, so the window gets tmux's default. */
+  windowPath: string | null;
   newId?: () => string;
   now?: () => number;
 }
@@ -105,6 +114,26 @@ function within(parent: string, child: string): boolean {
   const rel = relative(parent, child);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
 }
+
+/**
+ * The directory entry `name` resolved to: itself when it is an entry of `root`, else the one
+ * entry that differs only in case (a case-insensitive filesystem found "Shop" as "shop").
+ */
+async function entryName(root: string, name: string): Promise<string> {
+  try {
+    const names = await readdir(root);
+    if (names.includes(name)) return name;
+    const lower = name.toLowerCase();
+    const hits = names.filter((n) => n.toLowerCase() === lower);
+    if (hits.length === 1) return hits[0] as string;
+  } catch {
+    // listed a moment ago by findProject; keep the name as given
+  }
+  return name;
+}
+
+/** git's answer when `-b` names a branch that exists: then git created nothing. */
+const BRANCH_EXISTS = /a branch named .* already exists/;
 
 async function exists(path: string): Promise<boolean> {
   try {
@@ -139,7 +168,16 @@ export class TaskLauncher {
     const parsed = parseNewTask(body);
     if (!parsed.ok) throw new LaunchError(400, parsed.error);
     const task = parsed.value;
-    return this.#serial(task.project, () => this.#launch(task, bin));
+    const d = this.#d;
+    const found = await findProject(d.projectsRoot, task.project, d.git);
+    if (!found) {
+      throw new LaunchError(404, `No project named "${task.project}" in ${d.projectsRoot}.`);
+    }
+    // One canonical project: "Shop" on a case-insensitive filesystem, or a symlink to the same
+    // repo, shares the lock, the records' project and branchTaken with "shop".
+    const name = await entryName(d.projectsRoot, found.name);
+    const repo = await realpath(found.path).catch(() => resolve(found.path));
+    return this.#serial(repo, () => this.#launch(task, bin, name));
   }
 
   #serial<T>(key: string, fn: () => Promise<T>): Promise<T> {
@@ -153,14 +191,16 @@ export class TaskLauncher {
     return run;
   }
 
-  async #launch(t: NewTaskBody, bin: string): Promise<NewTaskResponse> {
+  async #launch(t: NewTaskBody, bin: string, name: string): Promise<NewTaskResponse> {
     const d = this.#d;
-    const project = await findProject(d.projectsRoot, t.project, d.git);
-    if (!project) {
+    // Read again under the lock: the listing may have changed while this start waited.
+    const found = await findProject(d.projectsRoot, name, d.git);
+    if (!found) {
       throw new LaunchError(404, `No project named "${t.project}" in ${d.projectsRoot}.`);
     }
+    const project = { ...found, name };
     if (!project.branches.includes(t.base)) {
-      throw new LaunchError(404, `No branch named "${t.base}" in ${t.project}.`);
+      throw new LaunchError(404, `No branch named "${t.base}" in ${name}.`);
     }
     const repo = resolve(project.path);
     const wtRoot = await this.#worktreeRoot(repo);
@@ -192,8 +232,10 @@ export class TaskLauncher {
         timeoutMs: WORKTREE_ADD_TIMEOUT_MS,
       });
     } catch (e) {
-      // K2: the slug was free, so a branch there now is one this request's git created.
-      if (await this.#branchExists(repo, branch).catch(() => false)) {
+      // K2: the slug was free under the lock, so a branch there now is one this request's git
+      // created; unless git says the branch already existed (someone outside Kage made it).
+      const existed = BRANCH_EXISTS.test(String((e as { stderr?: unknown }).stderr ?? ''));
+      if (!existed && (await this.#branchExists(repo, branch).catch(() => false))) {
         await d.git(['branch', '-D', '--', branch], { cwd: repo }).catch(() => {});
       }
       throw new LaunchError(422, `git couldn't create the worktree: ${firstLine(e)}`);
@@ -225,7 +267,10 @@ export class TaskLauncher {
       ({ windowId } = await d.tmux.newWindow({
         name: slug,
         cwd: path,
-        env: { KAGE_SOCKET: d.hookSocket, PATH: d.windowPath },
+        env: {
+          KAGE_SOCKET: d.hookSocket,
+          ...(d.windowPath !== null ? { PATH: d.windowPath } : {}),
+        },
         argv: claudeArgv(bin, d.settingsPath, t.acceptEdits, t.task),
         kageId,
       }));
@@ -249,16 +294,18 @@ export class TaskLauncher {
       `git couldn't create the worktree: ${d.worktreeDir} leads outside ${repo}`,
     );
     if (wtRoot === repo || !within(repo, wtRoot)) throw outside;
-    if (await exists(wtRoot)) {
-      let real: string;
-      let realRepo: string;
-      try {
-        [real, realRepo] = await Promise.all([realpath(wtRoot), realpath(repo)]);
-      } catch {
-        throw outside;
-      }
-      if (real === realRepo || !within(realRepo, real)) throw outside;
+    // The nearest folder of the path that exists, through any symlink, must still be in the
+    // repo: `a` in a worktreeDir of `a/b` can't be a link to somewhere else.
+    let probe = wtRoot;
+    while (probe !== repo && !(await exists(probe))) probe = dirname(probe);
+    let real: string;
+    let realRepo: string;
+    try {
+      [real, realRepo] = await Promise.all([realpath(probe), realpath(repo)]);
+    } catch {
+      throw outside;
     }
+    if (!within(realRepo, real) || (probe === wtRoot && real === realRepo)) throw outside;
     return wtRoot;
   }
 

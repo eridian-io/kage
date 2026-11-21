@@ -442,3 +442,103 @@ describe('TaskLauncher', () => {
     expect(call?.argv).not.toContain('--dangerously-skip-permissions');
   });
 });
+
+describe('TaskLauncher: hardening (Task 6 review)', () => {
+  // Case-insensitive filesystems only (Windows, macOS by default).
+  const tmp = tmpdir();
+  const caseInsensitive = tmp !== tmp.toUpperCase() && existsSync(tmp.toUpperCase());
+  it.runIf(caseInsensitive)(
+    'a project named in another case is the same project: one lock, its real name',
+    async () => {
+      const { launcher, tmux, source } = setup();
+      await Promise.all([launcher.start(body()), launcher.start(body({ project: 'SHOP' }))]);
+      expect(tmux.calls.map((c) => c.name).sort()).toEqual([
+        'fix-the-cart-total',
+        'fix-the-cart-total-2',
+      ]);
+      expect(source.records.map((r) => r.project)).toEqual(['shop', 'shop']);
+    },
+  );
+
+  it.skipIf(process.platform === 'win32')(
+    'a symlink to the same repo shares its lock',
+    async () => {
+      await symlink(repo, join(root, 'alias'));
+      const { launcher, tmux } = setup();
+      const results = await Promise.allSettled([
+        launcher.start(body()),
+        launcher.start(body({ project: 'alias' })),
+      ]);
+      expect(results.map((r) => r.status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(tmux.calls.map((c) => c.name).sort()).toEqual([
+        'fix-the-cart-total',
+        'fix-the-cart-total-2',
+      ]);
+    },
+  );
+
+  it('K2: a branch git says already existed is never deleted', async () => {
+    const racing: GitExec = async (args, opts) => {
+      if (args[0] === 'worktree' && args[1] === 'add') {
+        // Someone outside Kage made the branch between the slug check and worktree add.
+        const b = args[args.indexOf('-b') + 1] as string;
+        await gitExec(['branch', b, 'main'], opts);
+        throw Object.assign(new Error('x'), {
+          stderr: `fatal: a branch named '${b}' already exists\n`,
+        });
+      }
+      return gitExec(args, opts);
+    };
+    const { launcher } = setup({ git: racing });
+    const err = await launchError(launcher.start(body()));
+    expect(err.status).toBe(422);
+    expect(err.message).toBe(
+      "git couldn't create the worktree: fatal: a branch named 'kage/fix-the-cart-total' already exists",
+    );
+    expect(hasBranch(repo, 'kage/fix-the-cart-total')).toBe(true);
+  });
+
+  it('a failing adopt rolls back the worktree and branch, opens no window, never abandons: 422', async () => {
+    const { launcher, source, tmux, log } = setup();
+    source.adopt = async () => {
+      log.push('adopt');
+      throw new Error('disk full');
+    };
+    const err = await launchError(launcher.start(body()));
+    expect(err.status).toBe(422);
+    expect(err.message).toBe("tmux couldn't open a window: disk full");
+    expect(log).toEqual(['adopt']);
+    expect(tmux.calls).toEqual([]);
+    expect(existsSync(join(repo, '.worktrees', 'fix-the-cart-total'))).toBe(false);
+    expect(hasBranch(repo, 'kage/fix-the-cart-total')).toBe(false);
+  });
+
+  it('without a PATH in serve, the window env leaves PATH out', async () => {
+    const { launcher, tmux } = setup({ windowPath: null });
+    await launcher.start(body());
+    expect(tmux.calls[0]?.env).toEqual({ KAGE_SOCKET: '/run/kage/hook.sock' });
+  });
+
+  it('a nested worktreeDir works when every folder is inside the repo', async () => {
+    const { launcher, tmux } = setup({ worktreeDir: 'tmp/trees' });
+    await launcher.start(body());
+    expect(tmux.calls[0]?.cwd).toBe(join(repo, 'tmp', 'trees', 'fix-the-cart-total'));
+    const exclude = await readFile(join(repo, '.git', 'info', 'exclude'), 'utf8');
+    expect(exclude).toContain('/tmp/trees/\n');
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'a nested worktreeDir whose first folder is a symlink out of the repo is refused',
+    async () => {
+      const outside = join(root, 'elsewhere');
+      await mkdir(outside);
+      await symlink(outside, join(repo, 'tmp'));
+      const { launcher, gitCalls, tmux } = setup({ worktreeDir: 'tmp/trees' });
+      const err = await launchError(launcher.start(body()));
+      expect(err.status).toBe(422);
+      expect(gitCalls.some((a) => a[0] === 'worktree')).toBe(false);
+      expect(tmux.calls).toEqual([]);
+      expect(existsSync(join(outside, 'trees'))).toBe(false);
+    },
+  );
+});
