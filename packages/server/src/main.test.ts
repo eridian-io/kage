@@ -347,6 +347,7 @@ describe('kage (no command, help, unknown)', () => {
     expect(text).toContain('kage hook <Event>');
     expect(text).toContain('KAGE_SOCKET');
     expect(text).toContain('owned by you');
+    expect(text).toContain('KAGE_CLAUDE_BIN');
   });
   it('an unknown command exits 1', async () => {
     expect(await main(['frobnicate'], io(env()))).toBe(1);
@@ -468,6 +469,82 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       expect((await fetch(`${base}/api/auth`, { headers: { Cookie: cookie } })).status).toBe(204);
     } finally {
       await r.stop();
+    }
+  });
+
+  it('POST /api/sessions: 503 without claude, then a launch with KAGE_CLAUDE_BIN', async () => {
+    const projects = join(root, 'projects');
+    const repo = join(projects, 'shop');
+    mkdirSync(repo, { recursive: true });
+    const gitEnv = { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' };
+    const savedEnv = Object.fromEntries(Object.keys(gitEnv).map((k) => [k, process.env[k]]));
+    Object.assign(process.env, gitEnv);
+    const git = (...a: string[]) =>
+      execFileSync('git', ['-c', 'user.name=T', '-c', 'user.email=t@example.invalid', ...a], {
+        cwd: repo,
+        encoding: 'utf8',
+        env: { ...process.env, HOME: join(root, 'home') },
+      });
+    const fake = join(root, 'fake-claude');
+    // The window's PATH is serve's, empty here: name sleep by its path.
+    writeFileSync(fake, '#!/bin/sh\nexec /bin/sleep 30\n', { mode: 0o755 });
+    const body = JSON.stringify({
+      project: 'shop',
+      base: 'main',
+      task: 'Wire it',
+      acceptEdits: false,
+    });
+    try {
+      git('init', '-q', '-b', 'main');
+      git('commit', '-q', '--allow-empty', '-m', 'init');
+      for (const claude of [null, fake]) {
+        const p = port();
+        const e = env({
+          KAGE_HOST: '127.0.0.1',
+          KAGE_PORT: String(p),
+          KAGE_TMUX_SOCKET: socket,
+          // No PATH: no claude to find unless KAGE_CLAUDE_BIN names one.
+          ...(claude ? { KAGE_CLAUDE_BIN: claude } : {}),
+        });
+        writeConfig(e, { projectsRoot: projects });
+        out.length = 0;
+        const r = await main(['serve'], liveIo(e));
+        if (typeof r === 'number') throw new Error(`serve exited ${r}: ${err.join(' | ')}`);
+        try {
+          expect(err).toEqual([]);
+          const base = `http://127.0.0.1:${p}`;
+          const res = await fetch(`${base}/api/sessions`, {
+            method: 'POST',
+            headers: { 'X-Kage': '1', Origin: base, 'Content-Type': 'application/json' },
+            body,
+          });
+          if (!claude) {
+            expect(res.status).toBe(503);
+            expect(await res.json()).toEqual({
+              error: "Claude Code isn't on Kage's PATH. Install it, or set KAGE_CLAUDE_BIN.",
+            });
+            continue;
+          }
+          expect(res.status).toBe(201);
+          const { id } = (await res.json()) as { id: string };
+          const windows = tmux('list-windows', '-t', '=kage', '-F', '#{@kage_id}\t#{window_name}');
+          expect(windows).toContain(`${id}\twire-it`);
+          expect(existsSync(join(repo, '.worktrees', 'wire-it'))).toBe(true);
+          const state = JSON.parse(
+            readFileSync(join(e.XDG_STATE_HOME as string, 'kage', 'state.json'), 'utf8'),
+          );
+          expect(state.records).toMatchObject([
+            { kageId: id, branch: 'kage/wire-it', base: 'main', permissionMode: 'default' },
+          ]);
+        } finally {
+          await r.stop();
+        }
+      }
+    } finally {
+      for (const [k, v] of Object.entries(savedEnv)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
     }
   });
 

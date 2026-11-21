@@ -116,6 +116,7 @@ export class ProjectsCache {
   #value: ProjectsResponse | null = null;
   #at = 0;
   #flight: Promise<ProjectsResponse> | null = null;
+  #gen = 0;
 
   constructor(load: () => Promise<ProjectsResponse>, ttlMs = 10_000, now = Date.now) {
     this.#load = load;
@@ -126,16 +127,28 @@ export class ProjectsCache {
   get(): Promise<ProjectsResponse> {
     if (this.#value && this.#now() - this.#at < this.#ttl) return Promise.resolve(this.#value);
     if (!this.#flight) {
-      this.#flight = this.#load()
+      const gen = this.#gen;
+      const flight: Promise<ProjectsResponse> = this.#load()
         .then((v) => {
-          this.#value = v;
-          this.#at = this.#now();
+          // A scan that began before invalidate() may be stale: it never fills the cache.
+          if (gen === this.#gen) {
+            this.#value = v;
+            this.#at = this.#now();
+          }
           return v;
         })
         .finally(() => {
-          this.#flight = null;
+          if (this.#flight === flight) this.#flight = null;
         });
+      this.#flight = flight;
     }
     return this.#flight;
+  }
+
+  /** Forgets the listing (a launch added a branch); a scan already running is not reused. */
+  invalidate(): void {
+    this.#gen++;
+    this.#value = null;
+    this.#flight = null;
   }
 }

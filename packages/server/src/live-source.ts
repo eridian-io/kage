@@ -78,6 +78,8 @@ const STARTUP_RECHECK_MS = 1000;
 const UNKNOWN_PANE_MS = 5000;
 /** Pane fallback: a new capture continues the last one when they overlap by this many lines (or all of the last). */
 const MIN_OVERLAP = 3;
+/** The now line of a launched session until Claude says what it is doing. */
+const STARTING = 'Starting Claude…';
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -181,6 +183,8 @@ export class LiveSource implements SessionSource {
   readonly #listeners = new Set<(e: SourceEvent) => void>();
   readonly #sessions = new Map<string, Live>();
   readonly #records = new Map<string, SessionRecord>();
+  /** Window id → kageId for windows Kage just opened, until a listing shows the tag (claim). */
+  readonly #claims = new Map<string, string>();
   #running = false;
   #ready = false;
   #early: HookEvent[] = [];
@@ -246,6 +250,60 @@ export class LiveSource implements SessionSource {
     return () => {
       this.#listeners.delete(fn);
     };
+  }
+
+  // ------------------------------------------------------------ launches (TaskLauncher)
+
+  /**
+   * A task Kage is starting: the record is saved at once (awaited; a failed save throws and
+   * leaves nothing), then the session shows as running, "Starting Claude…", until its window
+   * is listed.
+   */
+  async adopt(record: SessionRecord): Promise<void> {
+    const r = { ...record };
+    this.#records.set(r.kageId, r);
+    try {
+      await this.#d.store.save([...this.#records.values()].map((x) => ({ ...x })));
+    } catch (e) {
+      this.#records.delete(r.kageId);
+      throw e;
+    }
+    const st = this.#fresh(r.kageId, r);
+    st.status = 'running';
+    st.now = STARTING;
+    st.lastActivity = this.#clock();
+    this.#sessions.set(r.kageId, st);
+    this.#emitNow(st);
+  }
+
+  /**
+   * The window `windowId` is this record's, even while a listing doesn't show its `@kage_id`
+   * yet (hooks can arrive first: review focus 6). An `ext-<windowId>` session that a listing
+   * made of it meanwhile goes (session.removed); then the windows are listed again.
+   */
+  claim(kageId: string, windowId: string): void {
+    if (!this.#records.has(kageId)) return;
+    this.#claims.set(windowId, kageId);
+    const ext = this.#sessions.get(`ext-${windowId}`);
+    if (ext) this.#removeSession(ext);
+    if (this.#running) void this.#relist();
+  }
+
+  /** The launch failed: the record and its session go (session.removed), and that is saved. */
+  async abandon(kageId: string): Promise<void> {
+    for (const [w, k] of this.#claims) if (k === kageId) this.#claims.delete(w);
+    const st = this.#sessions.get(kageId);
+    if (st) this.#removeSession(st);
+    if (!this.#records.delete(kageId)) return;
+    await this.#saveNow();
+  }
+
+  /** True when a record of `project` (archived ones too) uses `branch`. */
+  branchTaken(project: string, branch: string): boolean {
+    for (const r of this.#records.values()) {
+      if (r.project === project && r.branch === branch) return true;
+    }
+    return false;
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -392,7 +450,13 @@ export class LiveSource implements SessionSource {
   async #reconcile(windows: TmuxWindow[]): Promise<void> {
     const seen = new Set<string>();
     const attaching: Promise<void>[] = [];
+    // A claim lasts until a listing shows the window's tag (or abandon, or the server goes
+    // down). Not until the window is missing from a listing: one begun before new-window ran
+    // would drop it too early.
+    for (const w of windows) if (w.kageId) this.#claims.delete(w.windowId);
     for (const w of windows) {
+      const claimed = this.#claims.get(w.windowId);
+      if (claimed && this.#records.has(claimed)) w.kageId = claimed;
       this.#ignoredPanes.delete(w.paneId);
       // R22: Kage's placeholder stays hidden while it sits at a shell; once it runs anything
       // else it is an ordinary window, so its tag goes.
@@ -573,6 +637,8 @@ export class LiveSource implements SessionSource {
       case 'down':
         // A new server numbers its panes afresh: old hook panes would mislead the next listing.
         this.#hookPanes.clear();
+        // …and its windows afresh: a claimed id could name someone else's window.
+        this.#claims.clear();
         for (const st of [...this.#sessions.values()]) {
           if (!st.record) this.#removeSession(st);
           else if (st.window) this.#detach(st);

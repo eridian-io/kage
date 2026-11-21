@@ -227,6 +227,8 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   archived: false,
   sessionId: null,
   transcriptPath: null,
+  base: null,
+  permissionMode: 'default',
   ...over,
 });
 
@@ -1763,5 +1765,142 @@ describe('LiveSource: phase 2 residuals (phase 3 Task 0)', () => {
       reset: true,
     });
     expect(source.lines('ext-@1').map((l) => l.text)).toEqual(['c', 'd', 'e']);
+  });
+});
+
+describe('LiveSource: launches (phase 3 Task 6)', () => {
+  const launched = (over: Partial<SessionRecord> = {}) =>
+    rec({
+      kageId: 'k-9',
+      windowId: null,
+      task: 'Add a dark mode',
+      branch: 'kage/add-a-dark-mode',
+      worktree: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+      createdAt: T0,
+      base: 'main',
+      permissionMode: 'acceptEdits',
+      ...over,
+    });
+  const newWin = (over: Partial<TmuxWindow> = {}) =>
+    win({
+      windowId: '@7',
+      paneId: '%7',
+      kageId: null,
+      command: 'claude',
+      cwd: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+      name: 'add-a-dark-mode',
+      activity: Math.floor(T0 / 1000),
+      ...over,
+    });
+
+  it('adopt saves the record before it emits the session as running, "Starting Claude…"', async () => {
+    const { source, store, events } = setup();
+    await source.start();
+    let savedAtEmit = false;
+    source.subscribe((e) => {
+      if (e.type === 'session.updated' && e.session.id === 'k-9') {
+        savedAtEmit = store.saves.some((s) => s.some((r) => r.kageId === 'k-9'));
+      }
+    });
+    await source.adopt(launched());
+    expect(savedAtEmit).toBe(true);
+    expect(store.saves.at(-1)).toEqual([launched()]);
+    expect(events.at(-1)).toMatchObject({
+      type: 'session.updated',
+      session: { id: 'k-9', status: 'running', now: 'Starting Claude…', task: 'Add a dark mode' },
+    });
+  });
+
+  it('a failed save makes adopt throw and leaves no session', async () => {
+    const { source, store, events } = setup();
+    await source.start();
+    store.fail = 1;
+    await expect(source.adopt(launched())).rejects.toThrow('disk full');
+    expect(source.get('k-9')).toBeUndefined();
+    expect(events).toEqual([]);
+    expect(source.branchTaken('shop', 'kage/add-a-dark-mode')).toBe(false);
+  });
+
+  it('an adopted session without its window yet stays running through a re-list', async () => {
+    const { source, watcher } = setup();
+    await source.start();
+    await source.adopt(launched());
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('k-9')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+  });
+
+  it('claim before the re-list: the untagged window attaches to the record, not as ext-@7', async () => {
+    const { source, tmux, events, store } = setup();
+    await source.start();
+    await source.adopt(launched());
+    tmux.windows = [newWin()];
+    source.claim('k-9', '@7');
+    await flush();
+    expect(source.get('ext-@7')).toBeUndefined();
+    expect(events.some((e) => e.type === 'session.updated' && e.session.id === 'ext-@7')).toBe(
+      false,
+    );
+    expect(source.get('k-9')).toMatchObject({ status: 'running', external: false });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(store.saves.at(-1)?.find((r) => r.kageId === 'k-9')?.windowId).toBe('@7');
+  });
+
+  it('claim after an ext-@7 session appeared: ext-@7 is removed, then the record attaches', async () => {
+    const { source, tmux, watcher, events } = setup();
+    await source.start();
+    await source.adopt(launched());
+    tmux.windows = [newWin()];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('ext-@7')).toBeDefined();
+    events.length = 0;
+    source.claim('k-9', '@7');
+    await flush();
+    expect(events[0]).toEqual({ type: 'session.removed', id: 'ext-@7' });
+    expect(source.get('ext-@7')).toBeUndefined();
+    expect(source.get('k-9')?.status).toBe('running');
+    // Later listings, now with the tag, keep it the record's.
+    tmux.windows = [newWin({ kageId: 'k-9' })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('ext-@7')).toBeUndefined();
+    expect(source.list().map((s) => s.id)).toEqual(['k-9']);
+  });
+
+  it("a hook from the claimed window's pane goes to the record", async () => {
+    const { source, tmux, hooks } = setup();
+    await source.start();
+    await source.adopt(launched());
+    tmux.windows = [newWin()];
+    source.claim('k-9', '@7');
+    await flush();
+    hooks.fire(hook('UserPromptSubmit', '%7'));
+    await flush();
+    expect(source.get('k-9')?.status).toBe('running');
+    hooks.fire(hook('Stop', '%7'));
+    await flush();
+    expect(source.get('k-9')?.status).toBe('done');
+    expect(source.get('ext-@7')).toBeUndefined();
+  });
+
+  it('abandon removes the record and its session (session.removed) and saves', async () => {
+    const { source, store, events } = setup();
+    await source.start();
+    await source.adopt(launched());
+    events.length = 0;
+    await source.abandon('k-9');
+    expect(events).toEqual([{ type: 'session.removed', id: 'k-9' }]);
+    expect(source.get('k-9')).toBeUndefined();
+    expect(store.saves.at(-1)).toEqual([]);
+    expect(source.branchTaken('shop', 'kage/add-a-dark-mode')).toBe(false);
+  });
+
+  it('branchTaken: any record of the project using the branch, archived ones included', async () => {
+    const { source } = setup({ records: [rec({ archived: true })] });
+    await source.start();
+    expect(source.branchTaken('shop', 'kage/fix-the-cart-total')).toBe(true);
+    expect(source.branchTaken('other', 'kage/fix-the-cart-total')).toBe(false);
+    expect(source.branchTaken('shop', 'kage/else')).toBe(false);
   });
 });

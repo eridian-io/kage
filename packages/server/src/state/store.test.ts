@@ -16,6 +16,8 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   archived: false,
   sessionId: null,
   transcriptPath: null,
+  base: 'main',
+  permissionMode: 'default',
   ...over,
 });
 
@@ -83,6 +85,26 @@ describe('StateStore', () => {
     good.records.push({ kageId: 7 }, null);
     await writeFile(path, JSON.stringify(good));
     expect(await store.load()).toEqual([rec()]);
+  });
+
+  it('loads a phase 2 record (no base or permissionMode) with null and "default"', async () => {
+    const { base: _b, permissionMode: _p, ...phase2 } = rec();
+    const store = new StateStore(path);
+    await store.save([]);
+    await writeFile(path, JSON.stringify({ version: 1, records: [phase2] }));
+    expect(await store.load()).toEqual([rec({ base: null, permissionMode: 'default' })]);
+  });
+
+  it('round-trips base and permissionMode, and skips a record with an unknown mode', async () => {
+    const store = new StateStore(path);
+    await store.save([rec({ kageId: 'k-2', base: 'develop', permissionMode: 'acceptEdits' })]);
+    expect(await store.load()).toEqual([
+      rec({ kageId: 'k-2', base: 'develop', permissionMode: 'acceptEdits' }),
+    ]);
+    const data = JSON.parse(await readFile(path, 'utf8'));
+    data.records.push({ ...data.records[0], kageId: 'k-3', permissionMode: 'bypassPermissions' });
+    await writeFile(path, JSON.stringify(data));
+    expect((await store.load()).map((r) => r.kageId)).toEqual(['k-2']);
   });
 
   it('serialises concurrent saves: the last one wins', async () => {

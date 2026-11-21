@@ -6,6 +6,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { authCookieValue, CLEAR_COOKIE, setCookieHeader } from './auth.ts';
+import { LaunchError } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { LiveSource, type LiveSourceDeps } from './live-source.ts';
@@ -557,5 +558,121 @@ describe('GET /api/projects', () => {
       req('/api/projects', { headers: { Cookie: `kage_auth=${authCookieValue(token)}` } }),
     );
     expect(ok.status).toBe(200);
+  });
+});
+
+describe('GET /api/projects errors (R35)', () => {
+  it('wraps a failed listing into a one-sentence body', async () => {
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token: '',
+      projects: async () => {
+        throw Object.assign(new Error('spawn git ENOENT'), { stderr: '' });
+      },
+    });
+    const res = await a.fetch(req('/api/projects'));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Couldn't list the projects: spawn git ENOENT" });
+  });
+});
+
+describe('POST /api/sessions', () => {
+  const BODY = { project: 'api', base: 'main', task: 'Fix it', acceptEdits: false };
+  const withLauncher = (start: (body: unknown) => Promise<{ id: string }>, token = '') => {
+    let invalidated = 0;
+    const bodies: unknown[] = [];
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      projects: async () => PROJECTS,
+      launcher: {
+        start: (b: unknown) => {
+          bodies.push(b);
+          return start(b);
+        },
+      },
+      invalidateProjects: () => {
+        invalidated++;
+      },
+    });
+    return { a, bodies, invalidated: () => invalidated };
+  };
+
+  it('answers 201 with the id, passes the body through and invalidates the projects', async () => {
+    const { a, bodies, invalidated } = withLauncher(async () => ({ id: 'k-1' }));
+    const res = await a.fetch(mutate('POST', '/api/sessions', BODY));
+    expect(res.status).toBe(201);
+    expect(await res.json()).toEqual({ id: 'k-1' });
+    expect(bodies).toEqual([BODY]);
+    expect(invalidated()).toBe(1);
+  });
+
+  it('passes LaunchError statuses and messages through', async () => {
+    for (const status of [400, 404, 422, 503] as const) {
+      const { a } = withLauncher(async () => {
+        throw new LaunchError(status, `Problem ${status}.`);
+      });
+      const res = await a.fetch(mutate('POST', '/api/sessions', BODY));
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+    }
+  });
+
+  it('a failed launch still invalidates the projects (a rollback may have run)', async () => {
+    const { a, invalidated } = withLauncher(async () => {
+      throw new LaunchError(422, "tmux couldn't open a window: x");
+    });
+    await a.fetch(mutate('POST', '/api/sessions', BODY));
+    expect(invalidated()).toBe(1);
+  });
+
+  it('a body that is not JSON reaches the launcher as undefined (it answers 400)', async () => {
+    const { a, bodies } = withLauncher(async () => ({ id: 'k-1' }));
+    await a.fetch(
+      req('/api/sessions', {
+        method: 'POST',
+        headers: { 'X-Kage': '1', Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: '{not json',
+      }),
+    );
+    expect(bodies).toEqual([undefined]);
+  });
+
+  it('an unexpected error is a 500 with a one-sentence body', async () => {
+    const { a } = withLauncher(async () => {
+      throw new Error('boom\nstack');
+    });
+    const res = await a.fetch(mutate('POST', '/api/sessions', BODY));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Kage couldn't start the task: boom" });
+  });
+
+  it('is 501 in demo mode', async () => {
+    const res = await app(true).fetch(mutate('POST', '/api/sessions', BODY));
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({ error: "Demo mode can't start tasks." });
+  });
+
+  it('needs X-Kage and Origin, and the token when one is set', async () => {
+    const { a, bodies } = withLauncher(async () => ({ id: 'k-1' }));
+    const res = await a.fetch(
+      req('/api/sessions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(BODY),
+      }),
+    );
+    expect(res.status).toBe(403);
+    const token = 'x'.repeat(20);
+    const t = withLauncher(async () => ({ id: 'k-1' }), token);
+    expect((await t.a.fetch(mutate('POST', '/api/sessions', BODY))).status).toBe(401);
+    expect(bodies).toEqual([]);
+    expect(t.bodies).toEqual([]);
   });
 });

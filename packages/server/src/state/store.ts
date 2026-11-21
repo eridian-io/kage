@@ -41,6 +41,10 @@ export interface SessionRecord {
   /** Claude's session id and transcript, learned from SessionStart. */
   sessionId: string | null;
   transcriptPath: string | null;
+  /** The branch the task started from; null for records saved before phase 3. */
+  base: string | null;
+  /** The permission mode Claude was started with; 'default' for records saved before phase 3. */
+  permissionMode: 'default' | 'acceptEdits';
 }
 
 const VERSION = 1;
@@ -64,7 +68,11 @@ function toRecord(v: unknown): SessionRecord | null {
     typeof o.pinned !== 'boolean' ||
     typeof o.archived !== 'boolean' ||
     !isStrOrNull(o.sessionId ?? null) ||
-    !isStrOrNull(o.transcriptPath ?? null)
+    !isStrOrNull(o.transcriptPath ?? null) ||
+    !isStrOrNull(o.base ?? null) ||
+    (o.permissionMode !== undefined &&
+      o.permissionMode !== 'default' &&
+      o.permissionMode !== 'acceptEdits')
   ) {
     return null;
   }
@@ -80,6 +88,8 @@ function toRecord(v: unknown): SessionRecord | null {
     archived: o.archived,
     sessionId: (o.sessionId as string | null | undefined) ?? null,
     transcriptPath: (o.transcriptPath as string | null | undefined) ?? null,
+    base: (o.base as string | null | undefined) ?? null,
+    permissionMode: o.permissionMode === 'acceptEdits' ? 'acceptEdits' : 'default',
   };
 }
 

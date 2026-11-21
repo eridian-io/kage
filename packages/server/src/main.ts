@@ -24,6 +24,7 @@ Environment:
   KAGE_SOCKET       The hook socket path. Its directory must be owned by you:
                     Kage refuses a directory that belongs to another user.
   KAGE_TMUX_SOCKET  Use a separate tmux server (tmux -L <name>).
+  KAGE_CLAUDE_BIN   The claude program for new tasks (default: the first claude on PATH).
   KAGE_HOST, KAGE_PORT, KAGE_NAME  Override the config's host, port and name.`;
 
 /** This file: the hook command runs it again with `hook <Event>`. */

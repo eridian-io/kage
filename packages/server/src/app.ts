@@ -11,7 +11,9 @@ import {
   sameSecret,
   setCookieHeader,
 } from './auth.ts';
+import { LaunchError, type TaskLauncher } from './control/launcher.ts';
 import type { EventHub } from './events.ts';
+import { firstLine } from './git/exec.ts';
 import { csrfGuard, hostGuard } from './security.ts';
 import { NotFoundError, NotImplementedError, type SessionSource } from './source.ts';
 
@@ -26,7 +28,13 @@ export interface AppDeps {
   demoReset?: () => void;
   /** Live mode: the projects under projectsRoot. Without it (demo mode) the route answers 501. */
   projects?: () => Promise<ProjectsResponse>;
+  /** Live mode: starts tasks (POST /api/sessions). Without it (demo mode) the route answers 501. */
+  launcher?: Pick<TaskLauncher, 'start'>;
+  /** R35: forgets the cached project listing after a launch (it adds a branch). */
+  invalidateProjects?: () => void;
 }
+
+const DEMO_NO_TASKS = "Demo mode can't start tasks.";
 
 const CSP = [
   "default-src 'self'",
@@ -159,8 +167,27 @@ export function createApp(deps: AppDeps): Hono {
 
   const { projects } = deps;
   app.get('/api/projects', async (c) => {
-    if (!projects) return c.json({ error: "Demo mode can't start tasks." }, 501);
-    return c.json(await projects());
+    if (!projects) return c.json({ error: DEMO_NO_TASKS }, 501);
+    try {
+      return c.json(await projects());
+    } catch (err) {
+      return c.json({ error: `Couldn't list the projects: ${firstLine(err)}` }, 500);
+    }
+  });
+
+  const { launcher, invalidateProjects } = deps;
+  app.post('/api/sessions', async (c) => {
+    if (!launcher) return c.json({ error: DEMO_NO_TASKS }, 501);
+    // Not JSON: the launcher answers 400 for undefined, after its 503 check.
+    const body: unknown = await c.req.json().catch(() => undefined);
+    try {
+      return c.json(await launcher.start(body), 201);
+    } catch (err) {
+      if (err instanceof LaunchError) return c.json({ error: err.message }, err.status);
+      return c.json({ error: `Kage couldn't start the task: ${firstLine(err)}` }, 500);
+    } finally {
+      invalidateProjects?.();
+    }
   });
 
   app.delete('/api/sessions/:id', async (c) => {

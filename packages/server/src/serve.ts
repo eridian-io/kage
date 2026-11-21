@@ -7,8 +7,10 @@ import type { ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
+import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
@@ -105,6 +107,15 @@ function checkSignal(io: Io): void {
   if (io.signal?.aborted) throw new Stopped();
 }
 
+/** What live mode started, for the task launcher. */
+interface LiveParts {
+  source: LiveSource;
+  /** Opens a window in the kage session, re-creating the session first if it went away. */
+  newWindow: TmuxClient['newWindow'];
+  settingsPath: string;
+  hookSocket: string;
+}
+
 /**
  * Starts live mode in order: the tmux session, the hook server, the hooks settings file, the
  * state store, the watcher and the source. Each started part pushes its cleanup.
@@ -114,7 +125,7 @@ async function startLive(
   io: Io,
   cli: CliParts,
   cleanups: Cleanup[],
-): Promise<LiveSource> {
+): Promise<LiveParts> {
   const target = {
     session: cfg.tmuxSession,
     socket: cfg.tmuxSocket,
@@ -150,8 +161,9 @@ async function startLive(
   cleanups.push(() => hooks.close());
   checkSignal(io);
 
+  let settingsPath: string;
   try {
-    await cli.writeSettings(io.env);
+    settingsPath = await cli.writeSettings(io.env);
   } catch (err) {
     throw new StartError(`Couldn't write the Claude settings file: ${oneLine(err)}`);
   }
@@ -175,7 +187,11 @@ async function startLive(
     throw new StartError(`Couldn't load the sessions: ${oneLine(err)}`);
   }
   checkSignal(io);
-  return source;
+  const newWindow: TmuxClient['newWindow'] = async (o) => {
+    await ensureSession();
+    return tmux.newWindow(o);
+  };
+  return { source, newWindow, settingsPath, hookSocket };
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
@@ -298,18 +314,37 @@ async function startServer(
   let source: SessionSource;
   let demoReset: (() => void) | undefined;
   let projects: (() => Promise<ProjectsResponse>) | undefined;
+  let launcher: TaskLauncher | undefined;
+  let invalidateProjects: (() => void) | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
     demoReset = () => d.reset();
   } else {
     const live = await startLive(cfg, io, cli, cleanups);
-    source = live;
+    source = live.source;
     const cache = new ProjectsCache(async () => ({
       projects: await listProjects(cfg.projectsRoot),
-      last: live.lastProject(),
+      last: live.source.lastProject(),
     }));
     projects = () => cache.get();
+    invalidateProjects = () => cache.invalidate();
+    // Resolved once; when it is missing, POST /api/sessions says so (503), nothing is logged.
+    const claudeBin = await resolveClaude(io.env);
+    checkSignal(io);
+    launcher = new TaskLauncher({
+      projectsRoot: cfg.projectsRoot,
+      worktreeDir: cfg.worktreeDir,
+      branchPrefix: cfg.branchPrefix,
+      git: gitExec,
+      tmux: { newWindow: live.newWindow },
+      source: live.source,
+      claudeBin,
+      settingsPath: live.settingsPath,
+      hookSocket: live.hookSocket,
+      // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.
+      windowPath: io.env.PATH ?? '',
+    });
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -322,6 +357,8 @@ async function startServer(
     token: cfg.token,
     ...(demoReset ? { demoReset } : {}),
     ...(projects ? { projects } : {}),
+    ...(launcher ? { launcher } : {}),
+    ...(invalidateProjects ? { invalidateProjects } : {}),
   });
 
   let server: ReturnType<typeof serve>;

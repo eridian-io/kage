@@ -155,6 +155,34 @@ describe('ProjectsCache', () => {
     await expect(c.get()).rejects.toThrow();
     await expect(c.get()).resolves.toBe(resp);
   });
+  it('invalidate() makes the next call load again (R35: after a launch)', async () => {
+    let n = 0;
+    const c = new ProjectsCache(async () => ({ projects: [], last: `v${++n}` }));
+    expect((await c.get()).last).toBe('v1');
+    expect((await c.get()).last).toBe('v1');
+    c.invalidate();
+    expect((await c.get()).last).toBe('v2');
+  });
+  it('invalidate() ignores a scan that began before it', async () => {
+    let n = 0;
+    const gates: (() => void)[] = [];
+    const c = new ProjectsCache(async () => {
+      const v = `v${++n}`;
+      await new Promise<void>((r) => gates.push(r));
+      return { projects: [], last: v };
+    });
+    const old = c.get();
+    c.invalidate();
+    const fresh = c.get();
+    expect(n).toBe(2);
+    gates[1]?.();
+    expect((await fresh).last).toBe('v2');
+    gates[0]?.();
+    expect((await old).last).toBe('v1');
+    // The older scan finished last, but the cache keeps the newer one.
+    expect((await c.get()).last).toBe('v2');
+    expect(n).toBe(2);
+  });
 });
 
 describe('git spawns', () => {
