@@ -22,6 +22,8 @@ pnpm install
 pnpm dev          # runs Kage in demo mode with sample sessions, no tmux needed
 ```
 
+`pnpm dev` listens on your Tailscale address, so it needs Tailscale up. Without Tailscale, run it on loopback: `KAGE_HOST=127.0.0.1 pnpm dev`. Your own settings go in `~/.config/kage/config.json` (see [Configuration](README.md#configuration)), outside the repo.
+
 Before you open a pull request, run:
 
 ```sh
@@ -44,7 +46,7 @@ pnpm test:e2e     # Playwright, including the visual checks against the design t
 | Committed | Ignored (see `.gitignore`) |
 |---|---|
 | Source code, tests and test fixtures (with made-up data only) | `node_modules/`, build output, coverage and Playwright reports |
-| Docs: `docs/design/` (UI target and screenshots), `docs/specs/` (designs), `docs/plans/` (implementation plans) | Your local `kage.config.json`, `.env` files and keys |
+| Docs: `docs/design/` (UI target and screenshots), `docs/specs/` (designs), `docs/plans/` (implementation plans), `docs/backlog.md` (deferred work) | `.env` files and keys (your Kage config lives in `~/.config/kage/`, outside the repo) |
 | Shared editor and agent settings, such as `.editorconfig` and `AGENTS.md` | Personal settings: `.vscode/*` (except shared files), `.idea/`, `.claude/settings.local.json` |
 | Brand assets in `assets/` | Logs, sockets, `tmp/` and Kage's own `.worktrees/` |
 

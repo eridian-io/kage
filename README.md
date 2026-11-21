@@ -11,7 +11,7 @@
 
 <p align="center">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
-  <img src="https://img.shields.io/badge/node-%E2%89%A524-brightgreen" alt="Node 24 or newer">
+  <img src="https://img.shields.io/badge/node-%E2%89%A524.2-brightgreen" alt="Node 24.2 or newer">
   <img src="https://img.shields.io/badge/status-early%20development-orange" alt="Status: early development">
 </p>
 
@@ -58,7 +58,7 @@ Kage listens on your Tailscale address only, so the dashboard can't be reached f
 ## Requirements
 
 - A server or home PC that stays on (Linux or macOS; on Windows, use WSL)
-- [Node.js](https://nodejs.org) 24 or newer
+- [Node.js](https://nodejs.org) 24.2 or newer
 - [tmux](https://github.com/tmux/tmux)
 - [git](https://git-scm.com)
 - [Claude Code](https://docs.claude.com/en/docs/claude-code), signed in on the PC
@@ -76,29 +76,45 @@ pnpm install
 pnpm dev
 ```
 
-Then open the address it prints. You need Node 24.2 or newer. To serve a built checkout instead, run `pnpm build` and then `node packages/server/src/main.ts serve --demo`.
+Then open the address it prints. You need Node 24.2 or newer, and Tailscale up (or run `KAGE_HOST=127.0.0.1 pnpm dev` to stay on loopback). To serve a built checkout instead, run `pnpm build` and then `node packages/server/src/main.ts serve --demo`.
 
 ## Configuration
 
-`kage.config.json`:
+Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. It lives outside the checkout, so hostnames and secrets never end up in the repo.
 
 ```json
 {
-  "projectsRoot": "~/projects",
+  "name": "my-pc",
+  "host": null,
   "port": 8080,
+  "projectsRoot": "~/projects",
   "tmuxSession": "kage",
-  "ntfyTopic": ""
+  "worktreeDir": ".worktrees",
+  "branchPrefix": "kage/",
+  "autoArchive": { "onMerge": true, "afterDays": 14 },
+  "ntfyTopic": "",
+  "token": ""
 }
 ```
 
-| Key | Meaning |
-|---|---|
-| `projectsRoot` | The folder that holds your git projects |
-| `port` | The port the dashboard listens on, on the Tailscale interface only |
-| `tmuxSession` | The tmux session Kage uses for agent windows |
-| `ntfyTopic` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
+| Key | Default | Meaning |
+|---|---|---|
+| `name` | The PC's hostname, before the first dot | The name in the dashboard's host pill and in the address Kage prints |
+| `host` | `null` | The address to listen on. `null` uses your Tailscale IP (from `tailscale ip -4`). Kage only accepts a Tailscale or loopback address, or a name that resolves to one |
+| `port` | `8080` | The port the dashboard listens on |
+| `projectsRoot` | `"~/projects"` | The folder that holds your git projects |
+| `tmuxSession` | `"kage"` | The tmux session Kage uses for agent windows |
+| `worktreeDir` | `".worktrees"` | The folder, inside each project, for the agents' git worktrees |
+| `branchPrefix` | `"kage/"` | The prefix for the branches Kage creates |
+| `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or after this many days |
+| `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
+| `token` | `""` | Not enforced yet: Kage prints a warning at startup when it is set, and anyone on your tailnet can still open the dashboard |
 
-Keep hostnames, tokens and other secrets in `kage.config.json`. It is git-ignored.
+Kage runs in demo mode only for now: it reads and checks every key, but `projectsRoot`, `tmuxSession`, `worktreeDir`, `branchPrefix`, `autoArchive` and `ntfyTopic` take effect when live sessions arrive in a later phase.
+
+The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`.
+
+`pnpm dev` needs Tailscale to be up. Without it, run it on loopback instead: `KAGE_HOST=127.0.0.1 pnpm dev`.
 
 ## Run on boot
 
