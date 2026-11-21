@@ -1,0 +1,24 @@
+{
+  "name": "@kage/server",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24"
+  },
+  "bin": {
+    "kage": "src/main.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/config.ts",
+      "default": "./src/config.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -b"
+  },
+  "dependencies": {
+    "@kage/shared": "workspace:*"
+  }
+}
