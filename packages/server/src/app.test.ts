@@ -219,12 +219,26 @@ describe('API', () => {
     expect(source.get('docs')).toBeDefined();
   });
 
-  it('accepts the viewed session', async () => {
-    expect((await app().fetch(mutate('POST', '/api/view', { id: 'web' }))).status).toBe(204);
-    expect((await app().fetch(mutate('POST', '/api/view', { id: null }))).status).toBe(204);
-    const bad = await app().fetch(mutate('POST', '/api/view', { id: 3 }));
-    expect(bad.status).toBe(400);
-    expect(await bad.json()).toEqual({ error: 'Expected {"id": "<session id>"}' });
+  it('routes the view to its stream', async () => {
+    const reader = hub.stream().getReader();
+    const snap = JSON.parse(
+      new TextDecoder().decode((await reader.read()).value).split('data: ')[1] ?? '',
+    );
+    const ok = await app().fetch(
+      mutate('POST', '/api/view', { streamId: snap.streamId, id: 'web' }),
+    );
+    expect(ok.status).toBe(204);
+    expect((await reader.read()).value).toBeDefined();
+    expect(
+      (await app().fetch(mutate('POST', '/api/view', { streamId: snap.streamId, id: null })))
+        .status,
+    ).toBe(204);
+    const unknown = await app().fetch(mutate('POST', '/api/view', { streamId: 'nope', id: 'web' }));
+    expect(unknown.status).toBe(404);
+    expect(await unknown.json()).toEqual({ error: 'Unknown stream' });
+    for (const bad of [{ id: 3, streamId: 'x' }, { id: 'web' }, { streamId: 4, id: null }]) {
+      expect((await app().fetch(mutate('POST', '/api/view', bad))).status).toBe(400);
+    }
     const garbage = await app().fetch(
       req('/api/view', {
         method: 'POST',
@@ -235,6 +249,7 @@ describe('API', () => {
     expect(garbage.status).toBe(400);
     const huge = await app().fetch(mutate('POST', '/api/view', { id: 'x'.repeat(20_000) }));
     expect(huge.status).toBe(413);
+    await reader.cancel();
   });
 
   it('registers POST /api/demo/reset only in demo mode, behind the guards', async () => {

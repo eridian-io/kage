@@ -68,10 +68,15 @@ export function applyEvent(e: ServerEvent): void {
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
+      // A new stream (a reconnect) starts without lines: the view brings them again.
+      const fresh = streamId.value !== e.streamId;
       streamId.value = e.streamId;
       projectsRoot.value = e.projectsRoot;
       hadSnapshot.value = true;
       sessions.value = e.sessions;
+      linesById.value = fresh
+        ? new Map()
+        : new Map([...linesById.value].filter(([id]) => e.sessions.some((s) => s.id === id)));
       // A removal missed while disconnected is never announced, so its toast entry goes.
       for (const id of [...deleting.keys()]) {
         if (!e.sessions.some((s) => s.id === id)) deleting.delete(id);
@@ -84,7 +89,7 @@ export function applyEvent(e: ServerEvent): void {
       const prev = e.reset ? [] : (linesById.value.get(e.id) ?? []);
       const next = [...prev, ...e.lines].slice(-MAX_LINES);
       linesById.value = new Map(linesById.value).set(e.id, next);
-    } else {
+    } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
       if (linesById.value.has(e.id)) {
         const m = new Map(linesById.value);

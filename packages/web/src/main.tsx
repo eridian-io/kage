@@ -8,6 +8,7 @@ import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
 import { connect } from './sse.ts';
 import { connection, hadSnapshot, host, now, selected } from './store.ts';
+import { installView } from './view.ts';
 
 const MINUTE = 60_000;
 
@@ -69,5 +70,6 @@ export function Board() {
 const root = typeof document !== 'undefined' ? document.getElementById('app') : null;
 if (root) {
   render(<Board />, root);
+  installView();
   connect();
 }

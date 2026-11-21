@@ -110,12 +110,11 @@ export function createApp(deps: AppDeps): Hono {
 
   app.post('/api/view', async (c) => {
     const body: unknown = await c.req.json().catch(() => undefined);
-    const id =
-      typeof body === 'object' && body !== null ? (body as { id?: unknown }).id : undefined;
-    if (typeof id !== 'string' && id !== null) {
-      return c.json({ error: 'Expected {"id": "<session id>"}' }, 400);
+    const b = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
+    if (typeof b.streamId !== 'string' || (typeof b.id !== 'string' && b.id !== null)) {
+      return c.json({ error: 'Expected {"streamId": "<stream id>", "id": "<session id>"}' }, 400);
     }
-    // Phase 1 has no per-session streams yet; the hint is accepted and not needed.
+    if (!hub.view(b.streamId, b.id)) return c.json({ error: 'Unknown stream' }, 404);
     return c.body(null, 204);
   });
 

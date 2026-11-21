@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import type { SourceEvent } from './source.ts';
 
 const dec = new TextDecoder();
 const read = async (r: ReadableStreamDefaultReader<Uint8Array>) => {
@@ -61,5 +62,73 @@ describe('EventHub', () => {
     await reader.cancel();
     expect(hub.clientCount).toBe(0);
     hub.close();
+  });
+
+  describe('view routing', () => {
+    const open = async (hub: EventHub) => {
+      const reader = hub.stream().getReader();
+      const snap = JSON.parse((await read(reader)).split('data: ')[1] ?? '');
+      return { reader, streamId: snap.streamId as string };
+    };
+    it('sends a view only to its stream, and stops on null', async () => {
+      const source = new DemoSource(1);
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const b = await open(hub);
+      expect(a.streamId).not.toBe(b.streamId);
+      expect(hub.view(a.streamId, 'shop')).toBe(true);
+      const got = await read(a.reader);
+      expect(got.startsWith('event: session.lines\n')).toBe(true);
+      const ev = JSON.parse(got.split('data: ')[1] ?? '');
+      expect(ev).toMatchObject({ id: 'shop', reset: true });
+      expect(ev.lines).toHaveLength(9);
+      expect(ev.lines).toEqual(source.lines('shop'));
+
+      const emitLines = (text: string) => {
+        const { listeners } = source as unknown as { listeners: Set<(e: SourceEvent) => void> };
+        for (const l of listeners)
+          l({ type: 'session.lines', id: 'shop', lines: [{ kind: 'out', text }] });
+      };
+      emitLines('x1');
+      expect(await read(a.reader)).toContain('"reset":false');
+      expect(hub.view(a.streamId, null)).toBe(true);
+      emitLines('x2');
+      await source.remove('docs');
+      // a got no lines after null: its next frame is the removal
+      expect(await read(a.reader)).toContain('session.removed');
+      // b never viewed: its first frame is the removal too
+      expect(await read(b.reader)).toContain('session.removed');
+      hub.close();
+    });
+    it('session.updated reaches all streams', async () => {
+      const source = new DemoSource(1);
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const b = await open(hub);
+      hub.view(a.streamId, 'shop');
+      await read(a.reader);
+      await source.remove('docs');
+      expect(await read(a.reader)).toContain('session.removed');
+      expect(await read(b.reader)).toContain('session.removed');
+      hub.close();
+    });
+    it('an unknown stream id is false', () => {
+      const hub = new EventHub(new DemoSource(1), 'h', '/p');
+      expect(hub.view('nope', 'shop')).toBe(false);
+      hub.close();
+    });
+    it('closes and removes a stream that never reads', async () => {
+      const source = new DemoSource(1);
+      const hub = new EventHub(source, 'h', '/p', { maxQueue: 3 });
+      const slow = await open(hub);
+      const quick = await open(hub);
+      expect(hub.clientCount).toBe(2);
+      for (let i = 0; i < 6; i++) hub.view(slow.streamId, 'shop');
+      expect(hub.clientCount).toBe(1);
+      expect(hub.view(slow.streamId, 'shop')).toBe(false);
+      hub.view(quick.streamId, 'shop');
+      expect(await read(quick.reader)).toContain('session.lines');
+      hub.close();
+    });
   });
 });

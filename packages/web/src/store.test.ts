@@ -1,4 +1,4 @@
-import type { DisplayLine } from '@kage/shared';
+import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { applyEvent, linesById, projectsRoot, streamId } from './store.ts';
 
@@ -6,7 +6,11 @@ const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
   applyEvent({ type: 'snapshot', host: 'h', streamId: 's1', projectsRoot: '/p', sessions: [] });
 
-beforeEach(snap);
+beforeEach(() => {
+  linesById.value = new Map();
+  streamId.value = null;
+  snap();
+});
 
 describe('protocol v2 store', () => {
   it('a snapshot stores streamId and projectsRoot', () => {
@@ -29,6 +33,23 @@ describe('protocol v2 store', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(900)], reset: false });
     expect(linesById.value.get('a')).toHaveLength(500);
     expect(linesById.value.get('a')?.at(-1)?.text).toBe('line 900');
+  });
+  it('a snapshot of the same stream prunes lines of absent sessions', () => {
+    applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
+    applyEvent({ type: 'session.lines', id: 'b', lines: [line(2)], reset: true });
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [{ ...demoSessions(1)[0], id: 'a' } as Session],
+    });
+    expect([...linesById.value.keys()]).toEqual(['a']);
+  });
+  it('a snapshot of a new stream clears all lines', () => {
+    applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
+    applyEvent({ type: 'snapshot', host: 'h', streamId: 's2', projectsRoot: '/p', sessions: [] });
+    expect(linesById.value.size).toBe(0);
   });
   it('session.removed drops the lines of that id', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
