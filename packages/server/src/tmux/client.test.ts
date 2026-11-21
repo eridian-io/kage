@@ -415,6 +415,19 @@ describe('TmuxClient.windowKageId and killOwnedWindow', () => {
     expect(seen).toEqual([]);
   });
 
+  it('killUntaggedWindow re-reads @kage_id and kills only a window with none', async () => {
+    const { seen, c } = scripted({ 'show-options': '\n' });
+    expect(await c.killUntaggedWindow('@3')).toBe(true);
+    expect(seen).toEqual([
+      ['show-options', '-w', '-q', '-v', '-t', '@3', '@kage_id'],
+      ['kill-window', '-t', '@3'],
+    ]);
+    const tagged = scripted({ 'show-options': 'k-1\n' });
+    expect(await tagged.c.killUntaggedWindow('@3')).toBe(false);
+    expect(tagged.seen.map((a) => a[0])).toEqual(['show-options']);
+    await expect(tagged.c.killUntaggedWindow('%3')).rejects.toThrow(TypeError);
+  });
+
   it('both refuse a bad window id', async () => {
     const { seen, c } = scripted();
     await expect(c.windowKageId('=kage')).rejects.toThrow(TypeError);

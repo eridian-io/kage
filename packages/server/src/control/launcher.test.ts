@@ -7,6 +7,7 @@ import type { NewTaskBody } from '@kage/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type GitExec, gitExec } from '../git/exec.ts';
 import type { SessionRecord } from '../state/store.ts';
+import type { TmuxWindow } from '../tmux/format.ts';
 import {
   claudeArgv,
   LaunchError,
@@ -76,11 +77,39 @@ class FakeTmux {
   constructor(log: string[]) {
     this.log = log;
   }
+  /** The kage session's windows, as listWindows shows them. */
+  windows: { windowId: string; name: string; kageId: string | null }[] = [];
+  /** A window that new-window leaves behind before it fails (a timeout after tmux opened it). */
+  strayOnFail: { windowId: string; kageId: string | null } | null = null;
+  /** Whether the worktree folder still existed when each kill ran. */
+  worktreeAtKill: boolean[] = [];
   async newWindow(o: Parameters<LauncherDeps['tmux']['newWindow']>[0]) {
     this.log.push('newWindow');
     this.calls.push(o);
-    if (this.fail) throw this.fail;
+    if (this.fail) {
+      if (this.strayOnFail) this.windows.push({ ...this.strayOnFail, name: o.name });
+      throw this.fail;
+    }
     return { windowId: `@${6 + this.calls.length}`, paneId: `%${6 + this.calls.length}` };
+  }
+  async listWindows() {
+    return this.windows.map((w) => ({ ...w })) as unknown as TmuxWindow[];
+  }
+  async killUntaggedWindow(windowId: string) {
+    this.log.push(`kill-untagged ${windowId}`);
+    this.worktreeAtKill.push(existsSync(this.calls.at(-1)?.cwd ?? ''));
+    const w = this.windows.find((x) => x.windowId === windowId);
+    if (!w || w.kageId !== null) return false;
+    this.windows = this.windows.filter((x) => x !== w);
+    return true;
+  }
+  async killOwnedWindow(windowId: string, kageId: string) {
+    this.log.push(`kill-owned ${windowId}`);
+    this.worktreeAtKill.push(existsSync(this.calls.at(-1)?.cwd ?? ''));
+    const w = this.windows.find((x) => x.windowId === windowId);
+    if (!w || w.kageId !== kageId) return false;
+    this.windows = this.windows.filter((x) => x !== w);
+    return true;
   }
 }
 
@@ -506,11 +535,49 @@ describe('TaskLauncher: hardening (Task 6 review)', () => {
     };
     const err = await launchError(launcher.start(body()));
     expect(err.status).toBe(422);
-    expect(err.message).toBe("tmux couldn't open a window: disk full");
+    expect(err.message).toBe("Kage couldn't save the session: disk full");
     expect(log).toEqual(['adopt']);
     expect(tmux.calls).toEqual([]);
     expect(existsSync(join(repo, '.worktrees', 'fix-the-cart-total'))).toBe(false);
     expect(hasBranch(repo, 'kage/fix-the-cart-total')).toBe(false);
+  });
+
+  it('a worktree folder gone before the launch: 422 "The worktree folder is missing.", rolled back', async () => {
+    const wt = join(repo, '.worktrees', 'fix-the-cart-total');
+    const { launcher, log } = setup({
+      git: async (args, opts) => {
+        const r = await gitExec(args, opts);
+        if (args[0] === 'worktree' && args[1] === 'add') await rm(wt, { recursive: true });
+        return r;
+      },
+    });
+    const err = await launchError(launcher.start(body()));
+    expect([err.status, err.message]).toEqual([422, 'The worktree folder is missing.']);
+    expect(log).toEqual([]);
+    expect(hasBranch(repo, 'kage/fix-the-cart-total')).toBe(false);
+  });
+
+  it('new-window failing after tmux opened the window (a timeout): the untagged window named after the slug is killed before the worktree goes', async () => {
+    const { launcher, tmux, log } = setup();
+    // Someone else's untagged window with the same name, there before the launch, stays.
+    tmux.windows = [{ windowId: '@3', name: 'fix-the-cart-total', kageId: null }];
+    tmux.strayOnFail = { windowId: '@9', kageId: null };
+    tmux.fail = new Error('tmux timed out');
+    const err = await launchError(launcher.start(body()));
+    expect([err.status, err.message]).toEqual([422, "tmux couldn't open a window: tmux timed out"]);
+    expect(log).toEqual(['adopt', 'newWindow', 'kill-untagged @9', 'abandon k-1']);
+    expect(tmux.worktreeAtKill).toEqual([true]);
+    expect(tmux.windows.map((w) => w.windowId)).toEqual(['@3']);
+    expect(existsSync(join(repo, '.worktrees', 'fix-the-cart-total'))).toBe(false);
+  });
+
+  it('a leftover window tagged with this launch’s id is killed through killOwnedWindow', async () => {
+    const { launcher, tmux, log } = setup();
+    tmux.strayOnFail = { windowId: '@9', kageId: 'k-1' };
+    tmux.fail = new Error('tmux timed out');
+    await launchError(launcher.start(body()));
+    expect(log).toEqual(['adopt', 'newWindow', 'kill-owned @9', 'abandon k-1']);
+    expect(tmux.windows).toEqual([]);
   });
 
   it('without a PATH in serve, the window env leaves PATH out', async () => {

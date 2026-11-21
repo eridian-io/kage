@@ -394,12 +394,26 @@ export class TmuxClient {
 
   /**
    * Kills the window only when its `@kage_id` is exactly `kageId`, re-read just before. False
-   * when it holds another id or none, or when the window is gone. This is the only way control
-   * code kills a window; there is no unchecked kill.
+   * when it holds another id or none, or when the window is gone. With killUntaggedWindow, this
+   * is the only way control code kills a window; there is no unchecked kill.
    */
   async killOwnedWindow(windowId: string, kageId: string): Promise<boolean> {
     checkWindowId(windowId);
     if (kageId === '') throw new TypeError('killOwnedWindow needs a kage id');
+    return this.#killIfHeld(windowId, kageId);
+  }
+
+  /**
+   * A launch's rollback: kills the window only when its `@kage_id` is unset, re-read just before
+   * (a `new-window` that timed out after tmux opened the window, before the tag). False when it
+   * holds an id or is gone.
+   */
+  async killUntaggedWindow(windowId: string): Promise<boolean> {
+    checkWindowId(windowId);
+    return this.#killIfHeld(windowId, null);
+  }
+
+  async #killIfHeld(windowId: string, kageId: string | null): Promise<boolean> {
     let held: string | null;
     try {
       held = await this.windowKageId(windowId);

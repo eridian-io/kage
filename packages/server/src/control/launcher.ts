@@ -97,7 +97,7 @@ export interface LauncherDeps {
   worktreeDir: string;
   branchPrefix: string;
   git: GitExec;
-  tmux: Pick<TmuxClient, 'newWindow'>;
+  tmux: Pick<TmuxClient, 'newWindow' | 'listWindows' | 'killUntaggedWindow' | 'killOwnedWindow'>;
   /** `branchTaken` lets the slug skip branches that Kage's records use (deleted or not). */
   source: Pick<LiveSource, 'adopt' | 'claim' | 'abandon' | 'branchTaken'>;
   claudeBin: string | null;
@@ -257,13 +257,22 @@ export class TaskLauncher {
       base: t.base,
       permissionMode: t.acceptEdits ? 'acceptEdits' : 'default',
     };
-    let adopted = false;
+    let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;
+    // Windows already named after the slug before this launch (not ours to kill on rollback).
+    let before = new Set<string>();
     try {
       // K3: tmux would start the window in $HOME if the folder were missing.
-      if (!(await stat(path)).isDirectory()) throw new Error(`${path} is not a folder`);
+      const folder = await stat(path).catch(() => null);
+      if (!folder?.isDirectory()) throw new Error('missing');
+      step = 'adopt';
       await d.source.adopt(record);
-      adopted = true;
+      step = 'tmux';
+      before = new Set(
+        (await d.tmux.listWindows().catch(() => []))
+          .filter((w) => w.name === slug)
+          .map((w) => w.windowId),
+      );
       ({ windowId } = await d.tmux.newWindow({
         name: slug,
         cwd: path,
@@ -275,14 +284,39 @@ export class TaskLauncher {
         kageId,
       }));
     } catch (e) {
-      // Only what this request created: its worktree, its branch and its record.
+      // Only what this request created: a window new-window left behind (it can time out after
+      // tmux opened it), then its worktree, its branch and its record.
+      if (step === 'tmux') await this.#killLeftover(slug, kageId, before);
       await d.git(['worktree', 'remove', '--force', '--', path], { cwd: repo }).catch(() => {});
       await d.git(['branch', '-D', '--', branch], { cwd: repo }).catch(() => {});
-      if (adopted) await d.source.abandon(kageId).catch(() => {});
-      throw new LaunchError(422, `tmux couldn't open a window: ${firstLine(e)}`);
+      if (step === 'tmux') await d.source.abandon(kageId).catch(() => {});
+      throw new LaunchError(
+        422,
+        step === 'folder'
+          ? 'The worktree folder is missing.'
+          : step === 'adopt'
+            ? `Kage couldn't save the session: ${firstLine(e)}`
+            : `tmux couldn't open a window: ${firstLine(e)}`,
+      );
     }
     d.source.claim(kageId, windowId);
     return { id: kageId };
+  }
+
+  /**
+   * After a failed new-window: windows named `slug` that weren't there before the launch and
+   * are untagged (or tagged with this launch's id) are killed, each re-checked by tmux just
+   * before the kill. Best effort: a failure here leaves the window, never the launch half-done.
+   */
+  async #killLeftover(slug: string, kageId: string, before: ReadonlySet<string>): Promise<void> {
+    const tmux = this.#d.tmux;
+    try {
+      for (const w of await tmux.listWindows()) {
+        if (w.name !== slug || before.has(w.windowId)) continue;
+        if (w.kageId === null) await tmux.killUntaggedWindow(w.windowId);
+        else if (w.kageId === kageId) await tmux.killOwnedWindow(w.windowId, kageId);
+      }
+    } catch {}
   }
 
   /** `<repo>/<worktreeDir>`, refused when it leads outside the repo (also through a symlink). */

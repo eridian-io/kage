@@ -352,7 +352,12 @@ async function startServer(
       worktreeDir: cfg.worktreeDir,
       branchPrefix: cfg.branchPrefix,
       git: gitExec,
-      tmux: { newWindow: live.newWindow },
+      tmux: {
+        newWindow: live.newWindow,
+        listWindows: (p) => live.tmux.listWindows(p),
+        killUntaggedWindow: (w) => live.tmux.killUntaggedWindow(w),
+        killOwnedWindow: (w, k) => live.tmux.killOwnedWindow(w, k),
+      },
       source: live.source,
       claudeBin,
       settingsPath: live.settingsPath,
