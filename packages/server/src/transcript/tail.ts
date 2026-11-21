@@ -22,6 +22,17 @@ const FOLLOW_POLL_MS = 2000;
 
 type Listener = (added: DisplayLine[], reset: boolean) => void;
 
+export interface TranscriptTailOptions {
+  /** Display lines kept (default 200). */
+  maxLines?: number;
+  /** Bytes read from the end of the file at start (default 256 KiB). */
+  fromEnd?: number;
+  /** Test seam: the fs.watch to use, or false to rely on polling alone. */
+  watch?: typeof watch | false;
+  /** Test seam: read size in bytes (default 64 KiB). */
+  chunkSize?: number;
+}
+
 /**
  * Follows one Claude Code transcript: reads the tail of the file at start, then appends as the
  * file grows. The file may not exist yet; a truncated or replaced file starts over.
@@ -30,6 +41,8 @@ export class TranscriptTail {
   readonly #path: string;
   readonly #maxLines: number;
   readonly #fromEnd: number;
+  readonly #watch: typeof watch | false;
+  readonly #chunk: number;
 
   #lines: DisplayLine[] = [];
   #question: Question | null = null;
@@ -54,15 +67,19 @@ export class TranscriptTail {
   /** Dropping input until the next newline (an over-long line, or a cut first line). */
   #skipping = false;
   #reset = false;
+  /** The previous record was a user-rejected tool_result (its interrupt text is the same event). */
+  #afterRejection = false;
 
   // Serialises checks: one runs at a time; a request during it schedules one more.
   #busy: Promise<void> | null = null;
   #again = false;
 
-  constructor(path: string, opts: { maxLines?: number; fromEnd?: number } = {}) {
+  constructor(path: string, opts: TranscriptTailOptions = {}) {
     this.#path = path;
     this.#maxLines = opts.maxLines ?? 200;
     this.#fromEnd = opts.fromEnd ?? 256 * 1024;
+    this.#watch = opts.watch ?? watch;
+    this.#chunk = opts.chunkSize ?? CHUNK;
   }
 
   /** Reads what is there now and starts following. Resolves after the first read. */
@@ -129,7 +146,7 @@ export class TranscriptTail {
       st = await stat(this.#path);
       if (!st.isFile()) throw new Error('not a file');
     } catch {
-      this.#waitForFile();
+      if (this.#running) this.#waitForFile();
       return;
     }
     if (!this.#running) return;
@@ -138,6 +155,7 @@ export class TranscriptTail {
     if (this.#ino === undefined || replaced) {
       this.#ino = st.ino;
       await this.#seekStart(st.size);
+      if (!this.#running) return;
     }
     this.#follow();
     if (st.size > this.#offset) await this.#read(st.size);
@@ -156,6 +174,7 @@ export class TranscriptTail {
     this.#partial = [];
     this.#partialLength = 0;
     this.#skipping = false;
+    this.#afterRejection = false;
     this.#reset = true;
   }
 
@@ -186,9 +205,9 @@ export class TranscriptTail {
     }
     const added: DisplayLine[] = [];
     try {
-      const buf = Buffer.alloc(CHUNK);
+      const buf = Buffer.alloc(this.#chunk);
       while (this.#running && this.#offset < size) {
-        const want = Math.min(CHUNK, size - this.#offset);
+        const want = Math.min(this.#chunk, size - this.#offset);
         const { bytesRead } = await fh.read(buf, 0, want, this.#offset);
         if (bytesRead === 0) break;
         this.#offset += bytesRead;
@@ -274,10 +293,18 @@ export class TranscriptTail {
       added.push(l);
     }
 
+    const wasAfterRejection = this.#afterRejection;
+    // Only conversation records separate the pair; bookkeeping records in between don't.
+    const type = typeof r === 'object' && r !== null ? (r as { type?: unknown }).type : undefined;
+    if (type === 'user' || type === 'assistant') this.#afterRejection = false;
     if (interrupted(r)) {
       this.#question = null;
       this.#questionId = null;
       this.#now = null;
+      const rejection = answeredIds(r).length > 0;
+      this.#afterRejection = rejection;
+      // A denial writes the rejected tool_result and then the interrupt text: one event.
+      if (!rejection && wasAfterRejection) return;
       for (const fn of [...this.#interruptListeners]) {
         try {
           fn();
@@ -303,6 +330,7 @@ export class TranscriptTail {
 
   /** The file exists: watch it and poll its size as a fallback. */
   #follow(): void {
+    if (!this.#running) return;
     if (this.#watching !== 'file') {
       this.#unwatch();
       this.#watcher = this.#tryWatch(this.#path, (event) => {
@@ -317,6 +345,7 @@ export class TranscriptTail {
 
   /** The file is missing (R10): watch its directory if there is one, and poll every second. */
   #waitForFile(): void {
+    if (!this.#running) return;
     if (this.#watching === 'file') this.#unwatch();
     if (this.#watching !== 'dir') {
       const name = basename(this.#path);
@@ -329,8 +358,9 @@ export class TranscriptTail {
   }
 
   #tryWatch(target: string, fn: (event: string, file: string | null) => void): FSWatcher | null {
+    if (!this.#watch) return null;
     try {
-      const w = watch(target, { persistent: false }, (event, file) => {
+      const w = this.#watch(target, { persistent: false }, (event, file) => {
         if (this.#running) fn(event, typeof file === 'string' ? file : null);
       });
       w.on('error', () => {

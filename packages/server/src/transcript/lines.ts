@@ -9,6 +9,8 @@ const MAX_OUT_LINES = 3;
 const MAX_DIFF_LINES = 12;
 /** Longest `out`, diff or detail text, in characters. */
 const MAX_TEXT = 200;
+/** Longest `say` text, in characters. */
+const MAX_SAY = 2000;
 /** Characters of a Bash command shown in the now line. */
 const NOW_COMMAND = 60;
 
@@ -34,13 +36,27 @@ function blocks(record: unknown, type: 'user' | 'assistant'): Obj[] {
   return Array.isArray(c) ? c.filter(isObj) : [];
 }
 
-/** Cuts text to MAX_TEXT characters, ending with "…" when cut; never splits a surrogate pair. */
-function clip(text: string): string {
-  if (text.length <= MAX_TEXT) return text;
-  let cut = text.slice(0, MAX_TEXT - 1);
+/** Cuts text to `max` characters, ending with "…" when cut; never splits a surrogate pair. */
+function clip(text: string, max = MAX_TEXT): string {
+  if (text.length <= max) return text;
+  let cut = text.slice(0, max - 1);
   const last = cut.charCodeAt(cut.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
   return `${cut}…`;
+}
+
+/**
+ * One line of plain text: line breaks become spaces, escape sequences and control characters go,
+ * and the result is clipped. Only a bounded prefix is looked at.
+ */
+function plain(text: string): string {
+  return clip(stripAnsi(text.slice(0, MAX_TEXT * 4).replace(/\r?\n/g, ' ')));
+}
+
+/** Say text: escape sequences and control characters go per line, line breaks stay; clipped. */
+function sayText(text: string): string {
+  const lines = text.slice(0, MAX_SAY * 4).split('\n');
+  return clip(lines.map(stripAnsi).join('\n'), MAX_SAY);
 }
 
 /** Path relative to cwd when inside it; otherwise unchanged. */
@@ -61,20 +77,20 @@ function toolLine(block: Obj, cwd: unknown): DisplayLine | null {
     case 'Read': {
       const text = name === 'Edit' ? 'Update' : name;
       return path
-        ? { kind: 'tool', text, detail: clip(relative(path, cwd)) }
+        ? { kind: 'tool', text, detail: plain(relative(path, cwd)) }
         : { kind: 'tool', text };
     }
     case 'Bash': {
       const command = str(input.command);
       return command
-        ? { kind: 'tool', text: name, detail: clip(command) }
+        ? { kind: 'tool', text: name, detail: plain(command) }
         : { kind: 'tool', text: name };
     }
     case 'Grep':
     case 'Glob': {
       const pattern = str(input.pattern);
       return pattern
-        ? { kind: 'tool', text: name, detail: clip(pattern) }
+        ? { kind: 'tool', text: name, detail: plain(pattern) }
         : { kind: 'tool', text: name };
     }
     default:
@@ -111,8 +127,8 @@ function diffLines(patch: unknown[]): DisplayLine[] {
     for (const l of hunk.lines) {
       if (out.length >= MAX_DIFF_LINES) return out;
       if (typeof l !== 'string') continue;
-      if (l.startsWith('-')) out.push({ kind: 'del', text: clip(l.slice(1)) });
-      else if (l.startsWith('+')) out.push({ kind: 'add', text: clip(l.slice(1)) });
+      if (l.startsWith('-')) out.push({ kind: 'del', text: plain(l.slice(1)) });
+      else if (l.startsWith('+')) out.push({ kind: 'add', text: plain(l.slice(1)) });
     }
   }
   return out;
@@ -144,7 +160,7 @@ export function toDisplayLines(record: unknown): DisplayLine[] {
     const c = content(record, 'user');
     if (typeof c === 'string') {
       if (isLocal(record, c) || c.startsWith(INTERRUPT_PREFIX)) return [];
-      return [{ kind: 'say', text: `> ${c}` }];
+      return [{ kind: 'say', text: sayText(`> ${c}`) }];
     }
     return blocks(record, 'user').flatMap((b) =>
       b.type === 'tool_result' ? resultLines(record, b) : [],
@@ -154,7 +170,8 @@ export function toDisplayLines(record: unknown): DisplayLine[] {
     const out: DisplayLine[] = [];
     for (const b of blocks(record, 'assistant')) {
       if (b.type === 'text' && typeof b.text === 'string') {
-        if (b.text.trim() !== '') out.push({ kind: 'say', text: b.text });
+        const text = sayText(b.text);
+        if (text.trim() !== '') out.push({ kind: 'say', text });
       } else if (b.type === 'thinking') {
         if (out.at(-1)?.kind !== 'think') out.push(THINKING);
       } else if (b.type === 'tool_use') {

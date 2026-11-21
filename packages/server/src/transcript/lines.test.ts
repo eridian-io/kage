@@ -187,6 +187,42 @@ describe('toDisplayLines', () => {
     expect(toDisplayLines(toolResult(html))).toEqual([{ kind: 'out', text: html }]);
   });
 
+  it('clips say text to 2000 characters without splitting a surrogate pair', () => {
+    const long = `${'a'.repeat(1998)}😀tail`;
+    const [line] = toDisplayLines(assistant({ type: 'text', text: long }));
+    expect(line?.text).toBe(`${'a'.repeat(1998)}…`);
+    expect(line?.text.length).toBeLessThanOrEqual(2000);
+    const [prompt] = toDisplayLines({ type: 'user', message: { content: 'b'.repeat(5000) } });
+    expect(prompt?.text.length).toBe(2000);
+  });
+
+  it('strips escape sequences and control characters from say, diff and detail text', () => {
+    expect(
+      toDisplayLines(
+        assistant({ type: 'text', text: '\u001b[1mBold\u001b[0m\u0007 line\nnext\r' }),
+      ),
+    ).toEqual([{ kind: 'say', text: 'Bold line\nnext' }]);
+    expect(
+      toDisplayLines({ type: 'user', message: { content: 'hi\u001b]0;x\u0007 there' } }),
+    ).toEqual([{ kind: 'say', text: '> hi there' }]);
+    expect(toDisplayLines(toolUse('Bash', { command: 'echo \u001b[31mred\u001b[0m\nls' }))).toEqual(
+      [{ kind: 'tool', text: 'Bash', detail: 'echo red ls' }],
+    );
+    expect(toDisplayLines(toolUse('Read', { file_path: `${CWD}/a\u0000b.ts` }))).toEqual([
+      { kind: 'tool', text: 'Read', detail: 'ab.ts' },
+    ]);
+    expect(
+      toDisplayLines(
+        toolResult('ok', {
+          toolUseResult: { structuredPatch: [{ lines: ['-\u001b[2Kold', '+\tnew\u0008'] }] },
+        }),
+      ),
+    ).toEqual([
+      { kind: 'del', text: 'old' },
+      { kind: 'add', text: '\tnew' },
+    ]);
+  });
+
   it('emits one think line per thinking block, never two in a row within a record', () => {
     const r = {
       type: 'assistant',
