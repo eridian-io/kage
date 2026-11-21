@@ -1,4 +1,5 @@
 import type { DisplayLine, Question } from '@kage/shared';
+import { stripAnsi } from '../pane/prompt.ts';
 
 /** Turns Claude Code transcript records (one JSON object per JSONL line) into board lines. */
 
@@ -40,34 +41,6 @@ function clip(text: string): string {
   const last = cut.charCodeAt(cut.length - 1);
   if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
   return `${cut}…`;
-}
-
-const ESC = 0x1b;
-const BEL = 0x07;
-
-/** Removes terminal escape sequences (CSI and OSC) and control characters other than tab. */
-function stripControl(text: string): string {
-  let out = '';
-  let i = 0;
-  while (i < text.length) {
-    const c = text.charCodeAt(i);
-    if (c === ESC && text[i + 1] === '[') {
-      // CSI: parameter and intermediate bytes, then one final byte in @–~.
-      i += 2;
-      while (i < text.length && (text.charCodeAt(i) < 0x40 || text.charCodeAt(i) > 0x7e)) i++;
-      i++;
-    } else if (c === ESC && text[i + 1] === ']') {
-      // OSC: up to BEL or ESC \.
-      i += 2;
-      while (i < text.length && text.charCodeAt(i) !== BEL && text.charCodeAt(i) !== ESC) i++;
-      if (text.charCodeAt(i) === ESC && text[i + 1] === '\\') i += 2;
-      else if (text.charCodeAt(i) === BEL) i++;
-    } else {
-      if (c === 0x09 || (c >= 0x20 && c !== 0x7f)) out += text[i];
-      i++;
-    }
-  }
-  return out;
 }
 
 /** Path relative to cwd when inside it; otherwise unchanged. */
@@ -117,7 +90,7 @@ function firstLines(text: string, into: DisplayLine[]): void {
     if (end === -1) end = text.length;
     // Look at a bounded slice only, so a multi-megabyte line costs no more than a short one.
     const raw = text.slice(start, Math.min(end, start + MAX_TEXT * 4));
-    const line = stripControl(raw).trimEnd();
+    const line = stripAnsi(raw).trimEnd();
     if (line.trim() !== '') into.push({ kind: 'out', text: clip(line) });
     start = end + 1;
   }
