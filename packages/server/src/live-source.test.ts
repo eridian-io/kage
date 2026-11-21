@@ -192,6 +192,7 @@ const win = (over: Partial<TmuxWindow> = {}): TmuxWindow => ({
   cwd: `${ROOT}/demo`,
   name: 'demo',
   activity: Math.floor(T0 / 1000) - 60,
+  placeholder: false,
   ...over,
 });
 

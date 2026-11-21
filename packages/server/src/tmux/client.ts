@@ -47,7 +47,7 @@ export const hasTmux: boolean = tmuxVersionOutput !== null;
 
 export interface TmuxTarget {
   socket: string | null;
-  /** ; only matters when the call starts the server. */
+  /** A tmux config file (`-f`); it only matters when the call starts the server. */
   configFile?: string;
 }
 
@@ -82,18 +82,46 @@ export class TmuxClient {
     return this.#exec('tmux', tmuxArgs(this.#target, args));
   }
 
-  /** Creates the detached session when it is missing. */
+  /**
+   * Creates the detached session when it is missing. Its first window only holds the session
+   * open, so it is tagged `@kage_placeholder` (R22) and the board hides it while it sits at a
+   * shell.
+   */
   async ensureSession(): Promise<void> {
     try {
       await this.#run(['has-session', '-t', `=${this.#session}`]);
     } catch {
+      let windowId: string;
       try {
-        await this.#run(['new-session', '-d', '-s', this.#session]);
+        const { stdout } = await this.#run([
+          'new-session',
+          '-d',
+          '-s',
+          this.#session,
+          '-P',
+          '-F',
+          '#{window_id}',
+        ]);
+        windowId = stdout.trim();
       } catch (e) {
         // A concurrent caller created it between our has-session and new-session.
         if (!/duplicate session/i.test(stderrOf(e))) throw e;
+        return;
+      }
+      if (/^@\d+$/.test(windowId)) {
+        await this.#run(['set-option', '-w', '-t', windowId, '@kage_placeholder', '1']);
       }
     }
+  }
+
+  /** R22: the placeholder window now runs something else; it shows like any other window. */
+  async clearPlaceholder(windowId: string): Promise<void> {
+    await this.#run(['set-option', '-w', '-u', '-t', windowId, '@kage_placeholder']);
+  }
+
+  /** Sets a variable in the session's environment, which windows created later inherit. */
+  async setEnvironment(name: string, value: string): Promise<void> {
+    await this.#run(['set-environment', '-t', `=${this.#session}`, name, value]);
   }
 
   /** The session's windows; [] only when tmux says the server or session is missing, else throws. */

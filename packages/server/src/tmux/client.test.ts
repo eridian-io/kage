@@ -53,6 +53,58 @@ describe('TmuxClient.ensureSession', () => {
   });
 });
 
+describe('TmuxClient.ensureSession placeholder (R22)', () => {
+  it('tags the first window of a session it creates with @kage_placeholder', async () => {
+    const seen: string[][] = [];
+    const c = client(async (_cmd, args) => {
+      seen.push(args.slice(2));
+      if (args.includes('has-session')) throw fail("can't find session: kage");
+      if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
+      return { stdout: '', stderr: '' };
+    });
+    await c.ensureSession();
+    expect(seen).toEqual([
+      ['has-session', '-t', '=kage'],
+      ['new-session', '-d', '-s', 'kage', '-P', '-F', '#{window_id}'],
+      ['set-option', '-w', '-t', '@7', '@kage_placeholder', '1'],
+    ]);
+  });
+
+  it('does not tag anything when the session exists', async () => {
+    const seen: string[][] = [];
+    const c = client(async (_cmd, args) => {
+      seen.push(args.slice(2));
+      return { stdout: '', stderr: '' };
+    });
+    await c.ensureSession();
+    expect(seen).toEqual([['has-session', '-t', '=kage']]);
+  });
+
+  it('clearPlaceholder unsets the option on that window', async () => {
+    const seen: string[][] = [];
+    const c = client(async (_cmd, args) => {
+      seen.push(args.slice(2));
+      return { stdout: '', stderr: '' };
+    });
+    await c.clearPlaceholder('@7');
+    expect(seen).toEqual([['set-option', '-w', '-u', '-t', '@7', '@kage_placeholder']]);
+  });
+});
+
+describe('TmuxClient.setEnvironment', () => {
+  it('sets a session environment variable as separate arguments', async () => {
+    const seen: string[][] = [];
+    const c = client(async (_cmd, args) => {
+      seen.push(args.slice(2));
+      return { stdout: '', stderr: '' };
+    });
+    await c.setEnvironment('KAGE_SOCKET', "/run/user/1000/it's kage.sock");
+    expect(seen).toEqual([
+      ['set-environment', '-t', '=kage', 'KAGE_SOCKET', "/run/user/1000/it's kage.sock"],
+    ]);
+  });
+});
+
 describe('configFile', () => {
   it('adds -f <file> before -L to every invocation when set', async () => {
     const seen: string[][] = [];

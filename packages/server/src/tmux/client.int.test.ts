@@ -25,7 +25,19 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
   it('ensureSession creates the session, idempotently', async () => {
     await Promise.all([client.ensureSession(), client.ensureSession(), client.ensureSession()]);
     await client.ensureSession();
-    expect((await client.listWindows()).length).toBe(1);
+    const windows = await client.listWindows();
+    expect(windows.length).toBe(1);
+    // R22: the window Kage created to hold the session is tagged as its placeholder.
+    expect(windows[0]?.placeholder).toBe(true);
+    await client.clearPlaceholder(windows[0]?.windowId as string);
+    expect((await client.listWindows())[0]?.placeholder).toBe(false);
+  });
+
+  it('setEnvironment sets a session variable that new windows inherit', async () => {
+    await client.setEnvironment('KAGE_SOCKET', '/tmp/kage test.sock');
+    expect(tmux('show-environment', '-t', 'kage', 'KAGE_SOCKET').trim()).toBe(
+      'KAGE_SOCKET=/tmp/kage test.sock',
+    );
   });
 
   it('reads back a kage id set on a second window', async () => {
