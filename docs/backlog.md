@@ -14,9 +14,24 @@ Work deliberately left out of a phase, with the reason it's needed. Each item na
 
 ## Phase 3
 
-- **B13** Token login (B8 follow-up): a login page and a cookie that enforce the config `token`, then lift the refusal to start with one set.
-- **B14** Split panes in external windows: only the first pane of a window is known, so a prompt in another pane is missed.
-- **B15** Signal handling during `kage serve` startup: a SIGINT while tmux and the socket are starting should stop what has started, and a second SIGINT should exit at once. Late errors (assets, app creation) should print one line, not a stack trace.
+- **B13** (done, phase 3) Token login (B8 follow-up): a login page and a cookie that enforce the config `token`, then lift the refusal to start with one set.
+- **B14** (done, phase 3) Split panes in external windows: only the first pane of a window is known, so a prompt in another pane is missed.
+- **B15** (done, phase 3) Signal handling during `kage serve` startup: a SIGINT while tmux and the socket are starting should stop what has started, and a second SIGINT should exit at once. Late errors (assets, app creation) should print one line, not a stack trace.
+
+## Found in phase 3
+
+Deferred from the phase 3 reviews. None blocks use; each is a small change.
+
+- **B20** The token cookie has no server-side expiry: it lasts its 30 days. To revoke every device, change the token and restart. A server-side session list or a rotating secret would give a real sign-out.
+- **B21** A peer can use up the global login ceiling (30 failures a minute) and lock everyone out of signing in for 60 s. Cookies that exist keep working. Behind a reverse proxy, all clients share one address and one bucket.
+- **B22** The multi-select question (checkboxes) is unrecorded: Kage disables answering it and says to use the terminal. Capture a real one, record the keys, and then support it.
+- **B23** The port scan misses a daemon that detached from the pane (its parent became init). Match by working directory or process group as well.
+- **B24** A project reached through a symlink is recorded under the alias name. Record the real folder's name.
+- **B25** processLabel cosmetics: some long or wrapped commands give an odd label on the port card.
+- **B26** The 5 s window after a reply ignores a real Esc that the user presses in the terminal during it.
+- **B27** Two hooked claude processes in one window: the first wins. Side-pane activity re-lists the windows.
+- **B28** The web doesn't clamp the files list to its limit. The server owns the bound, so this only matters if the server changes.
+- **B29** The 404 for an unknown project or branch echoes the name without a length cap (cosmetic).
 
 ## Phase 2 or 4
 
@@ -31,7 +46,7 @@ Work deliberately left out of a phase, with the reason it's needed. Each item na
 ## Later
 
 - **B16** Re-check the pane parser against a real capture on each Claude Code version. The fixtures are idealised; the last real check was Claude Code 2.1.330. A manual smoke step per Claude release, or a recorded-capture test.
-- **B17** A live e2e for No and Esc on a prompt (R11): today the transcript and pane fallbacks are covered by unit tests and one manual run.
+- **B17** (done, phase 3) A live e2e for No and Esc on a prompt (R11): today the transcript and pane fallbacks are covered by unit tests and one manual run.
 - **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, so `pnpm test:linux` is reproducible.
 - **B19** Split `live-source.ts`: it carries tmux events, hooks, transcripts and pane checks. Pull the pane-capture decision out as a pure function first.
 

@@ -100,11 +100,27 @@ Or attach (`tmux attach -t kage`), open a new window (`Ctrl-b c`) and run `claud
 
 `kage hooks-path` writes the settings that send Claude's hook events to Kage, and prints the file's path (`$XDG_STATE_HOME/kage/claude-settings.json`, or `~/.local/state/kage/claude-settings.json`). Pass `--permission-mode default` too: Claude Code 2.1.330 starts in auto mode, which never asks, so Kage would never see a prompt.
 
-The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes or waits for your next prompt. The first run in a new folder shows Claude's folder-trust screen, and Kage reads it from the pane and shows it as "needs you" too. Answer it in the terminal for now: answering from the board comes in phase 3.
+The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes or waits for your next prompt. The first run in a new folder shows Claude's folder-trust screen, and Kage reads it from the pane and shows it as "needs you" too. Answer it from the board, or in the terminal.
 
 `kage serve --demo` still runs the sample sessions with no tmux.
 
 Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default; `kage serve` sets `KAGE_SOCKET` in the tmux session, so Claude in its windows finds the same socket. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
+
+## Control
+
+Kage can start and steer tasks from the board. This needs `claude` on Kage's `PATH` (or `KAGE_CLAUDE_BIN` set to it) and a git project directly inside `projectsRoot`.
+
+**Start a task.** Press `N` or click New task. Type the task, pick the project and the branch to start from, and press Start (or Enter). Kage makes a git worktree at `<project>/.worktrees/<name>` on a new branch `kage/<name>`, opens a tmux window there and runs `claude` on your task. Start waits until the window is up, then selects the new session. Tick "Accept edits automatically" to let Claude edit files without asking. Commands still ask.
+
+**Answer.** When Claude asks for permission or asks a question, the card shows its options as buttons. Click one, or press its number (`1`–`9`). Kage checks that the same question is still on the screen before it sends the key. A few options stay disabled and say "Choose this one in the terminal": switching to auto mode, and questions that take several choices.
+
+**Reply and follow-up.** Type in the box under the card and press Enter to answer a prompt in your own words. On a finished session the same box sends a follow-up task, and the session runs again. `R` jumps to the box. A reply can't start with `!`, `#`, `/` or a number: use the terminal for those.
+
+**Stop.** Click Stop, or press `X` twice within two seconds. Kage closes that session's tmux window. The worktree and the branch stay. Kage only stops windows it started.
+
+**Ports and files.** A port that a task opens appears on the right with a link. A port that listens only on the PC says "Only on this machine" and shows the `ssh -L` command to reach it. The files the task changed, including uncommitted ones, are listed with their line counts.
+
+**Token login.** Set `token` in the config (at least 16 characters) and restart. The board then asks for it once and keeps you signed in for 30 days. To sign out every device, change the token and restart Kage. Five wrong tries from one address lock that address out for a minute.
 
 ## Configuration
 
@@ -138,9 +154,9 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
 | `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in. Change the token to sign out every device. |
 
-Live sessions use `tmuxSession`, `token` and the host, port and name keys. `projectsRoot`, `worktreeDir`, `branchPrefix`, `autoArchive` and `ntfyTopic` take effect in later phases; Kage already reads and checks every key.
+Live sessions use `tmuxSession`, `token`, `projectsRoot`, `worktreeDir`, `branchPrefix` and the host, port and name keys. `autoArchive` and `ntfyTopic` take effect in later phases; Kage already reads and checks every key.
 
-The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`.
+The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`. `KAGE_CLAUDE_BIN` names the `claude` program for new tasks.
 
 `pnpm dev` needs Tailscale to be up. Without it, run it on loopback instead: `KAGE_HOST=127.0.0.1 pnpm dev`.
 
@@ -163,7 +179,7 @@ npm run install-service
 
 - [x] **Phase 1, skeleton:** dashboard served over Tailscale
 - [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
-- [ ] **Phase 3, control:** start, answer and stop tasks; preview links
+- [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
 - [ ] **Phase 4, polish:** notifications, diffs, run on boot, phone layout
 
 ## Contributing

@@ -105,7 +105,7 @@ flowchart LR
 - **Server:** Node 24. HTTP with [Hono](https://hono.dev) on `@hono/node-server`, which is small and fast. `ws` for the single WebSocket route. No native modules, so the server can ship as a single executable (§5.13). esbuild bundles it into one file.
 - **Browser:** [Preact](https://preactjs.com) with `@preact/signals` (about 5 KB gzipped together), for fine-grained updates without re-rendering the board, and hand-written CSS using the tokens in §6.2. esbuild bundles and minifies it, and Kage serves the result with long-cache hashed file names, inlining the critical CSS. xterm.js is a separate chunk, loaded only when a terminal opens.
 - **Fonts:** Geist and Geist Mono, self-hosted as subset woff2 files, preloaded, with `font-display: swap` and a system fallback stack.
-- **State:** no database. tmux and git are the truth. One small JSON file, `~/.local/state/kage/state.json` (`$XDG_STATE_HOME`), holds what they can't: task text, project, base branch, created time, pinned, archived, and the tmux window IDs Kage created.
+- **State:** no database. tmux and git are the truth. One small JSON file, `~/.local/state/kage/state.json` (`$XDG_STATE_HOME`), holds what they can't: task text, project, base branch, permission mode, created time, pinned, archived, and the tmux window IDs Kage created. The record gains `base` (the branch the task was cut from) and `permissionMode` (`default` or `acceptEdits`). (amended 2026-11-21, phase 3).
 - **Tests:** vitest for units, real tmux for integration tests, and Playwright for end-to-end and visual tests (§8).
 - **Tooling:** Biome for lint and format, pnpm.
 
@@ -115,6 +115,14 @@ A **session** is one tmux window in the tmux session `kage` (configurable), plus
 
 - **Created by Kage:** Kage runs `git worktree add <repo>/.worktrees/<slug> -b <branch> <base>`, then `tmux new-window -t kage -n <slug> -c <worktree>`, and starts `claude --settings <claude-settings.json> --permission-mode <mode> "<task>"` in it. The settings file is `$XDG_STATE_HOME/kage/claude-settings.json` (amended 2026-11-21, phase 2). Kage starts `claude` directly or through `exec`, never through a wrapper that stays alive: tmux reports the foreground process, and a wrapper would make the session look ended (amended 2026-11-21, phase 2).
 - **Permission mode** (owner's ruling, 2026-11-21): Claude Code's default mode, so Claude asks before edits and commands, and Kage shows those prompts as amber questions with buttons. The New task form has an **"Accept edits automatically"** checkbox, which adds `--permission-mode acceptEdits` for that task. Kage always passes `--permission-mode` explicitly (`default` otherwise), because Claude Code 2.1.330 defaults to auto mode, which never prompts (amended 2026-11-21, phase 2). Commands still prompt. Kage never offers to skip permissions, and refuses a config value that would. Kage tags the window with a tmux user option, `@kage_id=<uuid>`, and the record stores that UUID with the window ID (`@12`). tmux reuses window IDs after a restart, so **ownership is the UUID**: a window counts as Kage's only if its `@kage_id` matches a record.
+- **Starting a task, as built** (amended 2026-11-21, phase 3):
+  - **Command.** Kage runs `claude --settings <file> --permission-mode <default|acceptEdits> -- "<task>"`. The `--` ends the options, so a task can't be read as a flag. The argv never holds another mode or `--dangerously-skip-permissions`. `claude` is `KAGE_CLAUDE_BIN` (a path, or a name looked up on `PATH`), else the first `claude` on `PATH`. With none, the start fails with 503.
+  - **Direct launch.** `tmux new-window -d -P -F '#{window_id}' -t <session> -n <slug> -c <worktree> -e KAGE_SOCKET=<socket> -e PATH=<Kage's PATH> -- <argv>`. There is no shell in between, so the window closes when Claude exits. The session then counts as ended; the worktree and branch stay.
+  - **Tagging.** The window is tagged `@kage_id` in a second tmux call on its window ID, never chained with `;` in the same call: the chained form tagged the wrong window. Kage writes the record first (`adopt`), and the window then `claim`s it, so the tag and the record can't be separated.
+  - **Slugs.** Lowercase ASCII from the task text, at most 40 characters, made unique against the project's branches and Kage's own records (a numeric suffix).
+  - **Exclude entry.** Kage adds `/<worktreeDir>/` to the repo's `info/exclude`, found with `git rev-parse --git-path info/exclude`. A relative answer is resolved against the repo's git directory.
+  - **Rollback.** If the worktree, the window or the launch check fails, Kage removes only what this request created: its window, worktree, branch and record. It never deletes a branch that existed before. After the launch it checks that the folder exists and that the window and its pane are still alive 250 ms later, else it answers 422.
+  - **One at a time per project.** Starts for the same project run one after another, so two identical tasks get distinct names. A project is keyed by its real folder, so a symlink or a differently-cased name shares the lock.
 - **Found, not created:** windows in the `kage` session that Kage didn't create still appear, marked as *external*. Kage can show and answer them, but never stop or delete them. That's the brief's rule: "never kill windows you did not create".
 - **Branch names:** `kage/<slug>` by default. The slug comes from the task text: lowercase, ASCII, at most 40 characters, made unique with a numeric suffix.
 - **Worktree location:** `<repo>/.worktrees/<slug>` by default. Kage adds `.worktrees/` to the repo's `.git/info/exclude`, not to `.gitignore`, so it never changes tracked files. The location is configurable.
@@ -147,7 +155,7 @@ External windows without hooks fall back to activity: output in the last 5 secon
 
 - **PermissionRequest is the needs-you trigger** (amended 2026-11-21, phase 2). It fires within about 0.1 s, while the permission `Notification` arrives about 11 s later. The `Notification` stays as a fallback, and counts only while a tool is pending (a `PreToolUse` or `PermissionRequest` with no `PostToolUse`, `PostToolUseFailure` or `Stop` since). It never turns a done or ended session amber again. `PostToolUseFailure` maps to running.
 - **AskUserQuestion is recognised from `PreToolUse`** (amended 2026-11-21, phase 2): the tool name says it is a question, and `tool_input` holds the question and options.
-- **Startup screens make a session needs-you** (amended 2026-11-21, phase 2). Claude's theme, security notes, folder-trust, renderer and login screens fire no hook. Kage reads them from the pane and shows the screen's text and options. The login screen has no options: Kage never answers it. Answering from the board comes in phase 3.
+- **Startup screens make a session needs-you** (amended 2026-11-21, phase 2). Claude's theme, security notes, folder-trust, renderer and login screens fire no hook. Kage reads them from the pane and shows the screen's text and options. The login screen has no options: Kage never answers it. The board answers them since phase 3 (§5.4), except the login screen.
 - **No or Esc fires no hook** (amended 2026-11-21, phase 2). The session leaves needs-you through the transcript's rejection record (a tool result with `toolDenialKind` "user-rejected", or user text starting "[Request interrupted by user"), or through the pane: the prompt is gone and the denial line ("Interrupted · What should Claude do instead?") is near the bottom. Either way the session is done.
 - **Prompt cards show every option the prompt offers**, in order, with the trailing "· …" hint trimmed (amended 2026-11-21, phase 2). Hiding one, such as "Yes, and switch to auto mode", would put the button numbers out of step with Claude's.
 - **SessionStart means waiting for input** (amended 2026-11-21, phase 2). A new or resumed session waits for its first prompt, so `SessionStart` maps to done (from ended too, for a resume). A task Kage launches still reads running at once, because `UserPromptSubmit` follows within about 0.6 s. The "now doing" line goes on the wire only while the session is running.
@@ -155,20 +163,35 @@ External windows without hooks fall back to activity: output in the last 5 secon
 - **Startup checks are bounded** (amended 2026-11-21, phase 2). Kage looks for startup screens only in a window with no hook seen yet, and stops once Claude's idle input box shows. A `claude` window is captured once more a second after Kage first sees it, because a startup screen drawn after that sits still and makes no activity.
 - **The placeholder window is hidden** (amended 2026-11-21, phase 2). The window `ensureSession` creates to hold the session open is tagged `@kage_placeholder` and left off the board while it sits at a shell. Once it runs anything else the tag is cleared and it shows like any window.
 
+**Amendments from the phase 3 build** (2026-11-21, phase 3):
+
+- **`SessionStart` with source `compact` keeps the status** (amended 2026-11-21, phase 3). Claude compacts its context mid-turn and fires `SessionStart` again. Kage ignores that one for status, so a running session doesn't flip to done.
+- **A placeholder window gets the socket too** (amended 2026-11-21, phase 3). `kage serve` sets `KAGE_SOCKET` on the tmux session with `new-session -e` and `set-environment`, so a `claude` started by hand in a later window finds the same hook socket.
+- **Bidi and format characters are stripped from all displayed text** (amended 2026-11-21, phase 3) (say, out, pane lines and plain text), so text can't read differently from what it is.
+
 ### 5.4 Output: what the session panel shows
 
 The design shows Claude's prose in the sans font, tool calls as muted monospace lines, diffs in green and red, and a lime "thinking" line. To render that faithfully and cheaply, Kage reads **structure**, not screen text:
 
 - **Transcript reader:** each Claude Code session writes a JSONL transcript (its path arrives with the `SessionStart` hook). Kage tails that file with `fs.watch` plus a size poll (§5.5) and turns new records into display lines: `say` (assistant text), `tool` (tool name and a short argument), `add` / `del` (edit diffs), `out` (short tool results, such as test summaries) and `think` (the current activity). It keeps the last 200 display lines per session in memory.
 - **Questions:** when the latest assistant record is an `AskUserQuestion` tool call, its options become the answer buttons. For permission prompts (a `PermissionRequest` hook, or the `Notification` fallback), Kage reads the visible options from the pane (`tmux capture-pane -p`) and turns the numbered choices into buttons. If parsing fails, the typed reply box is always available.
-- **Answering:** a button sends that option's number with `tmux send-keys -t <window> <n>`. A typed reply sends `send-keys -l -- "<text>"` followed by `Enter`.
+- **Answering:** a button sends that option's number with `tmux send-keys -t <window> <n>`. A typed reply sends `send-keys -l -- "<text>"` followed by `Enter`. As built, the details are these (amended 2026-11-21, phase 3):
+  - **Plans.** Permission prompts and AskUserQuestion take the option's digit alone (a digit submits at once; no Enter). The folder-trust screen has no digits: Kage reads the `❯` from the pane, sends `Down` or `Up` presses to reach the chosen option, looks again (up to 10 times) until the `❯` is there, and only then sends `Enter`. If the `❯` never gets there, or the screen is gone, it sends nothing more and answers 409. The login screen is never answered.
+  - **Screen check before every key.** Kage captures the pane and sends a key only if the same prompt is still showing. The request carries the question text the user saw (`{option, question}`). If the question has changed, the answer is 409 "The question changed. Look again before answering." A click meant for one prompt never approves another.
+  - **Refused options.** "Yes, and switch to auto mode" is disabled, because it changes the launch permission policy. So is the renderer screen's "Yes, try it". "Yes, and switch to accept edits" stays enabled: accept-edits is the owner's sanctioned mode (§11), and picking it is an explicit act. A multi-select question is answered in the terminal.
+  - **A reply at a prompt is `Escape`, then the text.** Escape declines the prompt ("What should Claude do instead?"), Kage waits for Claude's idle input box, and then types the text.
+  - **Enter only after the text shows.** Kage types the text in one `send-keys -l --` call (up to 12,000 bytes, chunked on whole characters above that), reads the input box, and sends `Enter` only when the box shows the text (or Claude's `[Pasted text #N` placeholder, for text over 800 UTF-16 units). Otherwise it answers 409 "Your text is still in Claude's input box; send or clear it in the terminal." Kage never sends `Ctrl+U` or a double `Escape` to clear: a double `Escape` on an empty box opens Claude's rewind menu.
+  - **A reply can't start with `!`, `#`, `/` or a digit 1–9.** `!` runs a shell command with no prompt, `#` writes memory, `/` is a slash command, and a digit could answer a prompt that appears mid-send. A reply holds no control character or line break.
+  - **Interrupt suppression.** For 5 s after a board reply, Kage ignores the "[Request interrupted" and denial-line signals of §5.3, so the Escape that is part of a reply doesn't read as a user cancel.
+  - **No pre-trusting** (owner's ruling). Kage never writes Claude's configuration to skip the trust screen. Claude trusts the folders below a trusted repo, so the screen shows only for a project that was never trusted, and the board answers it.
 - **Risk:** the transcript format is internal to Claude Code and may change. The reader is one module with recorded fixture files and tests, and if it fails to parse, Kage falls back to a plain monospace rendering of `capture-pane` text. Version 1 must work in fallback mode too.
 
 ### 5.5 Live updates
 
 - **One SSE stream** (`GET /api/events`) per browser tab. The server pushes `snapshot` on connect, then small events: `session.updated` (status, counts, the "now doing" line), `session.lines` (new display lines, only for the session the tab has selected), `session.files`, `session.ports`, and `session.removed`. The `snapshot` carries a `streamId` for that tab and the `projectsRoot`, and its sessions carry no lines (`lines: []`) — lines come only through `session.lines` for the viewed session. The tab tells the server which session it's viewing with `POST /api/view {streamId, id}`; the server answers on that stream with `session.lines {id, lines, reset: true}` (the last 200 lines), then appends new lines as they arrive. A stream whose queue backs up (a stalled tab) is dropped; the tab reconnects and gets a fresh snapshot.
 - **Nothing is polled while nobody watches.** Hooks and `fs.watch` drive everything. The only timers are the port scan (every 5 s, only while a tab is viewing a session that's running) and a 30 s heartbeat comment on the SSE stream. Two more timers are allowed (amended 2026-11-21, phase 2): `TranscriptTail` polls the file size every 2 s, and every 1 s while the file doesn't exist yet, because `fs.watch` misses events on WSL and network file systems. Pane captures (`capture-pane`) happen only for sessions a tab is viewing, apart from the prompt and startup-screen checks (amended 2026-11-21, phase 2). A pane fallback capture that continues the last one sends only the appended lines; a redrawn screen resets them. A `claude` window still in its startup checks gets one extra capture a second after Kage first sees it, and activity in a shell window re-lists at most once a second, because `pane_current_command` changes fire no tmux event (amended 2026-11-21, phase 2). Ended sessions keep their last transcript lines and get no further captures (amended 2026-11-21, phase 2).
-- **Actions** are small JSON POSTs: new task, answer, reply, stop, pin, archive, delete. Each action returns at once, and its result arrives as an event.
+- **Actions** are small JSON POSTs: new task, answer, reply, stop, pin, archive, delete. Each action returns at once, and its result arrives as an event. **Except new task** (amended 2026-11-21, phase 3): `POST /api/sessions` waits for `git worktree add` (up to 60 s) and the window launch, then answers 201 with the session's id. It is synchronous so that a failure can say why and roll back.
+- **Ports and files** (amended 2026-11-21, phase 3): `session.ports` and `session.files` go out for the viewed session on every refresh, also when empty or unchanged, and in the reconnect snapshot, so a held value never goes stale. The port scan runs while a tab views a session that is **running or needs you** (the spec said running only; a dev server stays up while Claude waits for an answer), every 5 s, and once at a turn end. Caps: 100 files per session (`session.files` also carries the total), and line counts are read for at most 100 untracked files.
 
 ### 5.6 The terminal view (lazy)
 
@@ -180,8 +203,8 @@ Opening Terminal (`T`) loads `xterm.js` the first time (about 90 KB gzipped, the
 
 ### 5.7 Preview ports and changed files
 
-- **Ports:** on Linux, `ss -ltnpH`; on macOS, `lsof -iTCP -sTCP:LISTEN -nP`. Kage keeps only the ports whose process is a descendant of the window's pane process (`#{pane_pid}`). Links point to `http://<tailscale-host>:<port>`. If a port listens only on 127.0.0.1, its card says "Only on this machine" and shows the `ssh -L` command instead of a link.
-- **Files:** `git -C <worktree> status --porcelain=v2` and `git diff --numstat <base>...` refresh after edit hooks and `Stop`. View diff opens a read-only diff, rendered by Kage from `git diff <base>...`.
+- **Ports:** on Linux, `ss -ltnpH`; on macOS, `lsof -iTCP -sTCP:LISTEN -nP`. Kage keeps only the ports whose process is a descendant of the window's pane process (`#{pane_pid}`), walked with `ps -A -ww -o pid=,ppid=,args=` (as built, amended 2026-11-21, phase 3). The card's label is the program name from the `ps` of the listener's own process tree, because `ss` names a Node process "MainThread". A daemon that detached from the pane (its parent is now `init`) isn't found. Links point to `http://<tailscale-host>:<port>`. If a port listens only on 127.0.0.1, its card says "Only on this machine" and shows the `ssh -L` command instead of a link.
+- **Files:** refresh after edit hooks and `Stop`. View diff opens a read-only diff. As built (amended 2026-11-21, phase 3), the file list is **the merge base to the working tree, plus untracked files**: `git diff --numstat <merge base of refs/heads/<base> and HEAD>` (so uncommitted edits count, which `<base>...` would leave out) and `git ls-files --others --exclude-standard`, with line counts for small untracked files. Every git call runs with `GIT_OPTIONAL_LOCKS=0`, so Kage's status checks never take the index lock away from Claude. **Phase 4's diff must use the same form** (merge base to working tree, plus untracked), or the list and the diff will disagree.
 
 ### 5.8 Finishing sessions
 
@@ -207,7 +230,12 @@ Kage can run commands on the machine, so the defaults are strict:
 - **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed.
 - **DNS rebinding:** reject requests whose `Host` header isn't the configured host name or IP.
 - **CSRF:** every POST and WebSocket needs the header `X-Kage: 1` and a matching `Origin`.
-- **Optional token:** `token` in the config. When set, a login page stores it in an `HttpOnly`, `SameSite=Strict` cookie.
+- **Optional token** (as built, amended 2026-11-21, phase 3): `token` in the config, at least 16 characters (a shorter one stops Kage at start). When set, every `/api/*` route needs the cookie `kage_auth`, except `GET /api/auth`, `POST /api/login` and `POST /api/logout`.
+  - The cookie is `HttpOnly`, `SameSite=Strict`, `Path=/`, 30 days, and `Secure` over https. Its value is an HMAC-SHA256 of a fixed label keyed with the token, so it reveals nothing of the token. It is compared in constant time.
+  - `GET /api/auth` answers 200 when signed in and 401 when not. `POST /api/login {token}` sets the cookie and answers 204, or 401 for a wrong token. `POST /api/logout` needs only the CSRF header, always clears the cookie, and answers 204.
+  - **Limiter.** 5 failed logins from one address block that address for 60 s (429). A global ceiling of 30 failures a minute blocks everyone, so one peer can't lock the others out one by one. Only failures count.
+  - A 401 anywhere returns the board to the login screen.
+  - **There is no server-side expiry.** The cookie lasts its 30 days. To sign out every device, change the token and restart Kage.
 - **Hook socket:** a Unix socket with `0600` permissions, owned by the user.
 - **Shell safety:** all tmux and git calls use `execFile` with argument arrays, never a shell string. Task text reaches `claude` as a single argument.
 - **Ownership:** stop, archive, delete and resume are refused unless the target window's `@kage_id` matches one of Kage's records (§5.2). Answer and reply also work on external windows.
@@ -231,6 +259,8 @@ Kage can run commands on the machine, so the defaults are strict:
 }
 ```
 
+`worktreeDir` and `branchPrefix` are checked when the config loads (amended 2026-11-21, phase 3). `worktreeDir` is a relative folder name made of plain segments: no `..`, no `.git`, no leading `/`. `branchPrefix` is empty or looks like `kage/`: letters, digits, `.`, `_`, `-` and `/`, no segment starting with `-` or `.`, none ending in `.lock`. The environment variable `KAGE_CLAUDE_BIN` names the `claude` program for new tasks (a path, or a name on `PATH`).
+
 `name` is the machine name shown in the host pill (default: the short host name). `host` is the address Kage listens on (default: the Tailscale IP). Projects are the git repositories directly inside `projectsRoot`. The New task picker defaults to the project used last and to that repo's default branch.
 
 ### 5.12 HTTP API
@@ -240,17 +270,27 @@ Kage can run commands on the machine, so the defaults are strict:
 | `GET /` | The board (HTML, CSS and JS inlined or preloaded) |
 | `GET /api/events` | SSE stream (§5.5) |
 | `POST /api/view` | `{streamId, id}`: which session this tab shows (`id: null` for none) |
-| `GET /api/projects` | Projects and their branches, for New task |
-| `POST /api/sessions` | `{project, base, task, acceptEdits}`: start a task |
-| `POST /api/sessions/:id/answer` | `{option}` (1–9) |
+| `GET /api/projects` | Projects and their branches, for New task. 501 in demo mode |
+| `GET /api/auth` | 200 when signed in, else 401 (always open) |
+| `POST /api/login` | `{token}`: sets the cookie (204); 401 wrong token, 429 too many tries |
+| `POST /api/logout` | Clears the cookie (CSRF only; 204) |
+| `POST /api/sessions` | `{project, base, task, acceptEdits}`: start a task. 201 with the new session's id; 400 bad body; 404 unknown project or branch; 422 git or tmux failed (rolled back); 503 no `claude` |
+| `POST /api/sessions/:id/answer` | `{option, question}`: option 1–9 and the question text the card showed. 409 if the question changed or isn't waiting |
 | `POST /api/sessions/:id/reply` | `{text}`: a typed answer, or a follow-up task for a done session |
-| `POST /api/sessions/:id/stop` | Stop |
+| `POST /api/sessions/:id/stop` | Stop (no body). 403 for a window Kage didn't create |
 | `POST /api/sessions/:id/pin` | `{pinned}` |
 | `POST /api/sessions/:id/archive` | `{archived}` |
 | `DELETE /api/sessions/:id` | Delete (after the UI confirm) |
 | `GET /api/sessions/:id/diff` | Unified diff against the base |
 | `GET /api/sessions/:id/terminal` | WebSocket (§5.6) |
 | `POST /hook` (Unix socket only) | Hook events from `kage hook` |
+
+**Status codes** (amended 2026-11-21, phase 3): a failure's body is `{error}`, one plain sentence.
+- 400: a bad body (exact keys only; control characters, length and prefix rules).
+- 401: no or wrong token. 403: a window or origin Kage doesn't own. 404: no such session, project or branch.
+- 409: the session isn't in the state the action needs (the question changed, still working, ended, text still in the input box).
+- 413: a body over 16 KB. 422: git or tmux refused. 429: too many logins. 503: no `claude`.
+- 501: demo mode has no tasks or controls.
 
 ### 5.13 Install and distribution
 
@@ -325,12 +365,15 @@ The design target is the source of truth. Open `docs/design/kage-board.html`; wh
 
 ### 6.4 Keyboard
 
-`N` new task · `J`/`K` next and previous session · `1`–`9` answer · `R` reply · `T` terminal · `X` stop · `S` pin · `E` archive · `Esc` closes the terminal, the dialog or the confirmation · `⌘K`/`Ctrl K` command palette (version 1: jump to a session, new task). Shortcuts are ignored while typing in a field.
+`N` new task · `J`/`K` next and previous session · `1`–`9` answer · `R` reply · `T` terminal · `X` stop (twice) · `S` pin · `E` archive · `Esc` closes the terminal, the dialog or the confirmation · `⌘K`/`Ctrl K` command palette (version 1: jump to a session, new task). Shortcuts are ignored while typing in a field. **Stop on `X` needs a second press within 2 s** (amended 2026-11-21, phase 3): a stray key must not kill a session. The first press shows "Press X again to stop" in the muted text colour, and the Stop button still stops at once. Held keys don't repeat an action (`J`/`K` still repeat: that is list navigation). Stop shows only for a running or needs-you session that Kage created.
 
 ### 6.5 States the design doesn't show (builder's calls)
 
 - **First run with no sessions:** the middle column says "No sessions yet" and offers the New task form with a short explanation.
 - **New task:** clicking New task turns the left column's top into a form (task text, Project ▾, Branch off ▾, an "Accept edits automatically" checkbox, Start). `Enter` starts it, and `Esc` cancels.
+- **New task, as built** (amended 2026-11-21, phase 3): the form loads the projects ("Loading…", or "No git repositories in <projectsRoot>." when there are none), picks the last-used project and its default branch, and disables Start while the stream is down. Start shows "Starting…" until the 201, then selects the new session. An error shows in one line under the form, in the server's own words. The form is inline and non-modal, with no focus trap, and `Esc` is always visible. In demo mode the server's 501 sentence shows as that line.
+- **Login** (amended 2026-11-21, phase 3): when a token is set and the browser has no valid cookie, the page shows only an "Access token" field and **Sign in** (in the strong text colour, not lime). A wrong token shows "That token isn't right."; too many tries show "Too many tries. Wait a minute and try again."
+- **Local-only port** (amended 2026-11-21, phase 3): the card says "Only on this machine" and shows `ssh -L <port>:localhost:<port> <host>` to copy. When the board itself is open on that machine, the port links to `localhost`.
 - **Server unreachable:** a thin bar under the top bar says "Reconnecting to my-pc…". The UI stays readable, and actions are disabled until the connection is back.
 - **Terminal open:** the output area becomes the terminal, and its footer shows "Back to session  Esc".
 - **Diff view:** it replaces the output area with a read-only unified diff, using the same Back pattern.
