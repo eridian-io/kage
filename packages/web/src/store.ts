@@ -84,6 +84,10 @@ export function applyEvent(e: ServerEvent): void {
       linesById.value = fresh
         ? new Map()
         : new Map([...linesById.value].filter(([id]) => e.sessions.some((s) => s.id === id)));
+      // Counts of sessions that are gone go too; the others continue, so keys stay unique.
+      for (const id of [...lineCount.keys()]) {
+        if (!e.sessions.some((s) => s.id === id)) lineCount.delete(id);
+      }
       // A removal missed while disconnected is never announced, so its toast entry goes.
       for (const id of [...deleting.keys()]) {
         if (!e.sessions.some((s) => s.id === id)) deleting.delete(id);

@@ -1,6 +1,6 @@
 import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { applyEvent, linesById, projectsRoot, streamId } from './store.ts';
+import { applyEvent, lineKeyBase, linesById, projectsRoot, streamId } from './store.ts';
 
 const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
@@ -45,6 +45,21 @@ describe('protocol v2 store', () => {
       sessions: [{ ...demoSessions(1)[0], id: 'a' } as Session],
     });
     expect([...linesById.value.keys()]).toEqual(['a']);
+  });
+  it('a snapshot also forgets the line counts of absent sessions, and keeps the others', () => {
+    applyEvent({ type: 'session.lines', id: 'a', lines: [line(1), line(2)], reset: true });
+    applyEvent({ type: 'session.lines', id: 'b', lines: [line(3)], reset: true });
+    const a = lineKeyBase('a', 0);
+    expect(lineKeyBase('b', 0)).toBeGreaterThan(0);
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [{ ...demoSessions(1)[0], id: 'a' } as Session],
+    });
+    expect(lineKeyBase('a', 0)).toBe(a);
+    expect(lineKeyBase('b', 0)).toBe(0);
   });
   it('a snapshot of a new stream clears all lines', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
