@@ -281,12 +281,17 @@ test('a permission prompt waits for you, and runs on after 1 is sent to the pane
     'Waiting for youDo you want to proceed? — npm run clean',
     { timeout: STATUS_MS },
   );
-  await expect(page.locator('.k-ask .k-opts button')).toHaveText([
+  // The option buttons; the reply hint after them is a button too.
+  const options = page.locator('.k-ask .k-opts button:not(.k-or)');
+  await expect(options).toHaveText([
     '1Yes',
     '2Yes, and don’t ask again for: npm run clean *',
     '3Yes, and switch to auto mode',
     '4No',
   ]);
+  // The board never switches the launch permission mode (R39): shown, but disabled.
+  await expect(options.nth(2)).toBeDisabled();
+  await expect(options.nth(0)).toBeEnabled();
 
   const chips = await recordChips(page);
   // The test answers in the pane, not through the board (answering from Kage is phase 3).
