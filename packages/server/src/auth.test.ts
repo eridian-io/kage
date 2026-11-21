@@ -64,31 +64,60 @@ describe('isAuthorised', () => {
 });
 
 describe('LoginLimiter', () => {
-  it('allows 5 failures in 60 s, refuses the 6th try, and allows again after the window', () => {
+  const A = '100.64.0.9';
+  const B = '100.64.0.10';
+
+  it('allows 5 failures from an address in 60 s, refuses the 6th try, and allows again after the window', () => {
     let t = 1_000_000;
     const l = new LoginLimiter({ now: () => t });
     for (let i = 0; i < 5; i++) {
-      expect(l.allow()).toBe(true);
-      l.fail();
+      expect(l.allow(A)).toBe(true);
+      l.fail(A);
       t += 1000;
     }
-    expect(l.allow()).toBe(false);
+    expect(l.allow(A)).toBe(false);
     t += 54_999; // 59.999 s after the first failure
-    expect(l.allow()).toBe(false);
+    expect(l.allow(A)).toBe(false);
     t += 1; // the first failure leaves the window
-    expect(l.allow()).toBe(true);
-    l.fail();
-    expect(l.allow()).toBe(false);
+    expect(l.allow(A)).toBe(true);
+    l.fail(A);
+    expect(l.allow(A)).toBe(false);
+  });
+
+  it('an address that is locked out does not lock out another', () => {
+    const l = new LoginLimiter({ now: () => 0 });
+    for (let i = 0; i < 5; i++) l.fail(A);
+    expect(l.allow(A)).toBe(false);
+    expect(l.allow(B)).toBe(true);
+  });
+
+  it('30 failures a minute from all addresses together refuse everyone', () => {
+    let t = 0;
+    const l = new LoginLimiter({ now: () => t });
+    for (let i = 0; i < 30; i++) {
+      const peer = `100.64.1.${i}`;
+      expect(l.allow(peer)).toBe(true);
+      l.fail(peer);
+    }
+    expect(l.allow('100.64.2.1')).toBe(false);
+    t = 60_000;
+    expect(l.allow('100.64.2.1')).toBe(true);
   });
 
   it('counts only failures, and its memory stays bounded', () => {
     let t = 0;
-    const l = new LoginLimiter({ max: 2, windowMs: 100, now: () => t });
-    for (let i = 0; i < 10; i++) expect(l.allow()).toBe(true);
-    for (let i = 0; i < 1000; i++) l.fail();
-    expect(l.size).toBeLessThanOrEqual(2);
-    expect(l.allow()).toBe(false);
+    const l = new LoginLimiter({ max: 2, globalMax: 1e9, windowMs: 100, maxKeys: 3, now: () => t });
+    for (let i = 0; i < 10; i++) expect(l.allow(A)).toBe(true);
+    for (let i = 0; i < 1000; i++) l.fail(A);
+    expect(l.allow(A)).toBe(false);
+    for (let i = 0; i < 1000; i++) l.fail(`peer-${i}`);
+    expect(l.size).toBe(3);
+    // The least recently failed addresses went first: A is forgotten, the newest are kept.
+    expect(l.allow(A)).toBe(true);
+    l.fail('peer-999');
+    l.fail('peer-999');
+    expect(l.allow('peer-999')).toBe(false);
     t = 100;
-    expect(l.allow()).toBe(true);
+    expect(l.allow('peer-999')).toBe(true);
   });
 });

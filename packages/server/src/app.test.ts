@@ -345,7 +345,6 @@ describe('token login (B13)', () => {
       req('/api/events'),
       mutate('POST', '/api/view', { streamId: 's', id: null }),
       mutate('DELETE', '/api/sessions/docs'),
-      mutate('POST', '/api/logout'),
       req('/api/nope'),
     ];
     for (const r of cases) {
@@ -466,12 +465,60 @@ describe('token login (B13)', () => {
     expect((await a.fetch(login({ token: TOKEN }))).status).toBe(204);
   });
 
-  it('logout clears the cookie', async () => {
-    const res = await record(
-      await app(false, TOKEN).fetch(withCookie(mutate('POST', '/api/logout'))),
+  it('logout always answers 204 and clears the cookie: with it, without it, or a wrong one', async () => {
+    const a = app(false, TOKEN);
+    for (const r of [
+      withCookie(mutate('POST', '/api/logout')),
+      mutate('POST', '/api/logout'),
+      withCookie(mutate('POST', '/api/logout'), `kage_auth=${authCookieValue('y'.repeat(16))}`),
+    ]) {
+      const res = await record(await a.fetch(r));
+      expect(res.status).toBe(204);
+      expect(res.headers.get('set-cookie')).toBe(CLEAR_COOKIE);
+    }
+    // CSRF still applies.
+    const noHeader = await a.fetch(
+      req('/api/logout', { method: 'POST', headers: { Origin: ORIGIN } }),
     );
-    expect(res.status).toBe(204);
-    expect(res.headers.get('set-cookie')).toBe(CLEAR_COOKIE);
+    expect(noHeader.status).toBe(403);
+  });
+
+  /** A request as @hono/node-server hands it over: the socket's address in env.incoming. */
+  const from = (a: ReturnType<typeof app>, r: Request, remoteAddress: string) =>
+    a.fetch(r, { incoming: { socket: { remoteAddress } } });
+
+  it('parallel wrong tries can not race the limiter: exactly 5 get 401, the rest 429', async () => {
+    const a = app(false, TOKEN);
+    const all = await Promise.all(
+      Array.from({ length: 20 }, (_, i) =>
+        from(a, login({ token: `wrong-token-${i}-padding` }), '100.64.0.9'),
+      ),
+    );
+    const statuses = all.map((r) => r.status);
+    expect(statuses.filter((s) => s === 401)).toHaveLength(5);
+    expect(statuses.filter((s) => s === 429)).toHaveLength(15);
+  });
+
+  it('limits per socket address, never by a header; one address locked out leaves another alone', async () => {
+    const a = app(false, TOKEN);
+    for (let i = 0; i < 5; i++) {
+      const r = login({ token: `wrong-token-${i}-padding` });
+      expect((await from(a, r, '100.64.0.9')).status).toBe(401);
+    }
+    // A forwarded-for header does not make the locked-out peer someone else.
+    const spoofed = login({ token: TOKEN });
+    spoofed.headers.set('X-Forwarded-For', '100.64.0.10');
+    expect((await from(a, spoofed, '100.64.0.9')).status).toBe(429);
+    expect((await from(a, login({ token: TOKEN }), '100.64.0.10')).status).toBe(204);
+  });
+
+  it('30 failures a minute across all addresses refuse every address', async () => {
+    const a = app(false, TOKEN);
+    for (let i = 0; i < 30; i++) {
+      const r = login({ token: `wrong-token-${i}-padding` });
+      expect((await from(a, r, `100.64.1.${i}`)).status).toBe(401);
+    }
+    expect((await from(a, login({ token: TOKEN }), '100.64.2.1')).status).toBe(429);
   });
 
   it('with no token set, everything passes as in phase 2', async () => {

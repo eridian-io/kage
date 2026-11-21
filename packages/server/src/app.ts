@@ -78,6 +78,16 @@ function serveAsset(asset: Asset, req: Request): Response {
   return new Response(body as Uint8Array<ArrayBuffer>, { status: 200, headers });
 }
 
+/**
+ * The TCP peer's address, from @hono/node-server's `env.incoming`; never from a header, which the
+ * client controls. Requests without a socket (tests calling fetch directly) share one key.
+ */
+function remoteAddress(env: unknown): string {
+  const incoming = (env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)
+    ?.incoming;
+  return incoming?.socket?.remoteAddress ?? 'unknown';
+}
+
 export function createApp(deps: AppDeps): Hono {
   const { source, hub, assets, allowed, token } = deps;
   const app = new Hono();
@@ -106,17 +116,19 @@ export function createApp(deps: AppDeps): Hono {
   const limiter = new LoginLimiter();
   app.post('/api/login', async (c) => {
     if (token === '') return c.body(null, 204);
-    if (!limiter.allow()) {
-      return c.json({ error: 'Too many tries. Wait a minute and try again.' }, 429);
-    }
     const body: unknown = await c.req.json().catch(() => undefined);
     const keys = typeof body === 'object' && body !== null ? Object.keys(body) : [];
     const given = (body as { token?: unknown } | undefined)?.token;
     if (Array.isArray(body) || keys.length !== 1 || typeof given !== 'string') {
       return c.json({ error: 'Expected {"token": "<access token>"}' }, 400);
     }
+    // No await from here to fail(): parallel tries can't all pass allow() before one fails.
+    const peer = remoteAddress(c.env);
+    if (!limiter.allow(peer)) {
+      return c.json({ error: 'Too many tries. Wait a minute and try again.' }, 429);
+    }
     if (!sameSecret(given, token)) {
-      limiter.fail();
+      limiter.fail(peer);
       return c.json({ error: "That token isn't right." }, 401);
     }
     // Kage is usually served over plain http on the tailnet, where Secure would drop the cookie.

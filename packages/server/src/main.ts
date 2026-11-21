@@ -104,6 +104,47 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
   }
 }
 
+/**
+ * SIGINT and SIGTERM for `kage serve`, installed before it starts anything (B15). The first
+ * signal prints `Stopping…` once, then aborts a startup in progress (`signal`) or stops the
+ * running server and exits 0; a second one exits 130 at once.
+ */
+export function serveSignals(
+  proc: Pick<NodeJS.Process, 'on' | 'exit'>,
+  err: (line: string) => void,
+): { signal: AbortSignal; started: (r: Running) => void } {
+  const startup = new AbortController();
+  let running: Running | null = null;
+  let count = 0;
+  const shutdown = (r: Running) => {
+    setTimeout(() => proc.exit(0), 5000).unref();
+    r.stop().then(
+      () => proc.exit(0),
+      () => proc.exit(0),
+    );
+  };
+  const onSignal = () => {
+    count += 1;
+    if (count > 1) {
+      proc.exit(130);
+      return;
+    }
+    err('Stopping…');
+    if (running) shutdown(running);
+    else startup.abort();
+  };
+  proc.on('SIGINT', onSignal);
+  proc.on('SIGTERM', onSignal);
+  return {
+    signal: startup.signal,
+    started: (r) => {
+      running = r;
+      // A signal that came while main() was returning: stop what just started.
+      if (startup.signal.aborted) shutdown(r);
+    },
+  };
+}
+
 if (import.meta.main) {
   const argv = process.argv.slice(2);
   if (argv[0] === 'hook') {
@@ -113,34 +154,20 @@ if (import.meta.main) {
     } catch {}
     process.exit(0);
   }
-  // Installed before serve starts anything (B15). The first signal aborts a startup in progress,
-  // or stops a running server; a second one exits at once.
-  const startup = new AbortController();
-  let running: Running | null = null;
-  let signals = 0;
-  const shutdown = (r: Running) => {
-    setTimeout(() => process.exit(0), 5000).unref();
-    r.stop().then(
-      () => process.exit(0),
-      () => process.exit(0),
-    );
-  };
-  const onSignal = () => {
-    signals += 1;
-    if (signals > 1) process.exit(130);
-    if (running) shutdown(running);
-    else startup.abort();
-  };
-  process.on('SIGINT', onSignal);
-  process.on('SIGTERM', onSignal);
+  const out = (line: string) => console.log(line);
+  const err = (line: string) => console.error(line);
+  if (argv[0] !== 'serve') {
+    const code = await main(argv, { env: process.env, stdin: process.stdin, out, err });
+    process.exit(typeof code === 'number' ? code : 0);
+  }
+  const signals = serveSignals(process, err);
   const result = await main(argv, {
     env: process.env,
     stdin: process.stdin,
-    out: (line) => console.log(line),
-    err: (line) => console.error(line),
-    signal: startup.signal,
+    out,
+    err,
+    signal: signals.signal,
   });
   if (typeof result === 'number') process.exit(result);
-  running = result;
-  if (startup.signal.aborted) shutdown(result);
+  signals.started(result);
 }

@@ -27,9 +27,12 @@ export function apiPost(
   });
 }
 
-/** GET /api/auth: 204 when signed in (or no token is set), 401 when not. */
+/**
+ * GET /api/auth: 204 when signed in (or no token is set), 401 when not. Unlike the other calls it
+ * leaves `authRequired` to its caller (the stream), which ignores the answer once it has stopped.
+ */
 export function authStatus(): Promise<number> {
-  return send('/api/auth', {}).then((r) => r.status);
+  return fetch('/api/auth').then((r) => r.status);
 }
 
 export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' | 'error'> {

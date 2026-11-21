@@ -136,7 +136,7 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `branchPrefix` | `"kage/"` | The prefix for the branches Kage creates |
 | `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or after this many days |
 | `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
-| `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in |
+| `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in. Change the token to sign out every device. |
 
 Live sessions use `tmuxSession`, `token` and the host, port and name keys. `projectsRoot`, `worktreeDir`, `branchPrefix`, `autoArchive` and `ntfyTopic` take effect in later phases; Kage already reads and checks every key.
 

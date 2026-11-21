@@ -47,9 +47,9 @@ export function isAuthorised(token: string, cookieHeader: string | undefined): b
   return ok;
 }
 
-const OPEN = new Set(['GET /api/auth', 'HEAD /api/auth', 'POST /api/login']);
+const OPEN = new Set(['GET /api/auth', 'HEAD /api/auth', 'POST /api/login', 'POST /api/logout']);
 
-/** With a token set, every /api/* route but `GET /api/auth` and `POST /api/login` needs the cookie. */
+/** With a token set, every /api/* route but `GET /api/auth`, `POST /api/login` and `POST /api/logout` needs the cookie. */
 export function authGuard(token: string): MiddlewareHandler {
   return async (c, next) => {
     if (token === '' || OPEN.has(`${c.req.method} ${c.req.path}`)) return next();
@@ -59,41 +59,76 @@ export function authGuard(token: string): MiddlewareHandler {
 }
 
 /**
- * Failed logins, globally: `max` failures within `windowMs` refuse further tries until the oldest
- * leaves the window. Only failures count, and it keeps at most `max` timestamps.
+ * Failed logins (ruling R31): `max` failures from one address within `windowMs` refuse that
+ * address until its oldest failure leaves the window, and `globalMax` failures from all addresses
+ * together refuse everyone. Only failures count. Memory is bounded: at most `max` timestamps per
+ * address, `globalMax` overall, and `maxKeys` addresses (the least recently failed goes first).
+ * allow() and fail() are synchronous, so a caller that runs them with no await in between can't
+ * be raced by parallel requests.
  */
 export class LoginLimiter {
   readonly #max: number;
+  readonly #globalMax: number;
   readonly #windowMs: number;
+  readonly #maxKeys: number;
   readonly #now: () => number;
-  readonly #failures: number[] = [];
+  readonly #byKey = new Map<string, number[]>();
+  readonly #all: number[] = [];
 
-  constructor(opts: { max?: number; windowMs?: number; now?: () => number } = {}) {
+  constructor(
+    opts: {
+      max?: number;
+      globalMax?: number;
+      windowMs?: number;
+      maxKeys?: number;
+      now?: () => number;
+    } = {},
+  ) {
     this.#max = opts.max ?? 5;
+    this.#globalMax = opts.globalMax ?? 30;
     this.#windowMs = opts.windowMs ?? 60_000;
+    this.#maxKeys = opts.maxKeys ?? 1000;
     this.#now = opts.now ?? Date.now;
   }
 
-  #prune(): void {
+  #prune(list: number[]): void {
     const since = this.#now() - this.#windowMs;
-    while (this.#failures.length > 0 && (this.#failures[0] as number) <= since) {
-      this.#failures.shift();
-    }
+    while (list.length > 0 && (list[0] as number) <= since) list.shift();
   }
 
-  /** The number of failures held (test hook: it never exceeds `max`). */
+  /** The number of addresses held (test hook: it never exceeds `maxKeys`). */
   get size(): number {
-    return this.#failures.length;
+    return this.#byKey.size;
   }
 
-  allow(): boolean {
-    this.#prune();
-    return this.#failures.length < this.#max;
+  allow(key: string): boolean {
+    this.#prune(this.#all);
+    if (this.#all.length >= this.#globalMax) return false;
+    const list = this.#byKey.get(key);
+    if (!list) return true;
+    this.#prune(list);
+    if (list.length === 0) {
+      this.#byKey.delete(key);
+      return true;
+    }
+    return list.length < this.#max;
   }
 
-  fail(): void {
-    this.#prune();
-    this.#failures.push(this.#now());
-    if (this.#failures.length > this.#max) this.#failures.shift();
+  fail(key: string): void {
+    const t = this.#now();
+    this.#prune(this.#all);
+    this.#all.push(t);
+    if (this.#all.length > this.#globalMax) this.#all.shift();
+    const list = this.#byKey.get(key) ?? [];
+    this.#prune(list);
+    list.push(t);
+    if (list.length > this.#max) list.shift();
+    // Re-inserted, so Map order is least recently failed first.
+    this.#byKey.delete(key);
+    this.#byKey.set(key, list);
+    while (this.#byKey.size > this.#maxKeys) {
+      const oldest = this.#byKey.keys().next().value as string;
+      this.#byKey.delete(oldest);
+    }
   }
 }

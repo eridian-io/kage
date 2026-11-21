@@ -81,6 +81,22 @@ describe('connect: sign-in (B13)', () => {
     stop();
   });
 
+  it('a 401 that arrives after the stream was stopped changes nothing', async () => {
+    authStatus = 401;
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    stop();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authRequired.value).toBe(false);
+    // Likewise for a stream replaced by a new connect (signing in calls connect again).
+    connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    const again = connect();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authRequired.value).toBe(false);
+    again();
+  });
+
   it('a 204 retries as before', async () => {
     const stop = connect('/api/events', { retryMs: 100 });
     latest().fail();

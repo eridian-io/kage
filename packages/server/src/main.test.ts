@@ -1,5 +1,6 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand } from './hooks/settings.ts';
-import { type Io, main, type Running } from './main.ts';
+import { type Io, main, type Running, serveSignals } from './main.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
 
@@ -94,6 +95,16 @@ describe('kage serve: live-mode checks', () => {
       expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
       expect((await fetch(`http://127.0.0.1:${p}/`)).status).toBe(200);
       expect((await fetch(`http://127.0.0.1:${p}/api/events`)).status).toBe(401);
+      // Over a real socket, the limiter keys on the peer address: 5 wrong tries, then 429.
+      const base = `http://127.0.0.1:${p}`;
+      const tryLogin = (token: string) =>
+        fetch(`${base}/api/login`, {
+          method: 'POST',
+          headers: { 'X-Kage': '1', Origin: base, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ token }),
+        }).then((r) => r.status);
+      for (let i = 0; i < 5; i++) expect(await tryLogin(`wrong-token-${i}-padding`)).toBe(401);
+      expect(await tryLogin('a-secret-of-16-chars')).toBe(429);
     } finally {
       await running.stop();
     }
@@ -177,6 +188,65 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
     expect(r).toBe(1);
     expect(err).toEqual(["Couldn't start Kage: EACCES: permission denied, open dist/app.js"]);
     expect(out).toEqual([]);
+  });
+});
+
+describe('serveSignals (B15)', () => {
+  const fakeProc = () => {
+    const ee = new EventEmitter();
+    const exits: number[] = [];
+    const proc = {
+      on: (ev: string, fn: () => void) => ee.on(ev, fn),
+      exit: (code?: number) => {
+        exits.push(code ?? 0);
+      },
+    } as unknown as Pick<NodeJS.Process, 'on' | 'exit'>;
+    return { ee, exits, proc };
+  };
+
+  it('the first signal during startup prints Stopping… once and aborts; a second exits 130', () => {
+    const { ee, exits, proc } = fakeProc();
+    const s = serveSignals(proc, (l) => err.push(l));
+    expect(s.signal.aborted).toBe(false);
+    ee.emit('SIGINT');
+    expect(s.signal.aborted).toBe(true);
+    expect(err).toEqual(['Stopping…']);
+    expect(exits).toEqual([]);
+    ee.emit('SIGTERM');
+    expect(exits).toEqual([130]);
+    expect(err).toEqual(['Stopping…']);
+  });
+
+  it('once running, the first signal stops the server and exits 0', async () => {
+    const { ee, exits, proc } = fakeProc();
+    const s = serveSignals(proc, (l) => err.push(l));
+    let stopped = 0;
+    s.started({
+      stop: async () => {
+        stopped++;
+      },
+    });
+    ee.emit('SIGTERM');
+    await new Promise((r) => setImmediate(r));
+    expect(stopped).toBe(1);
+    expect(exits).toEqual([0]);
+    expect(err).toEqual(['Stopping…']);
+    expect(s.signal.aborted).toBe(false);
+  });
+
+  it('a signal that came while serve was returning stops what started', async () => {
+    const { ee, exits, proc } = fakeProc();
+    const s = serveSignals(proc, (l) => err.push(l));
+    ee.emit('SIGINT');
+    let stopped = 0;
+    s.started({
+      stop: async () => {
+        stopped++;
+      },
+    });
+    await new Promise((r) => setImmediate(r));
+    expect(stopped).toBe(1);
+    expect(exits).toEqual([0]);
   });
 });
 
