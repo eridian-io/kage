@@ -1,7 +1,7 @@
 import type { FileChange, Port } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Listener, Proc } from './ports.ts';
-import { type PreviewPatch, type PreviewTarget, PreviewTracker } from './tracker.ts';
+import { type PreviewPatch, type PreviewTarget, PreviewTracker, worktreeGone } from './tracker.ts';
 
 interface Published {
   id: string;
@@ -29,17 +29,21 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
   let gate: Promise<void> | null = null;
   const fileRuns: string[] = [];
   let fileResult: { files: FileChange[]; total: number } = { files: [], total: 0 };
+  let scanError: Error | null = null;
+  let filesError: Error | null = null;
   const tracker = new PreviewTracker({
     target: (id) => all.get(id) ?? null,
     publish: (id, patch, always) => published.push({ id, patch, always }),
     scan: async () => {
       scans++;
       if (gate) await gate;
+      if (scanError) throw scanError;
       return { listeners, procs: TREE };
     },
     files: async (worktree) => {
       fileRuns.push(worktree);
       if (gate) await gate;
+      if (filesError) throw filesError;
       return fileResult;
     },
   });
@@ -54,6 +58,12 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     },
     setFiles: (r: { files: FileChange[]; total: number }) => {
       fileResult = r;
+    },
+    failScan: (e: Error | null) => {
+      scanError = e;
+    },
+    failFiles: (e: Error | null) => {
+      filesError = e;
     },
     hold: () => {
       let release = () => {};
@@ -310,5 +320,127 @@ describe('PreviewTracker: publishing (R32)', () => {
     t.tracker.setViewed(new Set(['a']));
     t.tracker.touch('a', 'edit');
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+/** Like execFile's errors. */
+const timeoutError = () =>
+  Object.assign(new Error('Command failed: git diff'), { killed: true, signal: 'SIGTERM' });
+const goneError = () =>
+  Object.assign(new Error('Command failed: git diff'), {
+    stderr: 'fatal: not a git repository (or any of the parent directories): .git',
+  });
+const ONE = { files: [{ path: 'x.ts', added: 1, removed: 0 }], total: 1 };
+
+describe('PreviewTracker: review fix round 1', () => {
+  it('worktreeGone: ENOENT and "not a git repository" only', () => {
+    expect(worktreeGone(Object.assign(new Error('spawn git ENOENT'), { code: 'ENOENT' }))).toBe(
+      true,
+    );
+    expect(worktreeGone(goneError())).toBe(true);
+    expect(worktreeGone(timeoutError())).toBe(false);
+    expect(worktreeGone(new Error('stdout maxBuffer length exceeded'))).toBe(false);
+  });
+
+  it('a failed git run after a good one keeps the list and publishes nothing', async () => {
+    const t = setup({ a: { active: false } });
+    t.setFiles(ONE);
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(filesOf(t.published, 'a')).toEqual([{ files: ONE.files, filesTotal: 1 }]);
+    t.failFiles(timeoutError());
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(t.fileRuns).toHaveLength(2);
+    expect(filesOf(t.published, 'a')).toHaveLength(1);
+    // A second tab's view while git keeps failing: the last good list again.
+    t.tracker.refresh('a');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.published.filter((p) => p.patch.files).at(-1)).toEqual({
+      id: 'a',
+      patch: { files: ONE.files, filesTotal: 1 },
+      always: true,
+    });
+    // A worktree that is gone: the empty list is the truth.
+    t.failFiles(goneError());
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(filesOf(t.published, 'a').at(-1)).toEqual({ files: [], filesTotal: 0 });
+  });
+
+  it('a failed git run on a first view with no good value sends [] once', async () => {
+    const t = setup({ a: { active: false } });
+    t.failFiles(timeoutError());
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.published.filter((p) => p.patch.files)).toEqual([
+      { id: 'a', patch: { files: [], filesTotal: 0 }, always: true },
+    ]);
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(filesOf(t.published, 'a')).toHaveLength(1);
+  });
+
+  it('a burst of edits longer than 3 s still refreshes at 3 s', async () => {
+    const t = setup({ a: { active: false } });
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    t.fileRuns.length = 0;
+    for (let ms = 0; ms < 2900; ms += 100) {
+      t.tracker.touch('a', 'edit');
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    // First touch at 0, now 2900: nothing yet; the max wait ends at 3000.
+    expect(t.fileRuns).toEqual([]);
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(t.fileRuns).toHaveLength(1);
+    // The next burst starts its own 3 s.
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(500);
+    expect(t.fileRuns).toHaveLength(2);
+  });
+
+  it('a session that loses its pane (ended) gets ports [], viewed or not', async () => {
+    const t = setup({ a: {}, b: {} });
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(portsOf(t.published, 'a')).toEqual([[VITE_PORT]]);
+    Object.assign(t.all.get('a') as PreviewTarget, { panePid: null, active: false });
+    t.tracker.statusChanged('a');
+    expect(t.published.at(-1)).toEqual({ id: 'a', patch: { ports: [] }, always: false });
+    expect(vi.getTimerCount()).toBe(0);
+    Object.assign(t.all.get('b') as PreviewTarget, { panePid: null, active: false });
+    t.tracker.statusChanged('b');
+    expect(t.published.at(-1)).toEqual({ id: 'b', patch: { ports: [] }, always: false });
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a scan that fails on a first view sends ports [] once', async () => {
+    const t = setup({ a: {} });
+    t.failScan(new Error('ss timed out'));
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.published.filter((p) => p.patch.ports)).toEqual([
+      { id: 'a', patch: { ports: [] }, always: true },
+    ]);
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(portsOf(t.published, 'a')).toHaveLength(1);
+  });
+
+  it('unview forgets the last values: a re-view whose scan and git fail sends [], not stale data', async () => {
+    const t = setup({ a: { active: false } });
+    t.setFiles(ONE);
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    t.tracker.setViewed(new Set());
+    t.failScan(new Error('ss timed out'));
+    t.failFiles(timeoutError());
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.published.slice(-2)).toEqual([
+      { id: 'a', patch: { files: [], filesTotal: 0 }, always: true },
+      { id: 'a', patch: { ports: [] }, always: true },
+    ]);
   });
 });

@@ -36,10 +36,24 @@ export interface PreviewTrackerDeps {
   portEveryMs?: number;
   /** Quiet time after the last edit before the files refresh (default 500). */
   filesDebounceMs?: number;
+  /** Longest wait from the first edit of a burst to its refresh (default 3000). */
+  filesMaxWaitMs?: number;
+}
+
+/**
+ * A git failure that means the folder is gone or no repository (an empty list is then the
+ * truth), as opposed to a timeout or a full buffer (the last good list stays).
+ */
+export function worktreeGone(err: unknown): boolean {
+  const e = err as { code?: unknown; stderr?: unknown; message?: unknown } | null;
+  if (e?.code === 'ENOENT') return true;
+  return /not a git repository/i.test(`${String(e?.stderr ?? '')} ${String(e?.message ?? '')}`);
 }
 
 interface FileState {
   timer: ReturnType<typeof setTimeout> | null;
+  /** Date.now() of the first touch of the burst the timer waits for. */
+  firstAt: number | null;
   running: boolean;
   again: boolean;
 }
@@ -55,6 +69,7 @@ export class PreviewTracker {
   readonly #d: PreviewTrackerDeps;
   readonly #portEveryMs: number;
   readonly #filesDebounceMs: number;
+  readonly #filesMaxWaitMs: number;
   #viewed = new Set<string>();
   #timer: ReturnType<typeof setInterval> | null = null;
   #scanning = false;
@@ -71,6 +86,7 @@ export class PreviewTracker {
     this.#d = d;
     this.#portEveryMs = d.portEveryMs ?? 5000;
     this.#filesDebounceMs = d.filesDebounceMs ?? 500;
+    this.#filesMaxWaitMs = d.filesMaxWaitMs ?? 3000;
   }
 
   /** The sessions some tab views. Newly viewed ones get their ports and files now. */
@@ -99,9 +115,19 @@ export class PreviewTracker {
     if (reason === 'turn-end') void this.#scanPorts();
   }
 
-  /** The session's status changed: the port timer follows; one arming it scans at once. */
+  /**
+   * The session's status changed: the port timer follows; one arming it scans at once. A session
+   * without a live pane (ended) has no ports: `[]` goes out, viewed or not (the publisher drops
+   * an unchanged value).
+   */
   statusChanged(id: string): void {
-    if (this.#stopped || !this.#viewed.has(id)) return;
+    if (this.#stopped) return;
+    const t = this.#d.target(id);
+    if (t && t.panePid === null) {
+      if (this.#viewed.has(id)) this.#publishPorts(id, []);
+      else this.#d.publish(id, { ports: [] }, false);
+    }
+    if (!this.#viewed.has(id)) return;
     const armed = this.#timer !== null;
     this.#arm();
     if (!armed && this.#timer !== null) void this.#scanPorts();
@@ -164,7 +190,14 @@ export class PreviewTracker {
     }
     this.#scanning = false;
     if (this.#stopped) return;
-    if (!failed) {
+    if (failed) {
+      // R32: a view still gets a ports event, the last good value or none.
+      for (const id of this.#viewed) {
+        if (!this.#forcePorts.has(id)) continue;
+        const last = this.#lastPorts.get(id);
+        this.#publishPorts(id, last ? (JSON.parse(last) as Port[]) : []);
+      }
+    } else {
       for (const id of this.#viewed) {
         const t = this.#d.target(id);
         if (!t) continue;
@@ -197,6 +230,7 @@ export class PreviewTracker {
     const st = this.#fileState(id);
     if (st.timer) clearTimeout(st.timer);
     st.timer = null;
+    st.firstAt = null;
     void this.#runFiles(id, st);
   }
 
@@ -210,12 +244,15 @@ export class PreviewTracker {
     }
     this.#forcePorts.delete(id);
     this.#forceFiles.delete(id);
+    // A later view starts from nothing: no stale value suppresses or stands in for a new one.
+    this.#lastPorts.delete(id);
+    this.#lastFiles.delete(id);
   }
 
   #fileState(id: string): FileState {
     let st = this.#fileStates.get(id);
     if (!st) {
-      st = { timer: null, running: false, again: false };
+      st = { timer: null, firstAt: null, running: false, again: false };
       this.#fileStates.set(id, st);
     }
     return st;
@@ -224,10 +261,18 @@ export class PreviewTracker {
   #filesSoon(id: string): void {
     const st = this.#fileState(id);
     if (st.timer) clearTimeout(st.timer);
+    const now = Date.now();
+    st.firstAt ??= now;
+    // Debounced, but a long burst of edits still refreshes every 3 s.
+    const wait = Math.max(
+      0,
+      Math.min(this.#filesDebounceMs, st.firstAt + this.#filesMaxWaitMs - now),
+    );
     st.timer = setTimeout(() => {
       st.timer = null;
+      st.firstAt = null;
       void this.#runFiles(id, st);
-    }, this.#filesDebounceMs);
+    }, wait);
   }
 
   async #runFiles(id: string, st: FileState): Promise<void> {
@@ -238,12 +283,12 @@ export class PreviewTracker {
     const t = this.#d.target(id);
     if (!t) return;
     st.running = true;
-    let r: { files: FileChange[]; total: number };
+    let r: { files: FileChange[]; total: number } | null;
     try {
       r = await this.#d.files(t.worktree, t.base);
-    } catch {
-      // Not (or no longer) a repository: nothing changed that Kage can show.
-      r = { files: [], total: 0 };
+    } catch (err) {
+      // Gone or no repository: nothing to show. A timeout or similar keeps the last good list.
+      r = worktreeGone(err) ? { files: [], total: 0 } : null;
     }
     st.running = false;
     // Stopped, forgotten or no longer viewed: the result goes nowhere.
@@ -252,7 +297,12 @@ export class PreviewTracker {
       this.#fileStates.delete(id);
       return;
     }
-    this.#publishFiles(id, r);
+    if (r) this.#publishFiles(id, r);
+    else if (this.#forceFiles.has(id)) {
+      // R32: a view still gets a files event, the last good value or none.
+      const last = this.#lastFiles.get(id);
+      this.#publishFiles(id, last ? JSON.parse(last) : { files: [], total: 0 });
+    }
     if (st.again) {
       st.again = false;
       void this.#runFiles(id, st);
