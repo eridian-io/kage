@@ -204,6 +204,62 @@ describe('installKeys: after the selection changes by itself', () => {
   });
 });
 
+describe('installKeys: after the selected question changes (R51)', () => {
+  const change = (text: string, options = ['Yes', 'No']) => {
+    const web = sessions.value.find((s) => s.id === 'web');
+    if (!web) throw new Error('no web');
+    applyEvent({ type: 'session.updated', session: { ...web, question: { text, options } } });
+  };
+
+  it('a digit within 800 ms of a new question text sends nothing; after it works', async () => {
+    vi.useFakeTimers();
+    change('Delete the cache?');
+    press('1');
+    await vi.advanceTimersByTimeAsync(799);
+    press('1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    press('1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual(['/api/sessions/web/answer']);
+  });
+
+  it('new options alone also hold the digits', async () => {
+    vi.useFakeTimers();
+    const web = sessions.value.find((s) => s.id === 'web');
+    change(web?.question?.text ?? '', ['Yes', 'Yes, always', 'No']);
+    press('1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual([]);
+  });
+
+  it('an update that keeps the same question does not hold', async () => {
+    const web = sessions.value.find((s) => s.id === 'web');
+    if (!web) throw new Error('no web');
+    applyEvent({ type: 'session.updated', session: { ...web, unpushed: web.unpushed + 1 } });
+    press('1');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/web/answer']);
+  });
+
+  it('a change on another session does not hold the selected one', async () => {
+    const shop = sessions.value.find((s) => s.id === 'shop');
+    if (!shop) throw new Error('no shop');
+    applyEvent({
+      type: 'session.updated',
+      session: {
+        ...shop,
+        status: 'needs-you',
+        question: { text: 'Run it?', options: ['Yes', 'No'] },
+      },
+    });
+    press('1');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/web/answer']);
+  });
+});
+
 describe('installKeys: answering and Stop', () => {
   it('1–9 answer the selected needs-you session, only options it has', async () => {
     press('3');

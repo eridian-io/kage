@@ -107,10 +107,34 @@ export const stopPending = (s: Session): boolean =>
  */
 let autoPickedAt = 0;
 export const AUTO_PICK_MS = 1000;
-export const digitsHeld = (): boolean => Date.now() - autoPickedAt < AUTO_PICK_MS;
+/**
+ * R51: the same hold for a question that changes under the user's eyes. When the selected
+ * session's question text or options change, a digit or click meant for the old one must not
+ * answer the new one: the buttons are disabled and digits do nothing for QUESTION_HOLD_MS.
+ */
+export const QUESTION_HOLD_MS = 800;
+export const questionHeld: Signal<boolean> = signal(false);
+let questionTimer: ReturnType<typeof setTimeout> | undefined;
+function holdQuestion(): void {
+  clearTimeout(questionTimer);
+  questionHeld.value = true;
+  questionTimer = setTimeout(() => {
+    questionHeld.value = false;
+  }, QUESTION_HOLD_MS);
+}
+export const digitsHeld = (): boolean =>
+  questionHeld.value || Date.now() - autoPickedAt < AUTO_PICK_MS;
 export function releaseDigits(): void {
   autoPickedAt = 0;
+  clearTimeout(questionTimer);
+  questionHeld.value = false;
+  seenQuestion = null;
 }
+/**
+ * The selected session and its question, as last seen by keepSelection; null after an explicit
+ * selection, which is not a change under the user's eyes.
+ */
+let seenQuestion: { id: string; key: string } | null = null;
 
 /**
  * Selects a session. Every selection, even of the selected row, drops the confirmation and the
@@ -152,6 +176,10 @@ function keepSelection(): void {
   // The reply field belongs to a question that takes typed replies; it closes when that ends.
   if (!s?.question || s.question.startup) replyOpen.value = false;
   if (s === null || !canStop(s)) stopArmed.value = null;
+  // R51: the same selected session now asks something else (a new selection is not a change).
+  const key = s ? questionKey(s) : '';
+  if (s && seenQuestion?.id === s.id && seenQuestion.key !== key && key !== '') holdQuestion();
+  seenQuestion = s ? { id: s.id, key } : null;
 }
 
 /**

@@ -939,8 +939,48 @@ describe('controls', () => {
         type: 'session.updated',
         session: { ...web, question: { text: 'Next?', options: ['Yes', 'No'] } },
       });
-      await Promise.resolve();
+      // After the R51 hold.
+      await waitFor(() => expect(optButtons(container).every((b) => !b.disabled)).toBe(true), {
+        timeout: 2000,
+      });
+    });
+
+    it('holds the buttons ~800 ms after the selected question changes (R51)', async () => {
+      vi.useFakeTimers();
+      const { container } = render(<Board />);
+      const web = sessions.value.find((s) => s.id === 'web') as Session;
+      applyEvent({
+        type: 'session.updated',
+        session: { ...web, question: { text: 'Delete it?', options: ['Yes', 'No'] } },
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(optButtons(container).every((b) => b.disabled)).toBe(true);
+      fireEvent.click(optButtons(container)[0] as Element);
+      key('1');
+      await vi.advanceTimersByTimeAsync(799);
+      expect(fetchMock).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(1);
       expect(optButtons(container).every((b) => !b.disabled)).toBe(true);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(posts()).toEqual([
+        ['/api/sessions/web/answer', '1', { option: 1, question: 'Delete it?' }],
+      ]);
+    });
+
+    it('a click that lands before the re-render, during the hold, does nothing (R51)', async () => {
+      vi.useFakeTimers();
+      const { container } = render(<Board />);
+      const first = optButtons(container)[0] as HTMLButtonElement;
+      const web = sessions.value.find((s) => s.id === 'web') as Session;
+      applyEvent({
+        type: 'session.updated',
+        session: { ...web, question: { text: 'Delete it?', options: ['Yes', 'No'] } },
+      });
+      first.disabled = false;
+      fireEvent.click(first);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetchMock).not.toHaveBeenCalled();
     });
 
     it('disables the buttons and the keys while disconnected', async () => {

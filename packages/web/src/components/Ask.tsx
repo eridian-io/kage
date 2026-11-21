@@ -1,6 +1,6 @@
 import type { Question, Session } from '@kage/shared';
 import { answer } from '../api.ts';
-import { busy, connection, isAnswered, markAnswered, replyOpen } from '../store.ts';
+import { busy, connection, isAnswered, markAnswered, questionHeld, replyOpen } from '../store.ts';
 import { FollowUp } from './FollowUp.tsx';
 
 const close = () => {
@@ -16,7 +16,8 @@ const open = () => {
  * buttons only; the login screen has none (F8), so it points at the terminal.
  */
 export function Ask({ session: s, question: q }: { session: Session; question: Question }) {
-  const off = busy.value.has(s.id) || connection.value !== 'live' || isAnswered(s);
+  const off =
+    busy.value.has(s.id) || connection.value !== 'live' || isAnswered(s) || questionHeld.value;
   return (
     <div class="k-ask">
       <div class="k-q">
@@ -35,7 +36,10 @@ export function Ask({ session: s, question: q }: { session: Session; question: Q
                 key={`${i}`}
                 disabled={off || refused}
                 title={refused ? 'Choose this one in the terminal' : undefined}
-                onClick={() => answer(s, i + 1)}
+                onClick={() => {
+                  // R51: a click that lands before the re-render must not answer a new question.
+                  if (!questionHeld.value) void answer(s, i + 1);
+                }}
               >
                 <kbd>{i + 1}</kbd>
                 {o}

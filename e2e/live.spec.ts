@@ -490,6 +490,8 @@ async function expectPrompt(page: Page): Promise<void> {
     '3Yes, and switch to auto mode',
     '4No',
   ]);
+  // A new question holds its buttons and digits for ~800 ms (R51).
+  await expect(options(page).first()).toBeEnabled();
 }
 
 test('a task started from the board gets its worktree, branch and window, and runs to done', async ({
