@@ -116,7 +116,11 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
       '-y',
       '30',
     ]);
-    for (let i = 0; i < 50 && !(await client.capturePane(paneId, 50)).includes('─'); i++) {
+    // The screen's last line, so the first capture never sees a half-drawn screen.
+    const last = { prompt: 'Esc to cancel', trust: 'Enter to confirm', idle: 'for shortcuts' }[
+      mode
+    ];
+    for (let i = 0; i < 50 && !(await client.capturePane(paneId, 50)).includes(last); i++) {
       await sleep(100);
     }
     const marks: string[] = [];

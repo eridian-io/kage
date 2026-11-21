@@ -155,13 +155,17 @@ export class SessionControls {
             paneId,
             Array.from({ length: Math.abs(delta) }, () => move),
           );
-          const after = await this.#capture(paneId);
-          if (
-            !this.#showsSame(after, kind, question) ||
-            cursorIndex(after, question.options) !== plan.index
-          ) {
-            throw new ActionError(409, CHANGED);
-          }
+          // The TUI redraws a moment after the keys (R47): look until the ❯ is on the option, at
+          // most 10 times. The screen going away, or the ❯ never getting there, refuses the Enter.
+          let gone = false;
+          const there = await this.#poll(paneId, (after) => {
+            if (!this.#showsSame(after, kind, question)) {
+              gone = true;
+              return true;
+            }
+            return cursorIndex(after, question.options) === plan.index;
+          });
+          if (gone || !there) throw new ActionError(409, CHANGED);
         }
         await this.#keys(paneId, ['Enter']);
       }

@@ -250,26 +250,53 @@ describe('SessionControls.answer', () => {
     expect(tmux.log()).toEqual(['capture', 'keys Up', 'capture', 'keys Enter']);
   });
 
-  it('trust where the second capture still shows ❯ on "No, exit" → 409, no Enter', async () => {
+  it('trust where the ❯ never leaves "No, exit" after Down → 409 after 10 looks, no Enter', async () => {
     const t = target({
       question: { text: 'Trust this folder?', options: TRUST, startup: true },
       promptKind: 'trust',
     });
-    const { tmux, source, controls } = setup(t, pane('trust'), pane('trust'));
+    const { tmux, source, controls, sleeps } = setup(t, pane('trust'), pane('trust'));
     const e = await refusal(controls.answer('k-1', 2, shown('k-1')));
     expect([e.status, e.message]).toEqual([409, CHANGED]);
-    expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture']);
+    expect(tmux.log()).toEqual(['capture', 'keys Down', ...Array(10).fill('capture')]);
+    expect(sleeps).toEqual(Array(10).fill(100));
     expect(source.marks).toEqual([]);
   });
 
-  it('trust where the screen went away after Down → 409, no Enter', async () => {
+  it('R47: the screen redraws late after Down: Enter once a later capture shows ❯ on "Yes"', async () => {
+    const t = target({
+      question: { text: 'Trust this folder?', options: TRUST, startup: true },
+      promptKind: 'trust',
+    });
+    // The TUI hasn't redrawn yet when the first two captures after Down run.
+    const { tmux, source, controls } = setup(
+      t,
+      pane('trust'),
+      pane('trust'),
+      pane('trust'),
+      trustOnYes(),
+    );
+    await controls.answer('k-1', 2, shown('k-1'));
+    expect(tmux.log()).toEqual([
+      'capture',
+      'keys Down',
+      'capture',
+      'capture',
+      'capture',
+      'keys Enter',
+    ]);
+    expectCaptureBeforeEveryKey(tmux);
+    expect(source.marks).toEqual(['answered k-1']);
+  });
+
+  it('trust where the screen went away after Down → 409 at once, no Enter', async () => {
     const t = target({
       question: { text: 'Trust this folder?', options: TRUST, startup: true },
       promptKind: 'trust',
     });
     const { tmux, controls } = setup(t, pane('trust'), idle(''));
     expect((await refusal(controls.answer('k-1', 2, shown('k-1')))).message).toBe(CHANGED);
-    expect(tmux.log()).not.toContain('keys Enter');
+    expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture']);
   });
 
   it('the renderer offer takes the digit; the security notes take Enter', async () => {
