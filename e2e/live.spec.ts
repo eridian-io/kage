@@ -331,4 +331,23 @@ test('killing the tmux server ends Kage sessions, drops external ones, and the b
   await expect(page.locator('.k-host')).toContainText('my-pc');
   await expect(page.getByRole('status').filter({ hasText: 'Reconnecting' })).toHaveCount(0);
   expect(serve?.exitCode ?? null).toBeNull();
+
+  // The watcher brings the session back. Its first window is Kage's placeholder (R22): tagged,
+  // and kept off the board while it sits at its shell.
+  await expect
+    .poll(
+      async () =>
+        (
+          await tmux('list-windows', '-t', 'kage', '-F', '#{@kage_placeholder}').catch(() => ({
+            stdout: '',
+          }))
+        ).stdout.trim(),
+      { timeout: STATUS_MS },
+    )
+    .toBe('1');
+  // A window opened after it shows, which proves Kage has listed the windows since.
+  await newWindow('after-restart', dirOf('projects/shop'), 'sh');
+  await expect(row(page, 'after-restart')).toHaveCount(1, { timeout: STATUS_MS });
+  await expect(page.locator('.k-it')).toHaveCount(2);
+  await expect(row(page, 'seeded task')).toHaveCount(1);
 });
