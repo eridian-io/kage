@@ -544,6 +544,7 @@ describe('LiveSource: hooks and status', () => {
     const { source, hooks, tails } = setup({ windows: [kageWin()], records: [rec()] });
     await source.start();
     hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
     await flush();
     tails[0]?.push([{ kind: 'tool', text: 'Bash', detail: 'npm test' }], {
       now: 'Running npm test',
@@ -813,6 +814,7 @@ describe('LiveSource: pane captures and throttling', () => {
     });
     await source.start();
     hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
     await flush();
     const before = updates('k-1').length;
     for (let i = 0; i < 40; i++) {

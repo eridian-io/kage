@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
 import type { DisplayLine, Question, Session, SessionStatus } from '@kage/shared';
 import type { SessionRecord } from '../state/store.ts';
+import { boundQuestion } from '../text/bounds.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
 
 /** Pane activity this recent means running (spec §5.3, external windows without hooks). */
@@ -42,7 +43,8 @@ export function toSession(v: SessionView): Session {
     files: [],
   };
   if (v.question) s.question = { text: v.question.text, options: v.question.options.slice() };
-  if (v.now) s.now = v.now;
+  // The now line says what a running turn is doing; a finished or waiting one shows none (F3).
+  if (v.now && v.status === 'running') s.now = v.now;
   return s;
 }
 
@@ -78,7 +80,7 @@ export const sameLines = (a: DisplayLine[], b: DisplayLine[]): boolean =>
 const isObj = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v);
 
-/** AskUserQuestion's hook `tool_input` → the first question and its option labels. */
+/** AskUserQuestion's hook `tool_input` → the first question and its option labels, bounded. */
 export function questionFromToolInput(input: unknown): Question | null {
   if (!isObj(input) || !Array.isArray(input.questions)) return null;
   const q = input.questions[0];
@@ -86,7 +88,7 @@ export function questionFromToolInput(input: unknown): Question | null {
   const options = Array.isArray(q.options)
     ? q.options.flatMap((o) => (isObj(o) && typeof o.label === 'string' ? [o.label] : []))
     : [];
-  return { text: q.question, options };
+  return boundQuestion(q.question, options);
 }
 
 export const questionKey = (q: Question | null): string | null =>
