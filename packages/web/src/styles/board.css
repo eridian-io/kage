@@ -625,3 +625,31 @@ button {
   outline: 2px solid color-mix(in srgb, var(--lime) 45%, transparent);
   outline-offset: 2px;
 }
+
+/* Not in the target. Long names and paths stay on one line with an ellipsis; the element's title
+   holds the full text. Text the target shows fits, so nothing changes for it. */
+.k-head > div {
+  min-width: 0;
+}
+.k-proj,
+.k-chip {
+  flex: none;
+}
+.k-task,
+.k-it .k-name,
+.k-meta .k-clip {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.k-meta .k-clip {
+  max-width: 100%;
+}
+
+/* Not in the target: the board with no sessions. */
+.k-empty {
+  margin: auto;
+  color: var(--fg-3);
+  font-size: 13.5px;
+}

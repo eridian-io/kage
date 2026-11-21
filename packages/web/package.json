@@ -8,9 +8,13 @@
   },
   "dependencies": {
     "@fontsource/geist": "^5.2.8",
-    "@fontsource/geist-mono": "^5.2.7"
+    "@fontsource/geist-mono": "^5.2.7",
+    "@kage/shared": "workspace:*",
+    "@preact/signals": "^2.11.4",
+    "preact": "^11.2.0"
   },
   "devDependencies": {
+    "@testing-library/preact": "^3.2.6",
     "happy-dom": "^20.0.0"
   }
 }
