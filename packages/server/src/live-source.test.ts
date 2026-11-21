@@ -72,10 +72,16 @@ class FakeTmux implements TmuxClientLike {
       );
     return this.windows.map((w) => ({ ...w }));
   }
+  /** This many next captures fail (a tmux error). */
+  failCaptures = 0;
   /** Each call takes the next queued capture; the last one repeats. */
   async capturePane(paneId: string): Promise<string> {
     this.captureCalls.push(paneId);
     if (this.gate) await this.gate;
+    if (this.failCaptures > 0) {
+      this.failCaptures--;
+      throw new Error("can't find pane");
+    }
     const q = this.captures.get(paneId);
     if (!q || q.length === 0) return '';
     return (q.length > 1 ? q.shift() : q[0]) as string;
@@ -2049,6 +2055,89 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
       hooks.fire(hook('SessionStart', '%7', { source: 'clear' }));
       await flush();
       expect(source.get('k-9')?.status).toBe('done');
+    });
+
+    it('the 10 s fallback clears "Starting Claude…" also when it leaves the session running', async () => {
+      const { source, hooks } = await launchedWindow(BUSY);
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
+      expect(source.get('k-9')?.now).toBeUndefined();
+    });
+
+    it('the first UserPromptSubmit clears "Starting Claude…" with the wait', async () => {
+      const { source, hooks } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      hooks.fire(hook('UserPromptSubmit', '%7'));
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
+      expect(source.get('k-9')?.now).toBeUndefined();
+    });
+
+    it('10 s after SessionStart, a pane with neither an idle box nor "esc to interrupt" is done', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.setCapture('%7', ' ▐▛███▛█   Claude Code v2.1.330\n');
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      expect(source.get('k-9')).toMatchObject({ status: 'done' });
+    });
+
+    it('10 s after SessionStart, a permission dialog on screen makes it needs-you with that question', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.setCapture('%7', pane('permission-bash'));
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      const s = source.get('k-9');
+      expect(s?.status).toBe('needs-you');
+      expect(s?.question?.text).toBeTruthy();
+      expect(s?.question?.options.length).toBeGreaterThan(1);
+      expect(s?.now).not.toBe('Starting Claude…');
+    });
+
+    it('10 s after SessionStart, a startup screen on screen makes it needs-you with that screen', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.setCapture('%7', pane('trust'));
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      const s = source.get('k-9');
+      expect(s?.status).toBe('needs-you');
+      expect(s?.question).toMatchObject({ text: 'Trust this folder?', startup: true });
+    });
+
+    it('a failed capture at the 10 s fallback is retried once 2 s later', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 1;
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flush();
+      expect(source.get('k-9')).toMatchObject({ status: 'done' });
+    });
+
+    it('when the retry fails too, the session is not left running', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 2;
+      await vi.advanceTimersByTimeAsync(12_100);
+      await flush();
+      expect(source.get('k-9')).toMatchObject({ status: 'done' });
+    });
+
+    it('a hook during the 2 s retry wins over it', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 1;
+      await vi.advanceTimersByTimeAsync(10_100);
+      hooks.fire(hook('PreToolUse', '%7'));
+      await vi.advanceTimersByTimeAsync(2_000);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('running');
     });
 
     it('a session Kage did not just launch still goes done on SessionStart (R21)', async () => {

@@ -109,6 +109,8 @@ const REPLY_INTERRUPT_MS = 5000;
 const STARTING = 'Starting Claude…';
 /** P3F1: a launched session that had its SessionStart but no first prompt is looked at again this much later. */
 const FIRST_PROMPT_MS = 10_000;
+/** P3F1: a failed capture at that fallback (a tmux error) is tried once more this much later. */
+const FIRST_PROMPT_RETRY_MS = 2000;
 /** Claude's footer while a turn runs. */
 const BUSY_FOOTER = /esc to interrupt/i;
 
@@ -1010,28 +1012,62 @@ export class LiveSource implements SessionSource {
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
   }
 
+  /** The wait ends (its fallback and retry timers too); "Starting Claude…" goes with it. */
   #endFirstPromptWait(st: Live): void {
     st.firstPromptPending = false;
     this.#clearTimers(st, ['firstPrompt']);
+    if (st.now === STARTING) st.now = st.tail?.now() ?? null;
   }
 
   /**
-   * P3F1 fallback: FIRST_PROMPT_MS after SessionStart no first prompt came. The wait ends; when
-   * the pane shows Claude's idle box without "esc to interrupt", it is waiting for input: done.
+   * P3F1 fallback: FIRST_PROMPT_MS after SessionStart no first prompt came. In hooks mode nothing
+   * else would move the status, so it never stays running unless Claude is busy: a startup
+   * screen or a dialog on the pane makes it needs-you with that question; "esc to interrupt"
+   * keeps it running; anything else is done. A failed capture is retried once FIRST_PROMPT_RETRY_MS
+   * later; when that fails too, it is done. A hook that ends the wait meanwhile wins.
    */
-  async #firstPromptFallback(st: Live): Promise<void> {
+  async #firstPromptFallback(st: Live, retried = false): Promise<void> {
     if (!st.firstPromptPending) return;
-    st.firstPromptPending = false;
-    if (!this.#running || st.status !== 'running') return;
+    if (!this.#running || st.status !== 'running') {
+      this.#endFirstPromptWait(st);
+      return;
+    }
     const gen = st.gen;
     const text = await this.#capture(st);
-    if (text === null || !this.#running || st.gen !== gen || st.status !== 'running') return;
-    if (showsIdleBox(text) && !BUSY_FOOTER.test(text)) {
+    if (!st.firstPromptPending || !this.#running || this.#sessions.get(st.id) !== st) return;
+    if (st.gen !== gen || st.status !== 'running') {
+      this.#endFirstPromptWait(st);
+      this.#emitNow(st);
+      return;
+    }
+    if (text === null && !retried) {
+      st.timers.firstPrompt = setTimeout(() => {
+        delete st.timers.firstPrompt;
+        void this.#firstPromptFallback(st, true);
+      }, FIRST_PROMPT_RETRY_MS);
+      return;
+    }
+    this.#endFirstPromptWait(st);
+    const screen = text === null ? null : parseStartupScreen(text);
+    const prompt = text === null || screen ? null : parsePermissionPrompt(text);
+    if (screen) {
+      this.#clearTimers(st, ['idle', 'startup']);
+      this.#setStatus(st, 'needs-you');
+      st.startup = true;
+      st.question = { text: screen.text, options: screen.options, startup: true };
+      st.promptKind = screen.screen;
+    } else if (prompt && text !== null) {
+      this.#clearTimers(st, ['idle']);
+      this.#setStatus(st, 'needs-you');
+      st.question = prompt;
+      st.promptKind = numberedPromptKind(text) ?? 'permission';
+      st.promptSeen = true;
+      st.pending = true;
+    } else if (text === null || !BUSY_FOOTER.test(text)) {
       this.#clearTimers(st, ['idle']);
       this.#setStatus(st, 'done');
-      if (st.now === STARTING) st.now = st.tail?.now() ?? null;
-      this.#emitNow(st);
     }
+    this.#emitNow(st);
   }
 
   /**

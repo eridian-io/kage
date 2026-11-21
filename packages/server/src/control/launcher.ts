@@ -259,8 +259,9 @@ export class TaskLauncher {
     };
     let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;
-    // Windows already named after the slug before this launch (not ours to kill on rollback).
-    let before = new Set<string>();
+    // Windows already named after the slug before this launch (not ours to kill on rollback);
+    // null while unknown (the listing failed or never ran), which authorises no kill.
+    let before: Set<string> | null = null;
     try {
       // K3: tmux would start the window in $HOME if the folder were missing.
       const folder = await stat(path).catch(() => null);
@@ -268,10 +269,9 @@ export class TaskLauncher {
       step = 'adopt';
       await d.source.adopt(record);
       step = 'tmux';
-      before = new Set(
-        (await d.tmux.listWindows().catch(() => []))
-          .filter((w) => w.name === slug)
-          .map((w) => w.windowId),
+      before = await d.tmux.listWindows().then(
+        (ws) => new Set(ws.filter((w) => w.name === slug).map((w) => w.windowId)),
+        () => null,
       );
       ({ windowId } = await d.tmux.newWindow({
         name: slug,
@@ -286,7 +286,7 @@ export class TaskLauncher {
     } catch (e) {
       // Only what this request created: a window new-window left behind (it can time out after
       // tmux opened it), then its worktree, its branch and its record.
-      if (step === 'tmux') await this.#killLeftover(slug, kageId, before);
+      if (step === 'tmux' && before !== null) await this.#killLeftover(slug, kageId, before);
       await d.git(['worktree', 'remove', '--force', '--', path], { cwd: repo }).catch(() => {});
       await d.git(['branch', '-D', '--', branch], { cwd: repo }).catch(() => {});
       if (step === 'tmux') await d.source.abandon(kageId).catch(() => {});
@@ -307,6 +307,7 @@ export class TaskLauncher {
    * After a failed new-window: windows named `slug` that weren't there before the launch and
    * are untagged (or tagged with this launch's id) are killed, each re-checked by tmux just
    * before the kill. Best effort: a failure here leaves the window, never the launch half-done.
+   * Skipped when the listing before the launch failed: an unknown "before" authorises no kill.
    */
   async #killLeftover(slug: string, kageId: string, before: ReadonlySet<string>): Promise<void> {
     const tmux = this.#d.tmux;

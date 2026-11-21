@@ -580,6 +580,25 @@ describe('TaskLauncher: hardening (Task 6 review)', () => {
     expect(tmux.windows).toEqual([]);
   });
 
+  it('when the listing before the launch failed, a failed new-window kills nothing', async () => {
+    const { launcher, tmux, log } = setup();
+    // Someone else's window named after the slug: the failed listing never saw it.
+    tmux.windows = [{ windowId: '@3', name: 'fix-the-cart-total', kageId: null }];
+    tmux.strayOnFail = { windowId: '@9', kageId: null };
+    tmux.fail = new Error('tmux timed out');
+    let lists = 0;
+    const list = tmux.listWindows.bind(tmux);
+    tmux.listWindows = async () => {
+      if (lists++ === 0) throw new Error('no server running');
+      return list();
+    };
+    const err = await launchError(launcher.start(body()));
+    expect([err.status, err.message]).toEqual([422, "tmux couldn't open a window: tmux timed out"]);
+    expect(log).toEqual(['adopt', 'newWindow', 'abandon k-1']);
+    expect(tmux.windows.map((w) => w.windowId)).toEqual(['@3', '@9']);
+    expect(existsSync(join(repo, '.worktrees', 'fix-the-cart-total'))).toBe(false);
+  });
+
   it('without a PATH in serve, the window env leaves PATH out', async () => {
     const { launcher, tmux } = setup({ windowPath: null });
     await launcher.start(body());

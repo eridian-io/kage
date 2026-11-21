@@ -35,9 +35,9 @@ import { TranscriptTail } from './transcript/tail.ts';
 
 const DIST = join(import.meta.dirname, '../../web/dist');
 
-/** B15: a SIGINT or SIGTERM arrived before the server was up; what had started is stopped. */
 /** R53: live mode without a token, said once at startup. */
 export const NO_TOKEN = 'No token set: anyone on your tailnet can start and approve tasks.';
+/** B15: a SIGINT or SIGTERM arrived before the server was up; what had started is stopped. */
 export const STOPPED = 'Stopped before Kage was ready.';
 /** The exit code after a startup interrupted by a signal (128 + SIGINT). */
 export const STOPPED_CODE = 130;
