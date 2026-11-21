@@ -23,6 +23,8 @@ export interface SessionSource {
   remove(id: string): Promise<void>;
   /** The sessions some tab is viewing (the hub calls it whenever that set changes). */
   setViewed?(ids: ReadonlySet<string>): void;
+  /** One more stream views a session another stream already views (R32: its preview again). */
+  refreshView?(id: string): void;
   /** Never emits 'snapshot'. */
   subscribe(fn: (e: SourceEvent) => void): () => void;
 }

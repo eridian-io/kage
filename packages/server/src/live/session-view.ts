@@ -1,6 +1,7 @@
 import { posix } from 'node:path';
-import type { DisplayLine, Question, Session, SessionStatus } from '@kage/shared';
+import type { DisplayLine, FileChange, Port, Question, Session, SessionStatus } from '@kage/shared';
 import { disabledOptions, type PromptKind } from '../control/keys.ts';
+import type { PreviewTarget } from '../preview/tracker.ts';
 import type { SessionRecord } from '../state/store.ts';
 import { boundQuestion } from '../text/bounds.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
@@ -21,6 +22,10 @@ export interface SessionView {
   /** How the question is answered; it decides which options are disabled (R39). */
   promptKind?: PromptKind | null;
   now: string | null;
+  /** The latest preview values (Task 8); absent means none yet. */
+  ports?: Port[];
+  files?: FileChange[];
+  filesTotal?: number;
 }
 
 /** The wire Session for a live session; `lines` is always [] (lines travel separately). */
@@ -42,9 +47,9 @@ export function toSession(v: SessionView): Session {
     external: r === null,
     unpushed: 0,
     lines: [],
-    ports: [],
-    files: [],
-    filesTotal: 0,
+    ports: (v.ports ?? []).map((p) => ({ ...p })),
+    files: (v.files ?? []).map((f) => ({ ...f })),
+    filesTotal: v.filesTotal ?? 0,
   };
   if (v.question) {
     s.question = { text: v.question.text, options: v.question.options.slice() };
@@ -55,6 +60,24 @@ export function toSession(v: SessionView): Session {
   // The now line says what a running turn is doing; a finished or waiting one shows none (F3).
   if (v.now && v.status === 'running') s.now = v.now;
   return s;
+}
+
+/**
+ * What the preview tracker needs (F6): a record's worktree and base, or an external window's pane
+ * cwd with no base; the pane pid while the window is live; active while running or needs you.
+ * Null when there is no folder to look at.
+ */
+export function previewTarget(v: SessionView): PreviewTarget | null {
+  const worktree = v.record ? v.record.worktree : (v.window?.cwd ?? '');
+  if (worktree === '') return null;
+  const live = v.window !== null && !v.window.dead && v.status !== 'ended';
+  return {
+    id: v.id,
+    worktree,
+    base: v.record?.base ?? null,
+    panePid: live && v.window ? v.window.panePid : null,
+    active: v.status === 'running' || v.status === 'needs-you',
+  };
 }
 
 const sameQuestion = (a: Question | undefined, b: Question | undefined): boolean =>

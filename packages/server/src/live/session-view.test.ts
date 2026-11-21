@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { questionFromToolInput, type SessionView, sameSession, toSession } from './session-view.ts';
+import type { TmuxWindow } from '../tmux/format.ts';
+import {
+  previewTarget,
+  questionFromToolInput,
+  type SessionView,
+  sameSession,
+  toSession,
+} from './session-view.ts';
 
 const view = (over: Partial<SessionView> = {}): SessionView => ({
   id: 'ext-@1',
@@ -25,6 +32,48 @@ describe('toSession', () => {
 describe('toSession v3', () => {
   it('fills filesTotal 0 until real data arrives', () => {
     expect(toSession(view())).toMatchObject({ files: [], filesTotal: 0 });
+  });
+
+  it('carries the latest ports and files as copies', () => {
+    const ports = [{ port: 5173, process: 'vite', localOnly: true }];
+    const files = [{ path: 'a.ts', added: 1, removed: 2 }];
+    const s = toSession(view({ ports, files, filesTotal: 120 }));
+    expect(s).toMatchObject({ ports, files, filesTotal: 120 });
+    expect(s.ports[0]).not.toBe(ports[0]);
+    expect(s.files[0]).not.toBe(files[0]);
+  });
+});
+
+describe('previewTarget (F6)', () => {
+  const window: TmuxWindow = {
+    windowId: '@1',
+    kageId: null,
+    paneId: '%1',
+    panePid: 4100,
+    command: 'node',
+    cwd: '/home/dev/projects/demo/sub',
+    name: 'demo',
+    activity: 0,
+    placeholder: false,
+    dead: false,
+  };
+
+  it('an external window: the pane cwd, no base, its pane pid; active while running or needs you', () => {
+    expect(previewTarget(view({ window }))).toEqual({
+      id: 'ext-@1',
+      worktree: '/home/dev/projects/demo/sub',
+      base: null,
+      panePid: 4100,
+      active: true,
+    });
+    expect(previewTarget(view({ window, status: 'needs-you' }))?.active).toBe(true);
+    expect(previewTarget(view({ window, status: 'done' }))?.active).toBe(false);
+  });
+
+  it('no pane pid when ended or dead; null without a folder', () => {
+    expect(previewTarget(view({ window, status: 'ended' }))?.panePid).toBeNull();
+    expect(previewTarget(view({ window: { ...window, dead: true } }))?.panePid).toBeNull();
+    expect(previewTarget(view())).toBeNull();
   });
 });
 

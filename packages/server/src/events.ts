@@ -82,7 +82,10 @@ export class EventHub {
     if (id !== null && lines !== null) {
       this.send(c, frame({ type: 'session.lines', id, lines, reset: true }));
     }
+    // A session viewed already doesn't change the viewed set, so the source hears of it here.
+    const already = id !== null && this.viewed.has(id);
     this.syncViewed();
+    if (already) this.source.refreshView?.(id);
     return true;
   }
 

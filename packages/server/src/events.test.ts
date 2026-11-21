@@ -37,6 +37,10 @@ class StubSource implements SessionSource {
     this.viewedCalls.push([...ids].sort());
     this.onSetViewed?.(ids);
   }
+  readonly refreshCalls: string[] = [];
+  refreshView(id: string): void {
+    this.refreshCalls.push(id);
+  }
   subscribe(fn: (e: SourceEvent) => void): () => void {
     this.listeners.add(fn);
     return () => {
@@ -256,6 +260,18 @@ describe('EventHub', () => {
       expect(source.viewedCalls).toEqual([['shop'], ['docs', 'shop'], ['docs']]);
       await b.reader.cancel(); // a dropped stream leaves the union
       expect(source.viewedCalls.at(-1)).toEqual([]);
+      hub.close();
+    });
+    it('R32: a view of a session viewed already asks the source to send its preview again', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const b = await open(hub);
+      hub.view(a.streamId, 'shop'); // a new member of the union: setViewed, no refresh
+      hub.view(b.streamId, 'shop'); // viewed already: refresh
+      hub.view(b.streamId, 'docs');
+      hub.view(b.streamId, null);
+      expect(source.refreshCalls).toEqual(['shop']);
       hub.close();
     });
     it('a removed session leaves the union', async () => {

@@ -24,6 +24,9 @@ import {
 } from './listen.ts';
 import { LiveSource } from './live-source.ts';
 import type { Io, Running } from './main.ts';
+import { changedFiles } from './preview/files.ts';
+import { makeScanner } from './preview/ports.ts';
+import { PreviewTracker } from './preview/tracker.ts';
 import type { SessionSource } from './source.ts';
 import { StateStore, stateDir } from './state/store.ts';
 import { parseTmuxVersion, TmuxClient, tmuxVersionOutput } from './tmux/client.ts';
@@ -181,6 +184,14 @@ async function startLive(
     store,
     tail: (path) => new TranscriptTail(path),
     projectsRoot: cfg.projectsRoot,
+    // Ports from ss and ps on Linux, lsof and ps on macOS; no port scan elsewhere (spec §5.7).
+    preview: (host) =>
+      new PreviewTracker({
+        target: (id) => host.previewTarget(id),
+        publish: (id, patch, always) => host.setPreview(id, patch, always),
+        scan: makeScanner(io.platform ?? process.platform),
+        files: (worktree, base) => changedFiles(worktree, base, gitExec),
+      }),
   });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());

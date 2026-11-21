@@ -8,6 +8,8 @@ import {
   type HookServerLike,
   LiveSource,
   NotImplementedError,
+  type PreviewHost,
+  type PreviewLike,
   type StateStoreLike,
   type TailLike,
   type TmuxClientLike,
@@ -199,6 +201,31 @@ class FakeTail implements TailLike {
   }
 }
 
+/** Records what LiveSource tells the preview tracker. */
+class FakePreview implements PreviewLike {
+  host: PreviewHost | null = null;
+  calls: string[] = [];
+  viewed: string[][] = [];
+  setViewed(ids: ReadonlySet<string>): void {
+    this.viewed.push([...ids]);
+  }
+  touch(id: string, reason: string): void {
+    this.calls.push(`touch ${id} ${reason}`);
+  }
+  statusChanged(id: string): void {
+    this.calls.push(`status ${id}`);
+  }
+  refresh(id: string): void {
+    this.calls.push(`refresh ${id}`);
+  }
+  forget(id: string): void {
+    this.calls.push(`forget ${id}`);
+  }
+  stop(): void {
+    this.calls.push('stop');
+  }
+}
+
 // ---------------------------------------------------------------- builders
 
 const win = (over: Partial<TmuxWindow> = {}): TmuxWindow => ({
@@ -270,6 +297,7 @@ function setup(
     tail?: (path: string) => TailLike;
   } = {},
 ) {
+  const preview = new FakePreview();
   const tmux = new FakeTmux();
   tmux.windows = opts.windows ?? [];
   const watcher = new FakeWatcher();
@@ -289,6 +317,10 @@ function setup(
         return t;
       }),
     projectsRoot: ROOT,
+    preview: (host) => {
+      preview.host = host;
+      return preview;
+    },
   });
   const events: SourceEvent[] = [];
   source.subscribe((e) => events.push(e));
@@ -298,7 +330,7 @@ function setup(
     );
   const lineEvents = (id: string) =>
     events.flatMap((e) => (e.type === 'session.lines' && e.id === id ? [e] : []));
-  return { tmux, watcher, hooks, store, tails, source, events, updates, lineEvents };
+  return { tmux, watcher, hooks, store, tails, source, events, updates, lineEvents, preview };
 }
 
 const kageWin = (over: Partial<TmuxWindow> = {}) =>
@@ -2306,5 +2338,129 @@ describe('LiveSource: Task 7 fix round 2', () => {
     await vi.advanceTimersByTimeAsync(2000);
     s.tails[0]?.interrupt();
     expect(s.source.get('k-1')?.status).toBe('done');
+  });
+});
+
+describe('LiveSource: preview data (Task 8)', () => {
+  it('a PostToolUse of an edit tool touches files; another tool does not; Stop is a turn end', async () => {
+    const { source, hooks, preview } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    preview.calls = [];
+    for (const toolName of ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Read']) {
+      hooks.fire(hook('PostToolUse', '%2', { toolName }));
+    }
+    hooks.fire(hook('PreToolUse', '%2', { toolName: 'Edit' }));
+    hooks.fire(hook('PostToolUseFailure', '%2', { toolName: 'Edit' }));
+    hooks.fire(hook('Stop', '%2'));
+    expect(preview.calls).toEqual([
+      'touch k-1 edit',
+      'touch k-1 edit',
+      'touch k-1 edit',
+      'touch k-1 edit',
+      'status k-1',
+      'touch k-1 turn-end',
+    ]);
+  });
+
+  it('every status change is told to the tracker (F6)', async () => {
+    const { source, hooks, preview } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    preview.calls = [];
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    source.markStopped('k-1');
+    expect(preview.calls.filter((c) => c.startsWith('status'))).toHaveLength(2);
+  });
+
+  it('views go to the tracker once started, and refreshView asks for the values again', async () => {
+    const { source, preview } = setup({ windows: [kageWin()], records: [rec()] });
+    source.setViewed(new Set(['k-1']));
+    expect(preview.viewed).toEqual([]);
+    await source.start();
+    expect(preview.viewed).toEqual([['k-1']]);
+    source.setViewed(new Set());
+    expect(preview.viewed).toEqual([['k-1'], []]);
+    source.refreshView('k-1');
+    expect(preview.calls).toContain('refresh k-1');
+  });
+
+  it('previewTarget: a record gives its worktree, base and pane pid; active while running', async () => {
+    const { source, hooks, preview } = setup({
+      windows: [kageWin({ panePid: 4100 }), win({ windowId: '@7', paneId: '%7', panePid: 77 })],
+      records: [rec({ base: 'main' })],
+    });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    expect(preview.host?.previewTarget('k-1')).toEqual({
+      id: 'k-1',
+      worktree: `${ROOT}/shop/.worktrees/fix-the-cart-total`,
+      base: 'main',
+      panePid: 4100,
+      active: true,
+    });
+    hooks.fire(hook('Stop', '%2'));
+    expect(preview.host?.previewTarget('k-1')?.active).toBe(false);
+    // An external window: its pane cwd and no base.
+    expect(preview.host?.previewTarget('ext-@7')).toMatchObject({
+      worktree: `${ROOT}/demo`,
+      base: null,
+      panePid: 77,
+    });
+    expect(preview.host?.previewTarget('nope')).toBeNull();
+  });
+
+  it('an ended session has no pane pid', async () => {
+    const { source, preview } = setup({ windows: [], records: [rec()] });
+    await source.start();
+    expect(preview.host?.previewTarget('k-1')).toMatchObject({ panePid: null, active: false });
+  });
+
+  it('setPreview emits session.ports and session.files with filesTotal, only on a real change', async () => {
+    const { source, events } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    events.length = 0;
+    const files = [{ path: 'a.ts', added: 2, removed: 1 }];
+    const ports = [{ port: 5173, process: 'vite', localOnly: true }];
+    source.setPreview('k-1', { files, filesTotal: 140 });
+    source.setPreview('k-1', { ports });
+    source.setPreview('k-1', { files: files.map((f) => ({ ...f })), filesTotal: 140 });
+    source.setPreview('k-1', { ports: [{ ...ports[0] } as (typeof ports)[0]] });
+    expect(events).toEqual([
+      { type: 'session.files', id: 'k-1', files, filesTotal: 140 },
+      { type: 'session.ports', id: 'k-1', ports },
+    ]);
+    // R32: a view's value goes out although unchanged.
+    source.setPreview('k-1', { ports }, true);
+    expect(events).toHaveLength(3);
+    // Unknown sessions: nothing.
+    source.setPreview('nope', { ports }, true);
+    expect(events).toHaveLength(3);
+  });
+
+  it('toSession carries the latest ports and files (snapshots and updates)', async () => {
+    const { source, hooks, updates } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    const files = [{ path: 'a.ts', added: 2, removed: 1 }];
+    const ports = [{ port: 5173, process: 'vite', localOnly: true }];
+    source.setPreview('k-1', { files, filesTotal: 3, ports });
+    expect(source.get('k-1')).toMatchObject({ files, filesTotal: 3, ports });
+    expect(source.list().find((s) => s.id === 'k-1')).toMatchObject({ files, ports });
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    expect(updates('k-1').at(-1)).toMatchObject({ files, filesTotal: 3, ports });
+  });
+
+  it('a removed session is forgotten; stop() stops the tracker', async () => {
+    const { source, watcher, tmux, preview } = setup({
+      windows: [win({ windowId: '@7', paneId: '%7' })],
+    });
+    await source.start();
+    tmux.windows = [];
+    watcher.emit({ type: 'windows-changed' });
+    await vi.advanceTimersByTimeAsync(100);
+    expect(preview.calls).toContain('forget ext-@7');
+    await source.stop();
+    expect(preview.calls.at(-1)).toBe('stop');
   });
 });

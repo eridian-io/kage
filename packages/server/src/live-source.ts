@@ -7,6 +7,7 @@ import { nextStatus } from './hooks/status.ts';
 import {
   ACTIVE_MS,
   multiSelectByQuestion,
+  previewTarget,
   questionFromToolInput,
   questionKey,
   type SessionView,
@@ -24,6 +25,7 @@ import {
   showsIdleBox,
   showsPrompt,
 } from './pane/prompt.ts';
+import type { PreviewPatch, PreviewTarget, PreviewTracker } from './preview/tracker.ts';
 import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
 import type { SessionRecord, StateStore } from './state/store.ts';
 import type { TmuxClient } from './tmux/client.ts';
@@ -45,6 +47,20 @@ export type TailLike = Pick<
   'start' | 'stop' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt'
 >;
 
+/** What LiveSource tells the preview tracker. */
+export type PreviewLike = Pick<
+  PreviewTracker,
+  'setViewed' | 'touch' | 'statusChanged' | 'refresh' | 'forget' | 'stop'
+>;
+/** What the preview tracker reads from and writes to LiveSource. */
+export interface PreviewHost {
+  previewTarget(id: string): PreviewTarget | null;
+  setPreview(id: string, patch: PreviewPatch, always?: boolean): void;
+}
+
+/** PostToolUse of these tools changed files (Task 8). */
+const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
+
 export interface LiveSourceDeps {
   tmux: TmuxClientLike;
   watcher: TmuxWatcherLike;
@@ -58,6 +74,8 @@ export interface LiveSourceDeps {
   now?: () => number;
   /** Monotonic clock (ms) for throttles, idle and re-check timing (default performance.now). */
   clock?: () => number;
+  /** Makes the preview tracker (ports and changed files of viewed sessions); none without it. */
+  preview?: (host: PreviewHost) => PreviewLike;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -225,11 +243,13 @@ export class LiveSource implements SessionSource {
   #viewed = new Set<string>();
   #recheckTimer: ReturnType<typeof setTimeout> | null = null;
   #lastRecheckAt = Number.NEGATIVE_INFINITY;
+  readonly #preview: PreviewLike | null;
 
   constructor(deps: LiveSourceDeps) {
     this.#d = deps;
     this.#now = deps.now ?? Date.now;
     this.#clock = deps.clock ?? (() => performance.now());
+    this.#preview = deps.preview?.(this) ?? null;
   }
 
   // ------------------------------------------------------------ SessionSource
@@ -260,15 +280,21 @@ export class LiveSource implements SessionSource {
     throw new NotImplementedError('Deleting sessions arrives in a later version');
   }
 
-  /** Pane fallback lines are captured only for viewed sessions. */
+  /** Pane fallback lines are captured, and preview data gathered, only for viewed sessions. */
   setViewed(ids: ReadonlySet<string>): void {
     const before = this.#viewed;
     this.#viewed = new Set(ids);
     if (!this.#running) return;
+    if (this.#ready) this.#preview?.setViewed(this.#viewed);
     for (const id of this.#viewed) {
       const st = this.#sessions.get(id);
       if (st && !before.has(id)) this.#requestCapture(st);
     }
+  }
+
+  /** R32: another tab views a session that was viewed already; its preview values go out again. */
+  refreshView(id: string): void {
+    if (this.#ready) this.#preview?.refresh(id);
   }
 
   subscribe(fn: (e: SourceEvent) => void): () => void {
@@ -276,6 +302,46 @@ export class LiveSource implements SessionSource {
     return () => {
       this.#listeners.delete(fn);
     };
+  }
+
+  // ------------------------------------------------------------ preview (PreviewTracker)
+
+  /** The folder, base and pane the tracker looks at (F6); null for an unknown id. */
+  previewTarget(id: string): PreviewTarget | null {
+    const st = this.#sessions.get(id);
+    return st ? previewTarget(st) : null;
+  }
+
+  /**
+   * New preview values: session.ports / session.files go out when the value changed, or with
+   * `always` (the first value after a view, R32). toSession carries the latest values.
+   */
+  setPreview(id: string, patch: PreviewPatch, always = false): void {
+    const st = this.#sessions.get(id);
+    if (!st || !this.#running) return;
+    if (patch.ports) {
+      const changed = JSON.stringify(patch.ports) !== JSON.stringify(st.ports ?? []);
+      st.ports = patch.ports.map((p) => ({ ...p }));
+      if (changed || always) {
+        this.#emit({ type: 'session.ports', id, ports: st.ports.map((p) => ({ ...p })) });
+      }
+    }
+    if (patch.files) {
+      const total = patch.filesTotal ?? patch.files.length;
+      const changed =
+        total !== (st.filesTotal ?? 0) ||
+        JSON.stringify(patch.files) !== JSON.stringify(st.files ?? []);
+      st.files = patch.files.map((f) => ({ ...f }));
+      st.filesTotal = total;
+      if (changed || always) {
+        this.#emit({
+          type: 'session.files',
+          id,
+          files: st.files.map((f) => ({ ...f })),
+          filesTotal: total,
+        });
+      }
+    }
   }
 
   // ------------------------------------------------------------ launches (TaskLauncher)
@@ -464,6 +530,7 @@ export class LiveSource implements SessionSource {
     if (!this.#running) return;
     for (const st of this.#sessions.values()) this.#emitNow(st);
     this.#ready = true;
+    if (this.#viewed.size > 0) this.#preview?.setViewed(this.#viewed);
     const early = this.#early;
     this.#early = [];
     for (const e of early) this.#onHook(e);
@@ -489,6 +556,7 @@ export class LiveSource implements SessionSource {
     }
     if (this.#saveTimer) clearTimeout(this.#saveTimer);
     this.#saveTimer = null;
+    this.#preview?.stop();
     if (this.#dirty) await this.#saveNow();
   }
 
@@ -750,6 +818,7 @@ export class LiveSource implements SessionSource {
     st.window = null;
     st.gen++;
     this.#sessions.delete(st.id);
+    this.#preview?.forget(st.id);
     this.#emit({ type: 'session.removed', id: st.id });
   }
 
@@ -909,6 +978,9 @@ export class LiveSource implements SessionSource {
     if (next === 'ended') this.#retireTailSoon(st);
     if (e.event === 'Stop' || e.event === 'SessionEnd') this.#recheckSoon(STOP_RECHECK_MS);
     this.#emitNow(st);
+    if (e.event === 'PostToolUse' && e.toolName !== null && EDIT_TOOLS.has(e.toolName)) {
+      this.#preview?.touch(st.id, 'edit');
+    } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
   }
 
   /**
@@ -1237,6 +1309,7 @@ export class LiveSource implements SessionSource {
       st.startup = false;
       this.#clearTimers(st, ['retry']);
     }
+    if (this.#ready) this.#preview?.statusChanged(st.id);
   }
 
   #clearTimers(st: Live, names?: TimerName[]): void {
