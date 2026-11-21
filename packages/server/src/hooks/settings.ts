@@ -2,7 +2,8 @@ import { mkdir, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { HOOK_EVENTS, type HookEventName } from './event.ts';
 
-export const SETTINGS_FILE = 'kage-hooks.json';
+/** The file `kage hooks-path` writes, for `claude --settings <file>`. */
+export const SETTINGS_FILE = 'claude-settings.json';
 
 /** POSIX single-quote escaping: the word reaches the program unchanged through `sh -c`. */
 export function shellQuote(word: string): string {

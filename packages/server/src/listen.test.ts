@@ -1,7 +1,13 @@
 import { Hono } from 'hono';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from './config.ts';
-import { displayHost, ListenError, resolveListenAddress, shortHostname } from './listen.ts';
+import {
+  displayHost,
+  ListenError,
+  resolveListenAddress,
+  shortHostname,
+  tailscaleDnsName,
+} from './listen.ts';
 import { hostGuard } from './security.ts';
 
 const base = (over: { unsafeListenAll?: boolean; ip?: string | null } = {}) => ({
@@ -143,5 +149,95 @@ describe('displayHost', () => {
       '127.0.0.1',
     );
     expect(displayHost(cfg({ host: '::1', name: 'studio' }), '::1', 'Box.local')).toBe('[::1]');
+  });
+});
+
+describe('tailscaleDnsName (B1)', () => {
+  const status = (self: unknown) => async () => JSON.stringify({ Version: '1.90.0', Self: self });
+  it('reads Self.DNSName and drops the trailing dot', async () => {
+    const exec = vi.fn(status({ DNSName: 'box.tail1234.ts.net.', HostName: 'box' }));
+    expect(await tailscaleDnsName(exec)).toBe('box.tail1234.ts.net');
+    expect(exec).toHaveBeenCalledWith('tailscale', ['status', '--json']);
+  });
+  it.each([
+    ['a failing command', async () => Promise.reject(new Error('not running'))],
+    ['invalid JSON', async () => 'Tailscale is stopped.'],
+    ['no Self', async () => '{}'],
+    ['a non-string DNSName', status({ DNSName: 7 })],
+    ['an empty DNSName', status({ DNSName: '' })],
+    ['a DNSName that is not a host name', status({ DNSName: 'bad name.ts.net.' })],
+  ])('is null on %s', async (_label, exec) => {
+    expect(await tailscaleDnsName(exec as () => Promise<string>)).toBeNull();
+  });
+});
+
+describe('MagicDNS name in hostNames (B1)', () => {
+  const dns = async () => 'box.tail1234.ts.net';
+  it('is added for a Tailscale bind, auto-detected or configured', async () => {
+    const auto = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base(), tailscaleDnsName: dns },
+    );
+    expect(auto.hostNames).toContain('box.tail1234.ts.net');
+    const set = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '100.64.0.7' },
+      { ...base(), tailscaleDnsName: dns },
+    );
+    expect(set.hostNames).toContain('box.tail1234.ts.net');
+  });
+  it('is not asked for or added for a loopback bind', async () => {
+    const ask = vi.fn(dns);
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '127.0.0.1' },
+      { ...base(), tailscaleDnsName: ask },
+    );
+    expect(r.hostNames).not.toContain('box.tail1234.ts.net');
+    expect(ask).not.toHaveBeenCalled();
+  });
+  it('a null answer adds nothing', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null, name: 'my-pc' },
+      { ...base(), tailscaleDnsName: async () => null },
+    );
+    expect(r.hostNames).toEqual(['100.64.0.9', 'my-pc']);
+  });
+  it('passes the host guard', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base(), tailscaleDnsName: dns },
+    );
+    const app = new Hono();
+    app.use('*', hostGuard({ hostNames: r.hostNames, port: 8080 }));
+    app.get('/', (c) => c.text('ok'));
+    const res = await app.request('/', { headers: { Host: 'box.tail1234.ts.net:8080' } });
+    expect(res.status).toBe(200);
+  });
+});
+
+describe('cfg.name as a Host (B12)', () => {
+  const names = async (name: string) =>
+    (await resolveListenAddress({ ...DEFAULT_CONFIG, host: null, name }, base())).hostNames;
+  it.each(['studio', 'my-box', 'box.tail1234.ts.net', 'Box.local', 'studio.local'])(
+    'accepts %s',
+    async (name) => {
+      expect(await names(name)).toContain(name);
+    },
+  );
+  it.each(['example.com', 'kage.example.ts.net.evil.com', 'my box', 'x.local.example', '.local'])(
+    'leaves out %s',
+    async (name) => {
+      expect(await names(name)).not.toContain(name);
+    },
+  );
+  it('"example.com" is not accepted as a Host', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null, name: 'example.com' },
+      base(),
+    );
+    const app = new Hono();
+    app.use('*', hostGuard({ hostNames: r.hostNames, port: 8080 }));
+    app.get('/', (c) => c.text('ok'));
+    const res = await app.request('/', { headers: { Host: 'example.com:8080' } });
+    expect(res.status).toBe(403);
   });
 });

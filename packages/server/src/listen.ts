@@ -14,6 +14,8 @@ export interface ListenOptions {
   unsafeListenAll: boolean;
   tailscaleIp: () => Promise<string | null>;
   hostname: () => string;
+  /** The MagicDNS name (B1), asked only for a Tailscale or all-interfaces bind; null adds none. */
+  tailscaleDnsName?: () => Promise<string | null>;
   /** Resolves a host name to addresses; defaults to dns.lookup(name, { all: true }). */
   lookup?: (name: string) => Promise<{ address: string; family: number }[]>;
 }
@@ -89,6 +91,48 @@ export function displayHost(cfg: KageConfig, address: string, hostname: string):
   return p.v === 6 ? `[${address.replace(/^\[|\]$/g, '')}]` : address;
 }
 
+/** True for a DNS name made of valid labels ("box", "box.tail1234.ts.net"). */
+function isHostName(name: string): boolean {
+  return name.length <= 253 && name.split('.').every((l) => l.length <= 63 && LABEL.test(l));
+}
+
+/**
+ * B12: cfg.name is trusted as a Host and Origin name only when no one else can own it in public
+ * DNS: a single label, or a name under .ts.net (the tailnet) or .local (mDNS).
+ */
+export function isSafeName(name: string): boolean {
+  const n = name.toLowerCase();
+  if (LABEL.test(n)) return true;
+  return (n.endsWith('.ts.net') || n.endsWith('.local')) && isHostName(n);
+}
+
+export type ExecText = (cmd: string, args: string[]) => Promise<string>;
+
+const execText: ExecText = (cmd, args) =>
+  new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: 5000, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+      if (err) reject(err);
+      else resolve(String(stdout));
+    });
+  });
+
+/**
+ * B1: this machine's MagicDNS name from `tailscale status --json` (`Self.DNSName`, e.g.
+ * "box.tail1234.ts.net." → "box.tail1234.ts.net"); null on any error.
+ */
+export async function tailscaleDnsName(exec: ExecText = execText): Promise<string | null> {
+  try {
+    const data: unknown = JSON.parse(await exec('tailscale', ['status', '--json']));
+    const self = (data as { Self?: { DNSName?: unknown } } | null)?.Self;
+    const name = self?.DNSName;
+    if (typeof name !== 'string') return null;
+    const n = name.replace(/\.$/, '').toLowerCase();
+    return n !== '' && isHostName(n) ? n : null;
+  } catch {
+    return null;
+  }
+}
+
 /** Runs `tailscale ip -4` (argument array, no shell); null on error, empty or non-Tailscale output. */
 export function defaultTailscaleIp(): Promise<string | null> {
   return new Promise((resolve) => {
@@ -156,9 +200,18 @@ export async function resolveListenAddress(
     }
     address = ip;
   }
+  const bound = parseIp(address);
+  if (opts.tailscaleDnsName && (bound === null || bound.n === 0n || isTailscale(bound))) {
+    const dns = await opts.tailscaleDnsName();
+    if (dns) names.push(dns);
+  }
   const full = opts.hostname();
-  const hostNames = [...names, address, full, shortHostname(full), cfg.name].filter(
-    (h) => h !== '',
-  );
+  const hostNames = [
+    ...names,
+    address,
+    full,
+    shortHostname(full),
+    isSafeName(cfg.name) ? cfg.name : '',
+  ].filter((h) => h !== '');
   return { address, hostNames: [...new Set(hostNames)] };
 }

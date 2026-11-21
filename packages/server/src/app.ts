@@ -3,7 +3,7 @@ import { bodyLimit } from 'hono/body-limit';
 import type { Asset } from './assets.ts';
 import type { EventHub } from './events.ts';
 import { csrfGuard, hostGuard } from './security.ts';
-import { NotFoundError, type SessionSource } from './source.ts';
+import { NotFoundError, NotImplementedError, type SessionSource } from './source.ts';
 
 export interface AppDeps {
   source: SessionSource;
@@ -103,6 +103,7 @@ export function createApp(deps: AppDeps): Hono {
       await source.remove(id);
     } catch (err) {
       if (err instanceof NotFoundError) return c.json({ error: `No session with id ${id}` }, 404);
+      if (err instanceof NotImplementedError) return c.json({ error: err.message }, 501);
       throw err;
     }
     return c.body(null, 204);

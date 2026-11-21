@@ -57,15 +57,15 @@ describe('shellQuote', () => {
 });
 
 describe('writeHooksSettings', () => {
-  it('writes kage-hooks.json in the dir and returns its path', async () => {
+  it('writes claude-settings.json in the dir and returns its path', async () => {
     const path = await writeHooksSettings(dir, COMMAND);
-    expect(path).toBe(join(dir, 'kage-hooks.json'));
+    expect(path).toBe(join(dir, 'claude-settings.json'));
     expect(() => JSON.parse(readFileSync(path, 'utf8'))).not.toThrow();
   });
 
   it('creates the dir when missing', async () => {
     const path = await writeHooksSettings(join(dir, 'a', 'b'), COMMAND);
-    expect(path).toBe(join(dir, 'a', 'b', 'kage-hooks.json'));
+    expect(path).toBe(join(dir, 'a', 'b', 'claude-settings.json'));
   });
 
   it('registers all nine events, each running exactly command + hook <Event>', async () => {

@@ -7,6 +7,7 @@ import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import { LiveSource, type LiveSourceDeps } from './live-source.ts';
 
 const HOST = 'my-pc:8080';
 const ORIGIN = 'http://my-pc:8080';
@@ -202,6 +203,17 @@ describe('API', () => {
     expect(missing.status).toBe(404);
     expect(missing.headers.get('content-type')).toContain('application/json');
     expect(await missing.json()).toEqual({ error: 'No session with id nope' });
+  });
+
+  it('answers 501 when the live source cannot delete yet', async () => {
+    const live = new LiveSource({} as LiveSourceDeps);
+    const liveHub = new EventHub(live, 'my-pc', '/p');
+    const liveApp = createApp({ source: live, hub: liveHub, assets, allowed });
+    const res = await liveApp.fetch(mutate('DELETE', '/api/sessions/k-1'));
+    expect(res.status).toBe(501);
+    expect(res.headers.get('content-type')).toContain('application/json');
+    expect(await res.json()).toEqual({ error: 'Deleting sessions arrives in a later version' });
+    liveHub.close();
   });
 
   it('refuses a delete without X-Kage or with a foreign Origin', async () => {

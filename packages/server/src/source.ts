@@ -2,6 +2,9 @@ import type { DisplayLine, Session } from '@kage/shared';
 
 export class NotFoundError extends Error {}
 
+/** Thrown (as a rejection) by actions that arrive in a later phase; the API answers 501. */
+export class NotImplementedError extends Error {}
+
 export type SourceEvent =
   | { type: 'session.updated'; session: Session }
   | { type: 'session.removed'; id: string }

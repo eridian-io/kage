@@ -15,6 +15,10 @@ const MAX_STDIN = 1024 * 1024;
  * Where the hook socket lives: `KAGE_SOCKET`, else `$XDG_RUNTIME_DIR/kage.sock`, else
  * `$XDG_STATE_HOME/kage/kage.sock`, else
  * `~/.local/state/kage/kage.sock`. On Windows (dev only) a per-user named pipe.
+ *
+ * The socket's parent directory must be owned by the user running Kage: HookServer refuses
+ * one owned by anyone else (and tightens ours to 0700). A `KAGE_SOCKET` in a shared directory
+ * such as /tmp fails to start; `kage --help` says so too.
  */
 export function socketPath(
   env: NodeJS.ProcessEnv,

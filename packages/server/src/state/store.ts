@@ -1,5 +1,12 @@
 import { mkdir, open, readFile, rename } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, join } from 'node:path';
+
+/** Kage's state directory: `$XDG_STATE_HOME/kage`, else `~/.local/state/kage`. */
+export function stateDir(env: NodeJS.ProcessEnv): string {
+  if (env.XDG_STATE_HOME) return join(env.XDG_STATE_HOME, 'kage');
+  return join(env.HOME || homedir(), '.local', 'state', 'kage');
+}
 
 /** Directories can't be opened or fsynced on Windows (and some filesystems); that's fine. */
 const DIR_SYNC_UNSUPPORTED = new Set(['EPERM', 'EISDIR', 'EINVAL', 'EACCES', 'ENOTSUP']);

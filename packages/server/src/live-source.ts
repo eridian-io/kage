@@ -17,15 +17,14 @@ import {
   parseStartupScreen,
   showsPrompt,
 } from './pane/prompt.ts';
-import type { SessionSource, SourceEvent } from './source.ts';
+import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
 import type { SessionRecord, StateStore } from './state/store.ts';
 import type { TmuxClient } from './tmux/client.ts';
 import type { TmuxWindow } from './tmux/format.ts';
 import type { TmuxWatcher, WatchEvent } from './tmux/watcher.ts';
 import type { TranscriptTail } from './transcript/tail.ts';
 
-/** Thrown (as a rejection) by actions that arrive in a later phase. */
-export class NotImplementedError extends Error {}
+export { NotImplementedError } from './source.ts';
 
 export type TmuxClientLike = Pick<TmuxClient, 'ensureSession' | 'listWindows' | 'capturePane'>;
 export type TmuxWatcherLike = Pick<TmuxWatcher, 'on' | 'start' | 'stop'>;
