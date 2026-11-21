@@ -971,6 +971,44 @@ describe('LiveSource: fix round 1', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it.each(['bash', '-zsh', 'fish', 'login', 'pwsh'])(
+    'R17: a linked window back at the shell %s is ended',
+    async (command) => {
+      const { source } = setup({ windows: [kageWin({ command })], records: [linked()] });
+      await source.start();
+      expect(source.get('k-1')?.status).toBe('ended');
+    },
+  );
+
+  it.each(['node', 'claude', '2.1.330', 'claude-2.1'])(
+    'R17: a linked window running %s still counts as Claude',
+    async (command) => {
+      const { source } = setup({ windows: [kageWin({ command })], records: [linked()] });
+      await source.start();
+      expect(source.get('k-1')?.status).not.toBe('ended');
+    },
+  );
+
+  it('R17: a running session whose listing turns from node to -zsh is ended', async () => {
+    const { source, hooks, tmux } = setup({
+      windows: [kageWin({ command: 'node' })],
+      records: [rec()],
+    });
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    (tmux.windows[0] as TmuxWindow).command = '-zsh';
+    hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+  });
+
   it('a Kage window that never ran claude is not ended by its shell', async () => {
     const { source } = setup({ windows: [kageWin({ command: 'bash' })], records: [rec()] });
     await source.start();

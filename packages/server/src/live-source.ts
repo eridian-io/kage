@@ -66,6 +66,24 @@ const SAVE_MAX_MS = 30_000;
 /** Lines kept and scrollback captured. */
 const MAX_LINES = 200;
 
+/** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
+const SHELLS = new Set([
+  'bash',
+  'zsh',
+  'sh',
+  'dash',
+  'fish',
+  'ksh',
+  'mksh',
+  'tcsh',
+  'csh',
+  'nu',
+  'pwsh',
+  'login',
+]);
+const atShell = (command: string): boolean =>
+  SHELLS.has(command.startsWith('-') ? command.slice(1) : command);
+
 type TimerName = 'emit' | 'idle' | 'capture' | 'retry' | 'retire';
 
 interface Live extends SessionView {
@@ -355,11 +373,12 @@ export class LiveSource implements SessionSource {
   }
 
   /**
-   * Spec §5.3: a session whose `claude` is gone is ended. True when the pane no longer runs
-   * claude and the session had one: it linked a Claude session, or it is Kage's and ran claude.
+   * Spec §5.3 and R17: a session whose `claude` is gone is ended. True when the pane is back at
+   * a shell and the session had a Claude: it linked a Claude session, or it is Kage's and its
+   * pane ran something other than a shell. (The listing has no `pane_dead`, so that part is skipped.)
    */
   #claudeGone(st: Live, w: TmuxWindow): boolean {
-    if (w.command === 'claude') {
+    if (!atShell(w.command)) {
       st.sawClaude = true;
       return false;
     }
