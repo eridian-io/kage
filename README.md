@@ -78,6 +78,31 @@ pnpm dev
 
 Then open the address it prints. You need Node 24.2 or newer, and Tailscale up (or run `KAGE_HOST=127.0.0.1 pnpm dev` to stay on loopback). To serve a built checkout instead, run `pnpm build` and then `node packages/server/src/main.ts serve --demo`.
 
+## Try it with real sessions
+
+Live sessions need Linux or macOS with tmux 3.2 or newer. On Windows, use WSL and clone the repo inside WSL's own file system (for example `~/kage`), not under `/mnt/c`. There is no installer yet: it comes in phase 6, so for now run the command from the checkout. A shell function makes the steps below shorter:
+
+```sh
+kage() { node /home/dev/kage/packages/server/src/main.ts "$@"; }
+```
+
+1. Build the board, once: `pnpm build`.
+2. Start Kage on loopback: `KAGE_HOST=127.0.0.1 kage serve`. Without `KAGE_HOST` it listens on your Tailscale address. Open the address it prints, for example `http://127.0.0.1:8080`, in any browser that can reach it.
+3. Start a tmux session named `kage`, and run Claude inside it:
+
+```sh
+tmux new-session -s kage
+claude --settings "$(kage hooks-path)" --permission-mode default
+```
+
+`kage hooks-path` writes the settings that send Claude's hook events to Kage, and prints the file's path (`$XDG_STATE_HOME/kage/claude-settings.json`, or `~/.local/state/kage/claude-settings.json`). Pass `--permission-mode default` too: Claude Code 2.1.330 starts in auto mode, which never asks, so Kage would never see a prompt.
+
+The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes. The first run in a new folder shows Claude's folder-trust screen, and Kage shows that as "needs you" too. Answer it in the terminal for now: answering from the board comes in phase 3.
+
+`kage serve --demo` still runs the sample sessions with no tmux.
+
+Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
+
 ## Configuration
 
 Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. It lives outside the checkout, so hostnames and secrets never end up in the repo.
@@ -108,9 +133,9 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `branchPrefix` | `"kage/"` | The prefix for the branches Kage creates |
 | `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or after this many days |
 | `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
-| `token` | `""` | Not enforced yet: Kage prints a warning at startup when it is set, and anyone on your tailnet can still open the dashboard |
+| `token` | `""` | Not enforced yet: live mode refuses to start while it is set, and demo mode prints a warning, because anyone on your tailnet can still open the dashboard |
 
-Kage runs in demo mode only for now: it reads and checks every key, but `projectsRoot`, `tmuxSession`, `worktreeDir`, `branchPrefix`, `autoArchive` and `ntfyTopic` take effect when live sessions arrive in a later phase.
+Live sessions use `tmuxSession` and the host, port and name keys. `projectsRoot`, `worktreeDir`, `branchPrefix`, `autoArchive` and `ntfyTopic` take effect in later phases; Kage already reads and checks every key.
 
 The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`.
 
@@ -133,8 +158,8 @@ npm run install-service
 
 ## Roadmap
 
-- [ ] **Phase 1, skeleton:** dashboard served over Tailscale
-- [ ] **Phase 2, sessions:** list tmux sessions with live output
+- [x] **Phase 1, skeleton:** dashboard served over Tailscale
+- [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
 - [ ] **Phase 3, control:** start, answer and stop tasks; preview links
 - [ ] **Phase 4, polish:** notifications, diffs, run on boot, phone layout
 

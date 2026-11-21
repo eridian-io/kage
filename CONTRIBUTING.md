@@ -34,6 +34,11 @@ pnpm build        # the e2e tests run against the build
 pnpm test:e2e     # Playwright, including the visual checks against the design target
 ```
 
+The tmux and Unix-socket tests, and the live e2e, need Linux or macOS. On Windows, use one of these:
+
+- `pnpm test:linux` runs the whole check in a fresh Docker container (install, lint, typecheck, unit, build and every e2e project). It needs Docker, and works from Git Bash.
+- Or use WSL with tmux installed: clone the repo again inside WSL's own file system (for example `~/kage`, not `/mnt/c/...`), run `corepack enable && pnpm install`, then `pnpm test`. A fresh clone avoids Windows `node_modules` and file-watching problems.
+
 ## Pull requests
 
 - Keep each pull request to one change, and explain what it changes and why.
