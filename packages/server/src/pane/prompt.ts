@@ -1,23 +1,35 @@
 import type { DisplayLine, Question } from '@kage/shared';
 import { stripAnsi } from '../text/ansi.ts';
+import { boundQuestion, clip } from '../text/bounds.ts';
 
 /**
  * Reads `tmux capture-pane -p -J` text: permission prompts, AskUserQuestion panes and startup
  * screens (formats recorded in docs/specs/claude-code-integration.md §2, §3, §5, §6), and the
  * fallback lines shown when there is no transcript. Everything returned is plain text.
+ *
+ * Claude's TUI wraps long text itself (`-J` only joins tmux's own wraps), so wrapped option
+ * labels, question lines and startup phrases are joined back here.
  */
 
 /** Longest fallback line and longest command shown in a prompt's text, in characters. */
 const MAX_LINE = 200;
 const MAX_COMMAND = 120;
-/** Startup screens are small: the phrase must sit within the last non-empty lines. */
-const STARTUP_WINDOW = 15;
+/**
+ * Startup screens are small: a phrase must sit within the last non-empty lines and within the
+ * last text blocks (runs of non-empty lines). A long path or paragraph wrapped over many lines
+ * stays one block, so it can't push the phrase out, while older scrollback still can't match.
+ */
+const STARTUP_LINES = 40;
+const STARTUP_BLOCKS = 12;
 /** Most lines between numbered options (descriptions, rules) and between the last one and the footer. */
 const MAX_GAP = 6;
 
+/** The pane's lines without escapes or trailing spaces; indentation stays. */
+const rawLines = (pane: string): string[] => pane.split('\n').map((l) => stripAnsi(l).trimEnd());
+
 /** The pane as clean, trimmed lines (nothing is dropped, so indexes keep their place). */
 function cleanLines(pane: string): string[] {
-  return pane.split('\n').map((l) => stripAnsi(l).trim());
+  return rawLines(pane).map((l) => l.trim());
 }
 
 const OPTION = /^\s*(❯\s*)?(\d+)\.\s+(.*)$/;
@@ -33,15 +45,6 @@ const optionLabel = (text: string): string => {
   const at = text.indexOf(' · ');
   return (at === -1 ? text : text.slice(0, at)).trim();
 };
-
-/** Cuts to `max` characters, ending with "…" when cut. */
-function clip(text: string, max: number): string {
-  if (text.length <= max) return text;
-  let cut = text.slice(0, max - 1);
-  const last = cut.charCodeAt(cut.length - 1);
-  if (last >= 0xd800 && last <= 0xdbff) cut = cut.slice(0, -1);
-  return `${cut}…`;
-}
 
 /** The detail under a permission title: a Bash command, or the file name under an edit title. */
 function detailOf(segment: string[]): string {
@@ -63,24 +66,62 @@ function detailOf(segment: string[]): string {
   return rest.find((l) => l !== '' && !DASHED_RULE.test(l)) ?? '';
 }
 
+/** The pane's width as far as the text shows it: its longest line (a full rule spans it). */
+const paneWidth = (raw: string[]): number => raw.reduce((w, l) => Math.max(w, l.length), 0);
+
+const indentOf = (l: string): number => l.length - l.trimStart().length;
+
 /**
- * The numbered prompt nearest the bottom of the pane (permission prompt or AskUserQuestion):
- * the question line and every option in order. Null unless a numbered run starting at 1 is
- * followed by the Esc/Enter footer, so numbered lists in Claude's own output don't match.
+ * True when `next` continues `line`, wrapped by Claude's TUI: the first word of `next` would not
+ * have fitted at the end of `line`. A short line followed by an indented one is something else,
+ * such as an AskUserQuestion option's description.
  */
-export function parsePermissionPrompt(pane: string): Question | null {
-  return parsePrompt(cleanLines(pane));
+function wrapsInto(line: string, next: string, width: number): boolean {
+  const word = next.trim().split(/\s+/)[0] ?? '';
+  return word !== '' && line.length + 1 + word.length > width;
 }
 
-function parsePrompt(lines: string[]): Question | null {
+/** A trimmed line that is neither blank, an option, a rule nor a footer. */
+const isText = (l: string): boolean =>
+  l !== '' && !OPTION.test(l) && !FULL_RULE.test(l) && !DASHED_RULE.test(l) && !FOOTER.test(l);
+
+/**
+ * An option's text with the lines it wrapped onto: unnumbered lines, indented at least as far as
+ * the option's text, each the wrapped rest of the line above.
+ */
+function wrappedOption(raw: string[], at: number, end: number, width: number): string {
+  const line = raw[at] as string;
+  let text = (OPTION.exec(line) as RegExpExecArray)[3] as string;
+  const column = line.length - text.length;
+  let prev = line;
+  for (let j = at + 1; j < end; j++) {
+    const l = raw[j] as string;
+    if (!isText(l.trim()) || indentOf(l) < column || !wrapsInto(prev, l, width)) break;
+    text += ` ${l.trim()}`;
+    prev = l;
+  }
+  return text;
+}
+
+/**
+ * The numbered prompt nearest the bottom of the pane (permission prompt or AskUserQuestion):
+ * the question and every option in order, wrapped lines joined. Null unless a numbered run
+ * starting at 1 is followed by the Esc/Enter footer, so numbered lists in Claude's own output
+ * don't match. The result is bounded (500-character question, 10 options of 200).
+ */
+export function parsePermissionPrompt(pane: string): Question | null {
+  return parsePrompt(rawLines(pane));
+}
+
+function parsePrompt(raw: string[]): Question | null {
+  const lines = raw.map((l) => l.trim());
   // The footer must be the live bottom of the screen: only blank lines may follow it.
   const footer = lines.findLastIndex((l) => l !== '');
   if (footer === -1 || !FOOTER.test(lines[footer] as string)) return null;
 
   // Walk up from the footer collecting n, n-1, … 1; other lines (descriptions, rules) are skipped.
-  const labels: string[] = [];
+  const at: number[] = [];
   let expected: number | null = null;
-  let firstAt = -1;
   let gap = 0;
   for (let i = footer - 1; i >= 0 && gap <= MAX_GAP; i--) {
     const m = OPTION.exec(lines[i] as string);
@@ -90,29 +131,36 @@ function parsePrompt(lines: string[]): Question | null {
     }
     const n = Number(m[2]);
     if (expected !== null && n !== expected) break;
-    labels.unshift(optionLabel(m[3] as string));
+    at.unshift(i);
     expected = n - 1;
-    firstAt = i;
     gap = 0;
     if (n === 1) break;
   }
   if (expected !== 0) return null;
 
+  const width = paneWidth(raw);
+  const labels = at.map((i, k) => optionLabel(wrappedOption(raw, i, at[k + 1] ?? footer, width)));
   while (labels.length > 0 && UI_OPTION.test(labels.at(-1) as string)) labels.pop();
   if (labels.length === 0) return null;
 
-  let q = firstAt - 1;
-  while (q >= 0 && lines[q] === '') q--;
-  if (q < 0) return null;
-  const question = lines[q] as string;
+  // The question: the last text line above option 1, with the lines it wrapped from.
+  let end = (at[0] as number) - 1;
+  while (end >= 0 && lines[end] === '') end--;
+  if (end < 0) return null;
+  let q = end;
+  while (
+    q > 0 &&
+    isText(lines[q - 1] as string) &&
+    wrapsInto(raw[q - 1] as string, raw[q] as string, width)
+  ) {
+    q--;
+  }
+  const question = lines.slice(q, end + 1).join(' ');
 
   let top = q - 1;
   while (top >= 0 && !FULL_RULE.test(lines[top] as string)) top--;
   const detail = detailOf(lines.slice(top + 1, q));
-  return {
-    text: detail ? `${question} — ${clip(detail, MAX_COMMAND)}` : question,
-    options: labels,
-  };
+  return boundQuestion(detail ? `${question} — ${clip(detail, MAX_COMMAND)}` : question, labels);
 }
 
 const IDLE_FOOTER = /(\? for shortcuts|manual mode on|auto mode on)/;
@@ -133,16 +181,69 @@ function idleBoxBelow(lines: string[], from: number): boolean {
   return false;
 }
 
+/** The last STARTUP_LINES non-empty lines, with the blank lines between them kept. */
+function startupWindow(all: string[]): string[] {
+  let from = all.length;
+  let seen = 0;
+  while (from > 0 && seen < STARTUP_LINES) {
+    from--;
+    if (all[from] !== '') seen++;
+  }
+  return all.slice(from);
+}
+
+/** True when the bottom of the pane shows Claude's idle input box: Claude is past its startup screens. */
+export function showsIdleBox(pane: string): boolean {
+  return idleBoxBelow(startupWindow(cleanLines(pane)), -1);
+}
+
+interface Block {
+  text: string;
+  /** Index of the block's first line. */
+  at: number;
+}
+
+/** Runs of non-empty lines joined with spaces (a rule stands alone), so wrapped phrases match. */
+function textBlocks(lines: string[]): Block[] {
+  const blocks: Block[] = [];
+  let current: Block | null = null;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i] as string;
+    if (l === '' || FULL_RULE.test(l)) {
+      current = null;
+    } else if (current) {
+      current.text += ` ${l}`;
+    } else {
+      current = { text: l, at: i };
+      blocks.push(current);
+    }
+  }
+  return blocks.slice(-STARTUP_BLOCKS);
+}
+
 function parseStartup(all: string[]): Question | null {
-  const lines = all.filter((l) => l !== '').slice(-STARTUP_WINDOW);
-  /** Index of the last line matching `re`, or -1. */
-  const find = (re: RegExp): number => lines.findLastIndex((l) => re.test(l));
+  const lines = startupWindow(all);
+  const blocks = textBlocks(lines);
+  const first = blocks[0]?.at ?? lines.length;
+  /** First line of the last block whose joined text matches `re`, or -1. */
+  const find = (re: RegExp): number => blocks.findLast((b) => re.test(b.text))?.at ?? -1;
+  /** The last single line matching `re` within the blocks, or -1 (for short lines that render alone). */
+  const findLine = (re: RegExp): number => {
+    const i = lines.findLastIndex((l) => re.test(l));
+    return i >= first ? i : -1;
+  };
   const live = (...at: number[]): boolean =>
     at.every((i) => i >= 0) && !idleBoxBelow(lines, Math.min(...at));
   if (live(find(/Select login method/))) {
     return { text: 'Sign in to Claude Code in the terminal', options: [] };
   }
-  if (live(find(/Is this a project you created or one you trust\?/))) {
+  if (
+    live(find(/Is this a project you created or one you trust\?/)) ||
+    live(
+      findLine(/^Accessing workspace:$/),
+      findLine(/^(❯\s*)?(\d+\.\s+)?Yes, I trust this folder$/),
+    )
+  ) {
     return { text: 'Trust this folder?', options: ['No, exit', 'Yes, I trust this folder'] };
   }
   if (live(find(/Try the new fullscreen renderer\?/))) {
@@ -156,7 +257,7 @@ function parseStartup(all: string[]): Question | null {
       const m = OPTION.exec(l);
       return m ? [optionLabel(m[3] as string)] : [];
     });
-    return { text: 'Choose a text style', options: numbered.length > 0 ? numbered : ['Continue'] };
+    return boundQuestion('Choose a text style', numbered.length > 0 ? numbered : ['Continue']);
   }
   return null;
 }
@@ -168,8 +269,8 @@ export function parseStartupScreen(pane: string): Question | null {
 
 /** True when the pane shows a permission prompt, a question or a startup screen. */
 export function showsPrompt(pane: string): boolean {
-  const lines = cleanLines(pane);
-  return parsePrompt(lines) !== null || parseStartup(lines) !== null;
+  const raw = rawLines(pane);
+  return parsePrompt(raw) !== null || parseStartup(raw.map((l) => l.trim())) !== null;
 }
 
 /** What Claude shows under the tool line after No or Esc on a prompt (spec §1, R11). */

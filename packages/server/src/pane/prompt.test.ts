@@ -6,6 +6,7 @@ import {
   parsePermissionPrompt,
   parseStartupScreen,
   showsDenial,
+  showsIdleBox,
   showsPrompt,
 } from './prompt.ts';
 
@@ -134,6 +135,91 @@ describe('parseStartupScreen', () => {
   it('ignores a startup phrase far up in the scrollback', () => {
     const p = `Select login method\n${'filler\n'.repeat(40)}❯ \n`;
     expect(parseStartupScreen(p)).toBeNull();
+  });
+});
+
+describe('real 2.1.330 captures at 80 columns (R23)', () => {
+  it('folder trust is a startup screen', () => {
+    expect(parseStartupScreen(pane('real-trust-80'))).toEqual({
+      text: 'Trust this folder?',
+      options: ['No, exit', 'Yes, I trust this folder'],
+    });
+    expect(showsPrompt(pane('real-trust-80'))).toBe(true);
+    expect(parsePermissionPrompt(pane('real-trust-80'))).toBeNull();
+  });
+  it('the Edit prompt joins the wrapped option 2 into one label', () => {
+    expect(parsePermissionPrompt(pane('real-edit-80'))).toEqual({
+      text: 'Do you want to make this edit to notes.txt? — notes.txt',
+      options: [
+        'Yes',
+        'Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)',
+        'No',
+      ],
+    });
+    expect(parseStartupScreen(pane('real-edit-80'))).toBeNull();
+  });
+  it('the finished turn shows no prompt and no startup screen', () => {
+    expect(parsePermissionPrompt(pane('real-done-80'))).toBeNull();
+    expect(parseStartupScreen(pane('real-done-80'))).toBeNull();
+    expect(showsPrompt(pane('real-done-80'))).toBe(false);
+    expect(showsIdleBox(pane('real-done-80'))).toBe(true);
+    expect(showsIdleBox(pane('real-trust-80'))).toBe(false);
+  });
+});
+
+describe('wrapped text (F2, F4)', () => {
+  const RULE80 = '─'.repeat(80);
+  it('joins a wrapped question line', () => {
+    const p = [
+      RULE80,
+      ' Do you want to make this edit to a/very/long/path/that/goes/on/and/on/for/quite/',
+      ' a/while/file.ts?',
+      ' ❯ 1. Yes',
+      '   2. No',
+      '',
+      ' Esc to cancel',
+    ].join('\n');
+    expect(parsePermissionPrompt(p)?.text).toBe(
+      'Do you want to make this edit to a/very/long/path/that/goes/on/and/on/for/quite/ a/while/file.ts?',
+    );
+  });
+  it('keeps short description lines under an option apart from its label', () => {
+    const p = [
+      RULE80,
+      ' Which one?',
+      ' ❯ 1. Dash',
+      '      Turn spaces into dashes.',
+      '   2. Underscore',
+      '      Keep the underscores.',
+      ' Enter to select · Esc to cancel',
+    ].join('\n');
+    expect(parsePermissionPrompt(p)).toEqual({
+      text: 'Which one?',
+      options: ['Dash', 'Underscore'],
+    });
+  });
+  it('finds the trust screen when a long path wraps over many lines', () => {
+    const path = Array.from({ length: 12 }, (_, i) => ` /home/dev/projects/segment-${i}/`).join(
+      '\n',
+    );
+    const p = ` Accessing workspace:\n\n${path}\n\n Quick safety check: Is this a project you created or one you\n trust? (Like your own code, a well-known open source project, or work from\n your team). If not, take a moment to review what's in this folder first.\n\n Claude Code'll be able to read, edit, and execute files here.\n\n Security guide\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n`;
+    expect(parseStartupScreen(p)?.text).toBe('Trust this folder?');
+  });
+  it('finds the trust screen by its short lines when the question wraps mid-phrase', () => {
+    const p =
+      ' Accessing workspace:\n\n /home/dev/x\n\n Quick safety check: Is this a\n project you created or one you\n trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n';
+    expect(parseStartupScreen(p)?.text).toBe('Trust this folder?');
+  });
+  it('bounds a prompt: question 500 characters, 10 options of 200, no control characters', () => {
+    const opts = Array.from({ length: 12 }, (_, i) => `   ${i + 1}. ${'o'.repeat(300)}\x07`);
+    const p = [`${'q'.repeat(700)}?`, ...opts, ' Esc to cancel'].join('\n');
+    const q = parsePermissionPrompt(p);
+    expect(q?.text).toHaveLength(500);
+    expect(q?.options).toHaveLength(10);
+    for (const o of q?.options ?? []) {
+      expect(o.length).toBeLessThanOrEqual(200);
+      expect(o).not.toContain('\x07');
+    }
   });
 });
 
