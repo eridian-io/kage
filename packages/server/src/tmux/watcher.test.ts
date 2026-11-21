@@ -81,6 +81,19 @@ describe('TmuxWatcher', () => {
     w.stop();
   });
 
+  it('throttles on a monotonic clock: the wall clock stepping back does not mute a pane', async () => {
+    const { w, procs, events } = setup();
+    w.start();
+    procs[0]?.say('%output %1 a\n');
+    await flush();
+    vi.setSystemTime(Date.now() - 3_600_000);
+    await vi.advanceTimersByTimeAsync(260);
+    procs[0]?.say('%output %1 b\n');
+    await flush();
+    expect(events.filter((e) => e.type === 'activity')).toHaveLength(2);
+    w.stop();
+  });
+
   it('handles lines split across chunks and ignores unknown lines', async () => {
     const { w, procs, events } = setup();
     w.start();

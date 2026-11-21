@@ -161,7 +161,7 @@ export class TmuxWatcher {
       const rest = line.slice(sp + 1);
       const paneId = rest.slice(0, rest.indexOf(' ') < 0 ? rest.length : rest.indexOf(' '));
       if (!PANE_ID.test(paneId)) return;
-      const now = Date.now();
+      const now = performance.now();
       const last = this.#lastActivity.get(paneId);
       if (last !== undefined && now - last < this.#throttleMs) return;
       this.#lastActivity.set(paneId, now);
