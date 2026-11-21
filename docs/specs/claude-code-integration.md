@@ -268,3 +268,65 @@ Fixtures, all with invented paths and the observed layout:
 | Chunked sends (Kage's ≤ 2,000-byte `send-keys -l` calls, sent back to back) | Each chunk over 800 units becomes its own placeholder, **but bursts that arrive close together merge**, so the number of placeholders depends on timing. 2,000 + 2,000 + 500 bytes gave `[Pasted text #14][Pasted text #15]` twice, with the 500 merged into the second; the third run gave two placeholders plus the 500 as plain text. Chunks of 400 and 500 sent 0.3 s apart showed as plain text. |
 | Is the content intact? | Yes, as far as tested. A 3,907-character reply (4,207 bytes: ASCII plus 100 emoji), sent in chunks of 2,000, 1,998 and 209 bytes, showed `[Pasted text #1][Pasted text #2]`. By a script mistake, two multi-line text files followed in the same send; they became `[Pasted text #3 +21 lines][Pasted text #4 +38 lines]` and are left out of this check. In the transcript the first placeholder held chunk 1 exactly, and the second held chunks 2 and 3 joined. Nothing was lost or reordered. |
 | **How the transcript records a pasted prompt** | The user record's `message.content` is still a string. Each placeholder is expanded as `\n\n<pasted_content id="<n>">\n<text>\n</pasted_content id="<n>">\n`, and all the blocks of one prompt carried the same id. Typed text keeps its place between the blocks. A reader that shows the user's prompt sees these wrappers unless it unwraps them. Kage's transcript reader unwraps them (phase 3): a pasted block shows as `> [pasted text]` plus the first line of the paste, clipped, and §5.4 of the design spec says how Kage sends text. |
+
+## 8. Terminal and resume
+
+Recorded on 2026-11-22 (phase 4 spike) against 2.1.330 in WSL Ubuntu 24.04 with tmux 3.4.
+- Claude was started as Kage starts it (`new-window -d … -c <worktree> -- claude --settings <f> --permission-mode default`) in a worktree of a scratch repo whose root was never trusted.
+- It was driven only through a tmux control-mode client, as the terminal bridge will drive it: keys as `send-keys -t %N -H <hex>`, size as `resize-window`. The control-mode facts are in `host-integration.md` §4.
+- The hooks file had the same shape as `kage hooks-path`'s (all nine events), but each hook appended its event JSON to a file, because no Kage server was running to receive them.
+- Four prompts were used in all: two in the terminal and two for resume.
+
+Fixtures: `panes/real-edit-60.txt` and `panes/real-edit-160.txt` are `capture-pane -p -J` at 60×40 and 160×40 of a live Edit prompt, with the folder path and plan name replaced (as in `real-edit-80.txt`).
+
+### Read first: where this differs from the phase 4 plan
+
+1. **Esc at an Edit permission prompt shows `⎿  Rejected update to notes.txt`** with the diff under it, not `Interrupted · What should Claude do instead?` (that is the Bash wording, §1). As for Bash, no hook fires after it. The R11 pane fallback ("the pane no longer shows a prompt") still covers it, but a matcher that looks for "Interrupted" would miss Edit.
+2. **A start-up screen can drop a key sent the moment it first draws.** A `-H 1b 5b 42` (Down) sent as soon as the trust screen appeared was lost. The `0d` (Enter) that followed chose the default `No, exit`, Claude quit and the window closed. The same Down sent 0.8 s later worked. A sender must check that the selection moved before it sends Enter. That also applies to answering trust from the board (R25).
+3. **`--resume <unknown uuid>` in a pane exits 1 with nothing readable left on screen**, and fires a `SessionEnd` (reason `other`) with a new, random `session_id` and no `SessionStart` before it.
+4. Claude sets bracketed paste (`?2004h`) itself at start, and tmux has no flag to read it back, so the planned replay of `?2004h` for `claude` panes is needed (with `?1004h`, see below).
+
+### Claude's terminal modes
+
+| Question | Answer |
+|---|---|
+| Modes Claude sets at start (from `%output`, in order, repeats folded) | `?25h ?25l ?2004h ?2031h ?1004h ?1004l ?2031l ?2004l ?2004h ?2031h ?1004h ?25h ?25l ?25h`. It sets bracketed paste (`?2004h`), focus reporting (`?1004h`) and colour-scheme reports (`?2031h`) on the trust screen, resets them, and sets them again for the main screen. `?25l`/`?25h` toggle the cursor while it draws. No mouse mode, no `?1h` and no `?1049h` were seen. |
+| tmux flags | `alternate_on` 0 and `keypad_cursor_flag` 0 throughout (trust screen, idle box, permission prompt, after). Arrows therefore arrive as `ESC [ A`…, which is what xterm.js sends in normal cursor mode. `cursor_flag` was 0 while the prompt showed and 1 at the idle box. |
+| Fullscreen renderer (R39) | It stayed off: the offer never appeared (this install had answered it already), and `alternate_on` stayed 0. |
+
+### Resize (`resize-window -t @W -x <cols> -y 40`)
+
+| Question | Answer |
+|---|---|
+| At the idle box: 60, then 160, then 80 columns | Claude redrew cleanly every time. Both `─` rules took the new width (60, 160, 80), and the box and its ghost suggestion stayed intact. |
+| At an Edit permission prompt: 60, then 160 | Clean redraws. The whole conversation above reflowed to the new width: the typed prompt took three rows at 60 columns and one at 160, and option 2 wrapped onto three rows at 60. |
+| Do Kage's parsers still read it? | Yes. `parsePermissionPrompt` gives the same text and options for `real-edit-60.txt`, `real-edit-80.txt` and `real-edit-160.txt`. |
+
+### Keys (`send-keys -H`)
+
+| Keys | Effect |
+|---|---|
+| Trust screen: `1b 5b 42` (CSI Down) | Moves `❯` to `Yes, I trust this folder` (once the screen is ready, see Read first 2). `1b 4f 42` (SS3) moves it too, and `send-keys Down` likewise. A lone `1b` exits Claude. |
+| Idle box: `61 62 63`, then `7f` | `❯ abc`, then `❯ ab`. |
+| `09` (Tab) with `ab` in the box | No visible change. |
+| `03` (Ctrl+C) with text in the box | Clears the box, and the footer says `Press Ctrl-C again to exit`; a second `03` soon after would quit Claude. |
+| Bracketed paste `1b 5b 32 30 30 7e` + `first pasted line` + `0a` + `second pasted line` + `1b 5b 32 30 31 7e` | Both lines sit in the box (`❯ first pasted line` / `  second pasted line`). **Not submitted:** no `UserPromptSubmit`. |
+| `1b 1b` in one write | Clears the box (the pasted lines, or a recalled prompt), as `send-keys Escape Escape` does (§7). |
+| Typed text, then `0d` | Submits it: `UserPromptSubmit` carries the text. |
+| `1b 5b 41` (Up) in the empty box after a prompt | Recalls the previous prompt into the box: one press, one step. |
+| Edit prompt: `1b 5b 42`, `1b 5b 41`, `0d` | Down moved `❯` to option 2, Up moved it back to option 1, and Enter accepted it: `PostToolUse` Edit, and the file changed. |
+| Edit prompt: `1b` (Esc) | Declined: `● Update(notes.txt)` / `⎿  Rejected update to notes.txt` and the diff, then the empty idle box. Hooks: `UserPromptSubmit`, `PreToolUse` Edit and `PermissionRequest` Edit before the key, nothing after it (13 s). The file was unchanged. |
+
+### Resume
+
+Session A had two prompts in worktree `<repo>/.worktrees/a` and was ended with `/exit`.
+
+| Question | Answer |
+|---|---|
+| `claude --settings <f> --permission-mode default --resume <session_id>` in the same worktree | Resumes it. The screen redraws the earlier conversation (the prompts and the edit) above the idle box. |
+| `SessionStart` | `source: "resume"`, the **same `session_id`** and the **same `transcript_path`**. |
+| Transcript | The same file, appended: 67 lines before, 77 after one more prompt, and 83 after `/exit`. No new file was created. The next prompt's hooks carry the same `session_id`. |
+| Trust screen | Not shown again (the folder was trusted when session A started). |
+| `--continue` | After a second session (one prompt, `/exit`) in the same worktree, `--continue` picked that most recent session: `SessionStart` with `source: "resume"`, its `session_id` and its transcript path. Its screen showed that session's conversation. `/exit` without a prompt still appended a few records. |
+| Unknown id (a valid UUID) in a tmux pane | `claude` exited within 4 s with status 1. With `remain-on-exit on`, the pane showed only tmux's `Pane is dead (status 1, …)`; Claude's message didn't stay on screen. Hooks: one `SessionEnd`, reason `other`, with a new random `session_id`, and no `SessionStart`. |
+| The same without a terminal (`spawn`, stdin closed) | stderr `No conversation found with session ID: <id>`, nothing on stdout, exit 1. Without a terminal Claude behaves as `--print`, so a value that is not a UUID gives `Error: --resume requires a valid session ID or session title when used with --print. …`, exit 1. Kage only ever passes UUID-shaped ids. |

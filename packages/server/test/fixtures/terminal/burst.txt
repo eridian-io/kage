@@ -1,0 +1,21 @@
+%begin 1700000000 280 0
+%end 1700000000 280 0
+%session-changed $1 kage
+%output %3 \033[?2004h\033[?1004h\033[?25l
+%output %3 plain text\015\012
+%output %3 back\134slash, tab\011and caf√©\015\012
+%output %3 a split euro: ‚Ç
+%output %3 ¨ joined\015\012
+%output %4 another pane\015\012
+%begin 1700000001 281 1
+%end 1700000001 281 1
+%layout-change @2 aafd,120x40,0,0,3 aafd,120x40,0,0,3 *
+%layout-change @6 c19e,80x24,0,0[80x12,0,0,7,80x11,0,13,8] c19e,80x24,0,0[80x12,0,0,7,80x11,0,13,8] 
+%window-renamed @2 claude
+%begin 1700000002 282 1
+parse error: yacc stack overflow
+%error 1700000002 282 1
+%window-add @7
+%unlinked-window-close @6
+%window-close @5
+%exit

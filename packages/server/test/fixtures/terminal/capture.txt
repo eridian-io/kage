@@ -1,0 +1,13 @@
+%output %3 before the snapshot\015\012
+%begin 1700000003 290 1
+40 6 0 2 4 1 0 0 0 0 0 0 0 sh
+%end 1700000003 290 1
+%begin 1700000003 291 1
+[1m[32mgreen[0m café back\slash                   
+%end 1700000003 291 1
+%end 1700000000 7 1 
+%output %9 x        
+$         
+
+%end 1700000003 291 1
+%output %3 after the snapshot\015\012
