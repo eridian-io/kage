@@ -113,13 +113,20 @@ async function startLive(
     configFile: io.tmuxConfigFile,
   };
   const tmux = new TmuxClient(target);
-  try {
+  const hookSocket = socketPath(io.env);
+  // Windows inherit the session's environment, so `kage hook` in them posts to this socket even
+  // when their shell's XDG_RUNTIME_DIR or HOME differ from serve's.
+  const ensureSession = async () => {
     await tmux.ensureSession();
+    await tmux.setEnvironment('KAGE_SOCKET', hookSocket).catch(() => {});
+  };
+  try {
+    await ensureSession();
   } catch (err) {
     throw new StartError(`Couldn't start the tmux session "${cfg.tmuxSession}": ${oneLine(err)}`);
   }
 
-  const hooks = new HookServer(socketPath(io.env));
+  const hooks = new HookServer(hookSocket);
   try {
     await hooks.listen();
   } catch (err) {
@@ -134,7 +141,7 @@ async function startLive(
   }
 
   const store = new StateStore(join(stateDir(io.env), 'state.json'));
-  const watcher = new TmuxWatcher({ ...target, beforeLaunch: () => tmux.ensureSession() });
+  const watcher = new TmuxWatcher({ ...target, beforeLaunch: ensureSession });
   const source = new LiveSource({
     tmux,
     watcher,

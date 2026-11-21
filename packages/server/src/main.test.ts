@@ -268,6 +268,12 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       expect(existsSync(join(e.XDG_STATE_HOME as string, 'kage', 'claude-settings.json'))).toBe(
         true,
       );
+      // Hooks in the session's windows post to the socket serve listens on.
+      expect(tmux('show-environment', '-t', 'kage', 'KAGE_SOCKET').trim()).toBe(
+        `KAGE_SOCKET=${sock}`,
+      );
+      // R22: the session's first window is Kage's placeholder.
+      expect(tmux('show-options', '-w', '-v', '-t', 'kage:', '@kage_placeholder').trim()).toBe('1');
 
       tmux('new-window', '-d', '-t', 'kage:', '-n', 'probe', 'sleep 60');
       const ac = new AbortController();
@@ -277,6 +283,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       const dec = new TextDecoder();
       let text = '';
       let probe: { task: string; external: boolean } | undefined;
+      const tasks = new Set<string>();
       const deadline = Date.now() + 5000;
       while (!probe) {
         if (Date.now() > deadline) throw new Error(`no probe session in: ${text.slice(0, 2000)}`);
@@ -295,9 +302,12 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
           }
           const all = [...(ev.sessions ?? []), ...(ev.session ? [ev.session] : [])];
           probe ??= all.find((s) => s.task === 'probe');
+          for (const s of all) tasks.add(s.task);
         }
       }
       expect(probe).toMatchObject({ task: 'probe', external: true });
+      // The placeholder window (at its shell) is not on the board.
+      expect([...tasks]).toEqual(['probe']);
       ac.abort();
     } finally {
       await r.stop();
