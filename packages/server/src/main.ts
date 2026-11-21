@@ -32,7 +32,7 @@ function displayHost(address: string, hostNames: string[]): string {
 /** Under `node --watch`, reload the assets when the web build rewrites dist/. */
 function reloadOnChange(assets: Map<string, Asset>): void {
   let timer: ReturnType<typeof setTimeout> | undefined;
-  watch(DIST, () => {
+  const watcher = watch(DIST, () => {
     clearTimeout(timer);
     timer = setTimeout(async () => {
       try {
@@ -44,6 +44,10 @@ function reloadOnChange(assets: Map<string, Asset>): void {
         // mid-write; the next change event reloads
       }
     }, 150);
+  });
+  watcher.on('error', (err) => {
+    console.error(`kage: stopped watching dist/ (${err.message}); restart to pick up web changes`);
+    watcher.close();
   });
 }
 

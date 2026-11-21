@@ -84,6 +84,7 @@ button {
 }
 @media (prefers-reduced-motion: reduce) {
   * {
+    /* biome-ignore lint/complexity/noImportantStyles: reduced motion must beat every component animation */
     animation: none !important;
   }
 }
@@ -570,6 +571,27 @@ button {
   color: var(--amber);
   margin-bottom: 3px;
 }
+.k-follow {
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 12px;
+  border: 1px solid #23272e;
+  border-radius: 8px;
+  color: var(--fg-3);
+  font-size: 13.5px;
+  cursor: text;
+}
+.k-follow:hover {
+  border-color: #353b45;
+}
+.k-follow kbd {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--fg-3);
+}
+
 .k-opts {
   display: flex;
   gap: 10px;
@@ -608,27 +630,6 @@ button {
 .k-foot .r {
   display: flex;
   gap: 8px;
-}
-
-.k-follow {
-  margin: 0 0 12px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
-  border: 1px solid #23272e;
-  border-radius: 8px;
-  color: var(--fg-3);
-  font-size: 13.5px;
-  cursor: text;
-}
-.k-follow:hover {
-  border-color: #353b45;
-}
-.k-follow kbd {
-  margin-left: auto;
-  font-size: 11px;
-  color: var(--fg-3);
 }
 
 /* Controls reset with the all shorthand lose the global focus ring; restore it (after their rules, so it wins). */

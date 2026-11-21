@@ -49,7 +49,7 @@ const ALLOWED_LITERALS: Record<string, string> = {
 describe('tokens.css', () => {
   for (const [name, value] of Object.entries(TOKENS)) {
     it(`defines ${name}: ${value}`, () => {
-      expect(tokens).toMatch(new RegExp(String.raw`${name}: *${value};`));
+      expect(tokens).toMatch(new RegExp(`${name}: *${value};`));
     });
   }
   it('defines the font stacks', () => {

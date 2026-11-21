@@ -152,7 +152,7 @@ describe('API', () => {
     const res = await app().fetch(req('/api/events'));
     expect(res.status).toBe(200);
     expect(res.headers.get('content-type')).toBe('text/event-stream');
-    expect(res.headers.get('cache-control')).toBe('no-cache');
+    expect(res.headers.get('cache-control')).toBe('no-cache, no-transform');
     expect(res.headers.get('content-encoding')).toBeNull();
     const reader = (res.body as ReadableStream<Uint8Array>).getReader();
     const { value } = await reader.read();
