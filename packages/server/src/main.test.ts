@@ -111,6 +111,20 @@ describe('kage serve: live-mode checks', () => {
     await expect(fetch(`http://127.0.0.1:${p}/`)).rejects.toThrow();
   });
 
+  it('--demo without a token prints no token warning (R53 is for live mode)', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1' });
+    const p = port();
+    writeConfig(e, { port: p });
+    const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
+    expect(typeof r).toBe('object');
+    try {
+      expect(err).toEqual([]);
+      expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
+    } finally {
+      await (r as Running).stop();
+    }
+  });
+
   it('on Windows, live mode points to WSL or --demo', async () => {
     const e = env();
     expect(await main(['serve'], io(e, { platform: 'win32', tmuxVersion: null }))).toBe(1);
@@ -383,6 +397,8 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     const sock = join(e.XDG_RUNTIME_DIR as string, 'kage.sock');
     try {
       expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
+      // R53: no token in live mode: one line says what that means.
+      expect(err).toEqual(['No token set: anyone on your tailnet can start and approve tasks.']);
       // ensureSession made the session; the hook socket and the settings file exist.
       expect(tmux('has-session', '-t', '=kage')).toBe('');
       expect(existsSync(sock)).toBe(true);
@@ -508,10 +524,13 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
         });
         writeConfig(e, { projectsRoot: projects });
         out.length = 0;
+        err.length = 0;
         const r = await main(['serve'], liveIo(e));
         if (typeof r === 'number') throw new Error(`serve exited ${r}: ${err.join(' | ')}`);
         try {
-          expect(err).toEqual([]);
+          expect(err).toEqual([
+            'No token set: anyone on your tailnet can start and approve tasks.',
+          ]);
           const base = `http://127.0.0.1:${p}`;
           const res = await fetch(`${base}/api/sessions`, {
             method: 'POST',
