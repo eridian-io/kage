@@ -1,0 +1,18 @@
+/* Kage design tokens (spec section 6.2). Colours reach the board only through these. */
+:root {
+  --bg: #0f1114;
+  --line: #1b1e23;
+  --line-strong: #2a2f37;
+  --fg: #c9ced6;
+  --fg-strong: #eef0f3;
+  --fg-2: #8a919c;
+  --fg-3: #5f6672;
+  --lime: #cdf35a;
+  --amber: #d9a650;
+  --red: #e08a8a;
+  --add: #9cc59f;
+  --del: #c98d8d;
+  --sans: "Geist", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
