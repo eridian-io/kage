@@ -14,7 +14,7 @@ Before your first pull request can be merged, you'll be asked to sign a short Co
 
 ## Development setup
 
-You need Node 24 (see `.nvmrc`), pnpm through corepack, tmux 3.2 or newer, and git.
+You need Node 24.2 or newer (see `.nvmrc`), pnpm through corepack, tmux 3.2 or newer, and git.
 
 ```sh
 corepack enable
@@ -28,6 +28,7 @@ Before you open a pull request, run:
 pnpm lint
 pnpm typecheck
 pnpm test
+pnpm build        # the e2e tests run against the build
 pnpm test:e2e     # Playwright, including the visual checks against the design target
 ```
 

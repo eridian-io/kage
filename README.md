@@ -66,21 +66,17 @@ Kage listens on your Tailscale address only, so the dashboard can't be reached f
 
 ## Quick start
 
-On the server or home PC:
+Kage is in early development, and the installer comes in a later phase. For now, run it from a checkout in demo mode, with sample sessions and no tmux needed:
 
 ```sh
 git clone https://github.com/eridian-io/kage.git
 cd kage
-npm install
-cp kage.config.example.json kage.config.json   # then edit it
-npm start
+corepack enable
+pnpm install
+pnpm dev
 ```
 
-Then, on your laptop or phone (connected to Tailscale), open:
-
-```
-http://<your-pc-name>:8080
-```
+Then open the address it prints. You need Node 24.2 or newer. To serve a built checkout instead, run `pnpm build` and then `node packages/server/src/main.ts serve --demo`.
 
 ## Configuration
 
