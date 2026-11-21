@@ -34,6 +34,7 @@ vi.mock('./api.ts', () => ({
 const snap = (id: string, ids: string[]) =>
   applyEvent({
     type: 'snapshot',
+    archived: 0,
     host: 'h',
     streamId: id,
     projectsRoot: '/p',

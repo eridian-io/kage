@@ -45,11 +45,22 @@ export interface SessionRecord {
   base: string | null;
   /** The permission mode Claude was started with; 'default' for records saved before phase 3. */
   permissionMode: 'default' | 'acceptEdits';
+  /** The commit the worktree was cut from; null for records saved before phase 4. */
+  baseCommit: string | null;
+  /** Epoch ms of the last move into done or ended; null while active. */
+  doneAt: number | null;
+  /** Epoch ms of the last archive; null when not archived. */
+  archivedAt: number | null;
+  /** Epoch ms of the last restore; auto-archive skips the session until its next done (F2). */
+  restoredAt: number | null;
 }
 
 const VERSION = 1;
 
 const isStr = (v: unknown): v is string => typeof v === 'string';
+const HEX_COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+const timeOrNull = (v: unknown): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null;
 const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';
 
 function toRecord(v: unknown): SessionRecord | null {
@@ -90,6 +101,10 @@ function toRecord(v: unknown): SessionRecord | null {
     transcriptPath: (o.transcriptPath as string | null | undefined) ?? null,
     base: (o.base as string | null | undefined) ?? null,
     permissionMode: o.permissionMode === 'acceptEdits' ? 'acceptEdits' : 'default',
+    baseCommit: isStr(o.baseCommit) && HEX_COMMIT.test(o.baseCommit) ? o.baseCommit : null,
+    doneAt: timeOrNull(o.doneAt),
+    archivedAt: timeOrNull(o.archivedAt) ?? (o.archived ? o.createdAt : null),
+    restoredAt: timeOrNull(o.restoredAt),
   };
 }
 

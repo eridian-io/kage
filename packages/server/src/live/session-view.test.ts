@@ -96,6 +96,10 @@ describe('sameSession', () => {
     };
     expect(sameSession(base, b)).toBe(true);
   });
+  it('sees a change in unpushed or uncommitted', () => {
+    expect(sameSession(base, { ...base, unpushed: base.unpushed + 1 })).toBe(false);
+    expect(sameSession(base, { ...base, uncommitted: base.uncommitted + 1 })).toBe(false);
+  });
   it('compares question.startup', () => {
     const q = { text: 'Theme?', options: ['Dark'] };
     const a = { ...base, question: q };

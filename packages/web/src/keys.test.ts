@@ -46,6 +46,7 @@ beforeEach(() => {
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
+    archived: 0,
     sessions: demoSessions(NOW),
   });
   uninstall = installKeys(document);
@@ -161,6 +162,7 @@ describe('installKeys: after the selection changes by itself', () => {
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
+      archived: 0,
       sessions: demoSessions(NOW).map((s) =>
         s.id === 'shop'
           ? {

@@ -10,6 +10,7 @@ const TYPES: ServerEvent['type'][] = [
   'session.removed',
   'session.ports',
   'session.files',
+  'archive',
 ];
 
 /** The current connection's stopper. */

@@ -61,6 +61,7 @@ describe('the login screen', () => {
     // A 401 after a snapshot (an expired cookie) shows the same screen: nothing of the board.
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',

@@ -11,7 +11,9 @@ export type SourceEvent =
   /** Appended lines; with `reset`, the session's whole line list (a pane snapshot, a new transcript). */
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset?: boolean }
   | { type: 'session.ports'; id: string; ports: Port[] }
-  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number };
+  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number }
+  /** The number of archived sessions changed. */
+  | { type: 'archive'; count: number };
 
 export interface SessionSource {
   /** Excludes archived sessions. Each session's `lines` is []. */
@@ -25,6 +27,8 @@ export interface SessionSource {
   setViewed?(ids: ReadonlySet<string>): void;
   /** One more stream views a session another stream already views (R32: its preview again). */
   refreshView?(id: string): void;
+  /** How many sessions are archived; absent means 0. */
+  archivedCount?(): number;
   /** Never emits 'snapshot'. */
   subscribe(fn: (e: SourceEvent) => void): () => void;
 }

@@ -2,6 +2,7 @@ import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applyEvent,
+  archivedCount,
   lineKeyBase,
   linesById,
   projectsRoot,
@@ -15,7 +16,14 @@ import {
 
 const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
-  applyEvent({ type: 'snapshot', host: 'h', streamId: 's1', projectsRoot: '/p', sessions: [] });
+  applyEvent({
+    type: 'snapshot',
+    host: 'h',
+    streamId: 's1',
+    projectsRoot: '/p',
+    sessions: [],
+    archived: 0,
+  });
 
 beforeEach(() => {
   linesById.value = new Map();
@@ -50,6 +58,7 @@ describe('protocol v2 store', () => {
     applyEvent({ type: 'session.lines', id: 'b', lines: [line(2)], reset: true });
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -64,6 +73,7 @@ describe('protocol v2 store', () => {
     expect(lineKeyBase('b', 0)).toBeGreaterThan(0);
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -74,7 +84,14 @@ describe('protocol v2 store', () => {
   });
   it('a snapshot of a new stream clears all lines', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
-    applyEvent({ type: 'snapshot', host: 'h', streamId: 's2', projectsRoot: '/p', sessions: [] });
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's2',
+      projectsRoot: '/p',
+      sessions: [],
+      archived: 0,
+    });
     expect(linesById.value.size).toBe(0);
   });
   it('session.removed drops the lines of that id', () => {
@@ -88,6 +105,7 @@ describe('protocol v3 store', () => {
   const seed = () =>
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -123,6 +141,7 @@ describe('protocol v3 store', () => {
     expect(sessions.value[0]).toMatchObject({ status: 'done', ports, files, filesTotal: 250 });
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -146,6 +165,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     selectWhenSeen.value = null;
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -178,6 +198,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     selectStarted('new');
     applyEvent({
       type: 'snapshot',
+      archived: 0,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -191,5 +212,21 @@ describe('selecting a started session (Task 9, F5)', () => {
     select('shop');
     applyEvent({ type: 'session.updated', session: fresh('new') });
     expect(selectedId.value).toBe('shop');
+  });
+});
+
+describe('the archive count', () => {
+  it('a snapshot sets it and an archive event changes it', () => {
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [],
+      archived: 5,
+    });
+    expect(archivedCount.value).toBe(5);
+    applyEvent({ type: 'archive', count: 6 });
+    expect(archivedCount.value).toBe(6);
   });
 });

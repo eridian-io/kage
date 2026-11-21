@@ -48,6 +48,8 @@ export interface Session {
   archived: boolean;
   external: boolean;
   unpushed: number;
+  /** Files with uncommitted changes, untracked ones included. */
+  uncommitted: number;
   question?: Question;
   /** The "now doing" line, e.g. "Running npm test". */
   now?: string;
@@ -60,12 +62,78 @@ export interface Session {
   filesTotal: number;
 }
 export type ServerEvent =
-  | { type: 'snapshot'; host: string; streamId: string; projectsRoot: string; sessions: Session[] }
+  | {
+      type: 'snapshot';
+      host: string;
+      streamId: string;
+      projectsRoot: string;
+      sessions: Session[];
+      archived: number;
+    }
   | { type: 'session.updated'; session: Session }
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset: boolean }
   | { type: 'session.removed'; id: string }
   | { type: 'session.ports'; id: string; ports: Port[] }
-  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number };
+  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number }
+  /** The number of archived sessions changed. */
+  | { type: 'archive'; count: number };
+
+export interface ArchivedSession {
+  id: string;
+  project: string;
+  task: string;
+  branch: string;
+  archivedAt: number;
+}
+/** Newest first, at most LIMITS.archived. */
+export interface ArchivedResponse {
+  sessions: ArchivedSession[];
+}
+export interface PinBody {
+  pinned: boolean;
+}
+export interface ArchiveBody {
+  archived: boolean;
+}
+/** What the delete confirmation showed. */
+export interface DeleteBody {
+  unpushed: number;
+  uncommitted: number;
+}
+export type DiffLineKind = 'hunk' | 'ctx' | 'add' | 'del';
+export interface DiffFile {
+  path: string;
+  oldPath?: string;
+  kind: 'modified' | 'added' | 'deleted' | 'renamed' | 'untracked' | 'binary' | 'link';
+  added: number;
+  removed: number;
+  lines: [DiffLineKind, string][];
+  /** Lines of this file left out by the per-page cap. */
+  clipped: number;
+}
+export interface DiffPage {
+  base: string | null;
+  branch: string;
+  from: number;
+  next: number | null;
+  filesTotal: number;
+  files: DiffFile[];
+}
+
+export const TERM_PROTOCOL = 'kage.term.v1';
+/** Text frames (JSON). Output travels as binary frames. */
+export type TermServerMsg =
+  /** The next binary frame is the snapshot. */
+  | { t: 'reset'; cols: number; rows: number; mode: 'rw' | 'ro' }
+  | { t: 'size'; cols: number; rows: number };
+export type TermClientMsg = { t: 'in'; d: string } | { t: 'size'; cols: number; rows: number };
+export const TERM_CLOSE = {
+  gone: 4404,
+  ended: 4409,
+  forbidden: 4403,
+  tooMany: 4429,
+  demo: 4501,
+} as const;
 
 export interface Project {
   name: string;
@@ -105,4 +173,15 @@ export const LIMITS = {
   files: 100,
   projects: 200,
   branches: 200,
+  archived: 200,
+  diffLines: 1000,
+  diffBytes: 524_288,
+  diffLineChars: 2000,
+  termInputBytes: 65_536,
+  termMinCols: 20,
+  termMaxCols: 500,
+  termMinRows: 5,
+  termMaxRows: 200,
+  terminals: 8,
+  terminalsPerPane: 3,
 } as const;

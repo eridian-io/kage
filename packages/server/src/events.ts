@@ -62,6 +62,7 @@ export class EventHub {
             streamId: c.streamId,
             projectsRoot: this.projectsRoot,
             sessions: this.source.list(),
+            archived: this.source.archivedCount?.() ?? 0,
           }),
         );
       },

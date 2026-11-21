@@ -73,6 +73,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
+    archived: 0,
     sessions: list.map((s) => ({ ...s, lines: [] })),
   });
   for (const s of list) {
@@ -503,6 +504,7 @@ describe('reconnect bar', () => {
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
+      archived: 0,
       sessions: demoSessions(NOW),
     });
     connection.value = 'live';
@@ -536,6 +538,7 @@ describe('before the first snapshot', () => {
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
+      archived: 0,
       sessions: [],
     });
     await Promise.resolve();
@@ -605,6 +608,7 @@ describe('pending delete', () => {
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
+      archived: 0,
       sessions: demoSessions(NOW).filter((x) => x.id !== 'docs'),
     });
     // A later session with the same id is removed by someone else: no toast.
@@ -783,6 +787,7 @@ describe('board v2', () => {
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/home/dev/projects',
+      archived: 0,
       sessions: sessions.value,
     });
     const { container } = render(<Board />);
@@ -907,6 +912,7 @@ describe('controls', () => {
         host: 'my-pc',
         streamId: 's2',
         projectsRoot: '/p',
+        archived: 0,
         sessions: demoSessions(NOW).map((s) => ({ ...s, lines: [] })),
       });
       await vi.advanceTimersByTimeAsync(0);

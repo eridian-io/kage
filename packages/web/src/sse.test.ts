@@ -1,7 +1,15 @@
 import { demoSessions } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { connect } from './sse.ts';
-import { authRequired, connection, hadSnapshot, host, selectedId, sessions } from './store.ts';
+import {
+  archivedCount,
+  authRequired,
+  connection,
+  hadSnapshot,
+  host,
+  selectedId,
+  sessions,
+} from './store.ts';
 
 type Listener = (e: MessageEvent) => void;
 
@@ -272,5 +280,14 @@ describe('connect', () => {
     expect(connection.value).toBe('connecting');
     expect(sessions.value).toEqual([]);
     stop();
+  });
+});
+
+describe('the archive event', () => {
+  it('is listened for and sets archivedCount', () => {
+    archivedCount.value = 0;
+    connect();
+    latest().emit('archive', { type: 'archive', count: 7 });
+    expect(archivedCount.value).toBe(7);
   });
 });

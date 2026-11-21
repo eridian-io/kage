@@ -46,6 +46,7 @@ export function toSession(v: SessionView): Session {
     archived: r ? r.archived : false,
     external: r === null,
     unpushed: 0,
+    uncommitted: 0,
     lines: [],
     ports: (v.ports ?? []).map((p) => ({ ...p })),
     files: (v.files ?? []).map((f) => ({ ...f })),

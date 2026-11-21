@@ -18,6 +18,10 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   transcriptPath: null,
   base: 'main',
   permissionMode: 'default',
+  baseCommit: null,
+  doneAt: null,
+  archivedAt: null,
+  restoredAt: null,
   ...over,
 });
 
@@ -105,6 +109,53 @@ describe('StateStore', () => {
     data.records.push({ ...data.records[0], kageId: 'k-3', permissionMode: 'bypassPermissions' });
     await writeFile(path, JSON.stringify(data));
     expect((await store.load()).map((r) => r.kageId)).toEqual(['k-2']);
+  });
+
+  const writeRecords = async (store: StateStore, records: unknown[]) => {
+    await store.save([]);
+    await writeFile(path, JSON.stringify({ version: 1, records }));
+  };
+
+  it('loads a phase 3 record (no baseCommit, doneAt, archivedAt) with null for all', async () => {
+    const { baseCommit: _a, doneAt: _b, archivedAt: _c, restoredAt: _d, ...phase3 } = rec();
+    const store = new StateStore(path);
+    await writeRecords(store, [phase3]);
+    expect(await store.load()).toEqual([rec()]);
+  });
+
+  it('keeps a 40 or 64 hex baseCommit and nulls anything else', async () => {
+    const sha1 = 'a'.repeat(40);
+    const sha256 = '0123456789abcdef'.repeat(4);
+    const store = new StateStore(path);
+    await writeRecords(store, [
+      rec({ kageId: 'a', baseCommit: sha1 }),
+      rec({ kageId: 'b', baseCommit: sha256 }),
+      { ...rec({ kageId: 'c' }), baseCommit: 'abc123' },
+      { ...rec({ kageId: 'd' }), baseCommit: 'A'.repeat(40) },
+      { ...rec({ kageId: 'e' }), baseCommit: 'main; rm -rf' },
+      { ...rec({ kageId: 'f' }), baseCommit: 5 },
+    ]);
+    expect((await store.load()).map((r) => r.baseCommit)).toEqual([
+      sha1,
+      sha256,
+      null,
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it('round-trips doneAt, archivedAt and restoredAt; an archived record without archivedAt gets createdAt', async () => {
+    const store = new StateStore(path);
+    await store.save([rec({ doneAt: 5, archived: true, archivedAt: 7, restoredAt: 9 })]);
+    expect(await store.load()).toEqual([
+      rec({ doneAt: 5, archived: true, archivedAt: 7, restoredAt: 9 }),
+    ]);
+    const { archivedAt: _x, ...bare } = rec({ archived: true });
+    await writeRecords(store, [bare, { ...rec({ kageId: 'k-2' }), doneAt: 'x', archivedAt: null }]);
+    const [a, b] = await store.load();
+    expect(a?.archivedAt).toBe(1_700_000_000_000);
+    expect(b).toMatchObject({ doneAt: null, archivedAt: null });
   });
 
   it('serialises concurrent saves: the last one wins', async () => {

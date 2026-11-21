@@ -40,6 +40,7 @@ function snapshot(list: Session[]) {
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/home/me/code',
+    archived: 0,
     sessions: list,
   });
 }

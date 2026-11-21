@@ -30,6 +30,10 @@ describe('demoSessions', () => {
     expect(s.filter((x) => x.unpushed > 0).length).toBe(1);
   });
 
+  it('has no uncommitted files in any demo session', () => {
+    expect(s.every((x) => x.uncommitted === 0)).toBe(true);
+  });
+
   it('ends shop with a thinking line', () => {
     expect(s.find((x) => x.id === 'shop')?.lines.at(-1)).toEqual({
       kind: 'think',

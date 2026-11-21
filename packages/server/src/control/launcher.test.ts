@@ -266,6 +266,10 @@ describe('TaskLauncher', () => {
         transcriptPath: null,
         base: 'main',
         permissionMode: 'acceptEdits',
+        baseCommit: null,
+        doneAt: null,
+        archivedAt: null,
+        restoredAt: null,
       },
     ]);
     expect(tmux.calls).toEqual([

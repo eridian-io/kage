@@ -262,6 +262,10 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   transcriptPath: null,
   base: null,
   permissionMode: 'default',
+  baseCommit: null,
+  doneAt: null,
+  archivedAt: null,
+  restoredAt: null,
   ...over,
 });
 

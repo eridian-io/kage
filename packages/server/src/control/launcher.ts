@@ -256,6 +256,10 @@ export class TaskLauncher {
       transcriptPath: null,
       base: t.base,
       permissionMode: t.acceptEdits ? 'acceptEdits' : 'default',
+      baseCommit: null,
+      doneAt: null,
+      archivedAt: null,
+      restoredAt: null,
     };
     let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;

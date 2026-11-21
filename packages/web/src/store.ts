@@ -14,6 +14,8 @@ export const linesById: Signal<Map<string, DisplayLine[]>> = signal(new Map());
 /** This stream's id, from the snapshot; null before the first one. */
 export const streamId: Signal<string | null> = signal(null);
 export const projectsRoot: Signal<string> = signal('');
+/** How many sessions are archived. */
+export const archivedCount: Signal<number> = signal(0);
 export const MAX_LINES = 500;
 /**
  * How many lines each session has received, ever. The key of line i of n held is
@@ -201,6 +203,7 @@ export function applyEvent(e: ServerEvent): void {
       const fresh = streamId.value !== e.streamId;
       streamId.value = e.streamId;
       projectsRoot.value = e.projectsRoot;
+      archivedCount.value = e.archived;
       hadSnapshot.value = true;
       sessions.value = e.sessions.map(keepLive);
       linesById.value = fresh
@@ -234,6 +237,8 @@ export function applyEvent(e: ServerEvent): void {
           s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,
         );
       }
+    } else if (e.type === 'archive') {
+      archivedCount.value = e.count;
     } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
       lineCount.delete(e.id);

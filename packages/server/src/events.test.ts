@@ -37,6 +37,7 @@ class StubSource implements SessionSource {
     this.viewedCalls.push([...ids].sort());
     this.onSetViewed?.(ids);
   }
+  archivedCount?: () => number;
   readonly refreshCalls: string[] = [];
   refreshView(id: string): void {
     this.refreshCalls.push(id);
@@ -71,6 +72,35 @@ describe('EventHub', () => {
     await source.remove('docs');
     expect(await read(reader)).toContain('event: session.removed\ndata: ');
     await reader.cancel();
+    hub.close();
+  });
+  it('the snapshot carries archived from archivedCount(), or 0 without one', async () => {
+    const none = new EventHub(new StubSource(), 'h', '/p');
+    const r1 = none.stream().getReader();
+    expect(JSON.parse((await read(r1)).split('data: ')[1] as string).archived).toBe(0);
+    const source = new StubSource();
+    source.archivedCount = () => 3;
+    const hub = new EventHub(source, 'h', '/p');
+    const r2 = hub.stream().getReader();
+    expect(JSON.parse((await read(r2)).split('data: ')[1] as string).archived).toBe(3);
+    await r1.cancel();
+    await r2.cancel();
+    none.close();
+    hub.close();
+  });
+  it('an archive source event goes to every stream', async () => {
+    const source = new StubSource();
+    const hub = new EventHub(source, 'h', '/p');
+    const a = hub.stream().getReader();
+    const b = hub.stream().getReader();
+    await read(a);
+    await read(b);
+    source.emit({ type: 'archive', count: 4 });
+    for (const r of [a, b]) {
+      expect(await read(r)).toBe('event: archive\ndata: {"type":"archive","count":4}\n\n');
+    }
+    await a.cancel();
+    await b.cancel();
     hub.close();
   });
   it('fans out to every client', async () => {
