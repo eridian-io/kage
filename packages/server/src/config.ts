@@ -10,6 +10,8 @@ export interface KageConfig {
   host: string | null;
   port: number;
   tmuxSession: string;
+  /** `tmux -L <name>` socket; null means the default server. Env only (tests use a private one). */
+  tmuxSocket: string | null;
   worktreeDir: string;
   branchPrefix: string;
   autoArchive: { onMerge: boolean; afterDays: number };
@@ -23,6 +25,7 @@ export const DEFAULT_CONFIG: KageConfig = {
   host: null,
   port: 8080,
   tmuxSession: 'kage',
+  tmuxSocket: null,
   worktreeDir: '.worktrees',
   branchPrefix: 'kage/',
   autoArchive: { onMerge: true, afterDays: 14 },
@@ -129,6 +132,7 @@ export async function loadConfig(
 
   if (env.KAGE_NAME) c.name = env.KAGE_NAME;
   if (env.KAGE_HOST) c.host = env.KAGE_HOST;
+  if (env.KAGE_TMUX_SOCKET) c.tmuxSocket = env.KAGE_TMUX_SOCKET;
   if (env.KAGE_PORT) {
     const n = Number(env.KAGE_PORT);
     if (!Number.isInteger(n) || n < 1 || n > 65535) {

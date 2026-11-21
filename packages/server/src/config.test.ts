@@ -116,6 +116,13 @@ describe('loadConfig', () => {
     expect(c.port).toBe(4321);
   });
 
+  it('defaults tmuxSocket to null and lets KAGE_TMUX_SOCKET set it', async () => {
+    const none = join(dir, 'none.json');
+    expect((await loadConfig({ path: none, env: env() })).tmuxSocket).toBeNull();
+    const c = await loadConfig({ path: none, env: env({ KAGE_TMUX_SOCKET: 'kage-test-1' }) });
+    expect(c.tmuxSocket).toBe('kage-test-1');
+  });
+
   it('rejects an invalid KAGE_PORT', async () => {
     const err = await loadConfig({
       path: join(dir, 'none.json'),
