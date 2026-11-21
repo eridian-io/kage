@@ -1,6 +1,6 @@
 # Claude Code integration: observed behaviour
 
-Recorded on 2026-11-21 against **Claude Code 2.1.330** (WSL Ubuntu 24.04, tmux 3.4, Node 24), in a scratch git repo driven through a private tmux socket. This file holds facts only: field names, event order, timings and keystrokes. The fixtures in `packages/server/test/fixtures/` are hand-written and use invented content in the observed shapes.
+Recorded on 2026-11-21 against **Claude Code 2.1.330** (WSL Ubuntu 24.04, tmux 3.4, Node 24), in a scratch git repo driven through a private tmux socket. This file holds facts only: field names, event order, timings and keystrokes. The fixtures in `packages/server/test/fixtures/` are hand-written and use invented content in the observed shapes, except the `real-*` ones: `panes/real-trust-80.txt`, `panes/real-edit-80.txt`, `panes/real-done-80.txt` and `transcripts/real-short-turn.jsonl` were recorded from 2.1.330 at 80 columns in the phase 2 fix wave, with paths, ids and account fields replaced by invented values and the shapes kept.
 
 ## Read first: where this differs from the design spec (§5.2–§5.4)
 
@@ -110,6 +110,7 @@ Fixtures: `panes/permission-bash.txt`, `panes/permission-edit.txt`. Both are `ca
 | Answering option 2 | **Observed:** `send-keys 2` on a Bash prompt chose option 2 and ran the command at once, with no Enter. Alternatively, `send-keys Down` moves the `❯` to option 2, then `send-keys Enter` submits. `send-keys 4` (No) is also immediate. |
 | Cancelling | `send-keys Escape` cancels the prompt. It has the same effect as No; see §1, "Denial, cancel and failure". |
 | Lines | `-J` joins wrapped lines, but rows keep trailing spaces, often padded to near the pane width. Trim each line before parsing. Option lines are ` ❯ 1. Yes` or `   2. …`, so match `^\s*(❯\s*)?(\d+)\.\s+(.*)$`. |
+| Wrapping | Claude's TUI wraps long text itself, so `-J` doesn't join it. At 80 columns the Edit prompt's option 2 ends `…file edits and common file` and goes on, indented to the label's column, on the next line (`commands) for this session (shift+tab)`). An AskUserQuestion option's description is also indented under its label, but its label line is short. A long question or path wraps the same way. |
 
 ## 3. AskUserQuestion
 
@@ -140,7 +141,7 @@ Fixtures: `transcripts/ask-question.jsonl`, `hooks/pre-tool-use-ask-question.jso
 | Assistant thinking (think) | `message.content[0].type === "thinking"` | `.thinking` is **empty** and only `signature` is set, so use it only as an "is thinking" signal. `thinkingDurationMs` is on the envelope. |
 | Tool call | `message.content[0].type === "tool_use"` | `name`, `id`, `input` (see below) |
 | Tool result | `type: "user"`, `message.content` is an array of `{type: "tool_result", tool_use_id, content, is_error?}` | `content` is a string. `is_error: true` marks a failure. The parsed `toolUseResult` is on the envelope. |
-| Turn end | `type: "system"`, `subtype: "turn_duration"` | `durationMs` |
+| Turn end | `type: "system"`, `subtype: "turn_duration"` | `durationMs`. In the recorded short turn the order was: the reply (an assistant record with `stop_reason: "end_turn"`), `system/stop_hook_summary` (when Stop hooks ran), then `turn_duration`. Kage treats each of the three as the turn's end. |
 
 Claude Code writes **one record per content block**. Several consecutive assistant records share one `message.id`: text, then tool_use, then tool_use. Parallel tool calls are written as consecutive `tool_use` records, and their results follow, each in its own user record. `message` also has `model`, `stop_reason` (`"tool_use"` or `"end_turn"`) and `usage`.
 
@@ -197,7 +198,7 @@ Each screen appeared before `SessionStart`:
 | Theme | "Choose the text style that looks best with your terminal" | `Enter` (Auto) |
 | Login | "Select login method" (when signed out) | the owner signs in. Kage must not answer it. |
 | Security notes | "Security notes: … Press Enter to continue" | `Enter` |
-| Folder trust | "Accessing workspace: <path> … Is this a project you created or one you trust?". The options are unnumbered: `❯ No, exit` (the default) and `Yes, I trust this folder`. | `Down`, then `Enter` |
+| Folder trust | "Accessing workspace: <path> … Is this a project you created or one you trust?". At 80 columns the question sits mid-paragraph: `Quick safety check: Is this a project you created or one you trust? (Like your` (it can wrap at other widths). `Accessing workspace:` and `Yes, I trust this folder` each render on a line of their own. The options are unnumbered: `❯ No, exit` (the default) and `Yes, I trust this folder`. | `Down`, then `Enter` |
 | Renderer offer | "Try the new fullscreen renderer?", options `1. Yes, try it` and `2. Not now` | `2` (no Enter). Saying yes would change what `capture-pane` returns. |
 
 The theme, security notes and renderer offer appeared once per install. The trust prompt is per folder.

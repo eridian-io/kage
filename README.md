@@ -90,20 +90,21 @@ Adjust the path to where you cloned the repo.
 
 1. Install and build the board, once: `corepack enable && pnpm install && pnpm build`.
 2. Start Kage on loopback: `KAGE_HOST=127.0.0.1 kage serve`. Without `KAGE_HOST` it listens on your Tailscale address. Open the address it prints, for example `http://127.0.0.1:8080`, in any browser that can reach it.
-3. `kage serve` creates the tmux session `kage`. In a second terminal, attach to it (`tmux attach -t kage`, or add a window with `tmux new-window -t kage`) and run Claude there:
+3. `kage serve` creates the tmux session `kage`. Its first window only holds the session open, so the board hides it while it sits at a shell. From a second terminal, start Claude in a new window of that session, in your project's folder:
 
 ```sh
-tmux attach -t kage
-claude --settings "$(kage hooks-path)" --permission-mode default
+tmux new-window -t kage -c ~/projects/my-app "exec claude --settings '$(kage hooks-path)' --permission-mode default"
 ```
+
+Or attach (`tmux attach -t kage`), open a new window (`Ctrl-b c`) and run `claude --settings "$(kage hooks-path)" --permission-mode default` there. Either way, `kage` must be defined in the shell you type it in: the shell function above, in your shell's startup file.
 
 `kage hooks-path` writes the settings that send Claude's hook events to Kage, and prints the file's path (`$XDG_STATE_HOME/kage/claude-settings.json`, or `~/.local/state/kage/claude-settings.json`). Pass `--permission-mode default` too: Claude Code 2.1.330 starts in auto mode, which never asks, so Kage would never see a prompt.
 
-The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes. The first run in a new folder shows Claude's folder-trust screen, and Kage shows that as "needs you" too. Answer it in the terminal for now: answering from the board comes in phase 3.
+The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes or waits for your next prompt. The first run in a new folder shows Claude's folder-trust screen, and Kage reads it from the pane and shows it as "needs you" too. Answer it in the terminal for now: answering from the board comes in phase 3.
 
 `kage serve --demo` still runs the sample sessions with no tmux.
 
-Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
+Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default; `kage serve` sets `KAGE_SOCKET` in the tmux session, so Claude in its windows finds the same socket. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
 
 ## Configuration
 
