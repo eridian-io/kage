@@ -1,6 +1,6 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
-import { act, apiDelete } from '../api.ts';
+import { apiDelete, stop } from '../api.ts';
 import {
   actionError,
   beginDelete,
@@ -12,6 +12,7 @@ import {
   pendingDeletes,
   projectsRoot,
   stopArmed,
+  stopPending,
 } from '../store.ts';
 import { Ask } from './Ask.tsx';
 import { FollowUp } from './FollowUp.tsx';
@@ -233,8 +234,8 @@ export function SessionPanel({ session: s }: { session: Session }) {
                 hotkey="X"
                 cls="stop"
                 icon={ICON.stop}
-                disabled={busy.value.has(s.id) || connection.value !== 'live'}
-                onClick={() => act(s.id, 'stop')}
+                disabled={busy.value.has(s.id) || connection.value !== 'live' || stopPending(s)}
+                onClick={() => stop(s)}
               />
             </>
           )}

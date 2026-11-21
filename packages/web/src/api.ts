@@ -1,5 +1,14 @@
 import type { Session } from '@kage/shared';
-import { actionError, answered, authRequired, busy, connection } from './store.ts';
+import {
+  actionError,
+  authRequired,
+  busy,
+  connection,
+  isAnswered,
+  markAnswered,
+  stopPending,
+  stopSent,
+} from './store.ts';
 
 export const NO_ANSWER = "Kage didn't answer.";
 
@@ -102,9 +111,17 @@ export async function act(
  */
 export async function answer(s: Session, n: number): Promise<boolean> {
   const q = s.question;
-  if (!q || q === answered.value || n < 1 || n > q.options.length) return false;
+  if (!q || isAnswered(s) || n < 1 || n > q.options.length) return false;
   if (q.disabledOptions?.includes(n)) return false;
   const ok = await act(s.id, 'answer', { option: n, question: q.text });
-  if (ok) answered.value = q;
+  if (ok) markAnswered(s);
+  return ok;
+}
+
+/** Stops the session; once the server accepts, Stop stays off until the status changes. */
+export async function stop(s: Session): Promise<boolean> {
+  if (stopPending(s)) return false;
+  const ok = await act(s.id, 'stop');
+  if (ok) stopSent.value = { id: s.id, status: s.status };
   return ok;
 }

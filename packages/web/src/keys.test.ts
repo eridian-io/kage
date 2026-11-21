@@ -2,16 +2,19 @@ import { demoSessions } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installKeys } from './keys.ts';
 import {
+  answered,
   applyEvent,
   busy,
   confirmingDelete,
   connection,
   newTaskOpen,
+  releaseDigits,
   replyOpen,
   select,
   selectedId,
   sessions,
   stopArmed,
+  stopSent,
 } from './store.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
@@ -31,6 +34,9 @@ beforeEach(() => {
   newTaskOpen.value = false;
   replyOpen.value = false;
   stopArmed.value = null;
+  stopSent.value = null;
+  answered.value = null;
+  releaseDigits();
   busy.value = new Set();
   connection.value = 'live';
   fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
@@ -118,6 +124,83 @@ describe('installKeys: the New task form', () => {
     expect(selectedId.value).toBe('web');
     press('Escape');
     expect(confirmingDelete.value).toBe(true);
+  });
+});
+
+const holdKey = (key: string) =>
+  document.dispatchEvent(new KeyboardEvent('keydown', { key, repeat: true, bubbles: true }));
+
+describe('installKeys: held keys', () => {
+  it('a repeated X after the first X sends nothing (R26)', async () => {
+    select('shop');
+    press('x');
+    for (let i = 0; i < 5; i++) holdKey('x');
+    await flush();
+    expect(posted()).toEqual([]);
+    expect(stopArmed.value).toBe('shop');
+  });
+
+  it('a repeated digit sends nothing', async () => {
+    holdKey('1');
+    await flush();
+    expect(posted()).toEqual([]);
+  });
+
+  it('J and K still repeat', () => {
+    holdKey('j');
+    holdKey('j');
+    expect(selectedId.value).toBe('infra');
+  });
+});
+
+describe('installKeys: after the selection changes by itself', () => {
+  /** web and shop both wait; web is selected, then removed, so shop is picked automatically. */
+  const pickShop = () => {
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      sessions: demoSessions(NOW).map((s) =>
+        s.id === 'shop'
+          ? {
+              ...s,
+              status: 'needs-you' as const,
+              question: { text: 'Run it?', options: ['Yes', 'No'] },
+            }
+          : s,
+      ),
+    });
+    select('web');
+    applyEvent({ type: 'session.removed', id: 'web' });
+    expect(selectedId.value).toBe('shop');
+  };
+
+  it('digits wait 1 s', async () => {
+    vi.useFakeTimers();
+    pickShop();
+    press('1');
+    await vi.advanceTimersByTimeAsync(999);
+    expect(posted()).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    press('1');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(posted()).toEqual(['/api/sessions/shop/answer']);
+  });
+
+  it('or until the user selects', async () => {
+    pickShop();
+    press('1');
+    press('k');
+    press('1');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/shop/answer']);
+  });
+
+  it('the first selection on load does not hold digits', async () => {
+    press('1');
+    await flush();
+    expect(posted()).toEqual(['/api/sessions/web/answer']);
   });
 });
 

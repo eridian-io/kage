@@ -1,7 +1,6 @@
 import {
   type DisplayLine,
   groupOf,
-  type Question,
   type ServerEvent,
   type Session,
   sortSessions,
@@ -46,10 +45,15 @@ export const busy: Signal<ReadonlySet<string>> = signal(new Set());
 /** The last action's failure, shown above that session's footer; cleared on select and the next action. */
 export const actionError: Signal<{ id: string; text: string } | null> = signal(null);
 /**
- * The question last answered or replied to from this page. Its buttons stay disabled until the
- * server's update replaces it, so a second click can't send another digit to an answered prompt.
+ * The question last answered or replied to from this page, by session and content. Its buttons
+ * stay disabled while that same question shows, so a second click can't send another digit to an
+ * answered prompt; a snapshot that re-creates it doesn't re-enable them. After ANSWER_HOLD_MS
+ * they work again, in case the prompt really is still waiting.
  */
-export const answered: Signal<Question | null> = signal(null);
+export const answered: Signal<{ id: string; q: string } | null> = signal(null);
+export const ANSWER_HOLD_MS = 5000;
+/** A Stop the server accepted, with the status it was sent at: Stop stays off until that changes. */
+export const stopSent: Signal<{ id: string; status: string } | null> = signal(null);
 /** The session a first X armed for Stop (R26): a second X within 2 s stops it. */
 export const stopArmed: Signal<string | null> = signal(null);
 // The login screen replaces the board; a form left open behind it would reappear after sign-in.
@@ -80,6 +84,34 @@ export const nameOf = (s: Session) => `${s.project} · ${s.task}`;
 export const canStop = (s: Session): boolean =>
   !s.external && (s.status === 'running' || s.status === 'needs-you');
 
+const questionKey = (s: Session) =>
+  s.question ? JSON.stringify([s.question.text, s.question.options]) : '';
+/** The session's question is the one answered from here, still showing. */
+export const isAnswered = (s: Session): boolean =>
+  answered.value?.id === s.id && answered.value.q === questionKey(s);
+export function markAnswered(s: Session): void {
+  const mark = { id: s.id, q: questionKey(s) };
+  answered.value = mark;
+  setTimeout(() => {
+    if (answered.value === mark) answered.value = null;
+  }, ANSWER_HOLD_MS);
+}
+/** A Stop for this session was accepted and its status hasn't changed since. */
+export const stopPending = (s: Session): boolean =>
+  stopSent.value?.id === s.id && stopSent.value.status === s.status;
+
+/**
+ * When the selected session goes away, keepSelection picks another; a digit meant for the old
+ * question must not answer the new one. Digits wait until the user selects (J/K, a click, N), or
+ * for AUTO_PICK_MS. Epoch ms of the automatic pick, else 0.
+ */
+let autoPickedAt = 0;
+export const AUTO_PICK_MS = 1000;
+export const digitsHeld = (): boolean => Date.now() - autoPickedAt < AUTO_PICK_MS;
+export function releaseDigits(): void {
+  autoPickedAt = 0;
+}
+
 /**
  * Selects a session. Every selection, even of the selected row, drops the confirmation and the
  * toast, as in the target.
@@ -93,7 +125,9 @@ export function select(id: string | null): void {
     replyOpen.value = false;
     actionError.value = null;
     stopArmed.value = null;
+    answered.value = null;
   });
+  releaseDigits();
 }
 
 /**
@@ -107,6 +141,8 @@ export function selectStarted(id: string): void {
 
 function keepSelection(): void {
   if (!sorted.value.some((s) => s.id === selectedId.value)) {
+    // Replacing a selected session is automatic; the first selection on load is not a switch.
+    if (selectedId.value !== null) autoPickedAt = Date.now();
     selectedId.value = sorted.value[0]?.id ?? null;
     confirmingDelete.value = false;
   }

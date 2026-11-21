@@ -1,13 +1,16 @@
-import { act, answer } from './api.ts';
+import { answer, stop } from './api.ts';
 import {
   authRequired,
   canStop,
   confirmingDelete,
+  digitsHeld,
   newTaskOpen,
+  releaseDigits,
   replyOpen,
   selected,
   selectNext,
   stopArmed,
+  stopPending,
 } from './store.ts';
 
 /** R26: a first X arms Stop for this long; a second X within it stops the session. */
@@ -32,15 +35,19 @@ export function installKeys(target: Document = document): () => void {
     if (e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
     if (newTaskOpen.value || authRequired.value) return;
     const k = e.key.toLowerCase();
+    // A held key repeats: J/K may move on, but nothing else acts twice (a held X must not stop).
+    if (e.repeat && k !== 'j' && k !== 'k') return;
     const s = selected.value;
-    if (k === 'n') newTaskOpen.value = true;
-    else if (k === 'j') selectNext(1);
+    if (k === 'n') {
+      releaseDigits();
+      newTaskOpen.value = true;
+    } else if (k === 'j') selectNext(1);
     else if (k === 'k') selectNext(-1);
     else if (k === 'escape') {
       confirmingDelete.value = false;
       replyOpen.value = false;
     } else if (k.length === 1 && k >= '1' && k <= '9') {
-      if (s?.status === 'needs-you') void answer(s, Number(k));
+      if (s?.status === 'needs-you' && !digitsHeld()) void answer(s, Number(k));
     } else if (k === 'r' && s) {
       if (s.status === 'needs-you') {
         // Startup screens take buttons only (R9).
@@ -49,11 +56,11 @@ export function installKeys(target: Document = document): () => void {
       }
       // A new reply field focuses itself as it mounts; an open one, or the follow-up, is focused here.
       target.querySelector<HTMLInputElement>('.k-follow input')?.focus();
-    } else if (k === 'x' && s && canStop(s)) {
+    } else if (k === 'x' && s && canStop(s) && !stopPending(s)) {
       clearTimeout(disarm);
       if (stopArmed.value === s.id) {
         stopArmed.value = null;
-        void act(s.id, 'stop');
+        void stop(s);
       } else {
         stopArmed.value = s.id;
         disarm = setTimeout(() => {

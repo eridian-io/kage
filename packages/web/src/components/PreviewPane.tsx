@@ -7,13 +7,17 @@ const label = (p: Port) => (
   </span>
 );
 
+/** The board opened on the machine itself: loopback-only ports are reachable from here. */
+const LOCAL = ['localhost', '127.0.0.1', '[::1]', '::1'];
+
 /**
  * A port's card (spec §5.7). It links to the port on the host this board was opened from; a port
- * that listens only on loopback can't be reached that way, so its card shows the tunnel to run.
+ * that listens only on loopback can't be reached that way from elsewhere, so its card shows the
+ * tunnel to run.
  */
 function PortCard({ port: p }: { port: Port }) {
   const host = location.hostname;
-  if (!p.localOnly) {
+  if (!p.localOnly || LOCAL.includes(host)) {
     return (
       <a
         class="k-port"

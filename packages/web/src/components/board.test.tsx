@@ -19,10 +19,12 @@ import {
   host,
   linesById,
   now,
+  releaseDigits,
   replyOpen,
   selectedId,
   sessions,
   stopArmed,
+  stopSent,
   toast,
 } from '../store.ts';
 
@@ -55,6 +57,8 @@ function reset(list: Session[] = demoSessions(NOW)) {
   busy.value = new Set();
   actionError.value = null;
   answered.value = null;
+  stopSent.value = null;
+  releaseDigits();
   replyOpen.value = false;
   stopArmed.value = null;
   sessions.value = [];
@@ -829,7 +833,12 @@ describe('controls', () => {
   const hold = () => {
     let release: (r: Response) => void = () => {};
     fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (release = r)));
-    return () => release(new Response(null, { status: 204 }));
+    return (status = 204) =>
+      release(
+        status === 204
+          ? new Response(null, { status })
+          : new Response(JSON.stringify({ error: 'Refused.' }), { status }),
+      );
   };
   const errLine = (c: Element) => c.querySelector('.k-err')?.textContent ?? null;
   const replyInput = (c: Element) => c.querySelector<HTMLInputElement>('.k-ask .k-follow input');
@@ -885,6 +894,33 @@ describe('controls', () => {
       release();
       await waitFor(() => expect(optButtons(container).every((b) => !b.disabled)).toBe(true));
       expect(busy.value.size).toBe(0);
+    });
+
+    it('a snapshot re-creating the same question keeps the buttons off; 5 s later they work', async () => {
+      vi.useFakeTimers();
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(answered.value).not.toBeNull();
+      applyEvent({
+        type: 'snapshot',
+        host: 'my-pc',
+        streamId: 's2',
+        projectsRoot: '/p',
+        sessions: demoSessions(NOW).map((s) => ({ ...s, lines: [] })),
+      });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(optButtons(container).every((b) => b.disabled)).toBe(true);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(optButtons(container).every((b) => !b.disabled)).toBe(true);
+    });
+
+    it('selecting another session clears the answered mark', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(optButtons(container)[0] as Element);
+      await waitFor(() => expect(answered.value).not.toBeNull());
+      fireEvent.click(row(container, 'shop'));
+      expect(answered.value).toBeNull();
     });
 
     it('keeps an answered question’s buttons disabled until the server replaces it', async () => {
@@ -1131,7 +1167,7 @@ describe('controls', () => {
       expect(posts()).toEqual([['/api/sessions/shop/stop', '1', undefined]]);
     });
 
-    it('is disabled while busy and while disconnected', async () => {
+    it('is disabled while busy and while disconnected; a refused stop enables it again', async () => {
       const release = hold();
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'shop'));
@@ -1139,11 +1175,34 @@ describe('controls', () => {
       await waitFor(() => expect(button(container, 'Stop').disabled).toBe(true));
       fireEvent.click(button(container, 'Stop'));
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      release();
+      release(409);
       await waitFor(() => expect(button(container, 'Stop').disabled).toBe(false));
       connection.value = 'reconnecting';
       await Promise.resolve();
       expect(button(container, 'Stop').disabled).toBe(true);
+    });
+
+    it('stays disabled after an accepted stop until the status changes', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      fireEvent.click(button(container, 'Stop'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      expect(button(container, 'Stop').disabled).toBe(true);
+      fireEvent.click(button(container, 'Stop'));
+      key('x');
+      key('x');
+      await Promise.resolve();
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(container.querySelector('.k-foot .k-hint')).toBeNull();
+      // A new status from the server (here needs-you): Stop works again.
+      const shop = sessions.value.find((s) => s.id === 'shop') as Session;
+      applyEvent({
+        type: 'session.updated',
+        session: { ...shop, status: 'needs-you', question: { text: 'Go on?', options: ['Yes'] } },
+      });
+      await Promise.resolve();
+      expect(button(container, 'Stop').disabled).toBe(false);
     });
 
     it('X twice stops a running session; the first X asks for the second (R26)', async () => {
@@ -1201,6 +1260,21 @@ describe('controls', () => {
       expect(a.hasAttribute('aria-disabled')).toBe(false);
       expect(a.textContent).toBe(':5173 viteOpen ↗');
       expect(q(a, '.go').textContent).toBe('Open ↗');
+    });
+
+    it('on the machine itself, a local-only port is a link too', () => {
+      for (const [url, host] of [
+        ['http://localhost:4400/', 'localhost'],
+        ['http://127.0.0.1:4400/', '127.0.0.1'],
+        ['http://[::1]:4400/', '[::1]'],
+      ] as const) {
+        setURL(url);
+        withPorts([{ port: 5432, process: 'postgres', localOnly: true }]);
+        const { container, unmount } = render(<Board />);
+        expect(q(container, 'a.k-port').getAttribute('href')).toBe(`http://${host}:5432/`);
+        expect(container.querySelector('.k-ssh')).toBeNull();
+        unmount();
+      }
     });
 
     it('a local-only card has no link and shows the ssh line', () => {
