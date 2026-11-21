@@ -26,6 +26,9 @@ export interface SessionView {
   ports?: Port[];
   files?: FileChange[];
   filesTotal?: number;
+  /** A record's branch counts (Task 3), refreshed with the files; absent means none yet (0). */
+  unpushed?: number;
+  uncommitted?: number;
 }
 
 /** The wire Session for a live session; `lines` is always [] (lines travel separately). */
@@ -45,8 +48,9 @@ export function toSession(v: SessionView): Session {
     pinned: r ? r.pinned : false,
     archived: r ? r.archived : false,
     external: r === null,
-    unpushed: 0,
-    uncommitted: 0,
+    // External sessions never get counts: they keep 0.
+    unpushed: r ? (v.unpushed ?? 0) : 0,
+    uncommitted: r ? (v.uncommitted ?? 0) : 0,
     lines: [],
     ports: (v.ports ?? []).map((p) => ({ ...p })),
     files: (v.files ?? []).map((f) => ({ ...f })),
@@ -65,7 +69,7 @@ export function toSession(v: SessionView): Session {
 }
 
 /**
- * What the preview tracker needs (F6): a record's worktree and base, or an external window's pane
+ * What the preview tracker needs (F6): a record's worktree, base, branch and base commit, or an external window's pane
  * cwd with no base; the pane pid while the window is live; active while running or needs you.
  * Null when there is no folder to look at.
  */
@@ -77,6 +81,8 @@ export function previewTarget(v: SessionView): PreviewTarget | null {
     id: v.id,
     worktree,
     base: v.record?.base ?? null,
+    branch: v.record?.branch ?? null,
+    baseCommit: v.record?.baseCommit ?? null,
     panePid: live && v.window ? v.window.panePid : null,
     active: v.status === 'running' || v.status === 'needs-you',
   };

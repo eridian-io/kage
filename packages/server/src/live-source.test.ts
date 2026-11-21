@@ -1162,6 +1162,8 @@ describe('LiveSource: fix round 1', () => {
     expect(source.get('k-1')?.status).toBe('ended');
     expect(source.lines('k-1')).toEqual(lines);
     expect(tmux.captureCalls).toEqual([]);
+    // Only the debounced save of its new doneAt (phase 4 Task 3) is pending; no capture timer.
+    await vi.advanceTimersByTimeAsync(500);
     expect(vi.getTimerCount()).toBe(0);
   });
 
@@ -2581,7 +2583,7 @@ describe('LiveSource: preview data (Task 8)', () => {
   it('previewTarget: a record gives its worktree, base and pane pid; active while running', async () => {
     const { source, hooks, preview } = setup({
       windows: [kageWin({ panePid: 4100 }), win({ windowId: '@7', paneId: '%7', panePid: 77 })],
-      records: [rec({ base: 'main' })],
+      records: [rec({ base: 'main', baseCommit: 'd'.repeat(40) })],
     });
     await source.start();
     hooks.fire(hook('UserPromptSubmit', '%2'));
@@ -2589,6 +2591,8 @@ describe('LiveSource: preview data (Task 8)', () => {
       id: 'k-1',
       worktree: `${ROOT}/shop/.worktrees/fix-the-cart-total`,
       base: 'main',
+      branch: 'kage/fix-the-cart-total',
+      baseCommit: 'd'.repeat(40),
       panePid: 4100,
       active: true,
     });
@@ -2598,6 +2602,8 @@ describe('LiveSource: preview data (Task 8)', () => {
     expect(preview.host?.previewTarget('ext-@7')).toMatchObject({
       worktree: `${ROOT}/demo`,
       base: null,
+      branch: null,
+      baseCommit: null,
       panePid: 77,
     });
     expect(preview.host?.previewTarget('nope')).toBeNull();
@@ -2654,5 +2660,70 @@ describe('LiveSource: preview data (Task 8)', () => {
     expect(preview.calls).toContain('forget ext-@7');
     await source.stop();
     expect(preview.calls.at(-1)).toBe('stop');
+  });
+});
+
+describe('LiveSource: branch state (phase 4 Task 3)', () => {
+  it('a changed count emits session.updated once; an unchanged one emits nothing', async () => {
+    const { source, updates } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    const n = updates('k-1').length;
+    source.setPreview('k-1', { unpushed: 2, uncommitted: 3 });
+    expect(updates('k-1')).toHaveLength(n + 1);
+    expect(updates('k-1').at(-1)).toMatchObject({ unpushed: 2, uncommitted: 3 });
+    source.setPreview('k-1', { unpushed: 2, uncommitted: 3 });
+    source.setPreview('k-1', { unpushed: 2, uncommitted: 3 }, true);
+    expect(updates('k-1')).toHaveLength(n + 1);
+    source.setPreview('k-1', { unpushed: 0, uncommitted: 3 });
+    expect(updates('k-1')).toHaveLength(n + 2);
+    expect(source.get('k-1')).toMatchObject({ unpushed: 0, uncommitted: 3 });
+    expect(source.list().find((s) => s.id === 'k-1')).toMatchObject({ uncommitted: 3 });
+  });
+
+  it('an external session keeps 0 and 0 (it never gets counts)', async () => {
+    const { source } = setup({ windows: [win({ windowId: '@7', paneId: '%7' })] });
+    await source.start();
+    expect(source.get('ext-@7')).toMatchObject({ unpushed: 0, uncommitted: 0 });
+  });
+
+  it('doneAt is set on Stop, cleared on UserPromptSubmit, and saved (debounced)', async () => {
+    const { source, hooks, store } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store.saves.at(-1)?.[0]?.doneAt ?? null).toBeNull();
+    hooks.fire(hook('Stop', '%2'));
+    const stoppedAt = Date.now();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store.saves.at(-1)?.[0]?.doneAt).toBe(stoppedAt);
+    // A follow-up: active again, so no doneAt.
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(store.saves.at(-1)?.[0]?.doneAt).toBeNull();
+    hooks.fire(hook('Stop', '%2'));
+    const again = Date.now();
+    expect(again).toBeGreaterThan(stoppedAt);
+    await vi.advanceTimersByTimeAsync(1000);
+    // done → ended keeps the time it finished.
+    hooks.fire(hook('SessionEnd', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(store.saves.at(-1)?.[0]?.doneAt).toBe(again);
+  });
+
+  it('a phase 3 record that is done or ended at load gets doneAt = the load time', async () => {
+    const { source, store } = setup({
+      windows: [],
+      records: [rec(), rec({ kageId: 'k-2', windowId: '@3', doneAt: T0 - 5000 })],
+    });
+    await vi.advanceTimersByTimeAsync(2000);
+    const loadedAt = Date.now();
+    await source.start();
+    expect(source.get('k-1')?.status).toBe('ended');
+    await vi.advanceTimersByTimeAsync(1000);
+    const saved = store.saves.at(-1);
+    expect(saved?.find((r) => r.kageId === 'k-1')?.doneAt).toBe(loadedAt);
+    // One that has a doneAt keeps it.
+    expect(saved?.find((r) => r.kageId === 'k-2')?.doneAt).toBe(T0 - 5000);
   });
 });

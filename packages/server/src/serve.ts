@@ -11,6 +11,7 @@ import { attachCommand, SessionControls } from './control/actions.ts';
 import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import { branchCounts } from './git/branch.ts';
 import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
@@ -193,6 +194,8 @@ async function startLive(
         publish: (id, patch, always) => host.setPreview(id, patch, always),
         scan: makeScanner(io.platform ?? process.platform),
         files: (worktree, base) => changedFiles(worktree, base, gitExec),
+        // A record's unpushed and uncommitted counts, refreshed with its files (spec §5.8).
+        branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec),
       }),
   });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.

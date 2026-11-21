@@ -8,27 +8,35 @@ export type GitExec = (
 const DEFAULT_TIMEOUT_MS = 10_000;
 const MAX_BUFFER = 16 * 1024 * 1024;
 
-/** The environment minus variables that would point git at another repository. */
-function cleanEnv(): NodeJS.ProcessEnv {
-  const env = { ...process.env };
-  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
-  return env;
+/**
+ * Every git call's arguments: fsmonitor off first, whatever the repo says (a repo's
+ * `core.fsmonitor` names a program git would run). The one copy, for gitExec and any stream.
+ */
+export function gitArgs(args: readonly string[]): string[] {
+  return ['-c', 'core.fsmonitor=false', ...args];
 }
 
 /**
- * git with an argument array (never a shell); it never prompts and takes no optional locks.
- * Every call turns fsmonitor off: a repo's `core.fsmonitor` names a program git would run.
+ * Every git call's environment: the process's minus variables that would point git at another
+ * repository; it never prompts, takes no optional locks and speaks the C locale.
  */
+export function gitEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  for (const k of ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_COMMON_DIR']) delete env[k];
+  return { ...env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' };
+}
+
+/** git with an argument array (never a shell), with gitArgs and gitEnv. */
 export const gitExec: GitExec = (args, opts = {}) =>
   new Promise((resolve, reject) => {
     execFile(
       'git',
-      ['-c', 'core.fsmonitor=false', ...args],
+      gitArgs(args),
       {
         ...(opts.cwd !== undefined ? { cwd: opts.cwd } : {}),
         timeout: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         maxBuffer: MAX_BUFFER,
-        env: { ...cleanEnv(), GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0', LC_ALL: 'C' },
+        env: gitEnv(),
         windowsHide: true,
       },
       (err, stdout, stderr) => {

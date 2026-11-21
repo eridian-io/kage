@@ -266,7 +266,7 @@ describe('TaskLauncher', () => {
         transcriptPath: null,
         base: 'main',
         permissionMode: 'acceptEdits',
-        baseCommit: null,
+        baseCommit: git(path, 'rev-parse', 'HEAD').trim(),
         doneAt: null,
         archivedAt: null,
         restoredAt: null,
@@ -300,6 +300,33 @@ describe('TaskLauncher', () => {
     const path = join(repo, '.worktrees', 'fix-the-cart-total');
     expect(git(path, 'log', '-1', '--format=%s').trim()).toBe('on develop');
     expect(source.records[0]).toMatchObject({ base: 'develop', permissionMode: 'default' });
+  });
+
+  it('the adopted record holds the worktree’s HEAD as baseCommit (the base at the cut)', async () => {
+    git(repo, 'checkout', '-q', 'develop');
+    git(repo, 'commit', '-q', '--allow-empty', '-m', 'on develop');
+    git(repo, 'checkout', '-q', 'main');
+    const cut = git(repo, 'rev-parse', 'develop').trim();
+    const { launcher, source, gitCalls } = setup();
+    await launcher.start(body({ base: 'develop' }));
+    expect(source.records[0]?.baseCommit).toBe(cut);
+    expect(cut).toMatch(/^[0-9a-f]{40}$/);
+    // Read after the worktree exists, from the worktree itself.
+    const add = gitCalls.findIndex((c) => c[0] === 'worktree' && c[1] === 'add');
+    const rev = gitCalls.findIndex((c) => c.join(' ') === 'rev-parse HEAD');
+    expect(add).toBeGreaterThanOrEqual(0);
+    expect(rev).toBeGreaterThan(add);
+  });
+
+  it('a rev-parse that gives no commit id leaves baseCommit null; the launch goes on', async () => {
+    const { launcher, source } = setup({
+      git: async (args, opts) =>
+        args.join(' ') === 'rev-parse HEAD'
+          ? { stdout: 'nonsense\n', stderr: '' }
+          : gitExec(args, opts),
+    });
+    expect(await launcher.start(body())).toEqual({ id: 'k-1' });
+    expect(source.records[0]?.baseCommit).toBeNull();
   });
 
   it('adds /.worktrees/ to info/exclude once', async () => {

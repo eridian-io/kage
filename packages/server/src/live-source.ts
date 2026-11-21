@@ -328,7 +328,8 @@ export class LiveSource implements SessionSource {
 
   /**
    * New preview values: session.ports / session.files go out when the value changed, or with
-   * `always` (the first value after a view, R32). toSession carries the latest values.
+   * `always` (the first value after a view, R32); changed branch counts go out as one
+   * session.updated. toSession carries the latest values.
    */
   setPreview(id: string, patch: PreviewPatch, always = false): void {
     const st = this.#sessions.get(id);
@@ -355,6 +356,12 @@ export class LiveSource implements SessionSource {
           filesTotal: total,
         });
       }
+    }
+    if (patch.unpushed !== undefined || patch.uncommitted !== undefined) {
+      // Branch counts travel in session.updated; emitNow sends one only when a value changed.
+      if (patch.unpushed !== undefined) st.unpushed = patch.unpushed;
+      if (patch.uncommitted !== undefined) st.uncommitted = patch.uncommitted;
+      this.#emitNow(st);
     }
   }
 
@@ -537,6 +544,8 @@ export class LiveSource implements SessionSource {
     } catch {}
     if (!this.#running) return;
     await this.#reconcile(windows);
+    // A record saved before phase 4 that is done or ended now gets the load time as its doneAt.
+    for (const st of this.#sessions.values()) this.#trackDone(st);
     await Promise.all(
       [...this.#sessions.values()]
         .filter((st) => !st.window && st.transcriptPath)
@@ -1389,6 +1398,7 @@ export class LiveSource implements SessionSource {
     st.shellEnded = false;
     st.statusSince = this.#now();
     st.gen++;
+    this.#trackDone(st);
     if (status !== 'needs-you') {
       st.question = null;
       st.promptKind = null;
@@ -1397,6 +1407,20 @@ export class LiveSource implements SessionSource {
       this.#clearTimers(st, ['retry']);
     }
     if (this.#ready) this.#preview?.statusChanged(st.id);
+  }
+
+  /**
+   * A record's doneAt: set on its move into done or ended (kept from done to ended), cleared on
+   * running or needs you; saved with the debounced save.
+   */
+  #trackDone(st: Live): void {
+    const r = st.record;
+    if (!r) return;
+    const finished = st.status === 'done' || st.status === 'ended';
+    if (finished && r.doneAt === null) r.doneAt = this.#now();
+    else if (!finished && r.doneAt !== null) r.doneAt = null;
+    else return;
+    this.#saveSoon();
   }
 
   #clearTimers(st: Live, names?: TimerName[]): void {

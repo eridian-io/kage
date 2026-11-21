@@ -15,7 +15,7 @@ import type { NewTaskBody, NewTaskResponse } from '@kage/shared';
 import { firstLine, type GitExec } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
-import type { SessionRecord } from '../state/store.ts';
+import { HEX_COMMIT, type SessionRecord } from '../state/store.ts';
 import type { TmuxClient } from '../tmux/client.ts';
 import { slugify, uniqueSlug } from './slug.ts';
 import { parseNewTask } from './validate.ts';
@@ -241,6 +241,14 @@ export class TaskLauncher {
       throw new LaunchError(422, `git couldn't create the worktree: ${firstLine(e)}`);
     }
 
+    // The commit the worktree was cut from, read from the worktree itself (the base may move on
+    // meanwhile): merge detection's "a commit past baseCommit". Null when git gives no commit id.
+    const head = await d.git(['rev-parse', 'HEAD'], { cwd: path }).then(
+      (r) => r.stdout.trim(),
+      () => '',
+    );
+    const baseCommit = HEX_COMMIT.test(head) ? head : null;
+
     const kageId = this.#newId();
     const record: SessionRecord = {
       kageId,
@@ -256,7 +264,7 @@ export class TaskLauncher {
       transcriptPath: null,
       base: t.base,
       permissionMode: t.acceptEdits ? 'acceptEdits' : 'default',
-      baseCommit: null,
+      baseCommit,
       doneAt: null,
       archivedAt: null,
       restoredAt: null,

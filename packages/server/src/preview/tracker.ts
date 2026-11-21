@@ -8,6 +8,10 @@ export interface PreviewTarget {
   worktree: string;
   /** The branch the task started from; null for external sessions and old records. */
   base: string | null;
+  /** The record's branch; null for external sessions (they get no branch counts). */
+  branch: string | null;
+  /** The commit the record's worktree was cut from; null for external sessions and old records. */
+  baseCommit: string | null;
   /** The window's pane process; null without a live window. */
   panePid: number | null;
   /** Running or needs you: its ports are scanned every 5 s while viewed. */
@@ -18,6 +22,14 @@ export interface PreviewPatch {
   ports?: Port[];
   files?: FileChange[];
   filesTotal?: number;
+  /** Commits only the branch reaches; with uncommitted, refreshed with the files (records only). */
+  unpushed?: number;
+  uncommitted?: number;
+}
+
+export interface BranchCounts {
+  unpushed: number;
+  uncommitted: number;
 }
 
 export type TouchReason = 'edit' | 'turn-end';
@@ -32,6 +44,11 @@ export interface PreviewTrackerDeps {
   /** One scan of every listener and process; null where Kage can't scan (not Linux or macOS). */
   scan: (() => Promise<{ listeners: Listener[]; procs: Proc[] }>) | null;
   files: (worktree: string, base: string | null) => Promise<{ files: FileChange[]; total: number }>;
+  /** A record's unpushed commits and uncommitted entries; rejects when git fails. */
+  branch: (
+    worktree: string,
+    o: { branch: string; base: string | null; baseCommit: string | null },
+  ) => Promise<BranchCounts>;
   /** Port scan period while a viewed session is active (default 5000). */
   portEveryMs?: number;
   /** Quiet time after the last edit before the files refresh (default 500). */
@@ -77,6 +94,7 @@ export class PreviewTracker {
   readonly #fileStates = new Map<string, FileState>();
   readonly #lastPorts = new Map<string, string>();
   readonly #lastFiles = new Map<string, string>();
+  readonly #lastCounts = new Map<string, string>();
   /** Sessions whose next ports or files value is published even when unchanged (R32). */
   readonly #forcePorts = new Set<string>();
   readonly #forceFiles = new Set<string>();
@@ -140,6 +158,7 @@ export class PreviewTracker {
     this.#fileStates.delete(id);
     this.#lastPorts.delete(id);
     this.#lastFiles.delete(id);
+    this.#lastCounts.delete(id);
     this.#arm();
   }
 
@@ -247,6 +266,7 @@ export class PreviewTracker {
     // A later view starts from nothing: no stale value suppresses or stands in for a new one.
     this.#lastPorts.delete(id);
     this.#lastFiles.delete(id);
+    this.#lastCounts.delete(id);
   }
 
   #fileState(id: string): FileState {
@@ -283,6 +303,14 @@ export class PreviewTracker {
     const t = this.#d.target(id);
     if (!t) return;
     st.running = true;
+    // A record's branch counts run beside the files; a failed count keeps the last value.
+    const branch = t.branch;
+    const counts =
+      branch === null
+        ? null
+        : this.#d
+            .branch(t.worktree, { branch, base: t.base, baseCommit: t.baseCommit })
+            .catch(() => null);
     let r: { files: FileChange[]; total: number } | null;
     try {
       r = await this.#d.files(t.worktree, t.base);
@@ -290,6 +318,8 @@ export class PreviewTracker {
       // Gone or no repository: nothing to show. A timeout or similar keeps the last good list.
       r = worktreeGone(err) ? { files: [], total: 0 } : null;
     }
+    // No extra await without counts: an external session's values go out exactly as before.
+    const c = counts ? await counts : null;
     st.running = false;
     // Stopped, forgotten or no longer viewed: the result goes nowhere.
     if (this.#stopped || this.#fileStates.get(id) !== st) return;
@@ -297,6 +327,7 @@ export class PreviewTracker {
       this.#fileStates.delete(id);
       return;
     }
+    if (c) this.#publishCounts(id, c);
     if (r) this.#publishFiles(id, r);
     else if (this.#forceFiles.has(id)) {
       // R32: a view still gets a files event, the last good value or none.
@@ -307,6 +338,13 @@ export class PreviewTracker {
       st.again = false;
       void this.#runFiles(id, st);
     }
+  }
+
+  #publishCounts(id: string, c: BranchCounts): void {
+    const key = `${c.unpushed},${c.uncommitted}`;
+    if (this.#lastCounts.get(id) === key) return;
+    this.#lastCounts.set(id, key);
+    this.#d.publish(id, { unpushed: c.unpushed, uncommitted: c.uncommitted }, false);
   }
 
   #publishFiles(id: string, r: { files: FileChange[]; total: number }): void {

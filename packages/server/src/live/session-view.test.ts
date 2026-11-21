@@ -71,6 +71,8 @@ describe('previewTarget (F6)', () => {
       id: 'ext-@1',
       worktree: '/home/dev/projects/demo/sub',
       base: null,
+      branch: null,
+      baseCommit: null,
       panePid: 4100,
       active: true,
     });

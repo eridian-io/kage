@@ -58,7 +58,8 @@ export interface SessionRecord {
 const VERSION = 1;
 
 const isStr = (v: unknown): v is string => typeof v === 'string';
-const HEX_COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
+/** A full commit id (sha1 or sha256), as Kage records `baseCommit`. */
+export const HEX_COMMIT = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 const timeOrNull = (v: unknown): number | null =>
   typeof v === 'number' && Number.isFinite(v) ? v : null;
 const isStrOrNull = (v: unknown): v is string | null => v === null || typeof v === 'string';

@@ -69,9 +69,6 @@ async function untrackedLines(root: string, rel: string): Promise<number> {
   }
 }
 
-/** Repository config can name an fsmonitor program; a read-only preview never runs it. */
-const NO_FSMONITOR = ['-c', 'core.fsmonitor=false'];
-
 /**
  * The worktree's changes against the merge base of `base` and HEAD (or HEAD when the base is
  * null or missing): commits on the branch plus uncommitted work (`git diff <mb>`), and untracked
@@ -97,20 +94,20 @@ export async function changedFiles(
   const [diff, others] = await Promise.all([
     exec(
       [
-        ...NO_FSMONITOR,
         'diff',
         '--numstat',
         '-z',
         '-M',
         '--relative',
         '--no-ext-diff',
+        '--no-textconv',
         '--no-color',
         mb,
         '--',
       ],
       opts,
     ),
-    exec([...NO_FSMONITOR, 'ls-files', '--others', '--exclude-standard', '-z'], opts),
+    exec(['ls-files', '--others', '--exclude-standard', '-z'], opts),
   ]);
   const files = parseNumstat(diff.stdout);
   const untracked = others.stdout.split('\0').filter((p) => p !== '');

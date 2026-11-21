@@ -176,3 +176,29 @@ describe('changedFiles', () => {
     expect(diff?.args.slice(-2)).toEqual(['abc1234def', '--']);
   });
 });
+
+describe('changedFiles: arguments (F4, F8)', () => {
+  it('numstat passes --no-ext-diff and --no-textconv; fsmonitor is left to gitExec', async () => {
+    const calls: string[][] = [];
+    const exec: GitExec = async (args) => {
+      calls.push(args);
+      return { stdout: '', stderr: '' };
+    };
+    await changedFiles('/w', null, exec);
+    expect(calls).toEqual([
+      [
+        'diff',
+        '--numstat',
+        '-z',
+        '-M',
+        '--relative',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-color',
+        'HEAD',
+        '--',
+      ],
+      ['ls-files', '--others', '--exclude-standard', '-z'],
+    ]);
+  });
+});
