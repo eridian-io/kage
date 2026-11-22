@@ -9,11 +9,13 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { request } from 'node:http';
+import { createServer as createNetServer, type Socket } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { fetchStatus } from '../install/status.ts';
 import { type HookEvent, parseHookEvent } from './event.ts';
-import { HookServer } from './server.ts';
+import { HookServer, type ServerStatus } from './server.ts';
 
 const FIXTURES = join(import.meta.dirname, '../../test/fixtures/hooks');
 const payload = (file: string) => JSON.parse(readFileSync(join(FIXTURES, file), 'utf8'));
@@ -210,6 +212,83 @@ describe('HookServer', () => {
 
   it('other methods on /hook → 405', async () => {
     expect((await send(path, '', { method: 'GET' })).status).toBe(405);
+  });
+
+  describe('GET /status', () => {
+    const STATUS: ServerStatus = {
+      version: '9.8.7',
+      url: 'http://127.0.0.1:8080',
+      sessions: 3,
+      needsYou: 1,
+      pid: 4242,
+    };
+
+    it("answers the provider's JSON, read fresh for each request", async () => {
+      let sessions = 3;
+      server.onStatus(() => ({ ...STATUS, sessions }));
+      const res = await send(path, '', { path: '/status', method: 'GET' });
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual(STATUS);
+      sessions = 4;
+      expect(JSON.parse((await send(path, '', { path: '/status', method: 'GET' })).body)).toEqual({
+        ...STATUS,
+        sessions: 4,
+      });
+    });
+
+    it('with no provider → 503', async () => {
+      expect((await send(path, '', { path: '/status', method: 'GET' })).status).toBe(503);
+    });
+
+    it('POST /status → 405, and GET /hook stays 405', async () => {
+      server.onStatus(() => STATUS);
+      expect((await send(path, '{}', { path: '/status', method: 'POST' })).status).toBe(405);
+      expect((await send(path, '', { path: '/hook', method: 'GET' })).status).toBe(405);
+    });
+
+    it('a throwing provider → 500 with no body', async () => {
+      server.onStatus(() => {
+        throw new Error('secret detail');
+      });
+      const res = await send(path, '', { path: '/status', method: 'GET' });
+      expect(res.status).toBe(500);
+      expect(res.body).toBe('');
+    });
+
+    it('fetchStatus reads it over the socket', async () => {
+      server.onStatus(() => STATUS);
+      expect(await fetchStatus(path)).toEqual(STATUS);
+    });
+
+    it('fetchStatus gives null with no provider, or a malformed answer', async () => {
+      expect(await fetchStatus(path)).toBeNull();
+      server.onStatus(() => ({ ...STATUS, sessions: 'three' }) as unknown as ServerStatus);
+      expect(await fetchStatus(path)).toBeNull();
+    });
+
+    it('fetchStatus against a closed socket gives null within its timeout', async () => {
+      await server.close();
+      const t0 = Date.now();
+      expect(await fetchStatus(path, 500)).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(1500);
+    });
+
+    it('fetchStatus gives null when the socket accepts but never answers', async () => {
+      const silent = isWin
+        ? `\\\\.\\pipe\\kage-test-${randomBytes(4).toString('hex')}`
+        : join(dir, 'silent.sock');
+      const held: Socket[] = [];
+      const mute = createNetServer((s) => held.push(s));
+      await new Promise<void>((r) => mute.listen(silent, r));
+      try {
+        const t0 = Date.now();
+        expect(await fetchStatus(silent, 300)).toBeNull();
+        expect(Date.now() - t0).toBeLessThan(1500);
+      } finally {
+        for (const s of held) s.destroy();
+        await new Promise<void>((r) => mute.close(() => r()));
+      }
+    });
   });
 
   it('malformed JSON or invalid fields → 400', async () => {

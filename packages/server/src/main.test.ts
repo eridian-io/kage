@@ -9,6 +9,8 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand } from './hooks/settings.ts';
+import { KAGE_VERSION } from './install/runtime.ts';
+import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals } from './main.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
@@ -474,7 +476,13 @@ describe('kage (no command, help, unknown)', () => {
     expect(text).toContain('owned by you');
     expect(text).toContain('KAGE_CLAUDE_BIN');
     expect(text).toContain('kage ping');
+    expect(text).toContain('kage doctor');
     expect(text).not.toContain('KAGE_NOTIFY_DONE_AFTER_MS');
+  });
+  it('kage doctor is wired (its argument check, before any probe runs)', async () => {
+    expect(await main(['doctor', '--fix'], io(env()))).toBe(1);
+    expect(err).toEqual(['kage doctor takes no arguments.']);
+    expect(out).toEqual([]);
   });
   it('an unknown command exits 1', async () => {
     expect(await main(['frobnicate'], io(env()))).toBe(1);
@@ -558,6 +566,14 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       expect(probe).toMatchObject({ task: 'probe', external: true });
       // The placeholder window (at its shell) is not on the board.
       expect([...tasks]).toEqual(['probe']);
+      // GET /status on the hook socket (Task 4): the printed address, the count, this process.
+      expect(await fetchStatus(sock)).toEqual({
+        version: KAGE_VERSION,
+        url: `http://127.0.0.1:${p}`,
+        sessions: 1,
+        needsYou: 0,
+        pid: process.pid,
+      });
       ac.abort();
     } finally {
       await r.stop();

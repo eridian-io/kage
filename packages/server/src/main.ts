@@ -22,6 +22,8 @@ export const USAGE = `Usage:
       Forward one hook event to Kage (Claude runs this; it prints nothing).
   kage ping
       Send a test ping through ntfy (ntfyTopic in ~/.config/kage/config.json).
+  kage doctor
+      Check what Kage needs and how it runs, and say what to fix. It changes nothing.
   kage --version
       Print Kage's version.
 
@@ -123,6 +125,30 @@ async function pingCommand(io: Io): Promise<number> {
   return 1;
 }
 
+/** `kage doctor` with the real programs, file system, socket and fetch; loaded on demand. */
+async function doctorMain(args: string[], io: Io): Promise<number> {
+  const { doctorCommand } = await import('./install/doctor.ts');
+  const { realRun } = await import('./install/run.ts');
+  const { serviceManager } = await import('./install/service.ts');
+  const { fetchStatus } = await import('./install/status.ts');
+  const platform = io.platform ?? process.platform;
+  const home = io.env.HOME || homedir();
+  const uid = process.getuid?.();
+  const manager =
+    uid === undefined ? null : serviceManager(platform, { run: realRun, home, env: io.env, uid });
+  return doctorCommand(args, io, {
+    run: realRun,
+    env: io.env,
+    platform,
+    uid,
+    home,
+    mode: runMode(),
+    manager,
+    status: (socket) => fetchStatus(socket),
+    fetch: (input, init) => fetch(input, init),
+  });
+}
+
 /** Runs one command; a number is the exit code, a Running is a server still up. */
 export async function main(argv: string[], io: Io): Promise<number | Running> {
   const [command, ...rest] = argv;
@@ -149,6 +175,8 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
     }
     case 'ping':
       return pingCommand(io);
+    case 'doctor':
+      return doctorMain(rest, io);
     case 'version':
     case '--version':
       io.out(KAGE_VERSION);

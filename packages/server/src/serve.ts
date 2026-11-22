@@ -19,7 +19,7 @@ import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
-import { runMode, serviceCleanEnv } from './install/runtime.ts';
+import { KAGE_VERSION, runMode, serviceCleanEnv } from './install/runtime.ts';
 import {
   defaultTailscaleIp,
   displayHost,
@@ -132,6 +132,8 @@ interface LiveParts {
   newWindow: TmuxClient['newWindow'];
   settingsPath: string;
   hookSocket: string;
+  /** The hook socket's server; it also answers GET /status (Task 4). */
+  hooks: HookServer;
   /** One action at a time per session, across the controls, the finish actions and resume (F5, R68). */
   lock: ActionLock;
   /** Pin, archive and restore; auto-archive archives through it too. */
@@ -279,7 +281,17 @@ async function startLive(
     await ensureSession();
     return tmux.newWindow(o);
   };
-  return { source, tmux, newWindow, settingsPath, hookSocket, lock, finish, bridge: termBridge };
+  return {
+    source,
+    tmux,
+    newWindow,
+    settingsPath,
+    hookSocket,
+    hooks,
+    lock,
+    finish,
+    bridge: termBridge,
+  };
 }
 
 /**
@@ -572,7 +584,22 @@ async function startServer(
   checkSignal(io);
   // R53: without a token, anyone who can reach the address can start and approve tasks.
   if (!demo && cfg.token === '') io.err(NO_TOKEN);
-  io.out(`Kage is running at http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`);
+  const url = `http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`;
+  // GET /status on the hook socket (kage status, setup, doctor): no token, nothing secret.
+  if (liveParts) {
+    const live = liveParts.source;
+    liveParts.hooks.onStatus(() => {
+      const sessions = live.list();
+      return {
+        version: KAGE_VERSION,
+        url,
+        sessions: sessions.length,
+        needsYou: sessions.filter((s) => s.status === 'needs-you').length,
+        pid: process.pid,
+      };
+    });
+  }
+  io.out(`Kage is running at ${url}`);
   if (liveParts && cfg.ntfyTopic !== '') {
     io.out(`Pings go to ntfy at ${new URL(cfg.ntfyServer).host}.`);
   }

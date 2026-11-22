@@ -13,6 +13,19 @@ const HARD_CAP = 8 * MAX_BODY;
 /** Events kept for the first listener while nobody listens yet. */
 const MAX_EARLY = 256;
 
+/**
+ * What `GET /status` answers (phase 6): no token, no config values, nothing secret. `kage
+ * status`, setup's final check and `kage doctor` read it over the socket (mode 0600).
+ */
+export interface ServerStatus {
+  version: string;
+  /** The address `kage serve` printed, e.g. "http://box:8080". */
+  url: string;
+  sessions: number;
+  needsYou: number;
+  pid: number;
+}
+
 const isPipe = (path: string) => path.startsWith('\\\\.\\pipe\\') || path.startsWith('//./pipe/');
 
 /** Sets the process umask; null where it can't be set (worker threads). */
@@ -40,7 +53,8 @@ function probe(path: string): Promise<boolean> {
 
 /**
  * Receives `kage hook` posts on a Unix socket (or a named pipe on Windows):
- * `POST /hook` with a JSON envelope, at most 1 MB. The socket file is mode 0600.
+ * `POST /hook` with a JSON envelope, at most 1 MB, and `GET /status`. The socket file is
+ * mode 0600.
  */
 export class HookServer {
   readonly path: string;
@@ -50,6 +64,7 @@ export class HookServer {
   #early: HookEvent[] | null = [];
   #server: Server | null = null;
   #uid: number | undefined;
+  #status: (() => ServerStatus) | null = null;
 
   /** `uid` is the owner the socket's directory must have (default: this process's). */
   constructor(path: string, opts: { now?: () => number; uid?: number } = {}) {
@@ -76,6 +91,11 @@ export class HookServer {
     return () => {
       this.#listeners.delete(fn);
     };
+  }
+
+  /** `GET /status` answers the provider's value, read fresh for each request; 503 until set. */
+  onStatus(provider: () => ServerStatus): void {
+    this.#status = provider;
   }
 
   async listen(): Promise<void> {
@@ -155,6 +175,34 @@ export class HookServer {
     await unlink(this.path);
   }
 
+  /** GET /status: the provider's JSON, or a bare status code (405, 503, or 500 if it threw). */
+  #statusBody(method: string | undefined): string | number {
+    if (method !== 'GET') return 405;
+    const provider = this.#status;
+    if (!provider) return 503;
+    try {
+      return JSON.stringify(provider());
+    } catch {
+      // The reason stays here: the answer carries the status code only.
+      return 500;
+    }
+  }
+
+  #answerStatus(req: IncomingMessage, res: ServerResponse, reply: (status: number) => void): void {
+    const body = this.#statusBody(req.method);
+    if (typeof body === 'number') {
+      if (body === 405) res.setHeader('allow', 'GET');
+      reply(body);
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': 'application/json',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+    });
+    res.end(body);
+  }
+
   #handle(req: IncomingMessage, res: ServerResponse): void {
     const reply = (status: number) => {
       if (res.headersSent) return;
@@ -162,6 +210,11 @@ export class HookServer {
       res.end();
     };
     req.on('error', () => res.destroy());
+    if (req.url === '/status') {
+      req.resume();
+      this.#answerStatus(req, res, reply);
+      return;
+    }
     if (req.url !== '/hook') {
       req.resume();
       reply(404);
