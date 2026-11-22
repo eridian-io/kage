@@ -23,6 +23,8 @@ interface Run {
 class FakeClient {
   started = 0;
   closed = false;
+  /** Bytes written to tmux's stdin and not yet taken (pendingInput). */
+  pending = 0;
   written: string[] = [];
   runs: Run[] = [];
   writeErrors: ((rows: Buffer[]) => void)[] = [];
@@ -48,6 +50,9 @@ class FakeClient {
   }
   close() {
     this.closed = true;
+  }
+  pendingInput() {
+    return this.pending;
   }
 }
 
@@ -385,7 +390,7 @@ describe('TerminalBridge', () => {
   it('the last rw close of a window writes the restore line; a ro close does not', async () => {
     const t = setup();
     const ro = await t.open({ mode: 'ro' });
-    const rw1 = await t.open();
+    const rw1 = await t.open({ cols: 100, rows: 30 });
     const rw2 = await t.open({ paneId: '%5' });
     const restore = 'set-option -w -u -t @2 window-size';
     ro.handle.close();
@@ -394,6 +399,73 @@ describe('TerminalBridge', () => {
     rw2.handle.close();
     expect(t.last().written.filter((l) => l === restore)).toHaveLength(1);
     expect(t.idle).toEqual(['@2']);
+  });
+
+  it('restores only windows it resized (Task 11 review)', async () => {
+    const t = setup();
+    const restore = 'set-option -w -u -t @2 window-size';
+    // rw with no size and no resize: the window's size was never Kage's to restore.
+    (await t.open()).handle.close();
+    expect(t.last().written).not.toContain(restore);
+    // A resize later in the terminal's life counts.
+    const b = await t.open();
+    b.handle.resize(90, 20);
+    await vi.advanceTimersByTimeAsync(200);
+    b.handle.close();
+    expect(t.last().written.filter((l) => l === restore)).toHaveLength(1);
+    // Restored once: a later rw open without a size doesn't restore again.
+    (await t.open()).handle.close();
+    expect(t.last().written.filter((l) => l === restore)).toHaveLength(1);
+  });
+
+  it('stop restores only the windows it resized', async () => {
+    const t = setup();
+    await t.open({ cols: 100, rows: 30 });
+    await t.open({ windowId: '@7', paneId: '%8' });
+    t.bridge.stop();
+    expect(t.last().written).toContain('set-option -w -u -t @2 window-size');
+    expect(t.last().written).not.toContain('set-option -w -u -t @7 window-size');
+  });
+
+  it('input while tmux has over 1 MiB of unread input closes the sink with 1009 (Task 11 review)', async () => {
+    const t = setup();
+    const { sink, handle } = await t.open();
+    const other = await t.open({ mode: 'ro', windowId: '@7', paneId: '%8' });
+    t.last().pending = MiB + 1;
+    const before = t.last().written.length;
+    handle.input('a');
+    expect(sink.closes).toEqual([[1009, 'That was too much at once.']]);
+    expect(t.last().written.length).toBe(before);
+    expect(other.sink.closes).toEqual([]);
+    expect(t.bridge.count).toBe(1);
+  });
+
+  it('input at up to 1 MiB unread still goes to tmux', async () => {
+    const t = setup();
+    const { sink, handle } = await t.open();
+    t.last().pending = MiB;
+    handle.input('a');
+    expect(sink.closes).toEqual([]);
+    expect(t.last().written.at(-1)).toBe('send-keys -t %3 -H 61');
+  });
+
+  it('a dead pane in a multi-pane window: display-message reports another pane → 4409 for its sinks only', async () => {
+    const t = setup();
+    const dead = await t.open({ paneId: '%3' });
+    const live = await t.open({ paneId: '%5' }, { pane: '%5' });
+    t.last().onLine({ kind: 'layout', windowId: '@2' });
+    await flush();
+    const runs = t.last().runs.splice(0);
+    const forPane = (p: string) => runs.find((r) => r.line.includes(`-t ${p} `)) as Run;
+    // tmux falls back to the active pane for a pane that is gone.
+    forPane('%3').resolve([[Buffer.from(infoRow({ pane: '%5', w: 50, h: 20 }))]]);
+    forPane('%5').resolve([[Buffer.from(infoRow({ pane: '%5', w: 50, h: 20 }))]]);
+    await flush();
+    expect(dead.sink.closes).toEqual([[4409, "The session's window has closed."]]);
+    expect(dead.sink.sizes).toEqual([]);
+    expect(live.sink.sizes).toEqual([[50, 20]]);
+    expect(live.sink.closes).toEqual([]);
+    expect(t.bridge.count).toBe(1);
   });
 
   it('isWindowOpen follows the open terminals', async () => {
@@ -622,7 +694,7 @@ describe('TerminalBridge', () => {
 
   it('stop closes every sink with 1001, restores sizes and closes the client', async () => {
     const t = setup();
-    const a = await t.open();
+    const a = await t.open({ cols: 100, rows: 30 });
     const b = await t.open({ mode: 'ro', windowId: '@7', paneId: '%8' });
     t.bridge.stop();
     expect(a.sink.closes).toEqual([[1001, 'Kage is stopping.']]);

@@ -21,6 +21,8 @@ const HOLD_CHECK_MS = 100;
 const RESIZE_DEBOUNCE_MS = 100;
 /** The control client outlives the last terminal by this much, so a reload reuses it. */
 const CLIENT_GRACE_MS = 1000;
+/** Keys arriving while tmux has more than this unread on its stdin close the terminal (1009). */
+const INPUT_BACKLOG_MAX = MiB;
 
 const PANE_ID = /^%\d+$/;
 const WINDOW_ID = /^@\d+$/;
@@ -155,7 +157,7 @@ export interface TermHandle {
   close(): void;
 }
 
-type Client = Pick<ControlClient, 'start' | 'run' | 'write' | 'close'>;
+type Client = Pick<ControlClient, 'start' | 'run' | 'write' | 'close' | 'pendingInput'>;
 
 interface Term {
   windowId: string;
@@ -200,6 +202,8 @@ export class TerminalBridge {
   readonly #log: (line: string) => void;
   readonly #onWindowIdle: ((windowId: string) => void) | undefined;
   readonly #terms = new Set<Term>();
+  /** Windows this bridge resized and hasn't restored: only these get R61's restore line. */
+  readonly #resized = new Set<string>();
   #client: Client | null = null;
   #starting: Promise<Client> | null = null;
   #gen = 0;
@@ -269,6 +273,7 @@ export class TerminalBridge {
     }
     if (t.failure) throw t.failure;
     if (o.mode === 'rw' && Number.isFinite(o.cols) && Number.isFinite(o.rows)) {
+      this.#resized.add(o.windowId);
       client.write(resizeLine(o.windowId, o.cols as number, o.rows as number));
     }
     try {
@@ -292,14 +297,9 @@ export class TerminalBridge {
   /** Closes every sink with 1001, restores the windows it resized, and closes the client. */
   stop(): void {
     const c = this.#client;
-    const restored = new Set<string>();
-    for (const t of [...this.#terms]) {
-      if (c && t.mode === 'rw' && !restored.has(t.windowId)) {
-        restored.add(t.windowId);
-        c.write(restoreLine(t.windowId));
-      }
-      this.#close(t, 1001, STOPPING, false);
-    }
+    if (c) for (const w of this.#resized) c.write(restoreLine(w));
+    this.#resized.clear();
+    for (const t of [...this.#terms]) this.#close(t, 1001, STOPPING, false);
     this.#dropClient();
   }
 
@@ -366,6 +366,7 @@ export class TerminalBridge {
         this.#layout(l.windowId);
         return;
       case 'window-close': {
+        this.#resized.delete(l.windowId);
         let closed = false;
         for (const t of [...this.#terms]) {
           if (t.windowId !== l.windowId) continue;
@@ -383,7 +384,11 @@ export class TerminalBridge {
     }
   }
 
-  /** Every sink on a pane of the window gets its size from a fresh display-message. */
+  /**
+   * Every sink on a pane of the window gets its size from a fresh display-message. A pane that
+   * has gone (one pane of a multi-pane window exited) makes tmux describe another pane: its
+   * sinks close with 4409.
+   */
   #layout(windowId: string): void {
     const c = this.#client;
     if (!c) return;
@@ -393,7 +398,17 @@ export class TerminalBridge {
       c.run([display(paneId)], () => 1).then(
         (blocks) => {
           const info = parsePaneInfo(firstRow(blocks, 0));
-          if (!info || info.paneId !== paneId) return;
+          if (!info) return;
+          if (info.paneId !== paneId) {
+            let closed = false;
+            for (const t of [...this.#terms]) {
+              if (t.paneId !== paneId || t.state === 'closed') continue;
+              this.#close(t, 4409, WINDOW_CLOSED);
+              closed = true;
+            }
+            if (closed) this.#afterClose();
+            return;
+          }
           for (const t of this.#terms) {
             if (t.paneId === paneId && t.opened && (t.state === 'live' || t.state === 'held')) {
               t.sink.size(info.width, info.height);
@@ -415,6 +430,12 @@ export class TerminalBridge {
     }
     const c = this.#client;
     if (!c) return;
+    // tmux isn't reading its stdin fast enough: refuse rather than queue without end.
+    if (c.pendingInput() > INPUT_BACKLOG_MAX) {
+      this.#close(t, 1009, TOO_MUCH);
+      this.#afterClose();
+      return;
+    }
     const onError = (rows: Buffer[]) => {
       if (t.keyErrorLogged) return;
       t.keyErrorLogged = true;
@@ -433,7 +454,10 @@ export class TerminalBridge {
     if (t.resizeTimer) clearTimeout(t.resizeTimer);
     t.resizeTimer = setTimeout(() => {
       t.resizeTimer = null;
-      if (t.state !== 'closed') this.#client?.write(resizeLine(t.windowId, cols, rows));
+      const c = this.#client;
+      if (t.state === 'closed' || !c) return;
+      this.#resized.add(t.windowId);
+      c.write(resizeLine(t.windowId, cols, rows));
     }, RESIZE_DEBOUNCE_MS);
   }
 
@@ -481,7 +505,10 @@ export class TerminalBridge {
       windowOpen = true;
       if (o.mode === 'rw') rwLeft = true;
     }
-    if (restore && t.mode === 'rw' && !rwLeft) this.#client?.write(restoreLine(t.windowId));
+    if (restore && t.mode === 'rw' && !rwLeft && this.#resized.has(t.windowId)) {
+      this.#resized.delete(t.windowId);
+      this.#client?.write(restoreLine(t.windowId));
+    }
     if (t.opened && !windowOpen) this.#onWindowIdle?.(t.windowId);
   }
 

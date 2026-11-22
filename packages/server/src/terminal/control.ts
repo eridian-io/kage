@@ -269,6 +269,14 @@ export class ControlClient {
     this.#proc.stdin?.write(`${line}\n`);
   }
 
+  /** Bytes written to tmux's stdin that it hasn't taken yet (the input-flood check). */
+  pendingInput(): number {
+    if (this.#state !== 'up') return 0;
+    // A child's stdin is a stream.Writable; WatchedProcess types it as the narrower interface.
+    const stdin = this.#proc?.stdin as { writableLength?: number } | null | undefined;
+    return stdin?.writableLength ?? 0;
+  }
+
   /** Ends stdin (tmux runs what it has read, then exits); onExit is not called. */
   close(): void {
     if (this.#state === 'done') return;
@@ -303,12 +311,17 @@ export class ControlClient {
   #data(chunk: Buffer): void {
     this.#rest = this.#rest.length === 0 ? chunk : Buffer.concat([this.#rest, chunk]);
     if (this.#rest.length > MAX_PENDING) {
-      const proc = this.#proc;
-      proc?.kill();
-      if (proc) this.#ended(proc);
+      this.#broken();
       return;
     }
     this.#drain();
+  }
+
+  /** The stream can't be trusted any more: kill tmux and report the exit (the bridge starts anew). */
+  #broken(): void {
+    const proc = this.#proc;
+    proc?.kill();
+    if (proc) this.#ended(proc);
   }
 
   #drain(): void {
@@ -352,6 +365,10 @@ export class ControlClient {
         l.flags === b.flags
       ) {
         this.#endBlock(b, l.kind === 'error');
+      } else if (b.count !== null) {
+        // The count is reached, so only the block's own end may follow: anything else means the
+        // count was wrong and every later line would be misread.
+        this.#broken();
       } else {
         b.rows.push(line);
       }

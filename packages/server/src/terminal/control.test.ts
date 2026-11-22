@@ -283,19 +283,51 @@ describe('ControlClient', () => {
     c.close();
   });
 
-  it('a %end with another number does not end the block, nor one before the count', async () => {
+  it('a %end before the count is a row; after the count the matching %end ends the block', async () => {
     const { c, p } = await started();
-    const res = c.run(['capture-pane -p -e -N -S -1000 -t %3'], () => 2);
+    const res = c.run(['capture-pane -p -e -N -S -1000 -t %3'], () => 3);
     p.say('%begin 1700000005 9 1\n%end 1700000005 9 1\n%end 1700000005 8 1\nlast\n');
-    p.say('%end 1700000005 10 1\n%end 1700000005 9 1\n');
+    p.say('%end 1700000005 9 1\n');
     const [rows] = await res;
-    expect(rows?.map(String)).toEqual([
-      '%end 1700000005 9 1',
-      '%end 1700000005 8 1',
-      'last',
-      '%end 1700000005 10 1',
-    ]);
+    expect(rows?.map(String)).toEqual(['%end 1700000005 9 1', '%end 1700000005 8 1', 'last']);
     c.close();
+  });
+
+  it('after the count, any line but the matching %end/%error kills the client (Task 11 review)', async () => {
+    for (const extra of ['one row too many', '%end 1700000005 10 1', '%output %3 x']) {
+      let exits = 0;
+      const got: ControlLine[] = [];
+      const { c, p } = await started({ onExit: () => exits++, onLine: (l) => got.push(l) });
+      const res = c.run(['capture-pane -p -e -N -S -1000 -t %3'], () => 1);
+      p.say(`%begin 1700000005 9 1\nrow\n${extra}\n%end 1700000005 9 1\n%output %3 later\n`);
+      await expect(res).rejects.toThrow();
+      await tick();
+      expect(p.killed).toBe(true);
+      expect(exits).toBe(1);
+      expect(got.filter((l) => l.kind === 'output')).toEqual([]);
+      expect(() => c.write('send-keys -t %3 -H 61')).not.toThrow();
+      await expect(c.run(['set-option -w -u -t @2 window-size'])).rejects.toThrow();
+    }
+  });
+
+  it('a %error after the count still rejects the run normally', async () => {
+    const { c, p } = await started();
+    const res = c.run(['capture-pane -p -e -N -S -1000 -t %3'], () => 1);
+    p.say('%begin 1 9 1\nrow\n%error 1 9 1\n');
+    await expect(res).rejects.toThrow('row');
+    expect(p.killed).toBe(false);
+    c.close();
+  });
+
+  it('pendingInput is the bytes written to tmux and not yet taken', async () => {
+    const { c, p } = await started();
+    expect(c.pendingInput()).toBe(0);
+    p.stdin.pause();
+    p.stdin.removeAllListeners('data');
+    for (let i = 0; i < 2000; i++) c.write(`send-keys -t %3 -H ${'61 '.repeat(255)}61`);
+    expect(c.pendingInput()).toBeGreaterThan(1024 * 1024);
+    c.close();
+    expect(c.pendingInput()).toBe(0);
   });
 
   it('without a count, a block ends at its matching %end', async () => {
