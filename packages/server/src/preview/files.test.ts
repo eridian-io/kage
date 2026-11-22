@@ -2,9 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { LIMITS } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { GitExec } from '../git/exec.ts';
-import { changedFiles, parseNumstat } from './files.ts';
+import { changedFiles, listChanges, mergeBase, parseNumstat } from './files.ts';
 
 let root: string;
 let home: string;
@@ -195,10 +196,46 @@ describe('changedFiles: arguments (F4, F8)', () => {
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
+        '--ignore-submodules=none',
         'HEAD',
         '--',
       ],
       ['ls-files', '--others', '--exclude-standard', '-z'],
     ]);
+  });
+});
+
+describe('mergeBase and listChanges (shared by the list and the diff)', () => {
+  it('mergeBase is the hash of the fork point, or HEAD for a null or missing base', async () => {
+    const dir = await repo('mb');
+    const fork = git(dir, 'rev-parse', 'HEAD').trim();
+    await writeFile(join(dir, 'a.txt'), 'x\n');
+    git(dir, 'commit', '-q', '-am', 'on task');
+    expect(await mergeBase(dir, 'main')).toBe(fork);
+    expect(await mergeBase(dir, null)).toBe('HEAD');
+    expect(await mergeBase(dir, 'gone')).toBe('HEAD');
+  });
+
+  it('listChanges keeps rename sources and marks untracked files, sorted and uncapped', async () => {
+    const dir = await repo('lc');
+    git(dir, 'mv', 'old.txt', 'new.txt');
+    await writeFile(join(dir, 'b.txt'), 'alpha\n');
+    await writeFile(join(dir, 'u.txt'), 'u\n');
+    for (let i = 0; i < LIMITS.files + 5; i++) await writeFile(join(dir, `z${i}.txt`), 'z\n');
+    const { mb, changes } = await listChanges(dir, 'main');
+    expect(mb).toMatch(/^[0-9a-f]{40}$/);
+    expect(changes).toHaveLength(LIMITS.files + 8);
+    expect(changes.slice(0, 3)).toEqual([
+      { path: 'b.txt', added: 0, removed: 1, untracked: false },
+      { path: 'new.txt', oldPath: 'old.txt', added: 0, removed: 0, untracked: false },
+      { path: 'u.txt', added: 1, removed: 0, untracked: true },
+    ]);
+    const paths = changes.map((c) => c.path);
+    expect(paths).toEqual([...paths].sort());
+    const list = await changedFiles(dir, 'main');
+    expect(list.files).toEqual(
+      changes.slice(0, LIMITS.files).map(({ path, added, removed }) => ({ path, added, removed })),
+    );
+    expect(list.total).toBe(changes.length);
   });
 });

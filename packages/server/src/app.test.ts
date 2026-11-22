@@ -11,6 +11,7 @@ import { LaunchError } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { LiveSource, type LiveSourceDeps } from './live-source.ts';
+import { DiffError, DiffService } from './preview/diff.ts';
 
 const HOST = 'my-pc:8080';
 const ORIGIN = 'http://my-pc:8080';
@@ -1206,5 +1207,89 @@ describe('POST /api/sessions/:id/resume (phase 4 Task 7)', () => {
     expect((await t.a.fetch(mutate('POST', '/api/sessions/k-1/resume'))).status).toBe(401);
     expect(calls).toEqual([]);
     expect(t.calls).toEqual([]);
+  });
+});
+
+describe('GET /api/sessions/:id/diff (phase 4 Task 8)', () => {
+  const PAGE = { base: 'main', branch: 'kage/x', from: 0, next: null, filesTotal: 0, files: [] };
+  const withDiff = (fail: Error | null = null, token = '') => {
+    const calls: [string, number][] = [];
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      differ: {
+        page: async (id: string, from: number) => {
+          calls.push([id, from]);
+          if (fail) throw fail;
+          return { ...PAGE, from };
+        },
+      },
+    });
+    return { a, calls };
+  };
+
+  it('a GET with no CSRF header answers the page; from defaults to 0', async () => {
+    const { a, calls } = withDiff();
+    const res = await a.fetch(req('/api/sessions/k-1/diff?from=9'));
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    expect(await res.json()).toEqual({ ...PAGE, from: 9 });
+    expect((await a.fetch(req('/api/sessions/k-1/diff'))).status).toBe(200);
+    expect(calls).toEqual([
+      ['k-1', 9],
+      ['k-1', 0],
+    ]);
+  });
+
+  it('from=-1, x, 1.5 or empty → 400 "from must be a whole number." before any diff', async () => {
+    const { a, calls } = withDiff();
+    for (const q of ['-1', 'x', '1.5', '', '1e3', '99999999999999999999']) {
+      const res = await a.fetch(req(`/api/sessions/k-1/diff?from=${q}`));
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'from must be a whole number.' });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('maps DiffError statuses (404, 422) and messages', async () => {
+    for (const status of [404, 422] as const) {
+      const { a } = withDiff(new DiffError(status, `Problem ${status}.`));
+      const res = await a.fetch(req('/api/sessions/k-1/diff'));
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+    }
+  });
+
+  it('an unknown id in live mode → 404 (through the real DiffService)', async () => {
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token: '',
+      differ: new DiffService({ target: () => null }),
+    });
+    const res = await a.fetch(req('/api/sessions/nope/diff'));
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'No session with id nope' });
+  });
+
+  it('is 501 in demo mode: "Demo mode can\'t show diffs."', async () => {
+    const res = await app(true).fetch(req('/api/sessions/docs/diff'));
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({ error: "Demo mode can't show diffs." });
+  });
+
+  it('is behind the host guard and the token guard', async () => {
+    const { a, calls } = withDiff(null, 'x'.repeat(20));
+    expect((await a.fetch(req('/api/sessions/k-1/diff'))).status).toBe(401);
+    const evil = new Request(`http://${HOST}/api/sessions/k-1/diff`, {
+      headers: { Host: 'evil.example:8080' },
+    });
+    expect((await withDiff().a.fetch(evil)).status).toBe(403);
+    expect(calls).toEqual([]);
   });
 });

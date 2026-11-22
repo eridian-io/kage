@@ -25,6 +25,7 @@ import {
 import type { EventHub } from './events.ts';
 import type { FinishActions } from './finish/actions.ts';
 import { firstLine } from './git/exec.ts';
+import { DiffError, type DiffService } from './preview/diff.ts';
 import { csrfGuard, hostGuard } from './security.ts';
 import { NotFoundError, NotImplementedError, type SessionSource } from './source.ts';
 
@@ -54,10 +55,15 @@ export interface AppDeps {
   finish?: Pick<FinishActions, 'pin' | 'archive' | 'remove'>;
   /** Live mode: the archived sessions for GET /api/archive (501 without it). */
   archivedList?: () => ArchivedSession[];
+  /** Live mode: the branch's diff in pages (GET /api/sessions/:id/diff); 501 without it. */
+  differ?: Pick<DiffService, 'page'>;
 }
 
 const DEMO_NO_TASKS = "Demo mode can't start tasks.";
 const DEMO_NO_CONTROLS = "Demo mode can't run tasks.";
+const DEMO_NO_DIFF = "Demo mode can't show diffs.";
+/** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
+const WHOLE = /^\d{1,9}$/;
 
 /** Stop takes no body: none, or an empty JSON object. */
 function parseNoBody(raw: string): Parsed<null> {
@@ -316,6 +322,23 @@ export function createApp(deps: AppDeps): Hono {
     if (!archivedList) return c.json({ error: DEMO_NO_CONTROLS }, 501);
     const body: ArchivedResponse = { sessions: archivedList() };
     return c.json(body);
+  });
+
+  const { differ } = deps;
+  app.get('/api/sessions/:id/diff', async (c) => {
+    if (!differ) return c.json({ error: DEMO_NO_DIFF }, 501);
+    const raw = c.req.query('from');
+    if (raw !== undefined && !WHOLE.test(raw)) {
+      return c.json({ error: 'from must be a whole number.' }, 400);
+    }
+    try {
+      const page = await differ.page(c.req.param('id'), raw === undefined ? 0 : Number(raw));
+      c.header('Cache-Control', 'no-store');
+      return c.json(page);
+    } catch (err) {
+      if (err instanceof DiffError) return c.json({ error: err.message }, err.status);
+      return c.json({ error: `git couldn't show the diff: ${firstLine(err)}` }, 422);
+    }
   });
 
   app.delete('/api/sessions/:id', async (c) => {

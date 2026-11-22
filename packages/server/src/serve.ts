@@ -27,6 +27,7 @@ import {
 } from './listen.ts';
 import { LiveSource } from './live-source.ts';
 import type { Io, Running } from './main.ts';
+import { DiffService } from './preview/diff.ts';
 import { changedFiles } from './preview/files.ts';
 import { makeScanner } from './preview/ports.ts';
 import { PreviewTracker } from './preview/tracker.ts';
@@ -370,6 +371,7 @@ async function startServer(
   let controls: SessionControls | undefined;
   let finish: FinishActions | undefined;
   let archivedList: (() => ArchivedSession[]) | undefined;
+  let differ: DiffService | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
@@ -415,6 +417,8 @@ async function startServer(
     finish = live.finish;
     const liveSource = live.source;
     archivedList = () => liveSource.archivedList();
+    // The diff reads the same folder and base as the file list (spec §5.7, amended).
+    differ = new DiffService({ target: (id) => liveSource.previewTarget(id) });
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -432,6 +436,7 @@ async function startServer(
     ...(controls ? { controls } : {}),
     ...(finish ? { finish } : {}),
     ...(archivedList ? { archivedList } : {}),
+    ...(differ ? { differ } : {}),
   });
 
   let server: ReturnType<typeof serve>;

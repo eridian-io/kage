@@ -5,92 +5,145 @@ import { type FileChange, LIMITS } from '@kage/shared';
 import { type GitExec, gitExec } from '../git/exec.ts';
 
 /** Untracked files larger than this count 0 lines. */
-const MAX_UNTRACKED_BYTES = 1024 * 1024;
+export const MAX_UNTRACKED_BYTES = 1024 * 1024;
 /** A NUL within this many leading bytes marks a binary file (git's own heuristic). */
-const BINARY_SNIFF = 8192;
+export const BINARY_SNIFF = 8192;
 /** At most this many untracked files are read to count their lines; the rest count 0. */
 const MAX_UNTRACKED_READ = 100;
+
+/** One entry of the list: `oldPath` is a rename's source; `untracked` files come from ls-files. */
+export interface Change extends FileChange {
+  oldPath?: string;
+  untracked: boolean;
+}
+
+/** The numstat records with a rename's source kept as `oldPath`. */
+function parseNumstatChanges(out: string): Change[] {
+  const parts = out.split('\0');
+  const files: Change[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(parts[i] as string);
+    if (!m) continue;
+    let path = m[3] as string;
+    let oldPath: string | undefined;
+    if (path === '') {
+      // A rename: the old path, then the new one, follow as their own fields.
+      oldPath = parts[i + 1] ?? '';
+      path = parts[i + 2] ?? '';
+      i += 2;
+    }
+    if (path === '') continue;
+    const n = (s: string | undefined) => (s === '-' || s === undefined ? 0 : Number(s));
+    files.push({
+      path,
+      ...(oldPath ? { oldPath } : {}),
+      added: n(m[1]),
+      removed: n(m[2]),
+      untracked: false,
+    });
+  }
+  return files;
+}
 
 /**
  * `git diff --numstat -z`: `added\tremoved\tpath\0`, or for a rename `added\tremoved\t\0old\0new\0`
  * (the new path is kept). A binary file shows `-` counts, read as 0.
  */
 export function parseNumstat(out: string): FileChange[] {
-  const parts = out.split('\0');
-  const files: FileChange[] = [];
-  for (let i = 0; i < parts.length; i++) {
-    const m = /^(-|\d+)\t(-|\d+)\t(.*)$/s.exec(parts[i] as string);
-    if (!m) continue;
-    let path = m[3] as string;
-    if (path === '') {
-      // A rename: the old path, then the new one, follow as their own fields.
-      path = parts[i + 2] ?? '';
-      i += 2;
-    }
-    if (path === '') continue;
-    const n = (s: string | undefined) => (s === '-' || s === undefined ? 0 : Number(s));
-    files.push({ path, added: n(m[1]), removed: n(m[2]) });
-  }
-  return files;
+  return parseNumstatChanges(out).map(({ path, added, removed }) => ({ path, added, removed }));
 }
 
-const inside = (root: string, p: string): boolean =>
+/** True when `p` lies inside `root` (both absolute, resolved). */
+export const inside = (root: string, p: string): boolean =>
   p.startsWith(root.endsWith(sep) ? root : root + sep);
+
+/**
+ * An untracked file's bytes, read with the phase 3 safety rules, or why it wasn't read: `link`
+ * for a symlink or a path that leads outside the worktree (never followed), `big` over 1 MiB,
+ * `special` for anything but a plain file (a FIFO is never opened), `gone` when it vanished.
+ * `root` is the worktree's real path.
+ */
+export async function readUntracked(
+  root: string,
+  rel: string,
+): Promise<{ data: Buffer } | { skip: 'link' | 'big' | 'special' | 'gone' }> {
+  try {
+    const full = resolve(root, rel);
+    if (!inside(root, full)) return { skip: 'link' };
+    const st = await lstat(full);
+    if (st.isSymbolicLink()) return { skip: 'link' };
+    if (!st.isFile()) return { skip: 'special' };
+    if (st.size > MAX_UNTRACKED_BYTES) return { skip: 'big' };
+    // A parent folder that is a link could still lead outside.
+    if (!inside(root, await realpath(full))) return { skip: 'link' };
+    const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0);
+    const fh = await open(full, flags);
+    try {
+      // One byte past the size seen: a file that grew since is caught by the limit below.
+      const buf = Buffer.alloc(Math.min(st.size, MAX_UNTRACKED_BYTES) + 1);
+      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+      if (bytesRead > MAX_UNTRACKED_BYTES) return { skip: 'big' };
+      return { data: buf.subarray(0, bytesRead) };
+    } finally {
+      await fh.close();
+    }
+  } catch {
+    return { skip: 'gone' };
+  }
+}
+
+/** A NUL within the first 8 KiB: git's own binary heuristic. */
+export const looksBinary = (data: Buffer): boolean => data.subarray(0, BINARY_SNIFF).includes(0);
 
 /**
  * The line count of an untracked file, or 0 when it is not a plain file inside the worktree
  * (a symlink is never followed), is over 1 MiB, or has a NUL in its first 8 KiB.
  */
 async function untrackedLines(root: string, rel: string): Promise<number> {
+  const r = await readUntracked(root, rel);
+  if (!('data' in r) || looksBinary(r.data)) return 0;
+  const data = r.data;
+  let lines = 0;
+  for (const b of data) if (b === 0x0a) lines++;
+  if (data.length > 0 && data[data.length - 1] !== 0x0a) lines++;
+  return lines;
+}
+
+/**
+ * The merge base of `refs/heads/<base>` and HEAD, or 'HEAD' when the base is null, missing or
+ * has no common history: what the list and the diff compare against.
+ */
+export async function mergeBase(
+  worktree: string,
+  base: string | null,
+  exec: GitExec = gitExec,
+): Promise<string> {
+  if (base === null) return 'HEAD';
   try {
-    const full = resolve(root, rel);
-    if (!inside(root, full)) return 0;
-    const st = await lstat(full);
-    if (!st.isFile() || st.size > MAX_UNTRACKED_BYTES) return 0;
-    // A parent folder that is a link could still lead outside.
-    if (!inside(root, await realpath(full))) return 0;
-    const fh = await open(full, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
-    try {
-      // One byte past the size seen: a file that grew since is caught by the limit below.
-      const buf = Buffer.alloc(Math.min(st.size, MAX_UNTRACKED_BYTES) + 1);
-      const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
-      if (bytesRead > MAX_UNTRACKED_BYTES) return 0;
-      const data = buf.subarray(0, bytesRead);
-      if (data.subarray(0, BINARY_SNIFF).includes(0)) return 0;
-      let lines = 0;
-      for (const b of data) if (b === 0x0a) lines++;
-      if (bytesRead > 0 && data[bytesRead - 1] !== 0x0a) lines++;
-      return lines;
-    } finally {
-      await fh.close();
-    }
+    const out = (
+      await exec(['merge-base', `refs/heads/${base}`, 'HEAD'], { cwd: worktree })
+    ).stdout.trim();
+    if (/^[0-9a-f]{7,64}$/.test(out)) return out;
   } catch {
-    return 0;
+    // A deleted base: diff against HEAD.
   }
+  return 'HEAD';
 }
 
 /**
  * The worktree's changes against the merge base of `base` and HEAD (or HEAD when the base is
  * null or missing): commits on the branch plus uncommitted work (`git diff <mb>`), and untracked
- * files, sorted by path. This is the form phase 4's diff view must match (spec §5.7, amended).
- * `files` holds at most LIMITS.files entries; `total` counts them all. Paths are relative to
- * `worktree`. Rejects when git fails (not a repository, no HEAD).
+ * files, sorted by path and uncapped. The one source of the form the file list and the diff share
+ * (spec §5.7, amended). Paths are relative to `worktree`. Rejects when git fails (not a
+ * repository, no HEAD).
  */
-export async function changedFiles(
+export async function listChanges(
   worktree: string,
   base: string | null,
   exec: GitExec = gitExec,
-): Promise<{ files: FileChange[]; total: number }> {
+): Promise<{ mb: string; changes: Change[] }> {
   const opts = { cwd: worktree };
-  let mb = 'HEAD';
-  if (base !== null) {
-    try {
-      const out = (await exec(['merge-base', `refs/heads/${base}`, 'HEAD'], opts)).stdout.trim();
-      if (/^[0-9a-f]{7,64}$/.test(out)) mb = out;
-    } catch {
-      // A deleted base: diff against HEAD.
-    }
-  }
+  const mb = await mergeBase(worktree, base, exec);
   const [diff, others] = await Promise.all([
     exec(
       [
@@ -102,6 +155,7 @@ export async function changedFiles(
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
+        '--ignore-submodules=none',
         mb,
         '--',
       ],
@@ -109,7 +163,7 @@ export async function changedFiles(
     ),
     exec(['ls-files', '--others', '--exclude-standard', '-z'], opts),
   ]);
-  const files = parseNumstat(diff.stdout);
+  const changes = parseNumstatChanges(diff.stdout);
   const untracked = others.stdout.split('\0').filter((p) => p !== '');
   if (untracked.length > 0) {
     const root = await realpath(worktree).catch(() => resolve(worktree));
@@ -117,9 +171,27 @@ export async function changedFiles(
       untracked.map((p, i) => (i < MAX_UNTRACKED_READ ? untrackedLines(root, p) : 0)),
     );
     untracked.forEach((path, i) => {
-      files.push({ path, added: counts[i] ?? 0, removed: 0 });
+      changes.push({ path, added: counts[i] ?? 0, removed: 0, untracked: true });
     });
   }
-  files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
-  return { files: files.slice(0, LIMITS.files), total: files.length };
+  changes.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+  return { mb, changes };
+}
+
+/**
+ * The file list (spec §5.7): `listChanges` capped at LIMITS.files, so the right column and the
+ * diff list the same paths in the same order. `total` counts them all.
+ */
+export async function changedFiles(
+  worktree: string,
+  base: string | null,
+  exec: GitExec = gitExec,
+): Promise<{ files: FileChange[]; total: number }> {
+  const { changes } = await listChanges(worktree, base, exec);
+  return {
+    files: changes
+      .slice(0, LIMITS.files)
+      .map(({ path, added, removed }) => ({ path, added, removed })),
+    total: changes.length,
+  };
 }

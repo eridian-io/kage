@@ -1,4 +1,4 @@
-import { execFile } from 'node:child_process';
+import { type ChildProcess, execFile, spawn } from 'node:child_process';
 
 export type GitExec = (
   args: string[],
@@ -62,4 +62,92 @@ export function firstLine(err: unknown): string {
   const e = err as { stderr?: unknown; message?: unknown };
   const text = String((e?.stderr && String(e.stderr).trim()) || e?.message || err);
   return text.split(/\r?\n/)[0] ?? text;
+}
+
+/** Most stderr kept from a streamed git call (for its error's first line). */
+const MAX_STDERR = 64 * 1024;
+
+/**
+ * A child's stdout up to `maxBytes`: past it the child is killed and `clipped` is set. Resolves
+ * (or rejects) only once the child has exited and its pipes have closed, so no child outlives the
+ * call. A non-zero exit without a clip rejects with `stdout`, `stderr` and `code` on the error,
+ * like execFile; past `timeoutMs` the child is killed and the call rejects. Output decodes as
+ * UTF-8 (a clip may cut the last character, which then reads as U+FFFD).
+ */
+export function collectStream(
+  child: ChildProcess,
+  maxBytes: number,
+  timeoutMs: number,
+): Promise<{ stdout: string; clipped: boolean }> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    let clipped = false;
+    let timedOut = false;
+    let err = '';
+    let spawnError: Error | null = null;
+    const kill = () => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      kill();
+    }, timeoutMs);
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (clipped) return;
+      const room = maxBytes - size;
+      if (chunk.length >= room) {
+        if (room > 0) chunks.push(chunk.subarray(0, room));
+        size = maxBytes;
+        // Exactly maxBytes is a clip too: more may follow, and reading on is what the cap prevents.
+        clipped = true;
+        kill();
+        return;
+      }
+      chunks.push(chunk);
+      size += chunk.length;
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (err.length < MAX_STDERR) err += chunk.toString('utf8').slice(0, MAX_STDERR - err.length);
+    });
+    child.on('error', (e) => {
+      spawnError = e;
+    });
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      const stdout = Buffer.concat(chunks).toString('utf8');
+      if (spawnError) {
+        reject(Object.assign(spawnError, { stdout, stderr: err }));
+      } else if (timedOut && !clipped) {
+        reject(
+          Object.assign(new Error(`git timed out after ${timeoutMs} ms`), { stdout, stderr: err }),
+        );
+      } else if (!clipped && code !== 0) {
+        const first = err.trim().split(/\r?\n/)[0] ?? '';
+        reject(
+          Object.assign(new Error(`Command failed: git (exit ${code}) ${first}`), {
+            stdout,
+            stderr: err,
+            code,
+          }),
+        );
+      } else {
+        resolve({ stdout, clipped });
+      }
+    });
+  });
+}
+
+/** git through spawn: stdout up to maxBytes, then the child is killed; `clipped` says so. Same environment as gitExec. */
+export function gitStream(
+  args: string[],
+  o: { cwd: string; maxBytes: number; timeoutMs?: number },
+): Promise<{ stdout: string; clipped: boolean }> {
+  const child = spawn('git', gitArgs(args), {
+    cwd: o.cwd,
+    env: gitEnv(),
+    stdio: ['ignore', 'pipe', 'pipe'],
+    windowsHide: true,
+  });
+  return collectStream(child, o.maxBytes, o.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 }
