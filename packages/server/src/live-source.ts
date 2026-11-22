@@ -1599,7 +1599,11 @@ export class LiveSource implements SessionSource {
     st.now = tail.now() ?? (st.firstPromptPending ? STARTING : null);
     const q = tail.question();
     const key = questionKey(q);
-    if (key !== st.tailQuestionKey) {
+    if (st.resuming) {
+      // A resume replays the old transcript before the new claude's first hook: an open
+      // question there belongs to the ended run. Remember it so it never shows (or pings).
+      st.tailQuestionKey = key;
+    } else if (key !== st.tailQuestionKey) {
       st.tailQuestionKey = key;
       if (q && st.status !== 'ended') {
         if (st.status !== 'needs-you') this.#setStatus(st, 'needs-you');

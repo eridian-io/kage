@@ -19,6 +19,7 @@ import {
   type TmuxClientLike,
   type TmuxWatcherLike,
 } from './live-source.ts';
+import { NOTIFY_DEFAULTS, Notifier } from './notify/notifier.ts';
 import type { SourceEvent } from './source.ts';
 import type { SessionRecord } from './state/store.ts';
 import { pickPanes, type TmuxPane, type TmuxWindow } from './tmux/format.ts';
@@ -3657,6 +3658,61 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     await flush();
     expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
     expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-9');
+  });
+
+  it("a resume replays the old transcript's open question without showing it: running, no needs-you, until a new question after the first hook", async () => {
+    const old: Question = { text: 'Which separator?', options: ['Dash', 'Underscore'] };
+    const s = setup({
+      records: [ended()],
+      tails: { [TRANSCRIPT]: { lines: OLD.slice(), question: old } },
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: s.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      options: NOTIFY_DEFAULTS,
+      log: () => {},
+    });
+    notifier.start();
+    const before = s.updates('k-1').length;
+    vi.setSystemTime(T0 + 60_000);
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [resumedWin()];
+    s.tmux.setCapture('%7', IDLE);
+    s.source.claim('k-1', '@7', '%7');
+    await flush();
+    // Past the notifier's 3 s hold.
+    await vi.advanceTimersByTimeAsync(3_500);
+    const during = s.updates('k-1').slice(before);
+    expect(during.some((u) => u.status === 'needs-you')).toBe(false);
+    expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    expect(s.source.get('k-1')?.question).toBeUndefined();
+    expect(pings).toEqual([]);
+    // The new claude's first hook: the old question (still last in the file) stays hidden.
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'resume' }));
+    await flush();
+    s.tails.at(-1)?.push([{ kind: 'say', text: 'Back.' }]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.source.get('k-1')?.status).not.toBe('needs-you');
+    // A new question asked after it shows.
+    const q: Question = { text: 'Add a test?', options: ['Yes', 'No'] };
+    s.hooks.fire(hook('UserPromptSubmit', '%7'));
+    await flush();
+    s.tails.at(-1)?.push([], { question: q, now: 'Asking a question' });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+    await vi.advanceTimersByTimeAsync(3_500);
+    expect(pings).toHaveLength(1);
+    expect(pings[0]).toMatch(/needs you$/);
+    notifier.stop();
   });
 });
 
