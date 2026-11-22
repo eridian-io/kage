@@ -25,14 +25,16 @@ const isWin = process.platform === 'win32';
 /** A table-driven Run: "cmd args…" → its result; anything else is a missing program. */
 function tableRun(table: Record<string, Partial<RunResult>>) {
   const calls: string[] = [];
-  const run: Run = async (cmd, args) => {
+  const timeouts: Record<string, number | undefined> = {};
+  const run: Run = async (cmd, args, opts) => {
     const key = [cmd, ...args].join(' ');
     calls.push(key);
+    timeouts[key] = opts?.timeoutMs;
     const hit = table[key];
     if (!hit) return { code: -1, stdout: '', stderr: `${cmd}: not found`, missing: true };
     return { code: 0, stdout: '', stderr: '', missing: false, ...hit };
   };
-  return { run, calls };
+  return { run, calls, timeouts };
 }
 
 const TAILSCALE_UP = JSON.stringify({
@@ -304,6 +306,18 @@ describe('requirementChecks', () => {
     });
   });
 
+  it('claude-login: CLAUDE_CONFIG_DIR, when set, is the only folder looked at', async () => {
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', '.credentials.json'), '');
+    const other = join(dir, 'claude-config');
+    mkdirSync(other, { recursive: true });
+    const d = deps(tableRun(GOOD).run);
+    d.env.CLAUDE_CONFIG_DIR = other;
+    expect(one(await requirementChecks(d), 'claude-login').level).toBe('warn');
+    writeFileSync(join(other, '.credentials.json'), '');
+    expect(one(await requirementChecks(d), 'claude-login').level).toBe('ok');
+  });
+
   it('claude-login on macOS is always a warning', async () => {
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(join(home, '.claude', '.credentials.json'), '');
@@ -340,9 +354,15 @@ describe('requirementChecks', () => {
         stdout: JSON.stringify({ BackendState: 'Running', Self: { TailscaleIPs: ['fd7a::1'] } }),
       }),
     ).toMatchObject({ level: 'fail', label: "Tailscale isn't up." });
-    expect(await check({ stdout: 'not json' })).toMatchObject({
+    // Not JSON (tailscaled not running, a timeout): it didn't answer, it isn't "not installed".
+    expect(await check({ code: 1, stdout: '', stderr: 'failed to connect' })).toEqual({
+      id: 'tailscale',
       level: 'fail',
-      label: "Tailscale isn't up.",
+      label: "tailscale status didn't answer.",
+      fix: "Run tailscale status yourself to see what's wrong.",
+    });
+    expect(await check({ code: -1, stdout: 'not json' })).toMatchObject({
+      label: "tailscale status didn't answer.",
     });
     expect(await check(undefined)).toEqual({
       id: 'tailscale',
@@ -357,6 +377,57 @@ describe('requirementChecks', () => {
       }),
     ).toMatchObject({ level: 'ok', label: 'Tailscale is up (100.64.0.9).' });
   });
+
+  it('tmux, git and claude that are there but fail or time out: "didn\'t answer", not "isn\'t installed"', async () => {
+    const t = tableRun({
+      ...GOOD,
+      'tmux -V': { code: 1, stderr: 'tmux: broken' },
+      'git --version': { code: -1, stderr: 'timed out' },
+      '/opt/claude --version': { code: 2 },
+    });
+    const d = deps(t.run);
+    d.env.KAGE_CLAUDE_BIN = '/opt/claude';
+    const checks = await requirementChecks(d);
+    expect(one(checks, 'tmux')).toEqual({
+      id: 'tmux',
+      level: 'fail',
+      label: "tmux -V didn't answer.",
+      fix: "Run tmux -V yourself to see what's wrong.",
+    });
+    expect(one(checks, 'git')).toEqual({
+      id: 'git',
+      level: 'fail',
+      label: "git --version didn't answer.",
+      fix: "Run git --version yourself to see what's wrong.",
+    });
+    expect(one(checks, 'claude')).toEqual({
+      id: 'claude',
+      level: 'fail',
+      label: "/opt/claude --version didn't answer.",
+      fix: "Run /opt/claude --version yourself to see what's wrong.",
+    });
+  });
+
+  it('the version probes and tailscale status have a 5 s timeout', async () => {
+    const t = tableRun(GOOD);
+    await requirementChecks(deps(t.run));
+    for (const key of ['tmux -V', 'git --version', 'claude --version', 'tailscale status --json']) {
+      expect(t.timeouts[key], key).toBe(5000);
+    }
+  });
+
+  it.runIf(!isWin)(
+    'macOS: tailscale on PATH is run by name (R115; the app fallback is in tailscale.test.ts)',
+    async () => {
+      const bin = join(dir, 'bin');
+      fakeTool(bin, 'tailscale');
+      const t = tableRun(GOOD);
+      const d = deps(t.run, { platform: 'darwin' });
+      d.env.PATH = bin;
+      expect(one(await requirementChecks(d), 'tailscale').level).toBe('ok');
+      expect(t.calls).toContain('tailscale status --json');
+    },
+  );
 
   it('runs no install command, only version probes', async () => {
     const t = tableRun({});
@@ -515,6 +586,21 @@ describe('installChecks', () => {
       expect(c.fix).toBe('See its log: ~/Library/Logs/kage.log');
     });
 
+    it("a state that can't be read: the error's first line on the label, an action as the fix", async () => {
+      const m = fakeManager('active', null, {
+        state: async () => {
+          throw new Error('"systemctl --user is-active kage.service" exited 1: Failed\nmore');
+        },
+      });
+      expect(one(await installChecks(deps(tableRun({}).run, { manager: m })), 'service')).toEqual({
+        id: 'service',
+        level: 'warn',
+        label:
+          'Kage couldn\'t read the service\'s state ("systemctl --user is-active kage.service" exited 1: Failed).',
+        fix: 'Run kage doctor again. If it keeps happening, run kage setup again.',
+      });
+    });
+
     it('unavailable (R112): a warning with the reason, and state() is never called', async () => {
       const m = fakeManager('active', null, {
         unavailable: async () =>
@@ -663,10 +749,21 @@ describe('installChecks', () => {
         fetch: recordingFetch(500).fetch,
         status: async () => STATUS,
       });
-      expect(one(await installChecks(d), 'server')).toMatchObject({
+      expect(one(await installChecks(d), 'server')).toEqual({
+        id: 'server',
         level: 'fail',
         label: 'Kage is running, but http://127.0.0.1:8080 answers HTTP 500.',
+        fix: 'Restart Kage (kage serve) and run kage doctor again.',
       });
+      // With the service installed, its log comes first.
+      const withService = deps(tableRun({}).run, {
+        fetch: recordingFetch(500).fetch,
+        status: async () => STATUS,
+        manager: fakeManager('active', null),
+      });
+      expect(one(await installChecks(withService), 'server').fix).toBe(
+        'See the service log: journalctl --user -u kage -e',
+      );
     });
 
     it("the address doesn't answer here: a warning (it may still open on the phone)", async () => {
@@ -688,8 +785,44 @@ describe('installChecks', () => {
         fetch: f.fetch,
         status: async () => ({ ...STATUS, url: 'file:///etc/passwd' }),
       });
-      expect(one(await installChecks(d), 'server').level).toBe('fail');
+      expect(one(await installChecks(d), 'server')).toEqual({
+        id: 'server',
+        level: 'fail',
+        label: "Kage answers, but its address file:///etc/passwd isn't one Kage can serve.",
+        fix: 'Restart Kage (kage serve) and run kage doctor again.',
+      });
       expect(f.urls).toEqual([]);
+    });
+
+    it('the restart advice names the service when one is installed', async () => {
+      const status = async () => ({ ...STATUS, url: 'ftp://x' });
+      const systemd = deps(tableRun({}).run, { status, manager: fakeManager('active', null) });
+      expect(one(await installChecks(systemd), 'server').fix).toBe(
+        'Restart it with systemctl --user restart kage, then run kage doctor again.',
+      );
+      const launchd = deps(tableRun({}).run, {
+        status,
+        platform: 'darwin',
+        uid: 501,
+        manager: fakeManager('active', null, { kind: 'launchd', name: 'launchd agent' }),
+      });
+      expect(one(await installChecks(launchd), 'server').fix).toBe(
+        'Restart it with launchctl kickstart -k gui/501/io.eridian.kage, then run kage doctor again.',
+      );
+    });
+
+    it('every failing check has an action (a fix, or a label that says what to do)', async () => {
+      // An instruction, or a command to run (an install hint).
+      const says = /\b(Run|Install|Fix|Create|Start|Restart|See|Add|Open|curl|sudo|brew)\b/;
+      const bad = deps(tableRun({}).run, {
+        uid: 0,
+        status: async () => ({ ...STATUS, url: 'ftp://x' }),
+        manager: fakeManager('failed', join(dir, 'empty')),
+      });
+      const checks = [...(await requirementChecks(bad)), ...(await installChecks(bad))];
+      const fails = checks.filter((c) => c.level !== 'ok');
+      expect(fails.length).toBeGreaterThan(6);
+      for (const c of fails) expect(`${c.label} ${c.fix ?? ''}`, c.id).toMatch(says);
     });
   });
 

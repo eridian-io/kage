@@ -17,7 +17,9 @@ import { socketPath } from '../hooks/cli.ts';
 import type { ServerStatus } from '../hooks/server.ts';
 import { SETTINGS_FILE } from '../hooks/settings.ts';
 import { stateDir } from '../state/store.ts';
+import { tailscaleCommand } from '../tailscale.ts';
 import { parseTmuxVersion } from '../tmux/client.ts';
+import { LAUNCHD_LABEL } from './launchd.ts';
 import type { Run, RunResult } from './run.ts';
 import type { RunMode } from './runtime.ts';
 import type { ServiceManager, ServiceState } from './service.ts';
@@ -58,6 +60,8 @@ export interface CheckDeps {
 }
 
 const MIN_GIT: [number, number] = [2, 40];
+/** The version probes and tailscale status: local, so 5 s is plenty. */
+const PROBE = { timeoutMs: 5000 };
 const SERVICE_TOOLS = ['tmux', 'git', 'claude', 'tailscale'] as const;
 /** How long the one request to Kage's own address may take. */
 const SERVER_TIMEOUT_MS = 3000;
@@ -176,9 +180,11 @@ export async function requirementChecks(d: CheckDeps): Promise<Check[]> {
     return pm.then((p) => installHint(tool, d.platform, p));
   };
 
-  const tmux = await d.run('tmux', ['-V']);
-  if (!answered(tmux)) {
+  const tmux = await d.run('tmux', ['-V'], PROBE);
+  if (tmux.missing) {
     checks.push(fail('tmux', "tmux isn't installed.", await hint('tmux')));
+  } else if (!answered(tmux)) {
+    checks.push(silent('tmux', ['tmux', '-V']));
   } else {
     const { version, tooOld } = parseTmuxVersion(tmux.stdout);
     checks.push(
@@ -188,9 +194,11 @@ export async function requirementChecks(d: CheckDeps): Promise<Check[]> {
     );
   }
 
-  const git = await d.run('git', ['--version']);
-  if (!answered(git)) {
+  const git = await d.run('git', ['--version'], PROBE);
+  if (git.missing) {
     checks.push(fail('git', "git isn't installed.", await hint('git')));
+  } else if (!answered(git)) {
+    checks.push(silent('git', ['git', '--version']));
   } else {
     const v = parseVersion(git.stdout);
     const word = versionWord(git.stdout) ?? git.stdout.trim();
@@ -203,16 +211,28 @@ export async function requirementChecks(d: CheckDeps): Promise<Check[]> {
   }
 
   // Local only: `claude --version` makes no network call (host-integration §7.6).
-  const claude = await d.run(d.env.KAGE_CLAUDE_BIN || 'claude', ['--version']);
-  checks.push(
-    answered(claude)
-      ? ok('claude', `Claude Code ${versionWord(claude.stdout) ?? claude.stdout.trim()}`)
-      : fail('claude', "Claude Code isn't installed.", await hint('claude')),
-  );
+  const claudeBin = d.env.KAGE_CLAUDE_BIN || 'claude';
+  const claude = await d.run(claudeBin, ['--version'], PROBE);
+  if (claude.missing) {
+    checks.push(fail('claude', "Claude Code isn't installed.", await hint('claude')));
+  } else if (!answered(claude)) {
+    checks.push(silent('claude', [claudeBin, '--version']));
+  } else {
+    checks.push(ok('claude', `Claude Code ${versionWord(claude.stdout) ?? claude.stdout.trim()}`));
+  }
 
   checks.push(await claudeLogin(d));
   checks.push(await tailscaleCheck(d, hint));
   return checks;
+}
+
+/**
+ * A program that is there but timed out or exited non-zero: not "isn't installed", which would
+ * send the user to reinstall something that is installed.
+ */
+function silent(id: CheckId, cmd: string[]): Check {
+  const line = cmd.join(' ');
+  return fail(id, `${line} didn't answer.`, `Run ${line} yourself to see what's wrong.`);
 }
 
 async function exists(path: string): Promise<boolean> {
@@ -232,12 +252,10 @@ async function claudeLogin(d: CheckDeps): Promise<Check> {
       "Kage can't tell whether Claude Code is signed in on macOS. Run claude once to check.",
     );
   }
-  const dirs = [join(d.home, '.claude')];
-  if (d.env.CLAUDE_CONFIG_DIR) dirs.unshift(d.env.CLAUDE_CONFIG_DIR);
-  let signedIn = Boolean(d.env.ANTHROPIC_API_KEY);
-  for (const dir of dirs) {
-    if (!signedIn && (await exists(join(dir, '.credentials.json')))) signedIn = true;
-  }
+  // Claude keeps its files in CLAUDE_CONFIG_DIR when that is set, else in ~/.claude.
+  const dir = d.env.CLAUDE_CONFIG_DIR || join(d.home, '.claude');
+  const signedIn =
+    Boolean(d.env.ANTHROPIC_API_KEY) || (await exists(join(dir, '.credentials.json')));
   return signedIn
     ? ok('claude-login', 'Claude Code is signed in.')
     : warn('claude-login', 'Claude Code may not be signed in. Run claude once and sign in.');
@@ -249,15 +267,19 @@ async function tailscaleCheck(
   d: CheckDeps,
   hint: (tool: 'tailscale') => Promise<string>,
 ): Promise<Check> {
-  const r = await d.run('tailscale', ['status', '--json']);
+  // R115: on macOS the app's own CLI stands in when tailscale isn't on PATH.
+  const cmd = tailscaleCommand({ platform: d.platform, path: d.env.PATH ?? '' });
+  const r = await d.run(cmd, ['status', '--json'], PROBE);
   if (r.missing) return fail('tailscale', "Tailscale isn't installed.", await hint('tailscale'));
   let name: string | null = null;
+  let parsed = false;
   try {
     // A stopped Tailscale still prints its status (and may exit non-zero).
     const data = JSON.parse(r.stdout) as {
       BackendState?: unknown;
       Self?: { DNSName?: unknown; TailscaleIPs?: unknown };
     } | null;
+    parsed = true;
     const ips = Array.isArray(data?.Self?.TailscaleIPs) ? data.Self.TailscaleIPs : [];
     const v4 = ips.find((ip): ip is string => typeof ip === 'string' && IPV4.test(ip));
     if (data?.BackendState === 'Running' && v4) {
@@ -265,9 +287,16 @@ async function tailscaleCheck(
       name = typeof dns === 'string' && dns !== '' ? dns.replace(/\.$/, '') : v4;
     }
   } catch {
-    // not JSON: not up
+    // not JSON: it didn't answer (timed out, or tailscaled isn't running)
   }
   if (name !== null) return ok('tailscale', `Tailscale is up (${name}).`);
+  if (!parsed) {
+    return fail(
+      'tailscale',
+      "tailscale status didn't answer.",
+      "Run tailscale status yourself to see what's wrong.",
+    );
+  }
   return fail(
     'tailscale',
     "Tailscale isn't up.",
@@ -376,8 +405,13 @@ async function serviceChecks(d: CheckDeps): Promise<{ checks: Check[]; installed
   try {
     state = await m.state();
   } catch (err) {
+    const said = firstLine((err as Error).message);
     return none([
-      warn('service', "Kage couldn't read the service's state.", (err as Error).message),
+      warn(
+        'service',
+        `Kage couldn't read the service's state${said ? ` (${said})` : ''}.`,
+        'Run kage doctor again. If it keeps happening, run kage setup again.',
+      ),
     ]);
   }
   const log = `See its log: ${logHint(m)}`;
@@ -421,7 +455,12 @@ async function serviceChecks(d: CheckDeps): Promise<{ checks: Check[]; installed
   const path = (await m.pathOfInstalled()) ?? '';
   const found: Record<string, string> = {};
   for (const tool of SERVICE_TOOLS) {
-    const at = await findOnPath(tool, path);
+    let at = await findOnPath(tool, path);
+    if (at === null && tool === 'tailscale') {
+      // R115: serve falls back to the macOS app's CLI, so the service finds it there too.
+      const cmd = tailscaleCommand({ platform: d.platform, path });
+      if (cmd !== 'tailscale') at = cmd;
+    }
     if (at === null) {
       checks.push(
         fail(
@@ -445,6 +484,25 @@ async function serviceChecks(d: CheckDeps): Promise<{ checks: Check[]; installed
   return { checks, installed: true };
 }
 
+/** The first line of an error, at most 160 characters. */
+function firstLine(text: string): string {
+  const line = (text.split(/\r?\n/)[0] ?? '').trim();
+  return line.length > 160 ? `${line.slice(0, 159)}…` : line;
+}
+
+/** How to restart Kage: its service when one is installed, else kage serve. */
+function restartHint(d: CheckDeps, serviceInstalled: boolean): string {
+  const m = d.manager;
+  if (m && serviceInstalled) {
+    const how =
+      m.kind === 'systemd'
+        ? 'systemctl --user restart kage'
+        : `launchctl kickstart -k gui/${d.uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
+    return `Restart it with ${how}, then run kage doctor again.`;
+  }
+  return 'Restart Kage (kage serve) and run kage doctor again.';
+}
+
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 async function serverCheck(d: CheckDeps, serviceInstalled: boolean): Promise<Check> {
@@ -465,7 +523,11 @@ async function serverCheck(d: CheckDeps, serviceInstalled: boolean): Promise<Che
     // handled below
   }
   if (url === null || url.protocol !== 'http:') {
-    return fail('server', `Kage answers, but its address ${status.url} isn't one Kage can serve.`);
+    return fail(
+      'server',
+      `Kage answers, but its address ${status.url} isn't one Kage can serve.`,
+      restartHint(d, serviceInstalled),
+    );
   }
   const counts = `${plural(status.sessions, 'session', 'sessions')}, ${plural(status.needsYou, 'needs you', 'need you')}`;
   // The one request doctor makes over the network: to Kage's own address (R105, F24).
@@ -489,7 +551,9 @@ async function serverCheck(d: CheckDeps, serviceInstalled: boolean): Promise<Che
     return fail(
       'server',
       `Kage is running, but ${status.url} answers HTTP ${code}.`,
-      d.manager && serviceInstalled ? `See the service log: ${logHint(d.manager)}` : null,
+      d.manager && serviceInstalled
+        ? `See the service log: ${logHint(d.manager)}`
+        : restartHint(d, false),
     );
   }
   return ok(

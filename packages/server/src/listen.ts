@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process';
 import { lookup } from 'node:dns/promises';
 import { isIP } from 'node:net';
 import type { KageConfig } from './config.ts';
+import { tailscaleCommand } from './tailscale.ts';
 
 export interface ListenAddress {
   address: string;
@@ -143,7 +144,7 @@ const execText: ExecText = (cmd, args) =>
  */
 export async function tailscaleDnsName(exec: ExecText = execText): Promise<string | null> {
   try {
-    const data: unknown = JSON.parse(await exec('tailscale', ['status', '--json']));
+    const data: unknown = JSON.parse(await exec(tailscaleCommand(), ['status', '--json']));
     const self = (data as { Self?: { DNSName?: unknown } } | null)?.Self;
     const name = self?.DNSName;
     if (typeof name !== 'string') return null;
@@ -154,10 +155,13 @@ export async function tailscaleDnsName(exec: ExecText = execText): Promise<strin
   }
 }
 
-/** Runs `tailscale ip -4` (argument array, no shell); null on error, empty or non-Tailscale output. */
+/**
+ * Runs `tailscale ip -4` (argument array, no shell; the macOS app's CLI when none is on PATH,
+ * R115); null on error, empty or non-Tailscale output.
+ */
 export function defaultTailscaleIp(): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('tailscale', ['ip', '-4'], { timeout: 5000 }, (err, stdout) => {
+    execFile(tailscaleCommand(), ['ip', '-4'], { timeout: 5000 }, (err, stdout) => {
       if (err) return resolve(null);
       const first = String(stdout).split(/\r?\n/)[0]?.trim() ?? '';
       const n = ip4(first);

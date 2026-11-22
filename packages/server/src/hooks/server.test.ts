@@ -266,6 +266,13 @@ describe('HookServer', () => {
       expect(await fetchStatus(path)).toBeNull();
     });
 
+    it('fetchStatus gives null when request() throws at once (no timer left behind)', async () => {
+      // A number for socketPath makes http.request throw ERR_INVALID_ARG_TYPE synchronously.
+      const t0 = Date.now();
+      expect(await fetchStatus(5 as unknown as string, 60_000)).toBeNull();
+      expect(Date.now() - t0).toBeLessThan(1000);
+    });
+
     it('fetchStatus against a closed socket gives null within its timeout', async () => {
       await server.close();
       const t0 = Date.now();
