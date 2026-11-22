@@ -22,6 +22,12 @@ const NOT_KAGES = "That window isn't Kage's any more.";
 const UNCLEAR = "Kage didn't understand that.";
 const STOPPING = 'Kage is stopping.';
 const FAILED = "Kage couldn't open the terminal.";
+const TOO_MANY = 'Too many terminals are open. Close one and try again.';
+/**
+ * B35: at most this many upgraded sockets wait for their session checks and bridge.open at once;
+ * one more closes with 4429. A socket whose client hung up still counts until its open settles.
+ */
+const MAX_OPENING = 2 * LIMITS.terminals;
 const unknown = (id: string) => `No session with id ${id}`;
 /** After close(), a socket that hasn't finished its closing handshake by then is cut. */
 const CLOSE_GRACE_MS = 1000;
@@ -100,6 +106,8 @@ export class TerminalServer {
   readonly #conns = new Set<Conn>();
   #timer: NodeJS.Timeout | null = null;
   #closed = false;
+  /** Upgraded sockets whose session checks and bridge.open haven't settled yet (B35). */
+  #opening = 0;
 
   constructor(d: TerminalServerDeps) {
     this.#d = d;
@@ -136,6 +144,12 @@ export class TerminalServer {
         ws.close(1001, STOPPING);
         return;
       }
+      // B35: LIMITS.terminals caps open terminals in the bridge; this caps the ones still opening.
+      if (this.#opening >= MAX_OPENING) {
+        ws.on('error', () => {});
+        ws.close(TERM_CLOSE.tooMany, TOO_MANY);
+        return;
+      }
       this.#attach(ws, check.id, check.cols, check.rows);
     });
   }
@@ -169,7 +183,12 @@ export class TerminalServer {
       h?.close();
       if (this.#conns.size === 0) this.#stopTimer();
     });
-    void this.#open(conn, id, cols, rows).catch(() => this.#end(conn, 1011, FAILED));
+    this.#opening++;
+    void this.#open(conn, id, cols, rows)
+      .catch(() => this.#end(conn, 1011, FAILED))
+      .finally(() => {
+        this.#opening--;
+      });
   }
 
   async #open(conn: Conn, id: string, cols: number | null, rows: number | null): Promise<void> {

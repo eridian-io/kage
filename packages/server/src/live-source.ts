@@ -140,6 +140,8 @@ const SAVE_MAX_MS = 30_000;
 const MAX_LINES = 200;
 /** A claude window still in its startup checks is captured once more this long after attach. */
 const STARTUP_RECHECK_MS = 1000;
+/** P4F1: a still-starting launch is looked at once a second for at most this long (Task 0). */
+const STARTING_LOOKS_MS = 60_000;
 /** A hook pane still unknown after a re-list is dropped without re-listing for this long. */
 const UNKNOWN_PANE_MS = 5000;
 /** Pane fallback: a new capture continues the last one when they overlap by this many lines (or all of the last). */
@@ -229,6 +231,8 @@ interface Live extends SessionView {
    * SessionEnd, or by the FIRST_PROMPT_MS fallback after SessionStart.
    */
   firstPromptPending: boolean;
+  /** P4F1: when the idle rule first looked at this still-starting launch (monotonic ms), else null. */
+  startingSince: number | null;
   /**
    * B7: Kage resumed this session and no hook has come from the new Claude yet; `sessionId` is
    * the id passed to `--resume` (null for `--continue`). R63: a SessionEnd naming another id
@@ -448,6 +452,7 @@ export class LiveSource implements SessionSource {
     st.status = 'running';
     st.now = STARTING;
     st.firstPromptPending = true;
+    st.startingSince = null;
     st.lastActivity = this.#clock();
     this.#sessions.set(r.kageId, st);
     this.#emitNow(st);
@@ -487,6 +492,7 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['retire', 'firstPrompt']);
     st.resuming = { sessionId };
     st.firstPromptPending = true;
+    st.startingSince = null;
     // A new claude in a new window: its startup screens are checked afresh (R9).
     st.claudeExited = true;
     st.hookSeen = false;
@@ -860,6 +866,7 @@ export class LiveSource implements SessionSource {
       promptKind: null,
       replying: false,
       firstPromptPending: false,
+      startingSince: null,
       resuming: null,
       askMulti: new Map(),
       promptSeen: false,
@@ -1196,8 +1203,8 @@ export class LiveSource implements SessionSource {
    * P4F1: a launched or resumed claude that has sent no hook yet is still starting (a quiet pane
    * may be a startup screen drawn after the last capture), so the idle rule looks at the pane
    * instead: a startup screen is needs-you; anything else stays running, "Starting Claude…", and
-   * is looked at again STARTUP_RECHECK_MS later, until the first hook, the idle input box, or the
-   * window's end.
+   * is looked at again STARTUP_RECHECK_MS later, until the first hook, the idle input box, the
+   * window's end, or STARTING_LOOKS_MS of looks (then the usual rule: done).
    */
   #scheduleIdle(st: Live, after?: number): void {
     if (!this.#running) return;
@@ -1217,13 +1224,22 @@ export class LiveSource implements SessionSource {
     }, wait);
   }
 
-  /** P4F1: a Kage claude with no hook yet and no idle input box seen: still on its way in. */
+  /**
+   * P4F1: a Kage claude with no hook yet and no idle input box seen: still on its way in. Not
+   * once its looks have run for STARTING_LOOKS_MS: a pane that quiet is left to the activity rule.
+   */
   #stillStarting(st: Live): boolean {
-    return st.record !== null && st.firstPromptPending && this.#startupEligible(st);
+    return (
+      st.record !== null &&
+      st.firstPromptPending &&
+      this.#startupEligible(st) &&
+      (st.startingSince === null || this.#clock() - st.startingSince < STARTING_LOOKS_MS)
+    );
   }
 
   /** P4F1: the idle rule's look at a still-starting pane (see #scheduleIdle). */
   async #startingCheck(st: Live): Promise<void> {
+    st.startingSince ??= this.#clock();
     const gen = st.gen;
     const text = await this.#capture(st);
     if (!this.#running || this.#sessions.get(st.id) !== st || st.gen !== gen) return;
@@ -1669,6 +1685,8 @@ export class LiveSource implements SessionSource {
       }
       if (st.startup) {
         st.startup = false;
+        // A screen answered: the wait for the next one is a fresh one (its own 60 s of looks).
+        st.startingSince = null;
         this.#setStatus(st, this.#activityStatus(st));
         st.question = null;
         this.#scheduleIdle(st);

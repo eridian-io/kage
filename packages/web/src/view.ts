@@ -1,6 +1,6 @@
 import { effect } from '@preact/signals';
 import { apiPost } from './api.ts';
-import { selectedId, streamId } from './store.ts';
+import { selectedId, streamId, viewGen } from './store.ts';
 
 interface View {
   streamId: string;
@@ -49,9 +49,15 @@ export function sendView(stream: string | null, id: string | null): void {
   else post(view);
 }
 
-/** Posts the view whenever the stream (a snapshot) or the selection changes. Returns the stopper. */
+/**
+ * Posts the view whenever this tab's view changes (viewGen: a new stream, an automatic pick, or
+ * any selection, even of the selected row). The server answers each view with the session's
+ * files and counts, so a re-selection must post too or countsKnown would wait for good.
+ * Returns the stopper.
+ */
 export function installView(): () => void {
   return effect(() => {
+    void viewGen.value;
     sendView(streamId.value, selectedId.value);
   });
 }

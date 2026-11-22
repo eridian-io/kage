@@ -1,6 +1,6 @@
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
-import type { SessionStatus } from '@kage/shared';
+import { LIMITS, type SessionStatus } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { authCookieValue } from '../auth.ts';
@@ -300,6 +300,33 @@ describe('TerminalServer: sessions', () => {
       4429,
       'Too many terminals are open. Close one and try again.',
     ]);
+  });
+
+  it('B35: past 2 × LIMITS.terminals sockets waiting for bridge.open, a new one closes with 4429', async () => {
+    const { connect, bridge } = await setup();
+    let release = () => {};
+    bridge.gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const cap = 2 * LIMITS.terminals;
+    const waiting = Array.from({ length: cap }, () => connect());
+    await vi.waitFor(() => expect(bridge.opens).toHaveLength(cap));
+    const extra = connect();
+    expect(await extra.closed).toEqual([
+      4429,
+      'Too many terminals are open. Close one and try again.',
+    ]);
+    expect(bridge.opens).toHaveLength(cap);
+    // Clients that hang up still count until their bridge.open settles.
+    for (const w of waiting) w.ws.close();
+    await Promise.all(waiting.map((w) => w.closed));
+    expect((await connect().closed)[0]).toBe(4429);
+    release();
+    await vi.waitFor(() => expect(bridge.opens.every((o) => o.handle.closed === 1)).toBe(true));
+    // Once they settled, upgrades open again.
+    const next = connect();
+    await vi.waitFor(() => expect(bridge.opens).toHaveLength(cap + 1));
+    next.ws.close();
   });
 
   it('a socket that closes while bridge.open is pending closes the handle when it arrives', async () => {

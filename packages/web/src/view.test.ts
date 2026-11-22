@@ -88,6 +88,25 @@ describe('view posting', () => {
     expect(posts).toHaveLength(n + 1);
     expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: other });
   });
+  it('posts again when the selected session is selected again (the server re-sends its counts)', async () => {
+    snap('s1', ['a', 'b']);
+    await flush();
+    const n = posts.length;
+    select(selectedId.value);
+    await flush();
+    expect(posts).toHaveLength(n + 1);
+    expect(posts.at(-1)?.[1]).toEqual({ streamId: 's1', id: selectedId.value });
+  });
+  it('a re-selection in a list of one posts again too', async () => {
+    snap('s1', ['a']);
+    await flush();
+    const n = posts.length;
+    select('a');
+    await flush();
+    select('a');
+    await flush();
+    expect(posts).toHaveLength(n + 2);
+  });
   it('posts with the new stream id after a reconnect', async () => {
     snap('s1', ['a']);
     await flush();

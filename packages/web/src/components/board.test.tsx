@@ -1,7 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
-import { effect, untracked } from '@preact/signals';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiDelete, apiPost } from '../api.ts';
@@ -29,8 +28,8 @@ import {
   stopSent,
   termNote,
   toast,
-  viewGen,
 } from '../store.ts';
+import { installView } from '../view.ts';
 
 // The board's own actions (act) use the real api module, so they reach the stubbed fetch below.
 vi.mock('../api.ts', async (importOriginal) => ({
@@ -108,21 +107,24 @@ const button = (c: Element, label: string) => {
   if (!b) throw new Error(`no button ${label}`);
   return b;
 };
+/** The delete confirmation has the counts its view brought (the view post answers async). */
+const countsArrive = (c: Element) =>
+  waitFor(() => expect(q(c, '.k-confirm div').textContent).not.toContain('Checking the branch…'));
 beforeEach(() => {
   autoCounts = true;
-  stopAutoCounts = effect(() => {
-    void viewGen.value;
-    const id = selectedId.value;
-    untracked(() => {
-      const s = sessions.value.find((x) => x.id === id);
-      if (autoCounts && s) {
-        applyEvent({ type: 'session.files', id: s.id, files: s.files, filesTotal: s.filesTotal });
-      }
-    });
-  });
-  vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.mocked(apiDelete).mockClear();
-  vi.mocked(apiPost).mockClear();
+  vi.mocked(apiPost).mockReset();
+  // The server's answer to a view post: the viewed session's files, and with them its counts.
+  vi.mocked(apiPost).mockImplementation(async (path, body) => {
+    const id = (body as { id?: string | null } | undefined)?.id;
+    const s = path === '/api/view' ? sessions.value.find((x) => x.id === id) : undefined;
+    if (autoCounts && s) {
+      applyEvent({ type: 'session.files', id: s.id, files: s.files, filesTotal: s.filesTotal });
+    }
+    return new Response(null, { status: 204 });
+  });
+  stopAutoCounts = installView();
+  vi.spyOn(Date, 'now').mockReturnValue(NOW);
   replies = [];
   fetchMock = vi.fn(async () => {
     const [status, error] = replies.shift() ?? [204];
@@ -1479,44 +1481,45 @@ describe('finish controls (Task 9)', () => {
   });
 
   describe('the delete warning', () => {
-    const confirmFor = (patch: Partial<Session>) => {
+    const confirmFor = async (patch: Partial<Session>) => {
       withSession(patch);
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'docs'));
       fireEvent.click(button(container, 'Delete…'));
+      await countsArrive(container);
       return container;
     };
 
-    it('adds the uncommitted sentence inside the same warning', () => {
-      const c = confirmFor({ unpushed: 1, uncommitted: 3 });
+    it('adds the uncommitted sentence inside the same warning', async () => {
+      const c = await confirmFor({ unpushed: 1, uncommitted: 3 });
       expect(texts(c, '.k-confirm .warn')).toEqual([
         '1 commit isn’t pushed and will be lost. 3 files have uncommitted changes and will be lost.',
       ]);
       expect(q(c, '.k-confirm div').textContent).not.toContain('nothing is lost');
     });
 
-    it('says 1 file in the singular, with no unpushed sentence when all is pushed', () => {
-      const c = confirmFor({ unpushed: 0, uncommitted: 1 });
+    it('says 1 file in the singular, with no unpushed sentence when all is pushed', async () => {
+      const c = await confirmFor({ unpushed: 0, uncommitted: 1 });
       expect(texts(c, '.k-confirm .warn')).toEqual([
         '1 file has uncommitted changes and will be lost.',
       ]);
     });
 
-    it('warns about ignored files whenever there are any (R75)', () => {
-      const c = confirmFor({ unpushed: 2, uncommitted: 0, ignored: 4 });
+    it('warns about ignored files whenever there are any (R75)', async () => {
+      const c = await confirmFor({ unpushed: 2, uncommitted: 0, ignored: 4 });
       expect(texts(c, '.k-confirm .warn')).toEqual([
         '2 commits aren’t pushed and will be lost. 4 ignored files (like .env) will be deleted too.',
       ]);
       cleanup();
-      const one = confirmFor({ unpushed: 0, uncommitted: 0, ignored: 1 });
+      const one = await confirmFor({ unpushed: 0, uncommitted: 0, ignored: 1 });
       expect(texts(one, '.k-confirm .warn')).toEqual([
         '1 ignored file (like .env) will be deleted too.',
       ]);
       expect(q(one, '.k-confirm div').textContent).not.toContain('nothing is lost');
     });
 
-    it('keeps the pushed sentence when nothing would be lost', () => {
-      const c = confirmFor({ unpushed: 0, uncommitted: 0, ignored: 0 });
+    it('keeps the pushed sentence when nothing would be lost', async () => {
+      const c = await confirmFor({ unpushed: 0, uncommitted: 0, ignored: 0 });
       expect(c.querySelector('.k-confirm .warn')).toBeNull();
       expect(q(c, '.k-confirm div').textContent).toBe(
         'Delete this session? This removes the tmux window, the worktree ~/projects/docs/.worktrees/readme and the branch docs/readme. Everything on the branch is pushed, so nothing is lost.',
@@ -1524,7 +1527,7 @@ describe('finish controls (Task 9)', () => {
     });
 
     it('the counts shown follow the next session.updated', async () => {
-      const c = confirmFor({ unpushed: 1, uncommitted: 0 });
+      const c = await confirmFor({ unpushed: 1, uncommitted: 0 });
       const docs = sessions.value.find((s) => s.id === 'docs') as Session;
       applyEvent({ type: 'session.updated', session: { ...docs, uncommitted: 2 } });
       await Promise.resolve();
@@ -1540,6 +1543,7 @@ describe('finish controls (Task 9)', () => {
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'docs'));
       fireEvent.click(button(container, 'Delete…'));
+      await countsArrive(container);
       fireEvent.click(button(container, 'Delete session'));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       expect(raw()).toEqual([
@@ -1786,6 +1790,7 @@ describe('carried from Task 9 (R77)', () => {
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'docs'));
       fireEvent.click(button(container, 'Delete…'));
+      await countsArrive(container);
       fireEvent.click(button(container, 'Delete session'));
       await waitFor(() => expect(container.querySelector('.k-err')).not.toBeNull());
       await waitFor(() => expect(busy.value.size).toBe(0));
@@ -1958,6 +1963,20 @@ describe('delete before the counts are known (fix wave)', () => {
     await Promise.resolve();
     expect(text()).toContain('Everything on the branch is pushed, so nothing is lost.');
     expect(text()).not.toContain('Checking the branch…');
+    expect(button(container, 'Delete session').disabled).toBe(false);
+  });
+
+  it('selecting the selected session again posts the view, so the counts come again (no hang)', async () => {
+    autoCounts = true;
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'footer'));
+    await new Promise((r) => setTimeout(r, 0));
+    // A second click on the same row (or J/K in a list of one) is a new view.
+    fireEvent.click(row(container, 'footer'));
+    fireEvent.click(button(container, 'Delete…'));
+    const text = () => q(container, '.k-confirm div').textContent ?? '';
+    await waitFor(() => expect(text()).not.toContain('Checking the branch…'));
+    expect(text()).toContain('nothing is lost');
     expect(button(container, 'Delete session').disabled).toBe(false);
   });
 

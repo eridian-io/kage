@@ -3711,4 +3711,30 @@ describe('LiveSource: a launch on its startup screens (P4F1)', () => {
     await flush();
     expect(s.source.get('k-9')?.status).toBe('done');
   });
+
+  it('the per-second look stops after 60 s: then the activity rule (done after 5 s idle)', async () => {
+    const s = await loading();
+    // The idle rule first looks at ~9 s; 60 s of looks later it gives up.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(s.source.get('k-9')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    await vi.advanceTimersByTimeAsync(40_000);
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('done');
+    const calls = s.tmux.captureCalls.length;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(s.tmux.captureCalls.length).toBe(calls);
+  });
+
+  it('activity after the cap is the activity rule: running, then done 5 s after it stops', async () => {
+    const s = await loading();
+    await vi.advanceTimersByTimeAsync(70_000);
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('done');
+    s.watcher.emit({ type: 'activity', paneId: '%7' });
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(6000);
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('done');
+  });
 });

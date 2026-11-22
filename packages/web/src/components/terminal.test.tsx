@@ -148,11 +148,20 @@ describe('loading the terminal', () => {
   it('a stylesheet that fails to load is a load failure too, and is removed again', async () => {
     // The first test's stylesheet loaded; this one starts without it.
     for (const l of document.querySelectorAll('link[href="/term-BBB.css"]')) l.remove();
-    settings.handleDisabledFileLoadingAsSuccess = false;
+    // The stylesheet's load turns into an error, as a browser's failed load would. (happy-dom's own
+    // failure path prints a stack trace on a console the test can't reach.)
+    const dispatch = HTMLLinkElement.prototype.dispatchEvent;
+    const failed = vi
+      .spyOn(HTMLLinkElement.prototype, 'dispatchEvent')
+      .mockImplementation(function (this: HTMLLinkElement, e: Event) {
+        return dispatch.call(this, e.type === 'load' ? new Event('error') : e);
+      });
     const r = render(<Board />);
     fireEvent.click(row(r.container, 'shop'));
     key({ key: 't' });
     await waitFor(() => expect(termNote.value).toBe("Couldn't load the terminal."));
+    expect(failed).toHaveBeenCalled();
+    failed.mockRestore();
     expect(document.querySelectorAll('link[href="/term-BBB.css"]')).toHaveLength(0);
     expect(load).not.toHaveBeenCalled();
   });
