@@ -340,6 +340,37 @@ describe('FinishActions.archive: the live re-check right before the kill (Task 4
     }
   });
 
+  it('R70: a terminal opened during the capture → an automatic archive is skipped (no kill, no flags)', async () => {
+    const tmux = new FakeTmux();
+    const source = new FakeSource();
+    let open = false;
+    const finish = new FinishActions({
+      tmux,
+      source,
+      ...NO_DELETE,
+      isTerminalOpen: (id) => open && id === 'k-1',
+    });
+    tmux.onCapture = () => {
+      open = true;
+    };
+    await finish.archive('k-1', true, { auto: true });
+    expect(tmux.captures).toEqual(['%2 0']);
+    expect(tmux.log).toEqual([]);
+    expect(source.log).toEqual([]);
+    // A manual archive is unchanged: the user's explicit act closes the window (and its terminal).
+    await finish.archive('k-1', true);
+    expect(tmux.log).toEqual(['kill @2 k-1']);
+    expect(source.log).toEqual(['stopped k-1', 'flags k-1 {"archived":true}']);
+  });
+
+  it('R70: an automatic archive with no terminal open goes ahead', async () => {
+    const tmux = new FakeTmux();
+    const source = new FakeSource();
+    const finish = new FinishActions({ tmux, source, ...NO_DELETE, isTerminalOpen: () => false });
+    await finish.archive('k-1', true, { auto: true });
+    expect(tmux.log).toEqual(['kill @2 k-1']);
+  });
+
   it('the pane is gone at the capture: the kill finds it gone, archived anyway', async () => {
     const { finish, tmux, source } = setup();
     tmux.captureError = execError("can't find pane: %2");

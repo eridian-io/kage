@@ -3026,6 +3026,45 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
   });
 });
 
+describe('LiveSource: terminal (phase 4 Task 12)', () => {
+  it('terminalTarget gives the window, pane, kage id, ownership and status; null only for an unknown id', async () => {
+    const { source } = setup({
+      windows: [kageWin(), win({ windowId: '@7', paneId: '%7' })],
+      records: [rec(), rec({ kageId: 'k-2', worktree: `${ROOT}/shop/.worktrees/other` })],
+    });
+    await source.start();
+    expect(source.terminalTarget('k-1')).toEqual({
+      windowId: '@2',
+      paneId: '%2',
+      kageId: 'k-1',
+      external: false,
+      status: source.get('k-1')?.status,
+    });
+    expect(source.terminalTarget('ext-@7')).toMatchObject({
+      windowId: '@7',
+      paneId: '%7',
+      kageId: null,
+      external: true,
+    });
+    // A record with no window: known, so the terminal says it ended (4409), not 4404.
+    expect(source.terminalTarget('k-2')).toMatchObject({ windowId: null, paneId: null });
+    expect(source.terminalTarget('nope')).toBeNull();
+  });
+
+  it("windowIdle(window) touches its record session's auto-archive check (F11); others do nothing", async () => {
+    const { source, auto } = setup({
+      windows: [kageWin(), win({ windowId: '@7', paneId: '%7' })],
+      records: [rec()],
+    });
+    await source.start();
+    auto.calls = [];
+    source.windowIdle('@2');
+    source.windowIdle('@7');
+    source.windowIdle('@99');
+    expect(auto.calls).toEqual(['touch k-1']);
+  });
+});
+
 describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
   const cand = (over: Record<string, unknown> = {}) => ({
     id: 'k-1',

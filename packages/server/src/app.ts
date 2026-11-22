@@ -208,6 +208,11 @@ export function createApp(deps: AppDeps): Hono {
     return new Response(hub.stream(), { headers });
   });
 
+  // The terminal is a WebSocket (serve.ts takes the upgrade before Hono); a plain GET lands here.
+  app.get('/api/sessions/:id/terminal', (c) =>
+    c.json({ error: 'Open the terminal with a WebSocket.' }, 426),
+  );
+
   const { projects } = deps;
   app.get('/api/projects', async (c) => {
     if (!projects) return c.json({ error: DEMO_NO_TASKS }, 501);

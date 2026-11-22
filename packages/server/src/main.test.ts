@@ -125,6 +125,32 @@ describe('kage serve: live-mode checks', () => {
     }
   });
 
+  it('--demo: the terminal WebSocket refuses a bad Origin with 403, else closes with 4501 (Task 12)', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1' });
+    const p = port();
+    writeConfig(e, { port: p });
+    const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
+    expect(typeof r).toBe('object');
+    const { default: WebSocket } = await import('ws');
+    const url = `ws://127.0.0.1:${p}/api/sessions/docs/terminal`;
+    try {
+      const bad = new WebSocket(url, ['kage.term.v1'], { origin: 'http://evil.example' });
+      bad.on('error', () => {});
+      const status = await new Promise<number>((res) =>
+        bad.on('unexpected-response', (_q, s) => res(s.statusCode ?? 0)),
+      );
+      expect(status).toBe(403);
+      const ws = new WebSocket(url, ['kage.term.v1'], { origin: `http://127.0.0.1:${p}` });
+      ws.on('error', () => {});
+      const closed = await new Promise<[number, string]>((res) =>
+        ws.on('close', (code, why) => res([code, why.toString()])),
+      );
+      expect(closed).toEqual([4501, 'Demo mode has no terminal.']);
+    } finally {
+      await (r as Running).stop();
+    }
+  });
+
   it('on Windows, live mode points to WSL or --demo', async () => {
     const e = env();
     expect(await main(['serve'], io(e, { platform: 'win32', tmuxVersion: null }))).toBe(1);

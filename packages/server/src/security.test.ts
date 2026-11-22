@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
-import { csrfGuard, hostGuard } from './security.ts';
+import { csrfGuard, hostAllowed, hostGuard, originAllowed } from './security.ts';
 
 const allowed = { hostNames: ['my-pc', '100.64.0.7', 'fd7a:115c::1'], port: 8080 };
 
@@ -52,5 +52,56 @@ describe('csrfGuard', () => {
   it.each(['PUT', 'PATCH', 'DELETE'])('guards %s', async (m) => {
     expect((await send(m)).status).toBe(403);
     expect((await send(m, good)).status).toBe(200);
+  });
+});
+
+/** One table for the middlewares and the plain matchers the terminal upgrade uses (Task 12). */
+const HOSTS: [string | undefined, boolean][] = [
+  ['my-pc:8080', true],
+  ['my-pc', true],
+  ['MY-PC:8080', true],
+  ['100.64.0.7:8080', true],
+  ['[fd7a:115c::1]:8080', true],
+  ['evil.example', false],
+  ['my-pc:9999', false],
+  ['my-pc:8080/x', false],
+  ['user@my-pc:8080', false],
+  ['', false],
+  [undefined, false],
+];
+const ORIGINS: [string | undefined, boolean][] = [
+  ['http://my-pc:8080', true],
+  ['http://100.64.0.7:8080', true],
+  ['http://[fd7a:115c::1]:8080', true],
+  ['http://my-pc', false],
+  ['http://evil.example', false],
+  ['http://my-pc:9999', false],
+  ['https://my-pc:8080', false],
+  ['null', false],
+  ['my-pc:8080', false],
+  ['', false],
+  [undefined, false],
+];
+
+describe('hostAllowed and originAllowed agree with the middlewares', () => {
+  const hostApp = new Hono().use(hostGuard(allowed)).get('/', (c) => c.text('ok'));
+  const csrfApp = new Hono().use(csrfGuard(allowed)).post('/', (c) => c.text('ok'));
+  it.each(HOSTS)('Host %j → %s', async (host, ok) => {
+    expect(hostAllowed(host, allowed)).toBe(ok);
+    const r = await hostApp.request('/', { headers: host === undefined ? {} : { Host: host } });
+    // app.request fills in a Host of its own when none is given; only a given one is compared.
+    if (host !== undefined) expect(r.status === 200).toBe(ok);
+  });
+  it.each(ORIGINS)('Origin %j → %s', async (origin, ok) => {
+    expect(originAllowed(origin, allowed)).toBe(ok);
+    const headers: Record<string, string> = { 'X-Kage': '1' };
+    if (origin !== undefined) headers.Origin = origin;
+    const r = await csrfApp.request('/', { method: 'POST', headers });
+    expect(r.status === 200).toBe(ok);
+  });
+  it('a port-80 server takes an Origin without a port', () => {
+    const p80 = { hostNames: ['my-pc'], port: 80 };
+    expect(originAllowed('http://my-pc', p80)).toBe(true);
+    expect(originAllowed('http://my-pc:80', p80)).toBe(true);
   });
 });

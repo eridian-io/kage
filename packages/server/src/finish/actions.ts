@@ -30,6 +30,8 @@ export interface FinishDeps {
   publish: (id: string, patch: Counts) => void;
   /** The project folder of a record; null when it is gone (default findProject). */
   findProject?: (name: string) => Promise<{ path: string } | null>;
+  /** F11/R70: a terminal is open on the session; an automatic archive then leaves it alone. */
+  isTerminalOpen?: (id: string) => boolean;
 }
 
 export const BUSY = 'Kage is still finishing the last action on this session.';
@@ -166,8 +168,11 @@ export class FinishActions {
     });
   }
 
-  /** `archived: true` archives (closing a done session's window); false restores. */
-  archive(id: string, archived: boolean): Promise<void> {
+  /**
+   * `archived: true` archives (closing a done session's window); false restores. `auto` (the
+   * auto-archiver) skips the archive, quietly, when a terminal is open on the session (R70).
+   */
+  archive(id: string, archived: boolean, o: { auto?: boolean } = {}): Promise<void> {
     return this.#locked(id, async () => {
       const t = this.#source.finishTarget(id);
       const record = t?.record;
@@ -180,6 +185,10 @@ export class FinishActions {
       if (t.status === 'running' || t.status === 'needs-you') throw new ActionError(409, ACTIVE);
       if (t.windowId !== null) {
         await this.#stillIdle(id, t.paneId);
+        // R70: inside the lock, after the capture's await and with none before the kill. The
+        // auto-archiver's candidate re-read ran before that await, so a terminal opened
+        // meanwhile is seen only here. Its close touches the session, which re-checks it.
+        if (o.auto && this.#d.isTerminalOpen?.(id)) return;
         if (await this.#close(t.windowId, record.kageId)) this.#source.markStopped(id);
       }
       await this.#source.setFlags(id, { archived: true });
@@ -361,9 +370,6 @@ export class FinishActions {
       }
       if (BUSY_FOOTER.test(screen)) throw new ActionError(409, active);
     }
-    // TODO(Task 12): F11 — once the terminal bridge exists, re-check isTerminalOpen(id) here,
-    // inside the lock after the capture await, and refuse (409) an automatic archive while a
-    // terminal is open on the session; auto-archive's candidate re-read happens before this await.
     const now = this.#source.finishTarget(id);
     if (!now) throw new ActionError(404, `No session with id ${id}`);
     if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, active);

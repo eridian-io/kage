@@ -326,6 +326,14 @@ describe('host guard', () => {
   });
 });
 
+describe('GET /api/sessions/:id/terminal without an upgrade (Task 12)', () => {
+  it('answers 426 with a sentence', async () => {
+    const res = await app().fetch(req('/api/sessions/x/terminal'));
+    expect(res.status).toBe(426);
+    expect(await res.json()).toEqual({ error: 'Open the terminal with a WebSocket.' });
+  });
+});
+
 describe('token login (B13)', () => {
   const TOKEN = 'a-very-secret-token-0123';
   const COOKIE = `kage_auth=${authCookieValue(TOKEN)}`;

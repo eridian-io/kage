@@ -86,6 +86,15 @@ export interface FinishTarget {
   external: boolean;
 }
 
+/** What the terminal WebSocket opens (Task 12); see LiveSource.terminalTarget. */
+export interface TerminalTarget {
+  windowId: string | null;
+  paneId: string | null;
+  kageId: string | null;
+  external: boolean;
+  status: SessionStatus;
+}
+
 /** PostToolUse of these tools changed files (Task 8). */
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit']);
 
@@ -631,6 +640,35 @@ export class LiveSource implements SessionSource {
       status: st.status,
       external: st.record === null,
     };
+  }
+
+  // ------------------------------------------------------------ terminal (TerminalServer)
+
+  /**
+   * What the terminal opens (Task 12): the window and pane from the listing, never from the URL.
+   * Null only for an unknown id; a known session with no window (or an archived one) has null
+   * window and pane, which the terminal answers with "This session has ended." (4409).
+   */
+  terminalTarget(id: string): TerminalTarget | null {
+    const st = this.#sessions.get(id);
+    if (!st) return null;
+    const w = st.record?.archived ? undefined : st.window;
+    return {
+      windowId: w?.windowId ?? null,
+      paneId: w?.paneId ?? null,
+      kageId: st.record?.kageId ?? null,
+      external: st.record === null,
+      status: st.status,
+    };
+  }
+
+  /** The last terminal on a window closed: its record session's auto-archive check runs (F11). */
+  windowIdle(windowId: string): void {
+    for (const st of this.#sessions.values()) {
+      if (st.window?.windowId !== windowId) continue;
+      if (st.record) this.#auto?.touch(st.id);
+      return;
+    }
   }
 
   /**

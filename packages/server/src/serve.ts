@@ -1,4 +1,5 @@
 import { existsSync, watch } from 'node:fs';
+import type { Server as HttpServer } from 'node:http';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -33,6 +34,9 @@ import { makeScanner } from './preview/ports.ts';
 import { PreviewTracker } from './preview/tracker.ts';
 import type { SessionSource } from './source.ts';
 import { StateStore, stateDir } from './state/store.ts';
+import { TerminalBridge } from './terminal/bridge.ts';
+import { ControlClient } from './terminal/control.ts';
+import { TerminalServer } from './terminal/server.ts';
 import { parseTmuxVersion, TmuxClient, tmuxVersionOutput } from './tmux/client.ts';
 import { TmuxWatcher } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
@@ -130,6 +134,8 @@ interface LiveParts {
   lock: ActionLock;
   /** Pin, archive and restore; auto-archive archives through it too. */
   finish: FinishActions;
+  /** Browser terminals over one tmux control client (Task 11), mounted by the WebSocket. */
+  bridge: TerminalBridge;
 }
 
 /**
@@ -187,6 +193,13 @@ async function startLive(
 
   const store = new StateStore(join(stateDir(io.env), 'state.json'));
   const watcher = new TmuxWatcher({ ...target, beforeLaunch: ensureSession });
+  // F11/R70: a session with a terminal open on its window is never archived automatically.
+  // The bridge is built after the source (its idle callback touches the source), so late-bound.
+  let bridge: TerminalBridge | null = null;
+  const isTerminalOpen = (id: string): boolean => {
+    const w = source.terminalTarget(id)?.windowId ?? null;
+    return w !== null && bridge?.isWindowOpen(w) === true;
+  };
   const source = new LiveSource({
     tmux,
     watcher,
@@ -210,13 +223,23 @@ async function startLive(
         config: cfg.autoArchive,
         candidates: () => host.autoCandidates(),
         state: (c) => branchState(c.worktree, c, gitExec),
-        archive: (id) => finish.archive(id, true),
+        archive: (id) => finish.archive(id, true, { auto: true }),
         gitDir: (repo) => gitCommonDir(repo, gitExec),
         log: (line) => io.err(line),
       }),
+    isTerminalOpen,
     // A failed resume (R63) is reported on the card and here.
     log: (line) => io.err(line),
   });
+  // A control-mode client on the same tmux server and session, only while a terminal is open.
+  const termBridge = new TerminalBridge({
+    client: (o) => new ControlClient({ target, session: cfg.tmuxSession, ...o }),
+    log: (line) => io.err(line),
+    // The last terminal on a window closed: auto-archive may look at its session again (F11).
+    onWindowIdle: (windowId) => source.windowIdle(windowId),
+  });
+  bridge = termBridge;
+  cleanups.push(() => termBridge.stop());
   // Built before source.start(), which starts the auto-archiver that archives through it.
   const lock = new ActionLock();
   const finish = new FinishActions({
@@ -230,6 +253,7 @@ async function startLive(
     // Delete recounts what the confirmation showed; a mismatch reaches the board (B10).
     counts: (worktree, branch) => branchCounts(worktree, branch, gitExec),
     publish: (id, counts) => source.setPreview(id, counts),
+    isTerminalOpen,
   });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());
@@ -243,7 +267,7 @@ async function startLive(
     await ensureSession();
     return tmux.newWindow(o);
   };
-  return { source, tmux, newWindow, settingsPath, hookSocket, lock, finish };
+  return { source, tmux, newWindow, settingsPath, hookSocket, lock, finish, bridge: termBridge };
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
@@ -372,12 +396,14 @@ async function startServer(
   let finish: FinishActions | undefined;
   let archivedList: (() => ArchivedSession[]) | undefined;
   let differ: DiffService | undefined;
+  let liveParts: LiveParts | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
     demoReset = () => d.reset();
   } else {
     const live = await startLive(cfg, io, cli, cleanups);
+    liveParts = live;
     source = live.source;
     const cache = new ProjectsCache(async () => ({
       projects: await listProjects(cfg.projectsRoot),
@@ -423,11 +449,12 @@ async function startServer(
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
   cleanups.push(() => hub.close());
+  const allowed = { hostNames: listen.hostNames, port: cfg.port };
   const app = createApp({
     source,
     hub,
     assets,
-    allowed: { hostNames: listen.hostNames, port: cfg.port },
+    allowed,
     token: cfg.token,
     ...(demoReset ? { demoReset } : {}),
     ...(projects ? { projects } : {}),
@@ -438,6 +465,16 @@ async function startServer(
     ...(archivedList ? { archivedList } : {}),
     ...(differ ? { differ } : {}),
   });
+  // The terminal WebSocket (B9), in both modes: demo answers 4501 after its guards.
+  const terminals = new TerminalServer({
+    allowed,
+    token: cfg.token,
+    source: liveParts?.source ?? null,
+    bridge: liveParts?.bridge ?? null,
+    tmux: liveParts?.tmux ?? null,
+  });
+  // Closed before the HTTP server (and again here if the server never started).
+  cleanups.push(() => terminals.close());
 
   let server: ReturnType<typeof serve>;
   try {
@@ -447,6 +484,10 @@ async function startServer(
         resolve(s);
       });
       s.once('error', reject);
+      // Every upgrade goes to the terminal server, which refuses all but its own path.
+      (s as HttpServer).on('upgrade', (req, socket, head) =>
+        terminals.handleUpgrade(req, socket, head),
+      );
     });
   } catch (e) {
     await unwind(cleanups);
@@ -457,8 +498,11 @@ async function startServer(
     else io.err(`Couldn't start the server: ${oneLine(err)}`);
     return 1;
   }
-  // The HTTP server stops first: no new requests or streams while the rest shuts down.
+  // The HTTP server stops first: no new requests or streams while the rest shuts down. The
+  // terminals close before it (1001), since an upgraded socket would hold server.close() open.
   cleanups.push(async () => {
+    terminals.close();
+    liveParts?.bridge.stop();
     const closed = new Promise<void>((resolve) => server.close(() => resolve()));
     hub.close();
     if ('closeAllConnections' in server) server.closeAllConnections();
