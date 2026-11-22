@@ -1,6 +1,6 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
-import { useRef } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { archive, canAct, pin, remove, resume, stop } from '../api.ts';
 import {
   actionError,
@@ -126,6 +126,16 @@ function Confirm({ s }: { s: Session }) {
   const key = `${s.unpushed},${s.uncommitted},${s.ignored}`;
   const seen = useRef({ key, at: 0 });
   if (seen.current.key !== key) seen.current = { key, at: Date.now() };
+  // While held, the button looks off (aria-disabled keeps its focus); one re-render ends it.
+  const held = Date.now() - seen.current.at < FRESH_MS;
+  const [, wake] = useState(0);
+  useEffect(() => {
+    if (seen.current.at === 0) return;
+    // Effects can run late: a hold already over re-renders at once.
+    const left = FRESH_MS - (Date.now() - seen.current.at);
+    const t = setTimeout(() => wake((n) => n + 1), Math.max(0, left));
+    return () => clearTimeout(t);
+  }, [key]);
   return (
     <div class="k-confirm">
       <div>
@@ -148,6 +158,7 @@ function Confirm({ s }: { s: Session }) {
           type="button"
           class="k-act danger-solid"
           disabled={!canAct(s.id)}
+          aria-disabled={held ? 'true' : undefined}
           onClick={() => {
             if (Date.now() - seen.current.at >= FRESH_MS) void remove(s);
           }}

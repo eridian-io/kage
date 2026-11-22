@@ -1,4 +1,4 @@
-import { type DiffFile, type DiffPage, type Session, shortWorktree } from '@kage/shared';
+import { type DiffFile, type DiffPage, LIMITS, type Session, shortWorktree } from '@kage/shared';
 import { Component } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, errorOf, NO_ANSWER } from '../api.ts';
@@ -39,19 +39,34 @@ function File({ f }: { f: DiffFile }) {
   );
 }
 
-/** A page's files. They re-render only for a new page, not for every session event. */
+/**
+ * A page's files. They re-render only for a new page, not for every session event. The server
+ * caps a page at LIMITS.diffLines lines; the client holds to it too, counting the cut as clipped.
+ */
 class Files extends Component<{ page: DiffPage }> {
   override shouldComponentUpdate(next: { page: DiffPage }): boolean {
     return next.page !== this.props.page;
   }
   override render() {
-    return this.props.page.files.map((f) => <File f={f} />);
+    let left: number = LIMITS.diffLines;
+    return this.props.page.files.map((f) => {
+      const lines = f.lines.slice(0, Math.max(0, left));
+      left -= lines.length;
+      const cut = f.lines.length - lines.length;
+      return <File f={cut === 0 ? f : { ...f, lines, clipped: f.clipped + cut }} />;
+    });
   }
 }
 
+/** The page asked for, and where the pages before it started (← Previous goes to the last). */
+interface Req {
+  from: number;
+  back: number[];
+}
 interface Loaded {
-  /** The last page that arrived; kept while the next one loads, for the top line. */
+  /** The last page that arrived, with its back stack; kept while loading and after an error. */
   page: DiffPage | null;
+  back: number[];
   loading: boolean;
   error: string | null;
 }
@@ -59,14 +74,14 @@ interface Loaded {
 /**
  * The session's branch as a read-only diff, one page at a time (spec §5.7, §6.5). Fetched when it
  * opens and for each page, never live: a session.files event offers a reload instead. Unmounting
- * (Back, Esc, another session) aborts the request in flight.
+ * (Back, Esc, another session) aborts the request in flight. An error keeps the last page and its
+ * controls, and offers Try again.
  */
 export function DiffView({ session: s }: { session: Session }) {
-  const [from, setFrom] = useState(0);
-  /** Where the earlier pages started: ← Previous refetches the last one. */
-  const [back, setBack] = useState<number[]>([]);
-  const [reloads, setReloads] = useState(0);
-  const [st, setSt] = useState<Loaded>({ page: null, loading: true, error: null });
+  // Every request is a new object, so asking again for the same page refetches it.
+  const [req, setReq] = useState<Req>({ from: 0, back: [] });
+  const [st, setSt] = useState<Loaded>({ page: null, back: [], loading: true, error: null });
+  const view = useRef<HTMLElement>(null);
   const body = useRef<HTMLDivElement>(null);
   const live = useRef(s);
   live.current = s;
@@ -75,9 +90,11 @@ export function DiffView({ session: s }: { session: Session }) {
 
   useEffect(() => {
     const el = body.current;
-    if (!el) return;
+    const sec = view.current;
+    if (!el || !sec) return;
     el.focus();
-    // J/K inside the diff move between its files; the board's J/K leave them to it.
+    // J/K anywhere in the diff (its body, the page buttons) move between its files; the board's
+    // J/K leave them to it.
     const onKey = (e: KeyboardEvent) => {
       const k = e.key.toLowerCase();
       if ((k !== 'j' && k !== 'k') || e.ctrlKey || e.metaKey || e.altKey) return;
@@ -87,24 +104,28 @@ export function DiffView({ session: s }: { session: Session }) {
       const to = k === 'j' ? tops.find((t) => t > y + 1) : tops.reverse().find((t) => t < y - 1);
       if (to !== undefined) el.scrollTop = to;
     };
-    el.addEventListener('keydown', onKey);
-    return () => el.removeEventListener('keydown', onKey);
+    sec.addEventListener('keydown', onKey);
+    return () => sec.removeEventListener('keydown', onKey);
   }, []);
 
   useEffect(() => {
     const ctl = new AbortController();
     const cur = live.current;
     asked.current = cur.files;
-    setSt((l) => ({ page: l.page, loading: true, error: null }));
+    setSt((l) => ({ ...l, loading: true, error: null }));
     void (async () => {
       let error = NO_ANSWER;
       try {
-        const res = await apiGet(`/api/sessions/${encodeURIComponent(cur.id)}/diff?from=${from}`, {
-          signal: ctl.signal,
-        });
+        const res = await apiGet(
+          `/api/sessions/${encodeURIComponent(cur.id)}/diff?from=${req.from}`,
+          { signal: ctl.signal },
+        );
         if (res.ok) {
           const page = (await res.json()) as DiffPage;
-          if (!ctl.signal.aborted) setSt({ page, loading: false, error: null });
+          if (ctl.signal.aborted) return;
+          // The files shrank under a later page: start again from the first.
+          if (page.files.length === 0 && page.from > 0) setReq({ from: 0, back: [] });
+          else setSt({ page, back: req.back, loading: false, error: null });
           return;
         }
         // A 401 has sent the board to the login screen.
@@ -113,22 +134,28 @@ export function DiffView({ session: s }: { session: Session }) {
       } catch {
         // An abort (closed or switched) shows nothing; anything else is "Kage didn't answer."
       }
-      if (!ctl.signal.aborted) setSt({ page: null, loading: false, error });
+      if (!ctl.signal.aborted) setSt((l) => ({ ...l, loading: false, error }));
     })();
     return () => ctl.abort();
-  }, [from, reloads]);
+  }, [req]);
 
-  const go = (to: number, stack: number[]) => {
-    setBack(stack);
-    setFrom(to);
-  };
+  // A control that went away with the last state (Try again, the reload link) drops focus to the
+  // page; it comes back to the diff instead.
+  useEffect(() => {
+    const a = document.activeElement;
+    if (!st.loading && (a === null || a === document.body)) body.current?.focus();
+  }, [st]);
 
   const p = st.page;
   const shown = st.loading ? null : p;
   const paged = p !== null && (p.from > 0 || p.next !== null);
-  const stale = shown !== null && s.files !== asked.current;
+  const stale = shown !== null && st.error === null && s.files !== asked.current;
+  const again = () => setReq({ ...req });
+  // aria-disabled, not disabled: a focused button that turns off keeps focus (keyboard paging).
+  const prevOff = st.loading || st.back.length === 0;
+  const nextOff = st.loading || p === null || p.next === null;
   return (
-    <section class="k-dv" id="k-diff-view" aria-label="Diff">
+    <section class="k-dv" id="k-diff-view" aria-label="Diff" ref={view}>
       {p !== null && (
         <div class="k-diff-top">
           <span class="k-diff-ref">
@@ -140,22 +167,28 @@ export function DiffView({ session: s }: { session: Session }) {
           </span>
           {paged && (
             <span class="k-diff-pages">
-              <span class="k-diff-count">
+              <span class="k-diff-count" aria-live="polite">
                 Files {p.from + 1}–{p.from + p.files.length} of {p.filesTotal}
               </span>
               <button
                 type="button"
                 class="k-act"
-                disabled={st.loading || back.length === 0}
-                onClick={() => go(back.at(-1) ?? 0, back.slice(0, -1))}
+                aria-disabled={prevOff ? 'true' : undefined}
+                onClick={() => {
+                  if (!prevOff) setReq({ from: st.back.at(-1) ?? 0, back: st.back.slice(0, -1) });
+                }}
               >
                 ← Previous
               </button>
               <button
                 type="button"
                 class="k-act"
-                disabled={st.loading || p.next === null}
-                onClick={() => p.next !== null && go(p.next, [...back, p.from])}
+                aria-disabled={nextOff ? 'true' : undefined}
+                onClick={() => {
+                  if (!nextOff && p.next !== null) {
+                    setReq({ from: p.next, back: [...st.back, p.from] });
+                  }
+                }}
               >
                 Next →
               </button>
@@ -164,9 +197,19 @@ export function DiffView({ session: s }: { session: Session }) {
         </div>
       )}
       {stale && (
-        <button type="button" class="k-diff-stale" onClick={() => setReloads((n) => n + 1)}>
+        <button type="button" class="k-diff-stale" onClick={again}>
           The files changed. Reload the diff.
         </button>
+      )}
+      {st.error !== null && (
+        <div class="k-diff-error">
+          <span class="k-err" role="alert">
+            Couldn't load the diff: {st.error}
+          </span>
+          <button type="button" class="k-act" onClick={again}>
+            Try again
+          </button>
+        </div>
       )}
       {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must take focus to scroll by keyboard */}
       <div class="k-diff-body" ref={body} tabIndex={0}>
@@ -174,11 +217,7 @@ export function DiffView({ session: s }: { session: Session }) {
           <div class="k-diff-msg" role="status">
             Loading the diff…
           </div>
-        ) : st.error !== null ? (
-          <div class="k-err" role="alert">
-            Couldn't load the diff: {st.error}
-          </div>
-        ) : shown !== null && shown.files.length === 0 && shown.from === 0 ? (
+        ) : shown !== null && shown.files.length === 0 ? (
           <div class="k-diff-msg">No changes yet.</div>
         ) : (
           shown !== null && <Files page={shown} />

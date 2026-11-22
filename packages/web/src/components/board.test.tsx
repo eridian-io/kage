@@ -1750,6 +1750,10 @@ describe('carried from Task 9 (R77)', () => {
       expect(star(container)?.disabled).toBe(true);
       const rule = /\.k-pin \{([^}]*)\}/.exec(board)?.[1] ?? '';
       expect(rule).toContain('var(--fg-3)');
+      // A 32 px hit target; the glyph and layout stay as they were (negative margins).
+      expect(rule).toContain('width: 32px');
+      expect(rule).toContain('height: 32px');
+      expect(rule).toContain('font-size: 16px');
       expect(rule).not.toMatch(/--(amber|lime|red)/);
     });
   });
@@ -1796,6 +1800,26 @@ describe('carried from Task 9 (R77)', () => {
       fireEvent.click(button(container, 'Delete session'));
       await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       expect(bodies()[0]?.[2]).toBe('{"unpushed":1,"uncommitted":0,"ignored":4}');
+    });
+
+    it('Delete session looks off (aria-disabled) during the 400 ms hold, then on again', async () => {
+      withSession({ unpushed: 1 });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      const del = () => button(container, 'Delete session');
+      expect(del().getAttribute('aria-disabled')).toBeNull();
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_000);
+      applyEvent({ type: 'session.updated', session: { ...docs(), uncommitted: 2 } });
+      await Promise.resolve();
+      expect(del().getAttribute('aria-disabled')).toBe('true');
+      // Focusable while held: never the disabled attribute, which would drop focus.
+      expect(del().disabled).toBe(false);
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_400);
+      await waitFor(() => expect(del().getAttribute('aria-disabled')).toBeNull(), {
+        timeout: 2000,
+      });
+      expect(board).toMatch(/\.k-confirm \.k-act\[aria-disabled="true"\][^{]*\{[^}]*opacity/);
     });
 
     it('a click right after opening the confirmation is not held back', async () => {

@@ -113,6 +113,13 @@ const button = (c: Element, label: string) => {
   return b;
 };
 const viewDiff = (c: Element) => q(c, '.k-diff');
+/** Off but focusable: the page buttons use aria-disabled, never disabled. */
+const off = (b: HTMLButtonElement) => !b.disabled && b.getAttribute('aria-disabled') === 'true';
+/** happy-dom lays nothing out: give each file a top, 100 px apart. */
+const layOut = (c: Element) =>
+  c.querySelectorAll<HTMLElement>('.k-diff-file').forEach((f, i) => {
+    Object.defineProperty(f, 'offsetTop', { configurable: true, value: i * 100 });
+  });
 
 /** Renders the board on docs and opens its diff; resolves once the first page shows. */
 async function openDiff(id = 'docs') {
@@ -305,6 +312,60 @@ describe('the diff view', () => {
     }
   });
 
+  it('an error keeps the last page and its controls, and Try again asks for the same page', async () => {
+    pages.set(0, { ...PAGE, next: 5 });
+    pages.set(5, [429, 'Kage is still working on the last diff.']);
+    const c = await openDiff();
+    fireEvent.click(button(c, 'Next →'));
+    await waitFor(() => expect(c.querySelector('.k-dv .k-err')).not.toBeNull());
+    expect(q(c, '.k-dv .k-err').textContent).toBe(
+      "Couldn't load the diff: Kage is still working on the last diff.",
+    );
+    // The last page stays, with its top line and buttons.
+    expect(c.querySelectorAll('.k-diff-file')).toHaveLength(5);
+    expect(q(c, '.k-diff-count').textContent).toBe('Files 1–5 of 5');
+    expect(off(button(c, 'Next →'))).toBe(false);
+    pages.set(5, { ...PAGE, from: 5, filesTotal: 6, next: null, files: [PAGE.files[0] as never] });
+    fireEvent.click(button(c, 'Try again'));
+    await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 6–6 of 6'));
+    expect(diffGets()).toEqual([
+      '/api/sessions/docs/diff?from=0',
+      '/api/sessions/docs/diff?from=5',
+      '/api/sessions/docs/diff?from=5',
+    ]);
+    expect(c.querySelector('.k-dv .k-err')).toBeNull();
+    // ← Previous goes back to the first page (the failed Next didn't push a page).
+    fireEvent.click(button(c, '← Previous'));
+    await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 1–5 of 5'));
+    expect(off(button(c, '← Previous'))).toBe(true);
+  });
+
+  it('Try again after a failed first load asks for page 0 again', async () => {
+    pages.set(0, [422, "git couldn't show the diff: the folder is gone."]);
+    const c = await openDiff();
+    pages.set(0, PAGE);
+    fireEvent.click(button(c, 'Try again'));
+    await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+    expect(diffGets()).toEqual([
+      '/api/sessions/docs/diff?from=0',
+      '/api/sessions/docs/diff?from=0',
+    ]);
+    // Try again went away with the error; focus is back on the diff, not the page.
+    expect(document.activeElement).toBe(q(c, '.k-diff-body'));
+  });
+
+  it('an empty page past the first (the files shrank) goes back to page 0', async () => {
+    pages.set(0, { ...PAGE, next: 5 });
+    pages.set(5, { ...PAGE, from: 5, filesTotal: 2, next: null, files: [] });
+    const c = await openDiff();
+    pages.set(0, { ...PAGE, filesTotal: 2, files: PAGE.files.slice(0, 2) });
+    fireEvent.click(button(c, 'Next →'));
+    await waitFor(() => expect(diffGets()).toHaveLength(3));
+    expect(diffGets()[2]).toBe('/api/sessions/docs/diff?from=0');
+    await waitFor(() => expect(c.querySelectorAll('.k-diff-file')).toHaveLength(2));
+    expect(c.querySelector('.k-diff-pages')).toBeNull();
+  });
+
   it('a network failure shows Kage didn’t answer', async () => {
     fetchMock.mockImplementationOnce(async () => {
       throw new TypeError('fetch failed');
@@ -337,13 +398,13 @@ describe('the diff view', () => {
     it('Next → fetches from=next; ← Previous goes back and refetches', async () => {
       const c = await openDiff();
       expect(q(c, '.k-diff-count').textContent).toBe('Files 1–2 of 5');
-      expect(button(c, '← Previous').disabled).toBe(true);
+      expect(off(button(c, '← Previous'))).toBe(true);
       fireEvent.click(button(c, 'Next →'));
       await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 3–4 of 5'));
       expect(texts(c, '.k-dv h4')).toEqual(['f2.ts+2−0', 'f3.ts+2−0']);
       fireEvent.click(button(c, 'Next →'));
       await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 5–5 of 5'));
-      expect(button(c, 'Next →').disabled).toBe(true);
+      expect(off(button(c, 'Next →'))).toBe(true);
       fireEvent.click(button(c, '← Previous'));
       await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 3–4 of 5'));
       fireEvent.click(button(c, '← Previous'));
@@ -381,6 +442,57 @@ describe('the diff view', () => {
       expect(c.querySelectorAll('.k-dl')).toHaveLength(LIMITS.diffLines);
     });
 
+    it('the client clamps a page to LIMITS.diffLines lines too, counting the cut as clipped', async () => {
+      const many = (n: number, tag: string) =>
+        Array.from({ length: n }, (_, i) => ['add', `${tag}${i}`] as ['add', string]);
+      pages.set(0, {
+        ...PAGE,
+        filesTotal: 2,
+        next: null,
+        files: [
+          { path: 'a', kind: 'added', added: 900, removed: 0, lines: many(900, 'a'), clipped: 0 },
+          { path: 'b', kind: 'added', added: 300, removed: 0, lines: many(300, 'b'), clipped: 5 },
+        ],
+      });
+      const c = await openDiff();
+      expect(c.querySelectorAll('.k-dl')).toHaveLength(LIMITS.diffLines);
+      expect(texts(c, '.k-diff-note')).toEqual(["205 more lines in this file aren't shown."]);
+    });
+
+    it('the Files line is a polite live region', async () => {
+      const c = await openDiff();
+      expect(q(c, '.k-diff-count').getAttribute('aria-live')).toBe('polite');
+    });
+
+    it('keyboard paging keeps focus in the diff: Next, then J moves between files', async () => {
+      const c = await openDiff();
+      const next = button(c, 'Next →');
+      next.focus();
+      fireEvent.keyDown(next, { key: 'Enter' });
+      fireEvent.click(next);
+      await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 3–4 of 5'));
+      // Never disabled, so focus never fell to the page.
+      expect(document.activeElement).toBe(next);
+      expect(next.disabled).toBe(false);
+      layOut(c);
+      const body = q(c, '.k-diff-body');
+      body.scrollTop = 0;
+      fireEvent.keyDown(document.activeElement as Element, { key: 'j' });
+      expect(body.scrollTop).toBe(100);
+      fireEvent.keyDown(document.activeElement as Element, { key: 'k' });
+      expect(body.scrollTop).toBe(0);
+      await Promise.resolve();
+      expect(selectedId.value).toBe('docs');
+      expect(c.querySelector('.k-dv')).not.toBeNull();
+    });
+
+    it('an off page button does nothing', async () => {
+      const c = await openDiff();
+      fireEvent.click(button(c, '← Previous'));
+      await Promise.resolve();
+      expect(diffGets()).toHaveLength(1);
+    });
+
     it('the page buttons are off while a page loads', async () => {
       const c = await openDiff();
       let release: (r: Response) => void = () => {};
@@ -395,8 +507,8 @@ describe('the diff view', () => {
         expect(c.querySelector('.k-diff-msg')?.textContent).toBe('Loading the diff…'),
       );
       expect(c.querySelectorAll('.k-diff-file')).toHaveLength(0);
-      expect(button(c, 'Next →').disabled).toBe(true);
-      expect(button(c, '← Previous').disabled).toBe(true);
+      expect(off(button(c, 'Next →'))).toBe(true);
+      expect(off(button(c, '← Previous'))).toBe(true);
       release(new Response(JSON.stringify(pages.get(2)), { status: 200 }));
       await waitFor(() => expect(q(c, '.k-diff-count').textContent).toBe('Files 3–4 of 5'));
     });
@@ -502,6 +614,15 @@ describe('the diff view', () => {
       fireEvent.click(button(c, 'Delete…'));
       await waitFor(() => expect(c.querySelector('.k-confirm')).not.toBeNull());
       expect(c.querySelector('.k-dv')).toBeNull();
+    });
+
+    it('R stays in the diff for a session with no reply or follow-up (running)', async () => {
+      const c = await openDiff('shop');
+      (document.activeElement as HTMLElement | null)?.blur();
+      fireEvent.keyDown(document, { key: 'r' });
+      await new Promise((r) => setTimeout(r, 0));
+      expect(mainView.value).toBe('diff');
+      expect(c.querySelector('.k-dv')).not.toBeNull();
     });
 
     it('R leaves the diff for the follow-up field', async () => {

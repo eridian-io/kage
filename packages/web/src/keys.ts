@@ -65,7 +65,11 @@ export function installKeys(target: Document = document): () => void {
       if (s?.status === 'needs-you' && !digitsHeld() && !diff) void answer(s, Number(k));
     } else if (k === 'r' && s) {
       if (diff) {
-        // R leaves the diff for the reply or follow-up field, focused once it has rendered.
+        // R leaves the diff only for a session that takes a reply or a follow-up; the field is
+        // focused once it has rendered.
+        const typed =
+          s.status === 'needs-you' ? !!s.question && !s.question.startup : s.status === 'done';
+        if (!typed) return;
         mainView.value = 'output';
         setTimeout(() => target.querySelector<HTMLInputElement>('.k-follow input')?.focus());
       }

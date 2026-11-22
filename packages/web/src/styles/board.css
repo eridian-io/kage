@@ -943,10 +943,15 @@ a.k-port {
 }
 
 /* Not in the target: the quiet pin toggle at the right of the session header (R77). */
+/* A 32 px square hit target; the negative margins keep the header's layout as it was. */
 .k-pin {
   all: unset;
-  margin-left: auto;
-  padding: 0 2px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  margin: -2.5px -8px -2.5px auto;
   cursor: pointer;
   font-size: 16px;
   line-height: 27px;
@@ -990,9 +995,25 @@ a.k-port {
   flex: none;
   font-variant-numeric: tabular-nums;
 }
-.k-diff-pages .k-act {
+.k-diff-pages .k-act,
+.k-diff-error .k-act {
   padding: 3px 9px;
   font: 12.5px var(--sans);
+}
+/* Off but focusable (aria-disabled), so keyboard paging keeps its place. */
+.k-diff-pages .k-act[aria-disabled="true"],
+.k-confirm .k-act[aria-disabled="true"] {
+  opacity: 0.45;
+  cursor: default;
+}
+.k-diff-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.k-diff-error .k-err {
+  margin: 0;
 }
 .k-diff-stale {
   all: unset;
