@@ -113,6 +113,26 @@ describe('loadAssets', () => {
     expect(index?.immutable).toBe(false);
     expect(assets.get('/fonts/geist-latin-wght-normal.woff2')?.immutable).toBe(false);
   });
+
+  it('compresses one file at a time (R100: concurrent brotli encoders leave idle RSS behind)', async () => {
+    let inFlight = 0;
+    let most = 0;
+    const seen: number[] = [];
+    const one = async (body: Uint8Array) => {
+      inFlight++;
+      most = Math.max(most, inFlight);
+      seen.push(body.length);
+      await new Promise((r) => setTimeout(r, 1));
+      inFlight--;
+      return { gzip: body, br: body };
+    };
+    const loaded = await loadAssets(dist, one);
+    expect(most).toBe(1);
+    // Every compressible file went through it; fonts and images did not.
+    expect(seen).toHaveLength(
+      [...loaded.keys()].filter((k) => !/.(woff2|png|jpg|webp)$/.test(k) && k !== '/').length,
+    );
+  });
 });
 
 describe('static assets', () => {

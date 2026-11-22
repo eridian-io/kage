@@ -40,16 +40,17 @@ const HASHED = /^\/(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 const br = promisify(brotliCompress);
 const gz = promisify(gzip);
 
+type Compress = (body: Uint8Array) => Promise<{ gzip: Uint8Array; br: Uint8Array }>;
+
+/** gzip, then brotli: one encoder at a time (see loadAssets). */
 async function compress(body: Uint8Array): Promise<{ gzip: Uint8Array; br: Uint8Array }> {
-  const [g, b] = await Promise.all([
-    gz(body, { level: 9 }),
-    br(body, {
-      params: {
-        [constants.BROTLI_PARAM_QUALITY]: 11,
-        [constants.BROTLI_PARAM_SIZE_HINT]: body.length,
-      },
-    }),
-  ]);
+  const g = await gz(body, { level: 9 });
+  const b = await br(body, {
+    params: {
+      [constants.BROTLI_PARAM_QUALITY]: 11,
+      [constants.BROTLI_PARAM_SIZE_HINT]: body.length,
+    },
+  });
   return { gzip: new Uint8Array(g), br: new Uint8Array(b) };
 }
 
@@ -63,26 +64,31 @@ async function files(dir: string): Promise<string[]> {
  * Reads the built board into memory, precompressed (brotli quality 11, gzip level 9),
  * except formats that are compressed already (fonts, images), which stay raw.
  * Keys are URL paths ('/index.html', '/fonts/…'); '/' maps to index.html.
+ *
+ * One file and one encoder at a time (R100): brotli 11 encoders running side by side on the
+ * thread pool left 3–4 MB more of the freed memory resident at idle, varying run to run
+ * (71.5–76.5 MB against 71.5–72.1 MB one at a time, the shipped bundle with no sessions).
  */
-export async function loadAssets(distDir: string): Promise<Map<string, Asset>> {
+export async function loadAssets(
+  distDir: string,
+  encode: Compress = compress,
+): Promise<Map<string, Asset>> {
   const map = new Map<string, Asset>();
-  await Promise.all(
-    (await files(distDir)).map(async (file) => {
-      const path = `/${relative(distDir, file).split(sep).join('/')}`;
-      const body = new Uint8Array(await readFile(file));
-      const hash = createHash('sha256').update(body).digest('base64url').slice(0, 22);
-      const ext = extname(file).toLowerCase();
-      // Same bytes as the body, so serveAsset never picks an encoding for these.
-      const encoded = PRECOMPRESSED.has(ext) ? { gzip: body, br: body } : await compress(body);
-      map.set(path, {
-        body,
-        ...encoded,
-        type: TYPES[ext] ?? 'application/octet-stream',
-        etag: `"${hash}"`,
-        immutable: HASHED.test(path),
-      });
-    }),
-  );
+  for (const file of await files(distDir)) {
+    const path = `/${relative(distDir, file).split(sep).join('/')}`;
+    const body = new Uint8Array(await readFile(file));
+    const hash = createHash('sha256').update(body).digest('base64url').slice(0, 22);
+    const ext = extname(file).toLowerCase();
+    // Same bytes as the body, so serveAsset never picks an encoding for these.
+    const encoded = PRECOMPRESSED.has(ext) ? { gzip: body, br: body } : await encode(body);
+    map.set(path, {
+      body,
+      ...encoded,
+      type: TYPES[ext] ?? 'application/octet-stream',
+      etag: `"${hash}"`,
+      immutable: HASHED.test(path),
+    });
+  }
   const index = map.get('/index.html');
   if (index) map.set('/', index);
   return map;
