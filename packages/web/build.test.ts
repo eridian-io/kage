@@ -4,27 +4,26 @@ import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
-import * as esbuild from 'esbuild';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, FONTS } from './build.ts';
+import { measureSizes, SIZE_LIMITS, type Sizes, termLoaderCode } from './sizes.ts';
 
-// Spec §7 allows 30 KB; phase 4 must end at 25.5 KB to leave room for phase 5 (F14).
-const BUDGET = 25.5 * 1024;
-/** The terminal chunk, JS plus CSS gzipped (spec §7: about 90 KB; the plan: at most 100 KB). */
-const TERM_BUDGET = 100 * 1024;
-/** term-loader.ts, the only terminal code in the first load (F14). */
-const LOADER_BUDGET = 600;
+// The limits live in sizes.ts, shared with e2e/perf.spec.ts (ruling PF5, F6).
+const BUDGET = SIZE_LIMITS.firstLoad;
+const TERM_BUDGET = SIZE_LIMITS.termChunk;
+const LOADER_BUDGET = SIZE_LIMITS.termLoader;
 
 let out: string;
 let result: Awaited<ReturnType<typeof build>>;
+let sizes: Sizes;
 
 beforeAll(async () => {
   out = await mkdtemp(join(tmpdir(), 'kage-build-'));
   result = await build({ outDir: out });
+  sizes = await measureSizes(out);
 }, 60_000);
 afterAll(() => rm(out, { recursive: true, force: true }));
 
-const gz = async (name: string) => gzipSync(await readFile(join(out, name)), { level: 9 }).length;
 const built = async (re: RegExp) => (await readdir(out)).find((f) => re.test(f)) as string;
 
 describe('web build', () => {
@@ -91,8 +90,7 @@ describe('web build', () => {
 
   it(`keeps the first load (index.html + JS + CSS, gzipped) within ${BUDGET} bytes`, async () => {
     const js = await built(/^app-.*\.js$/);
-    const css = await built(/^app-.*\.css$/);
-    const total = (await gz('index.html')) + (await gz(js)) + (await gz(css));
+    const total = sizes.firstLoad;
     console.log(`first load gzipped: ${total} bytes`);
     expect(total).toBeLessThanOrEqual(BUDGET);
     // xterm stays out of it.
@@ -100,9 +98,8 @@ describe('web build', () => {
   });
 
   it(`keeps the terminal chunk (JS + CSS, gzipped) within ${TERM_BUDGET} bytes`, async () => {
-    const js = await built(/^term-.*\.js$/);
     const css = await built(/^term-.*\.css$/);
-    const total = (await gz(js)) + (await gz(css));
+    const total = sizes.termChunk;
     console.log(`terminal chunk gzipped: ${total} bytes`);
     expect(total).toBeLessThanOrEqual(TERM_BUDGET);
     // xterm.css and terminal.css are both in it; no preact (it is not the board).
@@ -114,17 +111,9 @@ describe('web build', () => {
   });
 
   it(`keeps the terminal loader within ${LOADER_BUDGET} bytes gzipped`, async () => {
-    const r = await esbuild.build({
-      entryPoints: [join(import.meta.dirname, 'src/term-loader.ts')],
-      bundle: true,
-      minify: true,
-      format: 'esm',
-      target: 'es2022',
-      write: false,
-      logLevel: 'silent',
-    });
-    const code = (r.outputFiles[0] as esbuild.OutputFile).contents;
-    const size = gzipSync(code, { level: 9 }).length;
+    const code = await termLoaderCode();
+    const size = sizes.termLoader;
+    expect(size).toBe(gzipSync(code, { level: 9 }).length);
     console.log(`terminal loader gzipped: ${size} bytes`);
     expect(size).toBeLessThanOrEqual(LOADER_BUDGET);
     // A type-only import of the chunk: nothing of it is bundled.

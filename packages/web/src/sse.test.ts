@@ -291,3 +291,36 @@ describe('the archive event', () => {
     expect(archivedCount.value).toBe(7);
   });
 });
+
+describe('the kage:board mark (spec §7, time to a usable board)', () => {
+  const snapshot = {
+    type: 'snapshot',
+    host: 'my-pc',
+    streamId: 's',
+    projectsRoot: '/p',
+    sessions: demoSessions(NOW),
+  };
+
+  it('marks kage:board once, in the frame after the first snapshot; never after a reconnect snapshot', async () => {
+    const frames: FrameRequestCallback[] = [];
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => frames.push(cb));
+    const mark = vi.spyOn(performance, 'mark');
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', snapshot);
+    // Not before the frame: the board has been applied, not yet painted.
+    expect(mark).not.toHaveBeenCalled();
+    expect(frames).toHaveLength(1);
+    for (const cb of frames.splice(0)) cb(0);
+    expect(mark.mock.calls).toEqual([['kage:board']]);
+
+    // A reconnect's snapshot is not a first board.
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    latest().emit('snapshot', snapshot);
+    expect(frames).toHaveLength(0);
+    expect(mark).toHaveBeenCalledTimes(1);
+    stop();
+    mark.mockRestore();
+  });
+});

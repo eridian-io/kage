@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, type Page, type TestInfo } from '@playwright/test';
-import { LIVE_BASE, LIVE_PORT } from './env.ts';
+import { LIVE_PORT } from './env.ts';
 
 /**
  * The live specs' setup and helpers: `kage serve` in live mode against a private tmux server,
@@ -43,6 +43,19 @@ export function hasTmux(): boolean {
   }
 }
 
+let ticksPerSecond = 0;
+/** USER_HZ, the unit of /proc/<pid>/stat's CPU times (100 on Linux; asked once). */
+function clockTicks(): number {
+  if (!ticksPerSecond) {
+    try {
+      ticksPerSecond = Number(execFileSync('getconf', ['CLK_TCK'], { encoding: 'utf8' })) || 100;
+    } catch {
+      ticksPerSecond = 100;
+    }
+  }
+  return ticksPerSecond;
+}
+
 const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 
 /**
@@ -50,11 +63,17 @@ const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
  * The methods are arrow fields, so a spec may destructure them.
  */
 export class LiveHarness {
+  /** The port `kage serve` listens on (the live project's by default; the perf project has its own). */
+  port: number;
   root = '';
   socket = '';
   env: NodeJS.ProcessEnv = {};
   serve: ChildProcess | null = null;
   serveOut = '';
+
+  constructor(port = LIVE_PORT) {
+    this.port = port;
+  }
 
   dirOf = (...parts: string[]): string => join(this.root, ...parts);
 
@@ -205,7 +224,7 @@ export class LiveHarness {
     new Promise((resolve, reject) => {
       const c = spawn(
         process.execPath,
-        ['packages/server/src/main.ts', 'serve', '--port', String(LIVE_PORT)],
+        ['packages/server/src/main.ts', 'serve', '--port', String(this.port)],
         { cwd: ROOT, env: this.env, stdio: ['ignore', 'pipe', 'pipe'] },
       );
       this.serve = c;
@@ -228,6 +247,56 @@ export class LiveHarness {
     const timer = setTimeout(() => c.kill('SIGKILL'), 8000);
     await exited;
     clearTimeout(timer);
+  };
+
+  /**
+   * One POST to the hook socket, as `kage hook <event>` makes it: the event name, the pane
+   * (`TMUX_PANE`) and Claude's hook JSON. Resolves once Kage has answered.
+   */
+  postHook = (event: string, body: Record<string, unknown>, pane: string | null): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const data = JSON.stringify({ event, pane, payload: body });
+      const req = httpRequest(
+        {
+          socketPath: this.env.KAGE_SOCKET,
+          path: '/hook',
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'content-length': Buffer.byteLength(data),
+          },
+        },
+        (res) => {
+          res.on('error', reject);
+          res.on('end', resolve);
+          res.resume();
+        },
+      );
+      req.on('error', reject);
+      req.end(data);
+    });
+
+  /** `kage serve`'s resident set in MB (/proc/<pid>/status VmRSS); Linux only. */
+  serveRss = (): number => {
+    const status = readFileSync(`/proc/${this.servePid()}/status`, 'utf8');
+    const kb = Number(/^VmRSS:\s+(\d+)\s+kB/m.exec(status)?.[1]);
+    if (!Number.isFinite(kb)) throw new Error('No VmRSS in /proc status');
+    return kb / 1024;
+  };
+
+  /** `kage serve`'s CPU time so far in ms (/proc/<pid>/stat utime + stime); Linux only. */
+  serveCpuMs = (): number => {
+    const stat = readFileSync(`/proc/${this.servePid()}/stat`, 'utf8');
+    // The fields after the command name (which may hold spaces) start at state, field 3.
+    const f = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+    const ticks = Number(f[11]) + Number(f[12]); // utime (field 14) and stime (field 15)
+    return (ticks * 1000) / clockTicks();
+  };
+
+  servePid = (): number => {
+    const pid = this.serve?.pid;
+    if (!pid) throw new Error('kage serve is not running');
+    return pid;
   };
 
   /** Kage, then the tmux server, then the temp root; each step runs even if one before failed. */
@@ -314,7 +383,7 @@ export async function startTask(
   await form.getByLabel('Branch off').selectOption('main');
   if (acceptEdits) await form.getByLabel('Accept edits automatically').check();
   const started = page.waitForResponse(
-    (r) => r.url() === `${LIVE_BASE}/api/sessions` && r.request().method() === 'POST',
+    (r) => new URL(r.url()).pathname === '/api/sessions' && r.request().method() === 'POST',
   );
   await form.getByLabel('Task').press('Enter');
   const res = await started;

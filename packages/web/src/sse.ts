@@ -36,6 +36,8 @@ export function connect(
   let es: EventSource | null = null;
   let retry: ReturnType<typeof setTimeout> | null = null;
   let stopped = false;
+  /** Spec §7: the first snapshot's board is marked once it is on screen (`kage:board`). */
+  let marked = false;
   const stop = () => {
     stopped = true;
     if (retry !== null) clearTimeout(retry);
@@ -61,6 +63,12 @@ export function connect(
       }
       applyEvent(e);
     });
+    if (e.type === 'snapshot' && !marked) {
+      // Time to a usable board (e2e/perf.spec.ts): the frame after the first snapshot rendered.
+      // A reconnect's snapshot is not a first board.
+      marked = true;
+      requestAnimationFrame(() => performance.mark('kage:board'));
+    }
   };
 
   const open = () => {

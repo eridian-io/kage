@@ -21,3 +21,7 @@ export async function resetDemo(base = BASE): Promise<void> {
 /** The live e2e's `kage serve` (real tmux); KAGE_E2E_LIVE_PORT overrides it on a dev box. */
 export const LIVE_PORT = Number(process.env.KAGE_E2E_LIVE_PORT) || 4393;
 export const LIVE_BASE = `http://127.0.0.1:${LIVE_PORT}`;
+
+/** The perf project's `kage serve` (e2e/perf.spec.ts); KAGE_E2E_PERF_PORT overrides it. */
+export const PERF_PORT = Number(process.env.KAGE_E2E_PERF_PORT) || 4395;
+export const PERF_BASE = `http://127.0.0.1:${PERF_PORT}`;

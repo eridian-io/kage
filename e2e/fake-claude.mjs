@@ -7,7 +7,7 @@
  *   fake-claude.mjs --settings <file> --permission-mode <mode> --continue
  *   fake-claude.mjs <scenario>                                              the phase 2 form
  *
- * Scenarios: edit-and-test, needs-permission, trust-first, commit-and-edit and commit-only. In
+ * Scenarios: edit-and-test, needs-permission, trust-first, commit-and-edit, commit-only and flood. In
  * Claude's form the scenario is the task's first word when it names one, else edit-and-test, and
  * the task is the first prompt. The argv is written as JSON to $FAKE_CLAUDE_DIR/argv-<sessionId>.json,
  * and every key received to keys-<sessionId>.json (typed runs joined as "text:…"), so a test can
@@ -15,6 +15,9 @@
  * - commit-and-edit: in its cwd (the worktree) it writes notes.md and commits it, then changes a
  *   line of README.md and writes scratch.txt (untracked), then fires Stop: one unpushed commit and
  *   two uncommitted files. commit-only commits notes.md the same way and leaves the tree clean.
+ * - flood (the perf spec's rendering budget): after UserPromptSubmit it waits for Enter, so a
+ *   test can open the session first, then appends 2,000 `say` records ("Flood line 1" to
+ *   "Flood line 2000") to its transcript in batches of 50 every 100 ms, then fires Stop.
  * - `--resume <id>` reuses <id> as its session id and appends to that transcript, fires
  *   SessionStart with `source: "resume"` and draws the idle box with no turn (integration §8).
  *   An id with no transcript in $FAKE_CLAUDE_DIR is Claude's unknown id (R63): a SessionEnd
@@ -68,12 +71,14 @@ const SCENARIOS = new Set([
   'trust-first',
   'commit-and-edit',
   'commit-only',
+  'flood',
 ]);
 const DEFAULT_PROMPT = {
   'edit-and-test': 'Make greet() say hello in lowercase, then run the tests',
   'needs-permission': 'Clear the build cache',
   'commit-and-edit': 'Write the notes',
   'commit-only': 'Commit the notes',
+  flood: 'Write a long answer',
 };
 
 // ------------------------------------------------------------------ arguments
@@ -680,6 +685,18 @@ async function commitWork(prompt, edit) {
   );
 }
 
+/** flood: 2,000 say records in batches of 50 every 100 ms, once Enter is pressed; then Stop. */
+async function flood(prompt) {
+  await begin(prompt);
+  await nextKey((k) => k === 'Enter');
+  for (let n = 1; n <= 2000; ) {
+    for (const end = n + 50; n < end; n++) sayRecord(`Flood line ${n}`);
+    out(`● Flood line ${n - 1}`);
+    await sleep(100);
+  }
+  await finish('The long answer is written.');
+}
+
 if (resumed === '') {
   // R63: Claude found no conversation; it leaves nothing readable and exits 1. Like the real
   // one, it first takes a moment to start.
@@ -700,5 +717,6 @@ await step();
 if (turnScenario === 'needs-permission') await needsPermission(firstPrompt);
 else if (turnScenario === 'commit-and-edit') await commitWork(firstPrompt, true);
 else if (turnScenario === 'commit-only') await commitWork(firstPrompt, false);
+else if (turnScenario === 'flood') await flood(firstPrompt);
 else await editAndTest(firstPrompt);
 await idle();

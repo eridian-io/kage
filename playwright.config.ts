@@ -1,5 +1,5 @@
 import { defineConfig, devices } from '@playwright/test';
-import { BASE, LIVE_BASE, PORT, SERVER_ENV } from './e2e/env.ts';
+import { BASE, LIVE_BASE, PERF_BASE, PORT, SERVER_ENV } from './e2e/env.ts';
 
 export default defineConfig({
   testDir: 'e2e',
@@ -19,13 +19,20 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { browserName: 'chromium' },
-      testIgnore: ['live.spec.ts', 'finish.spec.ts'],
+      testIgnore: ['live.spec.ts', 'finish.spec.ts', 'perf.spec.ts'],
     },
     // Real tmux and `kage serve` in live mode; the specs skip themselves where tmux is missing.
     {
       name: 'live',
       use: { browserName: 'chromium', baseURL: LIVE_BASE },
       testMatch: ['live.spec.ts', 'finish.spec.ts'],
+    },
+    // The budgets of spec §7 (e2e/budgets.ts writes test-results/budgets.json). Live mode on its
+    // own port; the live parts skip themselves without tmux, the idle server without /proc.
+    {
+      name: 'perf',
+      use: { browserName: 'chromium', baseURL: PERF_BASE },
+      testMatch: 'perf.spec.ts',
     },
   ],
   webServer: {

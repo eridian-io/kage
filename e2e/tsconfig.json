@@ -9,5 +9,5 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["*.ts", "../playwright.config.ts"]
+  "include": ["*.ts", "../playwright.config.ts", "../packages/web/sizes.ts"]
 }
