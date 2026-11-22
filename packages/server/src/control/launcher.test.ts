@@ -150,6 +150,11 @@ class FakeSource {
     const t = this.targets.get(kageId);
     if (t) t.status = 'running';
   }
+  resumeAborted(kageId: string): void {
+    this.log.push(`resumeAborted ${kageId}`);
+    const t = this.targets.get(kageId);
+    if (t) t.status = 'ended';
+  }
   hasWindow(kageId: string): boolean {
     return this.live.has(kageId);
   }
@@ -779,7 +784,7 @@ describe('TaskLauncher.resume (B7)', () => {
     return s;
   }
 
-  it('opens one window in the worktree with the record’s kage id and exact argv, then resumed, then claim', async () => {
+  it('resumed, then one window in the worktree with the record’s kage id and exact argv, then claim (R101)', async () => {
     const { launcher, tmux, log } = resumable();
     await launcher.resume('k-1');
     expect(tmux.calls).toEqual([
@@ -799,7 +804,8 @@ describe('TaskLauncher.resume (B7)', () => {
         kageId: 'k-1',
       },
     ]);
-    expect(log).toEqual(['newWindow', `resumed k-1 ${SID}`, 'claim k-1 @7 %7']);
+    // resumed first (R101): a listing that attaches the window must find the resume under way.
+    expect(log).toEqual([`resumed k-1 ${SID}`, 'newWindow', 'claim k-1 @7 %7']);
   });
 
   it('the mode comes from the record; no session id resumes with --continue', async () => {
@@ -899,7 +905,7 @@ describe('TaskLauncher.resume (B7)', () => {
     expect(s.tmux.calls).toEqual([]);
   });
 
-  it('a tmux failure is 422 with its first line; the session stays ended, nothing resumed or claimed', async () => {
+  it('a tmux failure is 422 with its first line; the resume is aborted, the session ended again, nothing claimed', async () => {
     const { launcher, tmux, source, log } = resumable();
     tmux.fail = new Error('no server running\nmore');
     const err = await launchError(launcher.resume('k-1'));
@@ -907,7 +913,7 @@ describe('TaskLauncher.resume (B7)', () => {
       422,
       "tmux couldn't open a window: no server running",
     ]);
-    expect(log).toEqual(['newWindow']);
+    expect(log).toEqual([`resumed k-1 ${SID}`, 'newWindow', 'resumeAborted k-1']);
     expect(source.finishTarget('k-1')?.status).toBe('ended');
   });
 
@@ -1007,7 +1013,7 @@ describe('resume hardening (Task 7 review)', () => {
     ] as const) {
       const { launcher, log, tmux } = resumable(record(wt, { sessionId }));
       await launcher.resume('k-1');
-      expect(log[1]).toBe(`resumed k-1 ${passed}`);
+      expect(log[0]).toBe(`resumed k-1 ${passed}`);
       expect(tmux.calls[0]?.argv.at(-1)).toBe(passed ?? '--continue');
       expect(tmux.calls[0]?.argv).not.toContain('--help-0000000');
     }

@@ -154,6 +154,23 @@ interface TailContent {
   now?: string | null;
 }
 
+/** A tail start a test holds open: set `wait`, then resolve it. */
+interface TailGate {
+  wait: Promise<void> | null;
+}
+
+/** A gate that holds tail starts until `open()`. */
+function holdTails(gate: TailGate): () => void {
+  let open = () => {};
+  gate.wait = new Promise<void>((r) => {
+    open = r;
+  });
+  return () => {
+    gate.wait = null;
+    open();
+  };
+}
+
 class FakeTail implements TailLike {
   readonly path: string;
   #lines: DisplayLine[];
@@ -163,13 +180,18 @@ class FakeTail implements TailLike {
   interruptFns = new Set<() => void>();
   started = false;
   stopped = false;
-  constructor(path: string, c: TailContent = {}) {
+  /** While `gate.wait` is set, start() waits for it: a hook can land while a tail starts. */
+  readonly #gate: TailGate | null;
+  constructor(path: string, c: TailContent = {}, gate: TailGate | null = null) {
     this.path = path;
     this.#lines = c.lines ?? [];
     this.#question = c.question ?? null;
     this.#now = c.now ?? null;
+    this.#gate = gate;
   }
   async start(): Promise<void> {
+    const wait = this.#gate?.wait;
+    if (wait) await wait;
     this.started = true;
     if (this.#lines.length) for (const fn of [...this.fns]) fn(this.#lines.slice(), false);
   }
@@ -331,6 +353,8 @@ function setup(
     /** A real auto-archiver instead of FakeAuto. */
     auto?: (host: AutoArchiveHost) => AutoArchiverLike;
     onLoaded?: () => void;
+    /** Every FakeTail's start() waits while its `wait` is set. */
+    tailGate?: TailGate;
   } = {},
 ) {
   const preview = new FakePreview();
@@ -351,7 +375,7 @@ function setup(
     tail:
       opts.tail ??
       ((path) => {
-        const t = new FakeTail(path, opts.tails?.[path]);
+        const t = new FakeTail(path, opts.tails?.[path], opts.tailGate ?? null);
         tails.push(t);
         return t;
       }),
@@ -3471,6 +3495,79 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
       transcriptPath: TRANSCRIPT,
       windowId: '@7',
     });
+  });
+
+  it('R101: a SessionStart that lands while a listing attaches the resumed window (before resumed()) is kept: done, not stuck running', async () => {
+    const gate: TailGate = { wait: null };
+    const s = setup({
+      records: [ended()],
+      tails: { [TRANSCRIPT]: { lines: OLD.slice() } },
+      tailGate: gate,
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    // The launcher's window is tagged and listed before it calls resumed(); the tail start blocks.
+    const open = holdTails(gate);
+    s.tmux.windows = [resumedWin({ kageId: 'k-1' })];
+    s.tmux.setCapture('%7', IDLE);
+    s.watcher.emit({ type: 'windows-changed' });
+    await vi.advanceTimersByTimeAsync(300);
+    await flush();
+    // The resumed claude's SessionStart lands during that await.
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'resume' }));
+    await flush();
+    open();
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    s.source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+  });
+
+  it('R101: resumeAborted (the window never opened) ends it again with no wait or resume left; a later hook-less window is not "Starting Claude…"', async () => {
+    const { source, updates } = await endedSession();
+    source.resumed('k-1', 's-1');
+    expect(source.get('k-1')?.status).toBe('running');
+    source.resumeAborted('k-1');
+    expect(source.get('k-1')).toMatchObject({ status: 'ended' });
+    expect(source.get('k-1')?.now).toBeUndefined();
+    expect(updates('k-1').at(-1)?.status).toBe('ended');
+    // Nothing armed: no fallback moves it later.
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(source.get('k-1')?.status).toBe('ended');
+    // Not ended by a resume (or unknown): left alone.
+    const n = updates().length;
+    source.resumeAborted('k-1');
+    source.resumeAborted('nope');
+    expect(updates().length).toBe(n);
+  });
+
+  it('R101: resumed() before the window is listed (the launcher order): the attach keeps the wait, and the fallback reaches done', async () => {
+    const gate: TailGate = { wait: null };
+    const s = setup({
+      records: [ended()],
+      tails: { [TRANSCRIPT]: { lines: OLD.slice() } },
+      tailGate: gate,
+    });
+    await s.source.start();
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    await flush();
+    const open = holdTails(gate);
+    s.tmux.windows = [resumedWin({ kageId: 'k-1' })];
+    s.tmux.setCapture('%7', IDLE);
+    s.source.claim('k-1', '@7', '%7');
+    await flush();
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'resume' }));
+    await flush();
+    open();
+    await flush();
+    expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    await vi.advanceTimersByTimeAsync(30_000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
   });
 
   it('with no prompt, the 10 s fallback after SessionStart makes it done at the idle box', async () => {

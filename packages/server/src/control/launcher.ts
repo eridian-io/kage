@@ -127,7 +127,14 @@ export interface LauncherDeps {
   /** `branchTaken` lets the slug skip branches that Kage's records use (deleted or not). */
   source: Pick<
     LiveSource,
-    'adopt' | 'claim' | 'abandon' | 'branchTaken' | 'finishTarget' | 'resumed' | 'hasWindow'
+    | 'adopt'
+    | 'claim'
+    | 'abandon'
+    | 'branchTaken'
+    | 'finishTarget'
+    | 'resumed'
+    | 'resumeAborted'
+    | 'hasWindow'
   >;
   /** One action at a time per session, shared with the controls and finish actions (F5, R68). */
   lock?: ActionLock;
@@ -218,8 +225,8 @@ export class TaskLauncher {
    * running `claude --resume <session id>`. Under the shared action lock, in order: 404 unknown,
    * 403 external, 409 archived, 409 not ended, 409 a window already carries its kage id, 503 no
    * claude, 409 the worktree folder is gone, 409 it isn't on the record's branch (R71); then the
-   * window opens, the session is resumed (running, "Starting Claude…") and the window claimed.
-   * A tmux failure is 422 and leaves the session ended: nothing was created to roll back.
+   * session is resumed (running, "Starting Claude…"), the window opens and is claimed.
+   * A tmux failure is 422 and ends the session again (resumeAborted): no window was created.
    */
   async resume(id: string): Promise<void> {
     const d = this.#d;
@@ -251,6 +258,9 @@ export class TaskLauncher {
         throw new LaunchError(409, notKageWorktree(r.worktree));
       }
       await this.#onBranch(r.worktree, r.branch);
+      // Resumed before the window exists (R101): a listing that attaches the new window, and its
+      // first hooks, must find the resume under way, as a launch's adopt() comes before its window.
+      d.source.resumed(r.kageId, resumeId(r.sessionId));
       let windowId: string;
       let paneId: string;
       try {
@@ -265,9 +275,9 @@ export class TaskLauncher {
           kageId: r.kageId,
         }));
       } catch (e) {
+        d.source.resumeAborted(r.kageId);
         throw new LaunchError(422, `tmux couldn't open a window: ${firstLine(e)}`);
       }
-      d.source.resumed(r.kageId, resumeId(r.sessionId));
       d.source.claim(r.kageId, windowId, paneId);
     } finally {
       release();

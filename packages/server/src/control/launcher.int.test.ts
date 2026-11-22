@@ -93,6 +93,7 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
           branchTaken: () => false,
           finishTarget: () => null,
           resumed: () => {},
+          resumeAborted: () => {},
           hasWindow: () => false,
         },
         claudeBin: bin,
@@ -202,6 +203,9 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
               : null,
           resumed: (k) => {
             log.push(`resumed ${k}`);
+          },
+          resumeAborted: (k) => {
+            log.push(`resumeAborted ${k}`);
           },
           hasWindow: () => false,
         },

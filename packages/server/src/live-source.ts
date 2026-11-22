@@ -259,6 +259,8 @@ interface Live extends SessionView {
   sawClaude: boolean;
   /** A hook arrived from this window: Claude is past its startup screens (no more R9 checks). */
   hookSeen: boolean;
+  /** Hooks applied so far: an attach that awaited its tail sees whether one landed meanwhile. */
+  hookCount: number;
   /** A capture showed Claude's idle input box: past its startup screens (no more R9 checks). */
   idleSeen: boolean;
   /**
@@ -527,6 +529,20 @@ export class LiveSource implements SessionSource {
     this.#setStatus(st, 'running');
     st.now = STARTING;
     if (st.transcriptPath) void this.#ensureTail(st);
+    this.#emitNow(st);
+  }
+
+  /**
+   * R101: the resume's window didn't open (tmux failed after resumed()): ended again, the wait
+   * and the resume cleared (#setStatus), the tail retired as for any end. A session that has
+   * moved on meanwhile (a window, a hook) is left alone.
+   */
+  resumeAborted(kageId: string): void {
+    const st = this.#sessions.get(kageId);
+    if (!st?.record || st.status === 'ended' || st.window || !st.resuming || !this.#running) return;
+    this.#setStatus(st, 'ended');
+    st.now = null;
+    this.#retireTailSoon(st);
     this.#emitNow(st);
   }
 
@@ -906,6 +922,7 @@ export class LiveSource implements SessionSource {
       transcriptPath: record?.transcriptPath ?? null,
       sawClaude: false,
       hookSeen: false,
+      hookCount: 0,
       idleSeen: false,
       claudeExited: false,
       shellEnded: false,
@@ -1081,10 +1098,12 @@ export class LiveSource implements SessionSource {
     }
     this.#setStatus(st, this.#activityStatus(st));
     if (st.transcriptPath) {
+      const hooks = st.hookCount;
       await this.#ensureTail(st);
       if (!this.#running || st.window !== w) return;
       // A resumed session's transcript is its last run's: until the first prompt, P3F1 decides.
-      if (!st.firstPromptPending) this.#rebuildFromTail(st);
+      // A hook that landed during the await is fresher than the transcript (R101): it stands.
+      if (!st.firstPromptPending && st.hookCount === hooks) this.#rebuildFromTail(st);
     }
     this.#scheduleIdle(st);
     const gen = st.gen;
@@ -1365,6 +1384,7 @@ export class LiveSource implements SessionSource {
     // SessionStart Kage missed (a restart, a hook lost) still gets its tail.
     this.#link(st, e);
     st.hookSeen = true;
+    st.hookCount++;
     st.claudeExited = false;
     // A compaction (auto-compact can run mid-turn) is the same turn going on (R21 exception).
     const compact = e.event === 'SessionStart' && e.source === 'compact';
