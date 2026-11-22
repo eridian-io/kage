@@ -268,6 +268,7 @@ export class TaskLauncher {
       doneAt: null,
       archivedAt: null,
       restoredAt: null,
+      unpinnedAt: null,
     };
     let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;

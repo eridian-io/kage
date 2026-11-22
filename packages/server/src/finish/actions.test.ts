@@ -23,6 +23,7 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   doneAt: null,
   archivedAt: null,
   restoredAt: null,
+  unpinnedAt: null,
   ...over,
 });
 

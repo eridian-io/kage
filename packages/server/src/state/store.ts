@@ -53,6 +53,8 @@ export interface SessionRecord {
   archivedAt: number | null;
   /** Epoch ms of the last restore; auto-archive skips the session until its next done (F2). */
   restoredAt: number | null;
+  /** Epoch ms of the last unpin; the age rule of auto-archive counts from it too (R69). */
+  unpinnedAt: number | null;
 }
 
 const VERSION = 1;
@@ -107,6 +109,7 @@ function toRecord(v: unknown): SessionRecord | null {
     // Only an archived record has an archive time; one without gets its creation time.
     archivedAt: o.archived ? (timeOrNull(o.archivedAt) ?? o.createdAt) : null,
     restoredAt: timeOrNull(o.restoredAt),
+    unpinnedAt: timeOrNull(o.unpinnedAt),
   };
 }
 

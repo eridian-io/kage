@@ -76,6 +76,9 @@ export class FinishActions {
       }
       if (BUSY_FOOTER.test(screen)) throw new ActionError(409, ACTIVE);
     }
+    // TODO(Task 12): F11 — once the terminal bridge exists, re-check isTerminalOpen(id) here,
+    // inside the lock after the capture await, and refuse (409) an automatic archive while a
+    // terminal is open on the session; auto-archive's candidate re-read happens before this await.
     const now = this.#source.finishTarget(id);
     if (!now) throw new ActionError(404, `No session with id ${id}`);
     if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, ACTIVE);

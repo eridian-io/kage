@@ -12,16 +12,21 @@ import {
 const T0 = 1_800_000_000_000;
 const DAY = 86_400_000;
 
-const cand = (over: Partial<AutoCandidate> = {}): AutoCandidate => ({
-  id: 'k-1',
-  repo: '/home/dev/projects/shop',
-  worktree: '/home/dev/projects/shop/.worktrees/fix-the-cart-total',
-  branch: 'kage/fix-the-cart-total',
-  base: 'main',
-  baseCommit: 'a'.repeat(40),
-  doneAt: T0 - 60_000,
-  ...over,
-});
+/** ageFrom follows doneAt unless given (no restore or unpin since). */
+const cand = (over: Partial<AutoCandidate> = {}): AutoCandidate => {
+  const doneAt = over.doneAt ?? T0 - 60_000;
+  return {
+    id: 'k-1',
+    repo: '/home/dev/projects/shop',
+    worktree: '/home/dev/projects/shop/.worktrees/fix-the-cart-total',
+    branch: 'kage/fix-the-cart-total',
+    base: 'main',
+    baseCommit: 'a'.repeat(40),
+    doneAt,
+    ageFrom: doneAt,
+    ...over,
+  };
+};
 
 /** A fake fs.watch: one entry per open watcher, with its callback. */
 class FakeWatch {
@@ -29,10 +34,16 @@ class FakeWatch {
   open = new Map<string, (name: string | null) => void>();
   closed: string[] = [];
   throwFor = new Set<string>();
-  watch = (dir: string, onChange: (name: string | null) => void) => {
+  errors = new Map<string, (e: unknown) => void>();
+  watch = (
+    dir: string,
+    onChange: (name: string | null) => void,
+    onError?: (e: unknown) => void,
+  ) => {
     this.calls.push(dir);
     if (this.throwFor.has(dir)) throw new Error('ENOSPC: System limit for number of file watchers');
     this.open.set(dir, onChange);
+    if (onError) this.errors.set(dir, onError);
     return {
       close: () => {
         this.closed.push(dir);
@@ -649,5 +660,111 @@ describe('gitCommonDir', () => {
     const dir = await gitCommonDir('/home/dev/projects/shop', exec);
     expect(calls).toEqual([[['rev-parse', '--git-common-dir'], '/home/dev/projects/shop']]);
     expect(dir.replaceAll('\\', '/')).toMatch(/\/home\/dev\/projects\/shop\/\.git$/);
+  });
+});
+
+describe('AutoArchiver: fix round 1', () => {
+  it('a stale merge result does not archive a session that worked again during the check; the queued re-check decides', async () => {
+    const releases: (() => void)[] = [];
+    const answers: BranchState[] = [
+      { unpushed: 0, uncommitted: 0, merged: true }, // stale: computed before the new turn
+      { unpushed: 0, uncommitted: 1, merged: true }, // fresh: the new turn left work
+    ];
+    let seen = 0;
+    const ctx = setup({
+      cands: [cand()],
+      state: async () => {
+        const answer = answers[seen++] as BranchState;
+        await new Promise<void>((r) => releases.push(r));
+        return answer;
+      },
+    });
+    ctx.a.start();
+    await flush();
+    expect(seen).toBe(1);
+    // A turn ends during the check: running, then done again with a new doneAt, and a touch.
+    ctx.set([cand({ doneAt: T0 + 5000 })]);
+    ctx.a.touch('k-1');
+    releases.shift()?.();
+    await flush();
+    expect(ctx.archived).toEqual([]);
+    expect(seen).toBe(2);
+    releases.shift()?.();
+    await flush();
+    expect(ctx.archived).toEqual([]);
+  });
+
+  it('the stale check returns quietly even when the session is active right now (no candidate)', async () => {
+    let release!: () => void;
+    const ctx = setup({
+      cands: [cand()],
+      state: async () => {
+        await new Promise<void>((r) => {
+          release = r;
+        });
+        return { unpushed: 0, uncommitted: 0, merged: true };
+      },
+    });
+    ctx.a.start();
+    await flush();
+    ctx.set([]); // running again
+    release();
+    await flush();
+    expect(ctx.archived).toEqual([]);
+    expect(ctx.logs).toEqual([]);
+  });
+
+  it('R69: age counts from ageFrom (the latest of done, restore and unpin): unpinned now, done 20 days ago → archived 14 days after the unpin', async () => {
+    const { a, archived } = setup({
+      cands: [cand({ doneAt: T0 - 20 * DAY, ageFrom: T0 })],
+      config: { onMerge: false, afterDays: 14 },
+    });
+    a.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(archived).toEqual([]);
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(14 * DAY - 1);
+    expect(archived).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(archived).toEqual(['k-1']);
+  });
+
+  it("a watcher's error (the repo deleted) logs watchFailed once, drops the watcher, and the dir is not watched again", async () => {
+    const { a, fw, logs, checks } = setup({ cands: [cand()] });
+    a.start();
+    await flush();
+    const dir = '/home/dev/projects/shop/.git';
+    fw.errors.get(dir)?.(new Error('ENOENT'));
+    fw.errors.get(dir)?.(new Error('ENOENT'));
+    expect(logs).toEqual([watchFailed(dir)]);
+    expect(fw.closed).toEqual([dir]);
+    expect(fw.open.size).toBe(0);
+    a.sync();
+    a.touch('k-1');
+    await flush();
+    expect(fw.calls).toEqual([dir]);
+    expect(logs).toHaveLength(1);
+    expect(checks).toEqual(['k-1', 'k-1']);
+    // stop() has no dead watcher left to close.
+    a.stop();
+    expect(fw.closed).toEqual([dir]);
+  });
+
+  it('sync() recomputes the delay even when the earliest deadline is unchanged (a suspend or wall-clock jump)', async () => {
+    const { a, archived } = setup({
+      cands: [cand({ doneAt: T0 - 13 * DAY })],
+      config: { onMerge: false, afterDays: 14 },
+    });
+    a.start();
+    await flush();
+    // The machine slept a day: the wall clock moved, the timer did not.
+    vi.setSystemTime(T0 + DAY);
+    a.sync();
+    expect(vi.getTimerCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
+    await flush();
+    expect(archived).toEqual(['k-1']);
   });
 });

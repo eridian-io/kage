@@ -270,6 +270,7 @@ describe('TaskLauncher', () => {
         doneAt: null,
         archivedAt: null,
         restoredAt: null,
+        unpinnedAt: null,
       },
     ]);
     expect(tmux.calls).toEqual([

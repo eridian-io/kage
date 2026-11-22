@@ -986,6 +986,7 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
       doneAt: null,
       archivedAt,
       restoredAt: null,
+      unpinnedAt: null,
     });
     const records = [rec('k-1', true, 10), rec('k-2', false, null), rec('k-3', true, 30)];
     const live = new LiveSource({

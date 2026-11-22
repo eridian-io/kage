@@ -61,6 +61,7 @@ async function repo(): Promise<AutoCandidate> {
     base: 'main',
     baseCommit,
     doneAt: Date.now(),
+    ageFrom: Date.now(),
   };
 }
 

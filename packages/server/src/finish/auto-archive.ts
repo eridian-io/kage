@@ -14,6 +14,8 @@ export interface AutoCandidate {
   baseCommit: string | null;
   /** Epoch ms of the session's last move into done or ended. */
   doneAt: number;
+  /** Where the age rule counts from (R69): the latest of doneAt, restoredAt and unpinnedAt. */
+  ageFrom: number;
 }
 
 export interface AutoArchiveDeps {
@@ -28,8 +30,15 @@ export interface AutoArchiveDeps {
   archive: (id: string) => Promise<void>;
   /** `rev-parse --git-common-dir`, made absolute. */
   gitDir: (repo: string) => Promise<string>;
-  /** Default fs.watch, not recursive, not keeping the process alive. */
-  watch?: (dir: string, onChange: (name: string | null) => void) => { close(): void };
+  /**
+   * Default fs.watch, not recursive, not keeping the process alive. `onError` reports a watcher
+   * that broke later (its directory deleted, for example).
+   */
+  watch?: (
+    dir: string,
+    onChange: (name: string | null) => void,
+    onError?: (e: unknown) => void,
+  ) => { close(): void };
   now?: () => number;
   /** Quiet time after the last relevant change in a git dir before its candidates are checked (5000). */
   debounceMs?: number;
@@ -62,12 +71,15 @@ export async function gitCommonDir(repo: string, exec: GitExec = gitExec): Promi
   return resolve(repo, out);
 }
 
-const defaultWatch = (dir: string, onChange: (name: string | null) => void) => {
+const defaultWatch = (
+  dir: string,
+  onChange: (name: string | null) => void,
+  onError?: (e: unknown) => void,
+) => {
   const w = fsWatch(dir, { persistent: false }, (_event, name) =>
     onChange(name === null ? null : String(name)),
   );
-  // A dir removed later: stop quietly (the other triggers still check its candidates).
-  w.on('error', () => w.close());
+  w.on('error', (e) => onError?.(e));
   return w;
 };
 
@@ -91,7 +103,6 @@ export class AutoArchiver {
   readonly #failedDirs = new Set<string>();
   readonly #debounce = new Map<string, ReturnType<typeof setTimeout>>();
   #timer: ReturnType<typeof setTimeout> | null = null;
-  #timerAt = 0;
   /** Ids waiting for a check, in order. */
   readonly #queue: string[] = [];
   /** id → repo of checks in flight. */
@@ -158,14 +169,21 @@ export class AutoArchiver {
   // ------------------------------------------------------------ the deadline timer
 
   #deadline(c: AutoCandidate): number {
-    return c.doneAt + this.#d.config.afterDays * DAY_MS;
+    return c.ageFrom + this.#d.config.afterDays * DAY_MS;
   }
 
   #ageDue(c: AutoCandidate): boolean {
     return this.#d.config.afterDays > 0 && this.#now() >= this.#deadline(c);
   }
 
-  /** One timer for the earliest age deadline not yet tried, only while there is one. */
+  /**
+   * One timer for the earliest age deadline not yet tried, only while there is one. Deadlines are
+   * wall-clock (epoch) times, but setTimeout counts monotonic time, so the delay is recomputed
+   * from the wall clock on every call: a suspend or a wall-clock jump is corrected at the next
+   * event (sync, touch, or the timer itself). A timer that wakes before its deadline (clamped,
+   * or the clock went back) finds nothing due and re-arms; one that wakes late archives late.
+   * A forward jump can archive early by the size of the jump.
+   */
   #arm(cands: AutoCandidate[]): void {
     let at = Number.POSITIVE_INFINITY;
     if (this.#d.config.afterDays > 0) {
@@ -176,9 +194,7 @@ export class AutoArchiver {
       this.#timer = null;
       return;
     }
-    if (this.#timer && this.#timerAt === at) return;
     if (this.#timer) clearTimeout(this.#timer);
-    this.#timerAt = at;
     const delay = Math.min(MAX_DELAY_MS, Math.max(0, at - this.#now()));
     this.#timer = setTimeout(() => {
       this.#timer = null;
@@ -212,15 +228,34 @@ export class AutoArchiver {
     for (const dir of wanted) {
       if (this.#watchers.has(dir)) continue;
       try {
-        this.#watchers.set(
+        const w = this.#watch(
           dir,
-          this.#watch(dir, (name) => this.#onChange(dir, name)),
+          (name) => this.#onChange(dir, name),
+          () => this.#watchBroke(dir, w),
         );
+        this.#watchers.set(dir, w);
       } catch {
         this.#failedDirs.add(dir);
         this.#log(watchFailed(dir));
       }
     }
+  }
+
+  /**
+   * A watcher broke after it opened (its directory deleted, for example): logged once, dropped,
+   * and its dir not watched again until restart; touch and start still check its candidates.
+   */
+  #watchBroke(dir: string, w: { close(): void }): void {
+    if (this.#watchers.get(dir) !== w) return;
+    this.#watchers.delete(dir);
+    this.#failedDirs.add(dir);
+    const t = this.#debounce.get(dir);
+    if (t) clearTimeout(t);
+    this.#debounce.delete(dir);
+    try {
+      w.close();
+    } catch {}
+    this.#log(watchFailed(dir));
   }
 
   /** Looks up a repo's git common dir once; a failure is logged once and never retried. */
@@ -321,8 +356,11 @@ export class AutoArchiver {
         const s = await this.#d.state(c);
         due = s.merged && s.uncommitted === 0;
       }
-      // Pinned, archived, restored, active again or a terminal opened meanwhile: skipped.
-      if (!due || !this.#running || !this.#candidate(c.id)) return;
+      // Pinned, archived, restored, active again or a terminal opened meanwhile: skipped. A new
+      // doneAt means a turn ran during the check, so its result is stale; the touch of that turn
+      // queued a fresh check.
+      const fresh = this.#candidate(c.id);
+      if (!due || !this.#running || !fresh || fresh.doneAt !== c.doneAt) return;
       await this.#d.archive(c.id);
       this.#logged.delete(c.id);
     } catch (e) {

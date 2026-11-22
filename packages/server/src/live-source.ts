@@ -575,6 +575,8 @@ export class LiveSource implements SessionSource {
     const archiving = f.archived === true && !r.archived;
     const restoring = f.archived === false && r.archived;
     if (f.pinned !== undefined) r.pinned = f.pinned;
+    // R69: an unpinned session's age for auto-archive starts again now.
+    if (before.pinned && f.pinned === false) r.unpinnedAt = this.#now();
     if (archiving) {
       r.archived = true;
       r.archivedAt = this.#now();
@@ -607,7 +609,7 @@ export class LiveSource implements SessionSource {
   /**
    * Auto-archive candidates (spec §5.8): record sessions that are done or ended, with a doneAt,
    * not pinned, not archived, not restored since their last done (F2) and with no open terminal
-   * (F11). External and active sessions never are.
+   * (F11). External and active sessions never are. Their age counts from ageFrom (R69).
    */
   autoCandidates(): AutoCandidate[] {
     const out: AutoCandidate[] = [];
@@ -625,6 +627,8 @@ export class LiveSource implements SessionSource {
         base: r.base,
         baseCommit: r.baseCommit,
         doneAt: r.doneAt,
+        // R69: the age rule counts from the latest of the last done, restore and unpin.
+        ageFrom: Math.max(r.doneAt, r.restoredAt ?? r.doneAt, r.unpinnedAt ?? r.doneAt),
       });
     }
     return out;

@@ -22,6 +22,7 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   doneAt: null,
   archivedAt: null,
   restoredAt: null,
+  unpinnedAt: null,
   ...over,
 });
 
@@ -117,7 +118,14 @@ describe('StateStore', () => {
   };
 
   it('loads a phase 3 record (no baseCommit, doneAt, archivedAt) with null for all', async () => {
-    const { baseCommit: _a, doneAt: _b, archivedAt: _c, restoredAt: _d, ...phase3 } = rec();
+    const {
+      baseCommit: _a,
+      doneAt: _b,
+      archivedAt: _c,
+      restoredAt: _d,
+      unpinnedAt: _e,
+      ...phase3
+    } = rec();
     const store = new StateStore(path);
     await writeRecords(store, [phase3]);
     expect(await store.load()).toEqual([rec()]);
@@ -143,6 +151,15 @@ describe('StateStore', () => {
       null,
       null,
     ]);
+  });
+
+  it('round-trips unpinnedAt (R69); a missing or bad one loads as null', async () => {
+    const store = new StateStore(path);
+    await store.save([rec({ pinned: false, unpinnedAt: 11 })]);
+    expect((await store.load())[0]?.unpinnedAt).toBe(11);
+    const { unpinnedAt: _u, ...old } = rec();
+    await writeRecords(store, [old, { ...rec({ kageId: 'k-2' }), unpinnedAt: 'soon' }]);
+    expect((await store.load()).map((r) => r.unpinnedAt)).toEqual([null, null]);
   });
 
   it('round-trips doneAt, archivedAt and restoredAt; an archived record without archivedAt gets createdAt', async () => {

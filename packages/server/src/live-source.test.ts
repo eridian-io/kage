@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { type DisplayLine, LIMITS, type Question, type Session } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinishActions } from './finish/actions.ts';
+import { AutoArchiver } from './finish/auto-archive.ts';
 import type { HookEvent, HookEventName } from './hooks/event.ts';
 import {
   type AutoArchiveHost,
@@ -287,6 +288,7 @@ const rec = (over: Partial<SessionRecord> = {}): SessionRecord => ({
   doneAt: null,
   archivedAt: null,
   restoredAt: null,
+  unpinnedAt: null,
   ...over,
 });
 
@@ -326,6 +328,8 @@ function setup(
     tails?: Record<string, TailContent>;
     /** A real tail instead of FakeTail. */
     tail?: (path: string) => TailLike;
+    /** A real auto-archiver instead of FakeAuto. */
+    auto?: (host: AutoArchiveHost) => AutoArchiverLike;
   } = {},
 ) {
   const preview = new FakePreview();
@@ -357,7 +361,7 @@ function setup(
     },
     autoArchive: (host) => {
       auto.host = host;
-      return auto;
+      return opts.auto ? opts.auto(host) : auto;
     },
     isTerminalOpen: (id) => terminals.has(id),
   });
@@ -2978,6 +2982,7 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     base: 'main',
     baseCommit: 'b'.repeat(40),
     doneAt: T0 - 5000,
+    ageFrom: T0 - 5000,
     ...over,
   });
 
@@ -3118,5 +3123,65 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     });
     await source.start();
     expect(auto.calls).toEqual(['start']);
+  });
+});
+
+describe('LiveSource: auto-archive fix round 1 (R69)', () => {
+  const DAY = 86_400_000;
+
+  it('unpin stamps unpinnedAt and saves it; pin leaves it; the candidate ageFrom is the latest of done, restore and unpin', async () => {
+    const { source, store, auto } = setup({
+      records: [rec({ pinned: true, doneAt: T0 - 20 * DAY, restoredAt: T0 - 30 * DAY })],
+    });
+    await source.start();
+    expect(auto.host?.autoCandidates()).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    await source.setFlags('k-1', { pinned: false });
+    expect(store.saves.at(-1)?.[0]).toMatchObject({ pinned: false, unpinnedAt: T0 + 1000 });
+    expect(auto.host?.autoCandidates()[0]).toMatchObject({
+      doneAt: T0 - 20 * DAY,
+      ageFrom: T0 + 1000,
+    });
+    vi.advanceTimersByTime(1000);
+    await source.setFlags('k-1', { pinned: true });
+    expect(store.saves.at(-1)?.[0]).toMatchObject({ pinned: true, unpinnedAt: T0 + 1000 });
+  });
+
+  it('ageFrom is doneAt when there was no later unpin or restore', async () => {
+    const { source, auto } = setup({
+      records: [rec({ doneAt: T0 - 3 * DAY, restoredAt: T0 - 9 * DAY, unpinnedAt: T0 - 8 * DAY })],
+    });
+    await source.start();
+    expect(auto.host?.autoCandidates()[0]?.ageFrom).toBe(T0 - 3 * DAY);
+  });
+
+  it('unpinning a session done 20 days ago does not archive it until 14 days after the unpin (real AutoArchiver)', async () => {
+    const archived: string[] = [];
+    const { source } = setup({
+      records: [rec({ windowId: null, pinned: true, doneAt: T0 - 20 * DAY })],
+      auto: (host) =>
+        new AutoArchiver({
+          config: { onMerge: false, afterDays: 14 },
+          candidates: () => host.autoCandidates(),
+          state: async () => {
+            throw new Error('no git in this test');
+          },
+          archive: async (id) => {
+            archived.push(id);
+          },
+          gitDir: async (repo) => repo,
+          watch: () => ({ close() {} }),
+        }),
+    });
+    await source.start();
+    await source.setFlags('k-1', { pinned: false });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(archived).toEqual([]);
+    await vi.advanceTimersByTimeAsync(14 * DAY - 2000);
+    expect(archived).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1000);
+    await flush();
+    expect(archived).toEqual(['k-1']);
+    await source.stop();
   });
 });
