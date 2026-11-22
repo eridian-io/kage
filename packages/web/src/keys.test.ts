@@ -19,6 +19,7 @@ import {
   stopArmed,
   stopSent,
   termNote,
+  viewGen,
 } from './store.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
@@ -79,6 +80,14 @@ describe('installKeys', () => {
     expect(selectedId.value).toBe('web');
     for (let i = 0; i < 10; i++) press('j');
     expect(selectedId.value).toBe('docs');
+  });
+
+  it('at an end of the list, J/K do nothing: no new view, the delete confirmation stays', () => {
+    const gen = viewGen.value;
+    confirmingDelete.value = true;
+    press('k');
+    expect(viewGen.value).toBe(gen);
+    expect(confirmingDelete.value).toBe(true);
   });
 
   it('ignores keys typed in an input or a textarea', () => {

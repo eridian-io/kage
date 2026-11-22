@@ -51,7 +51,7 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 
 Deferred from the phase 4 reviews. None blocks use.
 
-- **B34** The resume race (R63): a resumed window that dies before Kage's first listing of it loses the failed-resume `SessionEnd`, so the record can't tell a failed resume from a quiet one. Fix: claim the window with the pane id that `new-window` printed, so the first hook or the window's death is matched without a listing.
+- **B34** (done, phase 5 Task 9) The resume race (R63): a resumed window that dies before Kage's first listing of it loses the failed-resume `SessionEnd`, so the record can't tell a failed resume from a quiet one. Fix: claim the window with the pane id that `new-window` printed, so the first hook or the window's death is matched without a listing.
 - **B35** Pending terminal upgrades have no cap. `LIMITS.terminals` caps open terminals, but sockets that have passed the upgrade check and are still opening aren't counted. Cap them at about twice `LIMITS.terminals` and answer 4429.
 - **B36** `FileChange.path` is not stripped of control and bidi characters in the files list (the diff strips its own paths). Strip it where the list is built.
 - **B37** `listChanges` reads up to 100 MiB of untracked files on every request (the list and the diff both call it). Cache the untracked counts by file size and mtime, or read less.
@@ -61,6 +61,10 @@ Deferred from the phase 4 reviews. None blocks use.
 - **B41** Smaller e2e tidying from the Task 14 review: check that a pinned session stays before the archive step, give each fake scenario distinct file content, and assert the `sentIn` frames on the terminal socket.
 - **B42** A crash leaves resized windows at a manual size. The terminal's resize sets `window-size manual` on the window, and only a clean close unsets it, so after a crash the window stays at the browser's size when you attach at the PC. Fix: at startup, unset `window-size` (`set-option -w -u`) on every Kage-tagged window that has no terminal open.
 - **B43** A merge done in a linked worktree is seen only at the session's next turn end, so auto-archive on merge waits until then. The watcher looks at the top of the git common dir (`HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs`), and such a merge writes its `ORIG_HEAD` under `worktrees/<name>/` and a loose ref under `refs/heads/`. Fix: watch the linked worktrees' own git dirs too.
+
+## Found in phase 5
+
+- **B44** A trust screen drawn after the 60 s first-prompt look (phase 5 Task 0's cap on a still-starting launch) is seen only by the capture that pane activity triggers. A screen drawn with no activity after it stays unseen until the next activity. Fix if it shows up: one more look when the cap ends, or a slow look (every 10 s) until the first hook.
 
 ## Later
 

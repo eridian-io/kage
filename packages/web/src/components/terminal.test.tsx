@@ -156,12 +156,16 @@ describe('loading the terminal', () => {
       .mockImplementation(function (this: HTMLLinkElement, e: Event) {
         return dispatch.call(this, e.type === 'load' ? new Event('error') : e);
       });
-    const r = render(<Board />);
-    fireEvent.click(row(r.container, 'shop'));
-    key({ key: 't' });
-    await waitFor(() => expect(termNote.value).toBe("Couldn't load the terminal."));
-    expect(failed).toHaveBeenCalled();
-    failed.mockRestore();
+    try {
+      const r = render(<Board />);
+      fireEvent.click(row(r.container, 'shop'));
+      key({ key: 't' });
+      await waitFor(() => expect(termNote.value).toBe("Couldn't load the terminal."));
+      expect(failed).toHaveBeenCalled();
+    } finally {
+      // A failed wait must not leave every later link load turned into an error.
+      failed.mockRestore();
+    }
     expect(document.querySelectorAll('link[href="/term-BBB.css"]')).toHaveLength(0);
     expect(load).not.toHaveBeenCalled();
   });

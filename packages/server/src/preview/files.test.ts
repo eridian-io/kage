@@ -187,6 +187,21 @@ describe('changedFiles', () => {
   });
 });
 
+describe('changedFiles: displayed paths (B36)', () => {
+  it('strips escape sequences, control and bidi characters from each listed path; listChanges keeps the raw path', async () => {
+    const evil = 'src/\x1b[2Jclear‮txt.js';
+    const exec: GitExec = async (args) => {
+      if (args.includes('merge-base')) return { stdout: 'abc1234def\n', stderr: '' };
+      if (args.includes('diff')) return { stdout: `3\t1\t${evil}\0`, stderr: '' };
+      return { stdout: '', stderr: '' };
+    };
+    const r = await changedFiles('/w', 'main', exec);
+    expect(r.files).toEqual([{ path: 'src/cleartxt.js', added: 3, removed: 1 }]);
+    // The diff asks git by the raw path, so the shared list keeps it as git gave it.
+    expect((await listChanges('/w', 'main', exec)).changes[0]?.path).toBe(evil);
+  });
+});
+
 describe('changedFiles: arguments (F4, F8)', () => {
   it('numstat passes --no-ext-diff and --no-textconv; fsmonitor is left to gitExec', async () => {
     const calls: string[][] = [];

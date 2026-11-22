@@ -3,6 +3,7 @@ import { lstat, open, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { type FileChange, LIMITS } from '@kage/shared';
 import { type GitExec, gitExec } from '../git/exec.ts';
+import { stripAnsi } from '../text/ansi.ts';
 
 /** Untracked files larger than this count 0 lines. */
 export const MAX_UNTRACKED_BYTES = 1024 * 1024;
@@ -116,15 +117,15 @@ async function untrackedLines(
 /** The untracked line-count cache holds at most this many files in all (B37). */
 export const UNTRACKED_CACHE_MAX = 2000;
 
+/** An entry recorded less than this long after its file's mtime is racy: never trusted. */
+const RACY_MS = 2000;
+
 /**
  * Untracked files' line counts by worktree and path, valid while the file's size and mtimeMs are
  * the ones seen (B37): a refresh re-reads only what changed. Bounded; the least recently used
  * entry goes first. The session's removal forgets its worktree. An entry recorded within 2 s of its
  * file's mtime is racy (git's rule) and is read again.
  */
-/** An entry recorded less than this long after its file's mtime is racy: never trusted. */
-const RACY_MS = 2000;
-
 export class UntrackedCache {
   readonly #max: number;
   readonly #now: () => number;
@@ -280,7 +281,9 @@ export async function listChanges(
 
 /**
  * The file list (spec §5.7): `listChanges` capped at LIMITS.files, so the right column and the
- * diff list the same paths in the same order. `total` counts them all.
+ * diff list the same paths in the same order. `total` counts them all. Each path is shown, so
+ * it is stripped of escapes, control and bidi characters (B36) as the diff strips its own; the
+ * shared `listChanges` keeps git's raw path, which the diff passes back to git.
  */
 export async function changedFiles(
   worktree: string,
@@ -290,9 +293,11 @@ export async function changedFiles(
 ): Promise<{ files: FileChange[]; total: number }> {
   const { changes } = await listChanges(worktree, base, exec, o);
   return {
-    files: changes
-      .slice(0, LIMITS.files)
-      .map(({ path, added, removed }) => ({ path, added, removed })),
+    files: changes.slice(0, LIMITS.files).map(({ path, added, removed }) => ({
+      path: stripAnsi(path, { oneLine: true }),
+      added,
+      removed,
+    })),
     total: changes.length,
   };
 }

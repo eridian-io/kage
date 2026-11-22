@@ -302,7 +302,7 @@ describe('the diff view', () => {
   it('an error shows the error line, announced', async () => {
     for (const [status, error] of [
       [429, 'Kage is still working on the last diff.'],
-      [404, 'No session with id docs'],
+      [404, 'No session with id docs.'],
       [422, "git couldn't show the diff: the folder is gone."],
       [501, "Demo mode can't show diffs."],
     ] as const) {
@@ -553,12 +553,13 @@ describe('the diff view', () => {
       expect(texts(c, '.k-foot .l button')).toEqual(['TerminalT']);
     });
 
-    it('Esc returns to the output; the session stays selected', async () => {
+    it('Esc returns to the output and puts focus on View diff →; the session stays selected', async () => {
       const c = await openDiff();
       fireEvent.keyDown(document, { key: 'Escape' });
       await waitFor(() => expect(c.querySelector('.k-tr')).not.toBeNull());
       expect(selectedId.value).toBe('docs');
       expect(mainView.value).toBe('output');
+      expect(document.activeElement).toBe(viewDiff(c));
     });
 
     it('Esc while typing does not close the diff', async () => {

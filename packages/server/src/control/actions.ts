@@ -291,7 +291,7 @@ export class SessionControls {
    */
   async #locked(id: string, run: (t: ControlTarget) => Promise<void>): Promise<void> {
     const t = this.#source.target(id);
-    if (!t) throw new ActionError(404, `No session with id ${id}`);
+    if (!t) throw new ActionError(404, `No session with id ${id}.`);
     const release = this.#lock.tryAcquire(id);
     if (!release) {
       throw new ActionError(409, 'Kage is still sending the last action to this session.');

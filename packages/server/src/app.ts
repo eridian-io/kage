@@ -157,7 +157,7 @@ export function createApp(deps: AppDeps): Hono {
   app.use('*', csrfGuard(allowed));
   app.use(
     '/api/*',
-    bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large' }, 413) }),
+    bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large.' }, 413) }),
   );
   app.use('/api/*', authGuard(token));
 
@@ -174,7 +174,7 @@ export function createApp(deps: AppDeps): Hono {
     const keys = typeof body === 'object' && body !== null ? Object.keys(body) : [];
     const given = (body as { token?: unknown } | undefined)?.token;
     if (Array.isArray(body) || keys.length !== 1 || typeof given !== 'string') {
-      return c.json({ error: 'Expected {"token": "<access token>"}' }, 400);
+      return c.json({ error: 'Expected {"token": "<access token>"}.' }, 400);
     }
     // No await from here to fail(): parallel tries can't all pass allow() before one fails.
     const peer = remoteAddress(c.env);
@@ -368,7 +368,7 @@ export function createApp(deps: AppDeps): Hono {
     try {
       await source.remove(id);
     } catch (err) {
-      if (err instanceof NotFoundError) return c.json({ error: `No session with id ${id}` }, 404);
+      if (err instanceof NotFoundError) return c.json({ error: `No session with id ${id}.` }, 404);
       if (err instanceof NotImplementedError) return c.json({ error: err.message }, 501);
       throw err;
     }
@@ -379,9 +379,9 @@ export function createApp(deps: AppDeps): Hono {
     const body: unknown = await c.req.json().catch(() => undefined);
     const b = typeof body === 'object' && body !== null ? (body as Record<string, unknown>) : {};
     if (typeof b.streamId !== 'string' || (typeof b.id !== 'string' && b.id !== null)) {
-      return c.json({ error: 'Expected {"streamId": "<stream id>", "id": "<session id>"}' }, 400);
+      return c.json({ error: 'Expected {"streamId": "<stream id>", "id": "<session id>"}.' }, 400);
     }
-    if (!hub.view(b.streamId, b.id)) return c.json({ error: 'Unknown stream' }, 404);
+    if (!hub.view(b.streamId, b.id)) return c.json({ error: 'Unknown stream.' }, 404);
     return c.body(null, 204);
   });
 
@@ -393,7 +393,7 @@ export function createApp(deps: AppDeps): Hono {
     });
   }
 
-  app.all('/api/*', (c) => c.json({ error: 'Not found' }, 404));
+  app.all('/api/*', (c) => c.json({ error: 'Not found.' }, 404));
 
   app.get('*', (c) => {
     const asset = assets.get(c.req.path);

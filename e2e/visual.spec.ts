@@ -50,7 +50,10 @@ const STATES: State[] = [
   },
 ];
 
-/** The faces both pages use (one variable file per family: weight 100 900; the weights checked are the target's); each must have loaded, not fallen back to a system font. */
+/**
+ * The faces both pages use, one variable file per family (weight 100 900); the weights checked
+ * are the target's. Each must have loaded, not fallen back to a system font.
+ */
 const FONTS: [family: string, weight: string, check: string][] = [
   ['Geist', '100 900', '400 14px "Geist"'],
   ['Geist', '100 900', '500 14px "Geist"'],

@@ -371,7 +371,7 @@ export class FinishActions {
       if (BUSY_FOOTER.test(screen)) throw new ActionError(409, active);
     }
     const now = this.#source.finishTarget(id);
-    if (!now) throw new ActionError(404, `No session with id ${id}`);
+    if (!now) throw new ActionError(404, `No session with id ${id}.`);
     if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, active);
   }
 
@@ -395,7 +395,7 @@ export class FinishActions {
 
   /** 404 for an unknown id, then 409 while another action on the session runs. */
   async #locked(id: string, run: () => Promise<void>): Promise<void> {
-    if (!this.#source.finishTarget(id)) throw new ActionError(404, `No session with id ${id}`);
+    if (!this.#source.finishTarget(id)) throw new ActionError(404, `No session with id ${id}.`);
     const release = this.#lock.tryAcquire(id);
     if (!release) throw new ActionError(409, BUSY);
     try {

@@ -159,7 +159,7 @@ describe('FinishActions.pin', () => {
   it('an unknown id → 404', async () => {
     const { finish } = setup(null);
     const e = await refusal(finish.pin('nope', true));
-    expect([e.status, e.message]).toEqual([404, 'No session with id nope']);
+    expect([e.status, e.message]).toEqual([404, 'No session with id nope.']);
   });
 });
 
@@ -831,6 +831,6 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
     ).toBe(409);
     release?.();
     const e = await refusal(finish.remove('nope', { unpushed: 0, uncommitted: 0, ignored: 0 }));
-    expect([e.status, e.message]).toEqual([404, 'No session with id nope']);
+    expect([e.status, e.message]).toEqual([404, 'No session with id nope.']);
   });
 });

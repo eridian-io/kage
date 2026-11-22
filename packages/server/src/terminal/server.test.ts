@@ -283,7 +283,7 @@ describe('TerminalServer: sessions', () => {
     });
     expect(await connect('/api/sessions/nope/terminal').closed).toEqual([
       4404,
-      'No session with id nope',
+      'No session with id nope.',
     ]);
     expect(await connect().closed).toEqual([4409, 'This session has ended.']);
     expect(await connect('/api/sessions/k-2/terminal').closed).toEqual([

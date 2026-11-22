@@ -18,7 +18,11 @@ export const SIZE_LIMITS = {
   termChunk: 100 * 1024,
   /** term-loader.ts, the only terminal code in the first load (F14). */
   termLoader: 600,
-  /** Every .woff2 in dist/fonts, as served (compressed already; the OFL texts are not counted). Spec §7: 60 KB. */
+  /**
+   * Every .woff2 in dist/fonts, as served (compressed already; the OFL texts are not counted).
+   * Spec §7: 60 KB. Task 3 measured 59,296 B (two variable files), so 2,144 B of margin: a font
+   * package update that grows them must be measured, not waved through.
+   */
   fonts: 60 * 1024,
 } as const;
 

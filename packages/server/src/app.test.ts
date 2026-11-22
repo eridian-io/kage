@@ -243,7 +243,7 @@ describe('API', () => {
     const missing = await app().fetch(mutate('DELETE', '/api/sessions/nope', SEEN));
     expect(missing.status).toBe(404);
     expect(missing.headers.get('content-type')).toContain('application/json');
-    expect(await missing.json()).toEqual({ error: 'No session with id nope' });
+    expect(await missing.json()).toEqual({ error: 'No session with id nope.' });
   });
 
   it('answers 501 when the live source cannot delete yet', async () => {
@@ -288,7 +288,7 @@ describe('API', () => {
     ).toBe(204);
     const unknown = await app().fetch(mutate('POST', '/api/view', { streamId: 'nope', id: 'web' }));
     expect(unknown.status).toBe(404);
-    expect(await unknown.json()).toEqual({ error: 'Unknown stream' });
+    expect(await unknown.json()).toEqual({ error: 'Unknown stream.' });
     for (const bad of [{ id: 3, streamId: 'x' }, { id: 'web' }, { streamId: 4, id: null }]) {
       expect((await app().fetch(mutate('POST', '/api/view', bad))).status).toBe(400);
     }
@@ -501,7 +501,7 @@ describe('token login (B13)', () => {
       const res = await record(await a.fetch(login(bad)));
       expect(res.status).toBe(400);
       expect(res.headers.get('set-cookie')).toBeNull();
-      expect(await res.json()).toEqual({ error: 'Expected {"token": "<access token>"}' });
+      expect(await res.json()).toEqual({ error: 'Expected {"token": "<access token>"}.' });
     }
     const garbage = await a.fetch(
       req('/api/login', {
@@ -1311,7 +1311,7 @@ describe('GET /api/sessions/:id/diff (phase 4 Task 8)', () => {
     });
     const res = await a.fetch(req('/api/sessions/nope/diff'));
     expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'No session with id nope' });
+    expect(await res.json()).toEqual({ error: 'No session with id nope.' });
   });
 
   it('is 501 in demo mode: "Demo mode can\'t show diffs."', async () => {

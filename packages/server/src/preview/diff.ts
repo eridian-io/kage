@@ -535,7 +535,7 @@ export class DiffService {
    * waits is dropped before it runs git.
    */
   async page(id: string, from: number, signal?: AbortSignal): Promise<DiffPage> {
-    if (!this.#d.target(id)) throw new DiffError(404, `No session with id ${id}`);
+    if (!this.#d.target(id)) throw new DiffError(404, `No session with id ${id}.`);
     const pending = this.#pending.get(id) ?? 0;
     if (pending >= MAX_PER_SESSION) throw new DiffError(429, STILL_WORKING);
     this.#pending.set(id, pending + 1);
@@ -583,7 +583,7 @@ export class DiffService {
   async #run(id: string, from: number): Promise<DiffPage> {
     // Read again after the wait: the session may have gone meanwhile.
     const t = this.#d.target(id);
-    if (!t) throw new DiffError(404, `No session with id ${id}`);
+    if (!t) throw new DiffError(404, `No session with id ${id}.`);
     const isDir = await stat(t.worktree).then(
       (s) => s.isDirectory(),
       () => false,

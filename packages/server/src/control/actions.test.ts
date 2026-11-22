@@ -703,7 +703,7 @@ describe('SessionControls: all actions', () => {
       controls.stop('nope'),
     ]) {
       const e = await refusal(p);
-      expect([e.status, e.message]).toEqual([404, 'No session with id nope']);
+      expect([e.status, e.message]).toEqual([404, 'No session with id nope.']);
     }
     expect(tmux.calls).toEqual([]);
   });

@@ -352,6 +352,12 @@ export function selectNext(delta: 1 | -1): void {
   if (list.length === 0) return;
   const i = list.findIndex((s) => s.id === selectedId.value);
   const next = i < 0 ? 0 : Math.min(list.length - 1, Math.max(0, i + delta));
+  // At an end of the list nothing moves: no view post, and an open confirmation stays. The
+  // key still shows the user saw the selection, so held digits answer it from now on.
+  if (next === i) {
+    releaseDigits();
+    return;
+  }
   select(list[next]?.id ?? null);
 }
 
@@ -370,10 +376,17 @@ export function endRemoval(id: string, ok: boolean): void {
   else removing.delete(id);
 }
 
-/** Esc or Back to session: the output comes back, and focus returns to "View diff →", which opened it. */
+/**
+ * Esc or Back to session: the output comes back, and focus returns to "View diff →", which opened
+ * it, or to the selected row when there is none (no files, an external window: the palette opened
+ * it), so focus never falls to the page.
+ */
 export function closeDiff(): void {
   mainView.value = 'output';
-  document.querySelector<HTMLElement>('.k-diff')?.focus();
+  (
+    document.querySelector<HTMLElement>('.k-diff') ??
+    document.querySelector<HTMLElement>('.k-it.on')
+  )?.focus();
 }
 
 /** T or Terminal: the terminal replaces the output, for a session that still has a window. */

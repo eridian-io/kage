@@ -28,7 +28,7 @@ const TOO_MANY = 'Too many terminals are open. Close one and try again.';
  * one more closes with 4429. A socket whose client hung up still counts until its open settles.
  */
 const MAX_OPENING = 2 * LIMITS.terminals;
-const unknown = (id: string) => `No session with id ${id}`;
+const unknown = (id: string) => `No session with id ${id}.`;
 /** After close(), a socket that hasn't finished its closing handshake by then is cut. */
 const CLOSE_GRACE_MS = 1000;
 

@@ -453,6 +453,20 @@ Every new sentence a user can read, collected. A change here is a change in the 
 - **Terminal:** "Loading the terminal…"; "Couldn't load the terminal."; "Couldn't open the terminal."; "The terminal closed."; "That was too much at once."; the leave hint "Shift+Esc (or Ctrl+Shift+X) to leave"; the view-only line (§6.5); and the close reasons of §5.6. Plain HTTP refusals of the upgrade: "Open the terminal with a WebSocket.", "Unknown host", "Bad origin", "Kage's terminal speaks kage.term.v1.", "The terminal size is out of range."
 - **Demo mode:** "Demo mode can't show diffs." for the diff; the other demo sentences are unchanged.
 
+### 6.7 Copy added in phase 5 (draft, phase 5 Task 9; Task 11 finalises)
+
+The same rule as §6.6: every new sentence a user can read, and a change here is a change in the code. `packages/web/src/spec-copy.test.ts` checks that each quoted sentence below is in the code.
+
+- **Pings** (ntfy and the board's notifications carry the same text, N2): "<project> needs you" and "<project> is done", with the task as the message. An external window has no task to show (R93): the board says "Claude needs you" and ntfy "A Claude session needs you on <host>". `kage ping` sends "Kage test ping" with "ntfy is set up for <name>."
+- **`kage ping` and `kage serve`:** "Sent a test ping to <host>."; "Couldn't send the ping (<reason>)."; "No ntfyTopic in ~/.config/kage/config.json."; at start, "Pings go to ntfy at <host>."
+- **ntfy, in Kage's log:** "ntfy: couldn't send a ping (<reason>)."; "ntfy: the server refused the ping (HTTP N)." followed by " Check ntfyToken." for 401 and 403; "ntfy: too many pings; skipped N."; "ntfy: ntfyServer must be https: unless it is on this machine or your tailnet; no ping sent."; "The ntfy request timed out."
+- **Config errors** (after "Config error: "): "ntfyTopic must be at least 16 letters, digits, - or _ on ntfy.sh: anyone who guesses it can read your pings"; "<key> must be up to N letters, digits, - or _"; "<key> must be an https: URL (http: only on this machine or your tailnet), with no user name, query or fragment".
+- **Command palette:** the field "Jump to a session or run a command…"; "No matches."; "Keep typing to see more."; the footer "↑↓ to move · Enter to open · Esc to close"; the group "this session"; the commands "View diff", "Open the terminal", "Show archived", "Turn on browser notifications" (noted "shows project and task"), and "Browser notifications need HTTPS; use ntfy instead" where the page can't ask. A palette chunk that fails to load: "Couldn't open the palette. Press <key> to try again."
+- **Diff loading** (R78): "Loading the diff…"; "Couldn't load the diff." with "Try again", and from the second failure "Reload the page".
+- **Terminals:** "Too many terminals are open. Close one and try again." (B35).
+- **Files changed:** "No files changed yet." (no View diff then); for an external window with nothing to list, "Kage didn't start this window, so there's no branch to compare."
+- **API refusals** now end in a full stop like the rest: "No session with id <id>.", "Unknown stream.", "Not found.", "Request too large."
+
 ## 7. Performance budgets
 
 These are checked in CI (§8):

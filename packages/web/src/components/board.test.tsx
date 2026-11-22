@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { demoSessions, type Session } from '@kage/shared';
+import { demoSessions, LIMITS, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiDelete, apiPost } from '../api.ts';
@@ -1998,5 +1998,66 @@ describe('delete before the counts are known (fix wave)', () => {
     fireEvent.click(row(container, 'docs'));
     fireEvent.click(button(container, 'Delete…'));
     expect(button(container, 'Delete session').disabled).toBe(true);
+  });
+});
+
+describe('the right column: empty and external (phase 5, Task 9)', () => {
+  const withSession = (patch: Partial<Session>, id = 'docs') =>
+    reset(demoSessions(NOW).map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const filesSec = (c: Element) => c.querySelectorAll('.k-aside .k-sec')[1] as HTMLElement;
+
+  it('no changed files: "No files changed yet." and no View diff', () => {
+    withSession({ files: [], filesTotal: 0 });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    const sec = filesSec(container);
+    expect(q(sec, 'h4').textContent).toBe('Files changed · 0');
+    expect(q(sec, '.k-none').textContent).toBe('No files changed yet.');
+    expect(sec.querySelector('.k-diff')).toBeNull();
+  });
+
+  it('B28: shows at most LIMITS.files files, whatever the server sent, and counts the rest', () => {
+    const files = Array.from({ length: LIMITS.files + 5 }, (_, i) => ({
+      path: `f${String(i).padStart(3, '0')}.ts`,
+      added: 1,
+      removed: 0,
+    }));
+    withSession({ files, filesTotal: files.length });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    expect(container.querySelectorAll('.k-file')).toHaveLength(LIMITS.files);
+    expect(q(container, '.k-more').textContent).toBe('and 5 more');
+  });
+
+  it('an external session with no files has no branch to compare: one line in place of the files', () => {
+    withSession({ external: true, files: [], filesTotal: 0 }, 'shop');
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    const sec = filesSec(container);
+    expect(q(sec, '.k-none').textContent).toBe(
+      "Kage didn't start this window, so there's no branch to compare.",
+    );
+    expect(sec.querySelector('.k-file')).toBeNull();
+    expect(sec.querySelector('.k-diff')).toBeNull();
+    expect(sec.textContent).not.toContain('Files changed ·');
+  });
+
+  it("an external session's folder work against HEAD is still listed, with View diff", () => {
+    withSession({ external: true }, 'shop');
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'shop'));
+    expect(container.querySelectorAll('.k-file').length).toBeGreaterThan(0);
+    expect(q(container, '.k-diff').textContent).toBe('View diff →');
+  });
+
+  it('a diff left with no View diff to return to gives focus to the selected row', async () => {
+    withSession({ files: [], filesTotal: 0 });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    mainView.value = 'diff';
+    await waitFor(() => expect(container.querySelector('.k-dv')).not.toBeNull());
+    fireEvent.keyDown(document, { key: 'Escape' });
+    await waitFor(() => expect(container.querySelector('.k-tr')).not.toBeNull());
+    expect(document.activeElement).toBe(row(container, 'docs'));
   });
 });
