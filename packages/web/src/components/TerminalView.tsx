@@ -75,7 +75,7 @@ export function TerminalView({ session: s }: { session: Session }) {
       {/* xterm's own nodes; Preact renders no children here. */}
       <div class="k-term-x" ref={area} />
       {ro && (
-        <div class="k-term-ro">
+        <div class="k-term-ro" role="status">
           View only: Kage didn't start this window, so it doesn't type into it.
         </div>
       )}

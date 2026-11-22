@@ -16,6 +16,7 @@ import {
   sessions,
   stopArmed,
   stopSent,
+  termNote,
 } from './store.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
@@ -573,5 +574,45 @@ describe('installKeys: the terminal (Task 13)', () => {
     expect(replyOpen.value).toBe(false);
     expect(posted()).toEqual([]);
     expect(mainView.value).toBe('terminal');
+  });
+
+  it('Ctrl+Shift+X leaves on a non-Latin layout too (matched by its physical key)', () => {
+    select('shop');
+    press('t');
+    key({ key: 'Ч', code: 'KeyX', ctrlKey: true, shiftKey: true });
+    expect(mainView.value).toBe('output');
+  });
+
+  it('the selected session ending closes its terminal view, keeps the note, and gives the keys back', () => {
+    select('shop');
+    press('t');
+    termNote.value = "The session's window has closed.";
+    const shop = sessions.value.find((s) => s.id === 'shop') as Session;
+    applyEvent({ type: 'session.updated', session: { ...shop, status: 'ended' } });
+    expect(mainView.value).toBe('output');
+    expect(termNote.value).toBe("The session's window has closed.");
+    // Ended, shop moves to the end of the list; K moves on from it.
+    press('k');
+    expect(selectedId.value).not.toBe('shop');
+  });
+
+  it('a terminal view left on an ended session never swallows the keys', () => {
+    ended();
+    select('docs');
+    mainView.value = 'terminal';
+    press('k');
+    expect(selectedId.value).toBe('footer');
+  });
+
+  it('the selected session going away picks another, with the output and no old note', () => {
+    select('shop');
+    press('t');
+    termNote.value = "The session's window has closed.";
+    applyEvent({ type: 'session.removed', id: 'shop' });
+    expect(selectedId.value).not.toBe('shop');
+    expect(mainView.value).toBe('output');
+    expect(termNote.value).toBeNull();
+    press('j');
+    expect(selectedId.value).not.toBe('web');
   });
 });

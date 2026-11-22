@@ -975,9 +975,11 @@ a.k-port {
   flex-direction: column;
   margin-top: 12px;
 }
+/* A read-only pane keeps its own size: a larger one is clipped, never spilled over the footer. */
 .k-term-x {
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 .k-term-msg {
   position: absolute;

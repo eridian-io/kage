@@ -189,9 +189,16 @@ function keepSelection(): void {
     selectedId.value = sorted.value[0]?.id ?? null;
     confirmingDelete.value = false;
     mainView.value = 'output';
+    // A note about the session that went away doesn't belong to the one picked instead.
+    termNote.value = null;
   }
   // The confirmation belongs to a done session; it ends when the session leaves that group.
   const s = selected.value;
+  // An ended session has no window: its terminal view goes (keeping any note), or the board's
+  // keys would stay with a terminal that isn't there.
+  if (mainView.value === 'terminal' && (s === null || s.status === 'ended')) {
+    mainView.value = 'output';
+  }
   if (s === null || groupOf(s) !== 'done') confirmingDelete.value = false;
   // The reply field belongs to a question that takes typed replies; it closes when that ends.
   if (!s?.question || s.question.startup) replyOpen.value = false;

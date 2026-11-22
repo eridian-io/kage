@@ -166,6 +166,7 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
           term.options.disableStdin = mode === 'ro';
           o.onMode?.(mode);
         }
+        if (mode === 'rw') fitLater();
       } else if (m.t === 'size') {
         term.resize(m.cols, m.rows);
       }
@@ -190,7 +191,12 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
     if (mode === 'rw') for (const f of inFrames(d)) send(f);
   });
 
-  const observer = new ResizeObserver(() => {
+  /**
+   * Debounced: when the area's size in cells differs from xterm's, resize and send one size frame.
+   * Run for every resize of the area and after every read-write reset (the pane may not have
+   * taken the size the socket asked for).
+   */
+  function fitLater(): void {
     clearTimeout(resize);
     resize = setTimeout(() => {
       // View-only: xterm keeps the pane's size and never resizes it.
@@ -200,7 +206,8 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
       term.resize(d.cols, d.rows);
       send(JSON.stringify({ t: 'size', cols: d.cols, rows: d.rows }));
     }, RESIZE_MS);
-  });
+  }
+  const observer = new ResizeObserver(fitLater);
   observer.observe(el);
 
   const onVisibility = () => {

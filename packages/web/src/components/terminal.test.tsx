@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -301,6 +303,26 @@ describe('the terminal view', () => {
         "View only: Kage didn't start this window, so it doesn't type into it.",
       ),
     );
+    // Announced when it appears.
+    expect(q(c, '.k-term-ro').getAttribute('role')).toBe('status');
+  });
+
+  it('a pane larger than the area is clipped, never spilled over the footer', () => {
+    const css = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'utf8');
+    const rule = /.k-term-x {([^}]*)}/.exec(css)?.[1] ?? '';
+    expect(rule).toContain('overflow: hidden;');
+  });
+
+  it('the selected session ending disposes its terminal and returns to the output', async () => {
+    const c = await open();
+    const shop = sessions.value.find((s) => s.id === 'shop') as Session;
+    applyEvent({ type: 'session.updated', session: { ...shop, status: 'ended' } });
+    await waitFor(() => expect(last().dispose).toHaveBeenCalledTimes(1));
+    expect(mainView.value).toBe('output');
+    expect(c.querySelector('.k-term')).toBeNull();
+    // The board's keys work again.
+    key({ key: 'k' });
+    expect(selectedId.value).not.toBe('shop');
   });
 
   it('hides the question, the follow-up and the delete confirmation', async () => {

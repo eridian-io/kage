@@ -40,7 +40,9 @@ function typing(target: EventTarget | null): boolean {
 export function installKeys(target: Document = document): () => void {
   let disarm: ReturnType<typeof setTimeout> | undefined;
   const onKey = (e: KeyboardEvent) => {
-    if (mainView.value === 'terminal') {
+    const open = selected.value;
+    // Only a terminal that is on screen owns the keys (an ended session shows none).
+    if (mainView.value === 'terminal' && open !== null && open.status !== 'ended') {
       // From inside xterm too: its key handler lets these two through to here.
       if (isLeave(e) && !e.repeat) {
         e.preventDefault();

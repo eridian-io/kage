@@ -247,11 +247,28 @@ describe('mountTerminal', () => {
     expect(last().sent).toHaveLength(1);
   });
 
+  it('after a read-write reset the area is fitted: a size that differs sends one size frame', () => {
+    vi.useFakeTimers();
+    attached('rw');
+    // The fit addon proposes 100x30; the pane came back at 120x40.
+    vi.advanceTimersByTime(RESIZE_MS - 1);
+    expect(last().sent).toEqual([]);
+    vi.advanceTimersByTime(1);
+    expect(last().sent).toEqual(['{"t":"size","cols":100,"rows":30}']);
+    expect(fx.calls.at(-1)).toEqual(['resize', 100, 30]);
+    // A reset at the area's size sends nothing more.
+    last().text({ t: 'reset', cols: 100, rows: 30, mode: 'rw' });
+    vi.advanceTimersByTime(RESIZE_MS);
+    expect(last().sent).toHaveLength(1);
+  });
+
   it('Shift+Escape and Ctrl+Shift+X are not sent to the pane; Escape and Ctrl+X are', () => {
     mount();
     const keys = term().keys as (e: KeyboardEvent) => boolean;
     expect(keys(key({ key: 'Escape', shiftKey: true }))).toBe(false);
     expect(keys(key({ key: 'X', ctrlKey: true, shiftKey: true }))).toBe(false);
+    // A non-Latin layout: the physical X key.
+    expect(keys(key({ key: 'Ч', code: 'KeyX', ctrlKey: true, shiftKey: true }))).toBe(false);
     expect(keys(key({ key: 'Escape' }))).toBe(true);
     expect(keys(key({ key: 'x', ctrlKey: true }))).toBe(true);
     expect(keys(key({ key: 'Escape', shiftKey: true, altKey: true }))).toBe(true);
