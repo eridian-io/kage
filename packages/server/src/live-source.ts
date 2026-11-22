@@ -903,9 +903,12 @@ export class LiveSource implements SessionSource {
     // would drop it too early.
     for (const w of windows) if (w.kageId) this.#claims.delete(w.windowId);
     const listed = new Set(windows.map((w) => w.windowId));
+    /** Records whose claimed window died before any listing showed it. */
+    const lost = new Set<string>();
     for (const [w, at] of this.#claimSeq) {
       if (!this.#claims.has(w)) this.#claimSeq.delete(w);
       else if (at < seq && !listed.has(w)) {
+        lost.add(this.#claims.get(w) as string);
         this.#claims.delete(w);
         this.#claimSeq.delete(w);
       }
@@ -958,6 +961,19 @@ export class LiveSource implements SessionSource {
       if (seen.has(st.id)) continue;
       if (!st.record) this.#removeSession(st);
       else if (st.window) this.#detach(st);
+    }
+    // A launched or resumed window that died before any listing showed it: the session was
+    // never attached, so nothing above ends it. Ended now (which also ends the resume and the
+    // first-prompt wait), unless another listed window carries its id.
+    for (const id of lost) {
+      const st = this.#sessions.get(id);
+      if (!st?.record || st.window || st.status === 'ended') continue;
+      this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
+      st.mode = 'hooks';
+      st.pending = false;
+      this.#setStatus(st, 'ended');
+      this.#retireTailSoon(st);
+      this.#emitNow(st);
     }
     await Promise.all(attaching);
   }

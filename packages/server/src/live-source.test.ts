@@ -3540,3 +3540,55 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-other');
   });
 });
+
+describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
+  const ended = () => rec({ windowId: '@2', sessionId: 's-1', transcriptPath: TRANSCRIPT });
+
+  it('a resumed window no listing ever shows ends the session: ended, the wait cleared, resumable again', async () => {
+    const { source, updates } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    source.claim('k-1', '@9'); // the claim's own re-list finds no @9
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended' });
+    expect(source.get('k-1')?.now).toBeUndefined();
+    expect(source.hasWindow('k-1')).toBe(false);
+    // A later resume is allowed (ended, no window) and starts afresh.
+    const t = source.finishTarget('k-1');
+    expect(t).toMatchObject({ status: 'ended', windowId: null });
+    source.resumed('k-1', 's-1');
+    expect(source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+  });
+
+  it('the cleared wait holds: a hook arriving later is no "Starting Claude…" and no failed resume', async () => {
+    const { source, hooks, tmux, watcher } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    source.claim('k-1', '@9');
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    // The record's window shows up later, tagged (say, opened by hand), with another session.
+    tmux.windows = [kageWin({ windowId: '@10', paneId: '%10' })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    hooks.fire(hook('SessionEnd', '%10', { sessionId: 's-2' }));
+    await flush();
+    expect(source.lines('k-1')).not.toContainEqual({
+      kind: 'out',
+      text: "Claude couldn't find this conversation, so the session wasn't resumed.",
+    });
+    expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-2');
+  });
+
+  it('a launched window that dies unseen ends the launch too', async () => {
+    const { source } = setup();
+    await source.start();
+    await source.adopt(rec({ kageId: 'k-9', windowId: null, branch: 'kage/x', createdAt: T0 }));
+    source.claim('k-9', '@7');
+    await flush();
+    expect(source.get('k-9')?.status).toBe('ended');
+  });
+});
