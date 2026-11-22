@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { build, FONTS } from './build.ts';
+import { build, FONTS, HASHED, LAZY } from './build.ts';
 import {
   allowFailVerdict,
   measureSizes,
@@ -32,37 +32,88 @@ afterAll(() => rm(out, { recursive: true, force: true }));
 
 const built = async (re: RegExp) => (await readdir(out)).find((f) => re.test(f)) as string;
 
+const gzFile = async (f: string) => gzipSync(await readFile(join(out, f)), { level: 9 }).length;
+const textOf = (f: string) => readFile(join(out, f), 'utf8');
+const html = () => textOf('index.html');
+/** Every script and link in index.html that names code (.js or .css), without the slash. */
+const codeRefs = async () =>
+  [...(await html()).matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="\/([^"]+)"/g)]
+    .map((m) => m[1] as string)
+    .filter((r) => /\.(js|css)$/.test(r));
+
 describe('web build', () => {
-  it('references one hashed JS and one hashed CSS file; only the kage-term meta names the terminal', async () => {
-    const html = await readFile(join(out, 'index.html'), 'utf8');
-    const js = [...html.matchAll(/src="\/(app-[A-Za-z0-9]+\.js)"/g)].map((m) => m[1]);
-    const css = [...html.matchAll(/href="\/(app-[A-Za-z0-9]+\.css)"/g)].map((m) => m[1]);
+  it('references one app JS, one app CSS and a modulepreload per shared chunk; only the kage-term meta names the terminal', async () => {
+    const page = await html();
+    const js = [...page.matchAll(/src="\/(app-[A-Za-z0-9]+\.js)"/g)].map((m) => m[1]);
+    const css = [...page.matchAll(/href="\/(app-[A-Za-z0-9]+\.css)"/g)].map((m) => m[1]);
     expect(js).toHaveLength(1);
     expect(css).toHaveLength(1);
-    // Every script and link that names code names an app- file; none names the terminal.
-    const refs = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map(
+    expect(page).toContain('<script type="module" src="/');
+    // Every other code reference is a modulepreload of a shared chunk.
+    const preloads = [...page.matchAll(/<link rel="modulepreload" href="\/([^"]+)" \/>/g)].map(
       (m) => m[1] as string,
     );
-    expect(refs.filter((r) => /\.(js|css)$/.test(r))).toEqual([`/${css[0]}`, `/${js[0]}`]);
-    expect(html).not.toContain('modulepreload');
-    expect(html).not.toMatch(/<(?:script|link)\b[^>]*term-/);
+    for (const p of preloads) expect(p).toMatch(/^chunk-[A-Za-z0-9]+\.js$/);
+    expect((await codeRefs()).sort()).toEqual([css[0], js[0], ...preloads].sort());
+    // Neither lazy entry is ever named by a script or a link.
+    expect(page).not.toMatch(/<(?:script|link)\b[^>]*(?:term|diff|palette)-/);
     const meta =
       /<meta name="kage-term" content="\/(term-[A-Za-z0-9]+\.js) \/(term-[A-Za-z0-9]+\.css)" \/>/.exec(
-        html,
+        page,
       );
     expect(meta).not.toBeNull();
-    const [, termJs, termCss] = meta as RegExpExecArray;
-    const files = (await readdir(out)).sort();
-    expect(files).toEqual(
-      [css[0], js[0], termJs, termCss, 'fonts', 'index.html', 'kage-logo-96.png'].sort(),
-    );
-    expect(html).toContain('<script type="module" src="/');
   });
 
-  it('hashes both builds by name (assets.ts caches these names immutable; app.test.ts)', async () => {
-    const hashed = (await readdir(out)).filter((f) => /^(app|term)-/.test(f));
-    expect(hashed).toHaveLength(4);
-    for (const f of hashed) expect(f).toMatch(/^(app|term)-[A-Za-z0-9]+\.(js|css)$/);
+  it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {
+    const files = (await readdir(out)).filter(
+      (f) => !['fonts', 'index.html', 'kage-logo-96.png'].includes(f),
+    );
+    for (const f of files) expect(f).toMatch(HASHED);
+    expect(HASHED.source).toBe('^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\\.(js|css)$');
+    const count = (re: RegExp) => files.filter((f) => re.test(f)).length;
+    expect(count(/^app-.*\.js$/)).toBe(1);
+    expect(count(/^app-.*\.css$/)).toBe(1);
+    expect(count(/^term-.*\.js$/)).toBe(1);
+    expect(count(/^term-.*\.css$/)).toBe(1);
+    // The diff today; a lazy palette (ruling PF5, F7) is one more LAZY entry.
+    expect(Object.keys(LAZY)).toContain('diff');
+    for (const name of Object.keys(LAZY)) {
+      expect(count(new RegExp(`^${name}-.*\\.js$`)), name).toBe(1);
+      // Its styles are in board.css: no CSS of its own.
+      expect(count(new RegExp(`^${name}-.*\\.css$`)), name).toBe(0);
+    }
+    expect(count(/^chunk-.*\.css$/)).toBe(0);
+    expect(files).toHaveLength(4 + Object.keys(LAZY).length + count(/^chunk-.*\.js$/));
+  });
+
+  it('first load: app JS, its static import closure and app CSS, each named by index.html', async () => {
+    const js = await built(/^app-.*\.js$/);
+    const css = await built(/^app-.*\.css$/);
+    expect(result.firstLoad).toContain(js);
+    expect(result.firstLoad).toContain(css);
+    for (const f of result.firstLoad) {
+      expect(f).toMatch(/^(app-[A-Za-z0-9]+\.(js|css)|chunk-[A-Za-z0-9]+\.js)$/);
+    }
+    // Every chunk in it has its modulepreload, and index.html names nothing else.
+    expect((await codeRefs()).sort()).toEqual([...result.firstLoad].sort());
+  });
+
+  it('the diff view is its own lazy file, outside the first load', async () => {
+    const diff = await built(/^diff-.*\.js$/);
+    expect(result.firstLoad).not.toContain(diff);
+    console.log(`diff chunk gzipped: ${await gzFile(diff)} bytes`);
+    // DiffView's markup is in it, not in the first load.
+    expect(await textOf(diff)).toContain('k-diff-file');
+    for (const f of result.firstLoad.filter((n) => n.endsWith('.js'))) {
+      expect(await textOf(f), f).not.toContain('k-diff-file');
+    }
+  });
+
+  it('the demo data stays out of the first load (the server serves it)', async () => {
+    // The docs seed's text in packages/shared/src/demo.ts.
+    for (const f of result.firstLoad) {
+      expect(await textOf(f), f).not.toContain('a troubleshooting section');
+    }
   });
 
   it('copies the fonts and preloads the two 400 weights and the logo', async () => {
@@ -101,13 +152,20 @@ describe('web build', () => {
     expect(plain).toHaveLength(1);
   });
 
-  it(`keeps the first load (index.html + JS + CSS, gzipped) within ${BUDGET} bytes`, async () => {
-    const js = await built(/^app-.*\.js$/);
-    const total = sizes.firstLoad;
-    console.log(`first load gzipped: ${total} bytes`);
+  it(`keeps the first load (index.html + its JS and CSS, gzipped) within ${BUDGET} bytes`, async () => {
+    let total = await gzFile('index.html');
+    const each: string[] = [];
+    for (const f of result.firstLoad) {
+      const n = await gzFile(f);
+      each.push(`${f} ${n}`);
+      total += n;
+    }
+    console.log(`first load gzipped: ${total} bytes (${each.join(', ')})`);
+    // sizes.ts (perf.spec.ts) measures the same files, from index.html.
+    expect(sizes.firstLoad).toBe(total);
     expect(total).toBeLessThanOrEqual(BUDGET);
     // xterm stays out of it.
-    expect(await readFile(join(out, js), 'utf8')).not.toContain('xterm');
+    for (const f of result.firstLoad) expect(await textOf(f), f).not.toContain('xterm');
   });
 
   it(`keeps the terminal chunk (JS + CSS, gzipped) within ${TERM_BUDGET} bytes`, async () => {
@@ -119,8 +177,21 @@ describe('web build', () => {
     const text = await readFile(join(out, css), 'utf8');
     expect(text).toContain('.xterm-viewport');
     expect(text).toContain('.k-term-x');
-    const term = Object.entries(result.metafile.outputs).find(([p]) => /term-[^/\\]*\.js$/.test(p));
-    expect(Object.keys(term?.[1].inputs ?? {}).some((p) => p.includes('preact'))).toBe(false);
+    // Nor in any chunk it imports, if splitting gave it one.
+    const outputs = result.metafile.outputs;
+    const term = Object.keys(outputs).find((p) => /term-[^/\\]*\.js$/.test(p)) as string;
+    const closure = new Set([term]);
+    for (const p of closure) {
+      for (const i of outputs[p]?.imports ?? []) {
+        if (i.kind === 'import-statement' && !i.external) closure.add(i.path);
+      }
+    }
+    for (const p of closure) {
+      expect(
+        Object.keys(outputs[p]?.inputs ?? {}).some((i) => i.includes('preact')),
+        p,
+      ).toBe(false);
+    }
   });
 
   it(`keeps the terminal loader within ${LOADER_BUDGET} bytes gzipped`, async () => {

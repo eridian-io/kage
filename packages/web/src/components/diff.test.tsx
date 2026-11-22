@@ -3,6 +3,7 @@ import { join } from 'node:path';
 import { type DiffPage, demoSessions, LIMITS, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { diffImport } from '../diff-loader.tsx';
 import { Board } from '../main.tsx';
 import {
   actionError,
@@ -149,7 +150,9 @@ beforeEach(() => {
   vi.stubGlobal('fetch', fetchMock);
   reset();
 });
+const realLoad = diffImport.load;
 afterEach(() => {
+  diffImport.load = realLoad;
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -687,6 +690,140 @@ describe('the diff view', () => {
       applyEvent({ type: 'session.files', id: 'web', files: [], filesTotal: 0 });
       await Promise.resolve();
       expect(c.querySelector('.k-diff-stale')).toBeNull();
+    });
+  });
+
+  describe('the lazy chunk (R78)', () => {
+    /** diffImport.load answered by hand: each call waits for its own settle. */
+    function heldLoads() {
+      const calls: { ok: () => void; fail: () => void }[] = [];
+      diffImport.load = () =>
+        new Promise((ok, fail) => {
+          calls.push({ ok: () => ok(realLoad()), fail: () => fail(new Error('chunk 404')) });
+        });
+      return calls;
+    }
+    const openHeld = () => {
+      const r = render(<Board />);
+      fireEvent.click(row(r.container, 'docs'));
+      fireEvent.click(viewDiff(r.container));
+      return r.container;
+    };
+    const failed = async (c: Element) => {
+      await waitFor(() => expect(c.querySelector('.k-dv .k-err')).not.toBeNull());
+    };
+
+    it('View diff shows Loading the diff… while the chunk loads, then the page', async () => {
+      const calls = heldLoads();
+      const c = openHeld();
+      await waitFor(() => expect(calls).toHaveLength(1));
+      expect(q(c, '.k-dv .k-diff-msg').textContent).toBe('Loading the diff…');
+      expect(q(c, '.k-dv .k-diff-msg').getAttribute('role')).toBe('status');
+      // The page itself is asked for only once the chunk is in.
+      expect(diffGets()).toEqual([]);
+      calls[0]?.ok();
+      await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+      expect(diffGets()).toEqual(['/api/sessions/docs/diff?from=0']);
+    });
+
+    it("a chunk that won't load shows Couldn't load the diff. and Try again", async () => {
+      const calls = heldLoads();
+      const c = openHeld();
+      await waitFor(() => expect(calls).toHaveLength(1));
+      calls[0]?.fail();
+      await failed(c);
+      const err = q(c, '.k-dv .k-err');
+      expect(err.textContent).toBe("Couldn't load the diff.");
+      expect(err.getAttribute('role')).toBe('alert');
+      expect(button(c, 'Try again').tagName).toBe('BUTTON');
+      expect(c.querySelector('.k-diff-msg')).toBeNull();
+      expect(diffGets()).toEqual([]);
+    });
+
+    it('Try again loads the chunk again (a failure is not cached), then the page', async () => {
+      const calls = heldLoads();
+      const c = openHeld();
+      await waitFor(() => expect(calls).toHaveLength(1));
+      calls[0]?.fail();
+      await failed(c);
+      fireEvent.click(button(c, 'Try again'));
+      await waitFor(() => expect(calls).toHaveLength(2));
+      // Focus stays in the diff while Try again goes away.
+      expect(document.activeElement).toBe(q(c, '.k-diff-body'));
+      expect(q(c, '.k-dv .k-diff-msg').textContent).toBe('Loading the diff…');
+      calls[1]?.ok();
+      await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+      expect(c.querySelector('.k-dv .k-err')).toBeNull();
+    });
+
+    it('a failure is forgotten: the next View diff loads the chunk again', async () => {
+      const calls = heldLoads();
+      const c = openHeld();
+      await waitFor(() => expect(calls).toHaveLength(1));
+      calls[0]?.fail();
+      await failed(c);
+      fireEvent.click(button(c, 'Back to session'));
+      await waitFor(() => expect(c.querySelector('.k-dv')).toBeNull());
+      fireEvent.click(viewDiff(c));
+      await waitFor(() => expect(calls).toHaveLength(2));
+    });
+
+    it('once loaded, the chunk is not loaded again for the next open', async () => {
+      let n = 0;
+      diffImport.load = () => {
+        n++;
+        return realLoad();
+      };
+      const c = await openDiff();
+      fireEvent.click(button(c, 'Back to session'));
+      await waitFor(() => expect(c.querySelector('.k-dv')).toBeNull());
+      fireEvent.click(viewDiff(c));
+      await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+      expect(n).toBe(1);
+    });
+
+    // F11: the way back never depends on the chunk.
+    for (const state of ['loading', 'failed'] as const) {
+      it(`while ${state}: the footer shows Back to session with Esc, and Back leaves`, async () => {
+        const calls = heldLoads();
+        const c = openHeld();
+        await waitFor(() => expect(calls).toHaveLength(1));
+        if (state === 'failed') {
+          calls[0]?.fail();
+          await failed(c);
+        }
+        expect(texts(c, '.k-foot .l button')).toEqual(['Back to sessionEsc']);
+        fireEvent.click(button(c, 'Back to session'));
+        await waitFor(() => expect(c.querySelector('.k-tr')).not.toBeNull());
+        expect(mainView.value).toBe('output');
+        expect(document.activeElement).toBe(viewDiff(c));
+      });
+
+      it(`while ${state}: Esc returns to the output`, async () => {
+        const calls = heldLoads();
+        const c = openHeld();
+        await waitFor(() => expect(calls).toHaveLength(1));
+        if (state === 'failed') {
+          calls[0]?.fail();
+          await failed(c);
+        }
+        fireEvent.keyDown(document, { key: 'Escape' });
+        await waitFor(() => expect(c.querySelector('.k-tr')).not.toBeNull());
+        expect(mainView.value).toBe('output');
+        expect(selectedId.value).toBe('docs');
+      });
+    }
+
+    it('a chunk that arrives after Back shows nothing and asks for no page', async () => {
+      const calls = heldLoads();
+      const c = openHeld();
+      await waitFor(() => expect(calls).toHaveLength(1));
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(c.querySelector('.k-dv')).toBeNull());
+      calls[0]?.ok();
+      await new Promise((r) => setTimeout(r, 0));
+      expect(c.querySelector('.k-dv')).toBeNull();
+      expect(diffGets()).toEqual([]);
     });
   });
 

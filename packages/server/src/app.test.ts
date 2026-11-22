@@ -31,6 +31,11 @@ beforeAll(async () => {
   await writeFile(join(dist, 'app-ABC123.js'), JS);
   await writeFile(join(dist, 'term-GHI789.js'), 'export const t = 1;');
   await writeFile(join(dist, 'term-JKL012.css'), '.xterm{}');
+  // Phase 5 (R78): shared chunks and the lazy entries are hashed the same way.
+  await writeFile(join(dist, 'chunk-abc123.js'), 'export const c = 1;');
+  await writeFile(join(dist, 'diff-abc123.js'), 'export const d = 1;');
+  await writeFile(join(dist, 'palette-abc123.js'), 'export const p = 1;');
+  await writeFile(join(dist, 'other-abc123.js'), 'export const o = 1;');
   await writeFile(join(dist, 'app-DEF456.css'), `.k-app{color:red}${'.a{b:c}'.repeat(100)}`);
   await writeFile(join(dist, 'fonts', 'geist-latin-400-normal.woff2'), new Uint8Array([1, 2, 3]));
   // Compressible bytes under already-compressed extensions: must still be served raw.
@@ -100,6 +105,11 @@ describe('loadAssets', () => {
     // The terminal chunk is hashed the same way (Task 13).
     expect(assets.get('/term-GHI789.js')?.immutable).toBe(true);
     expect(assets.get('/term-JKL012.css')?.immutable).toBe(true);
+    expect(assets.get('/chunk-abc123.js')?.immutable).toBe(true);
+    expect(assets.get('/diff-abc123.js')?.immutable).toBe(true);
+    // A lazy palette (ruling PF5, F7) is ready too; an unknown name is not.
+    expect(assets.get('/palette-abc123.js')?.immutable).toBe(true);
+    expect(assets.get('/other-abc123.js')?.immutable).toBe(false);
     expect(index?.immutable).toBe(false);
     expect(assets.get('/fonts/geist-latin-400-normal.woff2')?.immutable).toBe(false);
   });
@@ -132,6 +142,11 @@ describe('static assets', () => {
     const js = await app().fetch(req('/app-ABC123.js'));
     expect(js.status).toBe(200);
     expect(js.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
+    for (const path of ['/chunk-abc123.js', '/diff-abc123.js']) {
+      const r = await app().fetch(req(path));
+      expect(r.status, path).toBe(200);
+      expect(r.headers.get('cache-control'), path).toBe('public, max-age=31536000, immutable');
+    }
 
     const index = await app().fetch(req('/index.html'));
     expect(index.headers.get('cache-control')).toBe('no-cache');

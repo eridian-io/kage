@@ -31,8 +31,11 @@ const TYPES: Record<string, string> = {
 /** Formats that are compressed already: served raw, never brotli/gzip. */
 const PRECOMPRESSED = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
 
-/** esbuild's `app-[hash]` and `term-[hash]` names: their content never changes under the same name. */
-const HASHED = /^\/(app|term)-[A-Za-z0-9]+\.(js|css)$/;
+/**
+ * esbuild's hashed names (packages/web/build.ts HASHED): the board, the terminal, the lazy diff and
+ * palette, and the chunks they share. Their content never changes under the same name.
+ */
+const HASHED = /^\/(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 
 const br = promisify(brotliCompress);
 const gz = promisify(gzip);

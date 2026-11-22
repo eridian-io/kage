@@ -8,8 +8,11 @@ import * as esbuild from 'esbuild';
  * build and e2e/perf.spec.ts records them from packages/web/dist (ruling PF5, F6). Gzip level 9.
  */
 export const SIZE_LIMITS = {
-  /** index.html + app JS + app CSS. Spec §7 allows 30 KB; phase 4 ends at 25.5 KB (F14). */
-  firstLoad: 25.5 * 1024,
+  /**
+   * index.html + every JS and CSS file it names (app, its chunks, its CSS). Spec §7 allows 30 KB;
+   * 26.5 KB from Task 2 (B1); after Task 8, the measured value + 1 KB (ruling PF5, F7).
+   */
+  firstLoad: 26.5 * 1024,
   /** The terminal chunk, JS plus CSS (spec §7: about 90 KB; the plan: at most 100 KB). */
   termChunk: 100 * 1024,
   /** term-loader.ts, the only terminal code in the first load (F14). */
@@ -81,10 +84,14 @@ export async function termLoaderCode(): Promise<Uint8Array> {
 /** Every size SIZE_LIMITS bounds, measured on the build in `dist`. */
 export async function measureSizes(dist: string): Promise<Sizes> {
   const at = (re: RegExp) => builtFile(dist, re).then((f) => join(dist, f));
-  const firstLoad =
-    (await gz(join(dist, 'index.html'))) +
-    (await gz(await at(/^app-.*\.js$/))) +
-    (await gz(await at(/^app-.*\.css$/)));
+  // What the browser fetches before the board runs: index.html and each file a script or link in
+  // it names (the stylesheet, app and its modulepreloaded chunks). build.test.ts checks that these
+  // are exactly build()'s firstLoad.
+  const html = await readFile(join(dist, 'index.html'), 'utf8');
+  let firstLoad = gzipSync(html, { level: 9 }).length;
+  for (const m of html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="\/([^"]+\.(?:js|css))"/g)) {
+    firstLoad += await gz(join(dist, m[1] as string));
+  }
   const termChunk = (await gz(await at(/^term-.*\.js$/))) + (await gz(await at(/^term-.*\.css$/)));
   const termLoader = gzipSync(await termLoaderCode(), { level: 9 }).length;
   let fonts = 0;

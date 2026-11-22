@@ -2,6 +2,7 @@ import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { archive, canAct, pin, remove, resume, stop } from '../api.ts';
+import { LazyDiff } from '../diff-loader.tsx';
 import {
   actionError,
   closeDiff,
@@ -17,7 +18,6 @@ import {
   termNote,
 } from '../store.ts';
 import { Ask } from './Ask.tsx';
-import { DiffView } from './DiffView.tsx';
 import { FollowUp } from './FollowUp.tsx';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
@@ -253,7 +253,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
       </div>
       <Toast />
       {diff ? (
-        <DiffView key={s.id} session={s} />
+        <LazyDiff key={s.id} session={s} />
       ) : term ? (
         <TerminalView key={s.id} session={s} />
       ) : (
