@@ -193,3 +193,131 @@ describe('worktreeDir and branchPrefix', () => {
       expect((await load({ branchPrefix: v })).branchPrefix).toBe(v);
   });
 });
+
+describe('ntfy keys (N4)', () => {
+  const load = async (obj: object) =>
+    loadConfig({ path: await write(JSON.stringify(obj)), env: env() });
+  const refused = async (obj: object): Promise<string> => {
+    const err = await load(obj).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConfigError);
+    return (err as Error).message;
+  };
+  const LONG_TOPIC = 'kage-topic-0123456789';
+
+  it('defaults: ntfy.sh, no token, no done pings, no topic', async () => {
+    const c = await loadConfig({ path: join(dir, 'none.json'), env: env() });
+    expect(c.ntfyServer).toBe('https://ntfy.sh');
+    expect(c.ntfyToken).toBe('');
+    expect(c.ntfyOnDone).toBe(false);
+    expect(c.ntfyTopic).toBe('');
+  });
+
+  it('ntfyTopic: "" or 1 to 64 letters, digits, - or _', async () => {
+    expect((await load({ ntfyTopic: '' })).ntfyTopic).toBe('');
+    expect((await load({ ntfyTopic: LONG_TOPIC })).ntfyTopic).toBe(LONG_TOPIC);
+    const t64 = 'A_-9'.repeat(16);
+    expect((await load({ ntfyTopic: t64 })).ntfyTopic).toBe(t64);
+    for (const bad of [
+      'secret topic xyz',
+      'secret/topic/xyzzz',
+      `secretTopic${'x'.repeat(60)}`,
+      'secrét-topic-xyzzz',
+      'secret\ntopic-xyzzz',
+    ]) {
+      const msg = await refused({ ntfyTopic: bad });
+      expect(msg).toBe('ntfyTopic must be up to 64 letters, digits, - or _');
+      expect(msg).not.toContain('secret');
+    }
+    await refused({ ntfyTopic: 42 });
+  });
+
+  it('on ntfy.sh with no token, the topic must be at least 16 characters', async () => {
+    const msg = await refused({ ntfyTopic: 'secretTopic15ch' });
+    expect(msg).toBe(
+      'ntfyTopic must be at least 16 letters, digits, - or _ on ntfy.sh: anyone who guesses it can read your pings',
+    );
+    expect(msg).not.toContain('secretTopic');
+    expect((await load({ ntfyTopic: 'k'.repeat(16) })).ntfyTopic).toBe('k'.repeat(16));
+    // A token, or another server, lifts the rule.
+    expect((await load({ ntfyTopic: 'short', ntfyToken: 'tk_abc' })).ntfyTopic).toBe('short');
+    expect(
+      (await load({ ntfyTopic: 'short', ntfyServer: 'https://ntfy.example.invalid' })).ntfyTopic,
+    ).toBe('short');
+    await refused({ ntfyTopic: 'short', ntfyServer: 'https://NTFY.SH/' });
+  });
+
+  it('ntfyServer: https anywhere; http only on loopback or the tailnet', async () => {
+    for (const ok of [
+      'https://ntfy.sh',
+      'https://ntfy.example.invalid:8443',
+      'https://ntfy.example.invalid/prefix',
+      'http://127.0.0.1:2586',
+      'http://localhost:2586',
+      'http://[::1]:2586',
+      'http://100.101.102.103',
+      'http://[fd7a:115c:a1e0::1]:80',
+      'http://ntfy.tail1.ts.net',
+    ]) {
+      expect((await load({ ntfyServer: ok })).ntfyServer).toBe(ok);
+    }
+    const expected =
+      'ntfyServer must be an https: URL (http: only on this machine or your tailnet), with no user name, query or fragment';
+    for (const bad of [
+      'http://secret.example.com',
+      'http://192.168.1.10',
+      'http://100.128.0.1',
+      'ftp://secret.example.com',
+      'https://user:secret@ntfy.example.invalid',
+      'https://ntfy.example.invalid/?secret=1',
+      'https://ntfy.example.invalid/?',
+      'https://ntfy.example.invalid/#secret',
+      'not a url secret',
+      '',
+    ]) {
+      const msg = await refused({ ntfyServer: bad });
+      expect(msg).toBe(expected);
+      expect(msg).not.toContain('secret');
+    }
+    await refused({ ntfyServer: 7 });
+  });
+
+  it('ntfyServer: a trailing / is dropped', async () => {
+    expect((await load({ ntfyServer: 'https://ntfy.example.invalid/' })).ntfyServer).toBe(
+      'https://ntfy.example.invalid',
+    );
+    expect((await load({ ntfyServer: 'https://ntfy.example.invalid/p//' })).ntfyServer).toBe(
+      'https://ntfy.example.invalid/p',
+    );
+  });
+
+  it('ntfyToken: "" or 1 to 128 letters, digits, - or _', async () => {
+    expect((await load({ ntfyToken: '' })).ntfyToken).toBe('');
+    expect((await load({ ntfyToken: 'tk_AbC-123' })).ntfyToken).toBe('tk_AbC-123');
+    expect((await load({ ntfyToken: 't'.repeat(128) })).ntfyToken).toBe('t'.repeat(128));
+    for (const bad of [
+      'tk_secret xyz',
+      'tk_secret\nxyz',
+      'tk_secrét',
+      `tk_secret${'x'.repeat(120)}`,
+      'tk_secret!',
+    ]) {
+      const msg = await refused({ ntfyToken: bad });
+      expect(msg).toBe('ntfyToken must be up to 128 letters, digits, - or _');
+      expect(msg).not.toContain('secret');
+    }
+    await refused({ ntfyToken: null });
+  });
+
+  it('ntfyOnDone: a boolean', async () => {
+    expect((await load({ ntfyOnDone: true })).ntfyOnDone).toBe(true);
+    expect(await refused({ ntfyOnDone: 'yes' })).toBe('ntfyOnDone must be true or false');
+  });
+
+  it('malformed JSON never repeats the file’s text (a secret may be in it)', async () => {
+    const path = await write('{"ntfyToken": tk_secretvalue}');
+    const err = await loadConfig({ path, env: env() }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as Error).message).toContain(path);
+    expect((err as Error).message).not.toContain('secret');
+  });
+});

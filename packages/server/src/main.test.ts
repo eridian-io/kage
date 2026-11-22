@@ -315,6 +315,89 @@ describe('kage hooks-path', () => {
   });
 });
 
+describe('kage ping (against the fake ntfy, R85)', () => {
+  interface Fake {
+    url: string;
+    received: { path: string; headers: Record<string, string>; body: unknown }[];
+    close(): Promise<void>;
+  }
+  const FAKE = new URL('../../../e2e/fake-ntfy.ts', import.meta.url).href;
+  const startFake = async (o?: { status?: number[] }): Promise<Fake> =>
+    (
+      (await import(FAKE)) as { startFakeNtfy(o?: { status?: number[] }): Promise<Fake> }
+    ).startFakeNtfy(o);
+  const TOPIC = 'kage-ping-topic-0123456789';
+  const TOKEN = 'tk_ping_secret_token_abc';
+  let fake: Fake | null = null;
+  afterEach(async () => {
+    await fake?.close();
+    fake = null;
+  });
+
+  it('sends the test ping and prints the success line, without the topic or token', async () => {
+    fake = await startFake();
+    const e = env();
+    // A path prefix in ntfyServer may be secret too (PF5 F15): only the host is printed.
+    writeConfig(e, {
+      name: 'box',
+      ntfyTopic: TOPIC,
+      ntfyToken: TOKEN,
+      ntfyServer: `${fake.url}/secret-prefix/`,
+    });
+    expect(await main(['ping'], io(e))).toBe(0);
+    const host = new URL(fake.url).host;
+    expect(out).toEqual([`Sent a test ping to ${host}.`]);
+    expect(err).toEqual([]);
+    expect(fake.received).toHaveLength(1);
+    expect(fake.received[0]?.path).toBe('/secret-prefix/');
+    expect(fake.received[0]?.body).toEqual({
+      topic: TOPIC,
+      title: 'Kage test ping',
+      message: 'ntfy is set up for box.',
+      priority: 3,
+    });
+    expect(fake.received[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
+    const printed = [...out, ...err].join('\n');
+    for (const secret of [TOPIC, TOKEN, 'secret-prefix']) expect(printed).not.toContain(secret);
+  });
+
+  it('with no topic: the exact line and exit 1', async () => {
+    const e = env();
+    writeConfig(e, { name: 'box' });
+    expect(await main(['ping'], io(e))).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toEqual(['No ntfyTopic in ~/.config/kage/config.json.']);
+  });
+
+  it('a refused ping: the redacted reason and exit 1, without the topic', async () => {
+    fake = await startFake({ status: [403] });
+    const e = env();
+    writeConfig(e, { ntfyTopic: TOPIC, ntfyServer: fake.url });
+    expect(await main(['ping'], io(e))).toBe(1);
+    expect(out).toEqual([]);
+    expect(err).toEqual(["Couldn't send the ping (HTTP 403)."]);
+    expect(fake.received).toHaveLength(1);
+  });
+
+  it('an unreachable server: one try, the error code, exit 1', async () => {
+    fake = await startFake();
+    const url = fake.url;
+    await fake.close();
+    fake = null;
+    const e = env();
+    writeConfig(e, { ntfyTopic: TOPIC, ntfyServer: url });
+    expect(await main(['ping'], io(e))).toBe(1);
+    expect(err).toEqual(["Couldn't send the ping (ECONNREFUSED)."]);
+  });
+
+  it('a config error is one line and exit 1, without the value', async () => {
+    const e = env();
+    writeConfig(e, { ntfyTopic: 'secret topic' });
+    expect(await main(['ping'], io(e))).toBe(1);
+    expect(err).toEqual(['Config error: ntfyTopic must be up to 64 letters, digits, - or _']);
+  });
+});
+
 describe('kage hook', () => {
   const missingSocket = () =>
     isWin
@@ -388,6 +471,8 @@ describe('kage (no command, help, unknown)', () => {
     expect(text).toContain('KAGE_SOCKET');
     expect(text).toContain('owned by you');
     expect(text).toContain('KAGE_CLAUDE_BIN');
+    expect(text).toContain('kage ping');
+    expect(text).not.toContain('KAGE_NOTIFY_DONE_AFTER_MS');
   });
   it('an unknown command exits 1', async () => {
     expect(await main(['frobnicate'], io(env()))).toBe(1);

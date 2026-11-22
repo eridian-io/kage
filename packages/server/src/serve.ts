@@ -28,6 +28,8 @@ import {
 } from './listen.ts';
 import { LiveSource } from './live-source.ts';
 import type { Io, Running } from './main.ts';
+import { boardLink, NOTIFY_DEFAULTS, Notifier } from './notify/notifier.ts';
+import { NtfyClient } from './notify/ntfy.ts';
 import { DiffService } from './preview/diff.ts';
 import { changedFiles, UntrackedCache } from './preview/files.ts';
 import { makeScanner } from './preview/ports.ts';
@@ -273,6 +275,46 @@ async function startLive(
   return { source, tmux, newWindow, settingsPath, hookSocket, lock, finish, bridge: termBridge };
 }
 
+/**
+ * Phone pings (spec §5.9): live mode with an `ntfyTopic` only. The notifier reads the live
+ * source's events; the link uses the MagicDNS name when Tailscale gave one. One startup line
+ * names the server's host, never the topic or the server's path; nothing about ntfy reaches
+ * the browser or the snapshot. `KAGE_NOTIFY_DONE_AFTER_MS` (whole ms) is a test-only override
+ * of the done threshold for the e2e, not documented in USAGE.
+ */
+function startNotifier(
+  cfg: KageConfig,
+  listen: { address: string; dnsName: string | null },
+  source: LiveSource,
+  io: Io,
+  cleanups: Cleanup[],
+): void {
+  const client = new NtfyClient({
+    config: { server: cfg.ntfyServer, topic: cfg.ntfyTopic, token: cfg.ntfyToken },
+    log: (line) => io.err(line),
+  });
+  const doneAfter = io.env.KAGE_NOTIFY_DONE_AFTER_MS ?? '';
+  const host = listen.dnsName ?? displayHost(cfg, listen.address, hostname());
+  const notifier = new Notifier({
+    source,
+    send: (p, stillWanted) => client.send(p, stillWanted),
+    link: (id) => boardLink(host, cfg.port, id),
+    hostName: cfg.name,
+    options: {
+      ...NOTIFY_DEFAULTS,
+      onDone: cfg.ntfyOnDone,
+      ...(/^\d{1,9}$/.test(doneAfter) ? { doneAfterMs: Number(doneAfter) } : {}),
+    },
+    log: (line) => io.err(line),
+  });
+  notifier.start();
+  cleanups.push(() => {
+    notifier.stop();
+    client.close();
+  });
+  io.out(`Pings go to ntfy at ${new URL(cfg.ntfyServer).host}.`);
+}
+
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
 export interface CliParts {
   usage: string;
@@ -515,6 +557,7 @@ async function startServer(
   // R53: without a token, anyone who can reach the address can start and approve tasks.
   if (!demo && cfg.token === '') io.err(NO_TOKEN);
   io.out(`Kage is running at http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`);
+  if (liveParts && cfg.ntfyTopic !== '') startNotifier(cfg, listen, liveParts.source, io, cleanups);
 
   return { stop: () => unwind(cleanups) };
 }

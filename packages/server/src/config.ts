@@ -1,6 +1,7 @@
 import { readFile } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
+import { serverAllowed } from './notify/ntfy.ts';
 
 export interface KageConfig {
   /** Display name in the host pill; default: the short os.hostname(). */
@@ -15,7 +16,14 @@ export interface KageConfig {
   worktreeDir: string;
   branchPrefix: string;
   autoArchive: { onMerge: boolean; afterDays: number };
+  /** "" means no pings. */
   ntfyTopic: string;
+  /** No trailing "/"; https:, or http: on loopback or the tailnet. */
+  ntfyServer: string;
+  /** "" or an access token, sent only as `Authorization: Bearer`. Never logged. */
+  ntfyToken: string;
+  /** Ping when a session is done after a minute or more of work. */
+  ntfyOnDone: boolean;
   token: string;
 }
 
@@ -30,6 +38,9 @@ export const DEFAULT_CONFIG: KageConfig = {
   branchPrefix: 'kage/',
   autoArchive: { onMerge: true, afterDays: 14 },
   ntfyTopic: '',
+  ntfyServer: 'https://ntfy.sh',
+  ntfyToken: '',
+  ntfyOnDone: false,
   token: '',
 };
 
@@ -109,6 +120,66 @@ function branchPrefix(v: unknown, key: string): string {
   return p;
 }
 
+const NTFY_TOPIC = /^[A-Za-z0-9_-]{1,64}$/;
+const NTFY_TOKEN = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** "" or 1 to 64 letters, digits, - or _ (N4). The message never repeats the value. */
+function ntfyTopic(v: unknown, key: string): string {
+  const t = str(v, key);
+  if (t !== '' && !NTFY_TOPIC.test(t)) {
+    throw new ConfigError(`${key} must be up to 64 letters, digits, - or _`);
+  }
+  return t;
+}
+
+/** "" or 1 to 128 letters, digits, - or _: a header-safe ntfy access token. */
+function ntfyToken(v: unknown, key: string): string {
+  const t = str(v, key);
+  if (t !== '' && !NTFY_TOKEN.test(t)) {
+    throw new ConfigError(`${key} must be up to 128 letters, digits, - or _`);
+  }
+  return t;
+}
+
+/**
+ * An https: URL, or http: on loopback or the tailnet (`serverAllowed`); no user info, query or
+ * fragment; trailing "/" dropped, so the client's `${server}/` stays one slash. The value may
+ * hold a secret path, so the message never repeats it.
+ */
+function ntfyServer(v: unknown, key: string): string {
+  const s = str(v, key).trim();
+  if (!serverAllowed(s) || s.includes('?') || s.includes('#') || s.includes('@')) {
+    throw new ConfigError(
+      `${key} must be an https: URL (http: only on this machine or your tailnet), with no user name, query or fragment`,
+    );
+  }
+  return s.replace(/\/+$/, '');
+}
+
+function hostOf(url: string): string {
+  try {
+    return new URL(url).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+/** A public topic without a token is readable by anyone who guesses it (N4). */
+function checkNtfyTopicLength(c: KageConfig): void {
+  if (c.ntfyTopic === '' || c.ntfyToken !== '' || hostOf(c.ntfyServer) !== 'ntfy.sh') return;
+  if (c.ntfyTopic.length < 16) {
+    throw new ConfigError(
+      'ntfyTopic must be at least 16 letters, digits, - or _ on ntfy.sh: anyone who guesses it can read your pings',
+    );
+  }
+}
+
+/** "line L column C" or "position N" from a JSON.parse error, never the text it quotes. */
+function jsonWhere(e: unknown): string {
+  const m = /line \d+ column \d+|position \d+/.exec(String((e as Error).message));
+  return m ? ` (at ${m[0]})` : '';
+}
+
 function expandHome(p: string, home: string): string {
   if (p === '~') return home;
   if (p.startsWith('~/') || p.startsWith('~\\')) return join(home, p.slice(2));
@@ -140,7 +211,8 @@ export async function loadConfig(
     try {
       parsed = JSON.parse(text);
     } catch (e) {
-      throw new ConfigError(`invalid JSON in config file ${path}: ${(e as Error).message}`);
+      // The parser's message can quote the file, and a token may be in it: say where only.
+      throw new ConfigError(`invalid JSON in config file ${path}${jsonWhere(e)}`);
     }
     if (!isObj(parsed)) throw new ConfigError(`config file ${path} must contain a JSON object`);
     raw = parsed;
@@ -163,7 +235,11 @@ export async function loadConfig(
     if (a.afterDays !== undefined)
       c.autoArchive.afterDays = days(a.afterDays, 'autoArchive.afterDays');
   }
-  if (raw.ntfyTopic !== undefined) c.ntfyTopic = str(raw.ntfyTopic, 'ntfyTopic');
+  if (raw.ntfyTopic !== undefined) c.ntfyTopic = ntfyTopic(raw.ntfyTopic, 'ntfyTopic');
+  if (raw.ntfyServer !== undefined) c.ntfyServer = ntfyServer(raw.ntfyServer, 'ntfyServer');
+  if (raw.ntfyToken !== undefined) c.ntfyToken = ntfyToken(raw.ntfyToken, 'ntfyToken');
+  if (raw.ntfyOnDone !== undefined) c.ntfyOnDone = bool(raw.ntfyOnDone, 'ntfyOnDone');
+  checkNtfyTopicLength(c);
   if (raw.token !== undefined) c.token = token(raw.token, 'token');
 
   if (env.KAGE_NAME) c.name = env.KAGE_NAME;

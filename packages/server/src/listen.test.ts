@@ -201,6 +201,25 @@ describe('MagicDNS name in hostNames (B1)', () => {
     );
     expect(r.hostNames).toEqual(['100.64.0.9', 'my-pc']);
   });
+  it('dnsName is the tailscale status name when found, else null (ntfy links)', async () => {
+    const found = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base(), tailscaleDnsName: dns },
+    );
+    expect(found.dnsName).toBe('box.tail1234.ts.net');
+    const none = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base(), tailscaleDnsName: async () => null },
+    );
+    expect(none.dnsName).toBeNull();
+    const notAsked = await resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base());
+    expect(notAsked.dnsName).toBeNull();
+    const loopback = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '127.0.0.1' },
+      { ...base(), tailscaleDnsName: dns },
+    );
+    expect(loopback.dnsName).toBeNull();
+  });
   it('passes the host guard', async () => {
     const r = await resolveListenAddress(
       { ...DEFAULT_CONFIG, host: null },

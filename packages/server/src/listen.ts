@@ -6,6 +6,8 @@ import type { KageConfig } from './config.ts';
 export interface ListenAddress {
   address: string;
   hostNames: string[];
+  /** The `tailscale status` MagicDNS name when it was asked for and found, else null (ntfy links). */
+  dnsName: string | null;
 }
 
 export class ListenError extends Error {}
@@ -201,9 +203,13 @@ export async function resolveListenAddress(
     address = ip;
   }
   const bound = parseIp(address);
+  let dnsName: string | null = null;
   if (opts.tailscaleDnsName && (bound === null || bound.n === 0n || isTailscale(bound))) {
     const dns = await opts.tailscaleDnsName();
-    if (dns) names.push(dns);
+    if (dns) {
+      names.push(dns);
+      dnsName = dns;
+    }
   }
   const full = opts.hostname();
   const hostNames = [
@@ -213,5 +219,5 @@ export async function resolveListenAddress(
     shortHostname(full),
     isSafeName(cfg.name) ? cfg.name : '',
   ].filter((h) => h !== '');
-  return { address, hostNames: [...new Set(hostNames)] };
+  return { address, hostNames: [...new Set(hostNames)], dnsName };
 }
