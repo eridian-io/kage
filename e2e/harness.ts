@@ -96,7 +96,7 @@ export class LiveHarness {
    * `config`) and the two repos. tmux and Kage start with startTmux and startServe.
    */
   setUp = async (config: Record<string, unknown> = {}): Promise<void> => {
-    // A topic only with the fake ntfy on 127.0.0.1: never a real ntfy server (R85, PF5 F2).
+    // Checked before anything is created; writeConfig and startServe check again.
     assertLocalNtfy(config);
     this.root = mkdtempSync(join(tmpdir(), 'kage-live-'));
     this.socket = `kage-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
@@ -131,11 +131,22 @@ export class LiveHarness {
       GIT_CONFIG_NOSYSTEM: '1',
       GIT_CONFIG_GLOBAL: '/dev/null',
     };
+    this.writeConfig(config);
+    for (const name of ['demo', 'shop']) await this.initRepo(this.dirOf('projects', name), name);
+  };
+
+  configPath = (): string => this.dirOf('config', 'kage', 'config.json');
+
+  /**
+   * Kage's config: projectsRoot plus `config`, read by the next startServe. A topic only with
+   * the fake ntfy on 127.0.0.1, never a real ntfy server (R85, PF5 F2).
+   */
+  writeConfig = (config: Record<string, unknown> = {}): void => {
+    assertLocalNtfy(config);
     writeFileSync(
-      this.dirOf('config', 'kage', 'config.json'),
+      this.configPath(),
       JSON.stringify({ projectsRoot: this.dirOf('projects'), ...config }),
     );
-    for (const name of ['demo', 'shop']) await this.initRepo(this.dirOf('projects', name), name);
   };
 
   /** A temp repo on `main` with an invented README in one commit and a local identity. */
@@ -238,6 +249,15 @@ export class LiveHarness {
     new Promise((resolve, reject) => {
       if (mode === 'shipped' && !existsSync(BUNDLE)) {
         reject(new Error(`No server bundle at ${BUNDLE}: run corepack pnpm build`));
+        return;
+      }
+      // The config as serve will read it, however a spec wrote it: no topic without the fake (R85).
+      try {
+        assertLocalNtfy(
+          JSON.parse(readFileSync(this.configPath(), 'utf8')) as Record<string, unknown>,
+        );
+      } catch (err) {
+        reject(err);
         return;
       }
       const args =

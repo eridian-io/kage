@@ -432,3 +432,45 @@ test('Stop ends a waiting session and keeps its worktree and branch; external wi
   expect(names).toContain('ext-stop');
   await expect(row(page, 'ext-stop')).toHaveCount(1);
 });
+
+test('B33: a card answered after its question changed gets 409; X then X within 2 s stops', async ({
+  page,
+}) => {
+  const task = 'needs-permission Stop me twice';
+  await page.goto('/');
+  const id = await startTask(page, task, 'shop');
+  await expectPrompt(page);
+
+  // The card's question as the server no longer has it: the request is rewritten on its way, as
+  // a card left on screen while the prompt changed would send it (R36).
+  await page.route(`**/api/sessions/${encodeURIComponent(id)}/answer`, (route) => {
+    const body = route.request().postDataJSON() as { option: number; question: string };
+    return route.continue({
+      postData: JSON.stringify({ ...body, question: 'Do you want to delete everything?' }),
+    });
+  });
+  const answered = page.waitForResponse((r) => r.url().endsWith('/answer'));
+  await options(page).first().click();
+  expect((await answered).status()).toBe(409);
+  await expect(page.locator('.k-err')).toContainText(
+    'The question changed. Look again before answering.',
+  );
+  await expect(chip(page)).toHaveText('needs you');
+  expect(fakeKeys(task)).toEqual([]);
+  await page.unroute(`**/api/sessions/${encodeURIComponent(id)}/answer`);
+
+  // R26: the first X only arms Stop and sends nothing; the second, within 2 s, stops.
+  const stops: string[] = [];
+  page.on('request', (r) => {
+    if (r.method() === 'POST' && r.url().endsWith('/stop')) stops.push(r.url());
+  });
+  await blur(page);
+  await page.keyboard.press('x');
+  await expect(page.getByRole('status').filter({ hasText: 'Press X again to stop' })).toBeVisible();
+  expect(stops).toEqual([]);
+  await expect(chip(page)).toHaveText('needs you');
+  await page.keyboard.press('x');
+  await expect(chip(page)).toHaveText('ended', { timeout: STATUS_MS });
+  expect(stops).toHaveLength(1);
+  await expect.poll(() => kageWindow(id), { timeout: STATUS_MS }).toBeNull();
+});

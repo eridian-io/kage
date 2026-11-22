@@ -19,13 +19,14 @@ export default defineConfig({
     {
       name: 'chromium',
       use: { browserName: 'chromium' },
-      testIgnore: ['live.spec.ts', 'finish.spec.ts', 'perf.spec.ts'],
+      testIgnore: ['live.spec.ts', 'finish.spec.ts', 'notify.spec.ts', 'perf.spec.ts'],
     },
-    // Real tmux and `kage serve` in live mode; the specs skip themselves where tmux is missing.
+    // Real tmux and `kage serve` in live mode (notify.spec.ts with the fake ntfy); the specs skip
+    // themselves where tmux is missing.
     {
       name: 'live',
       use: { browserName: 'chromium', baseURL: LIVE_BASE },
-      testMatch: ['live.spec.ts', 'finish.spec.ts'],
+      testMatch: ['live.spec.ts', 'finish.spec.ts', 'notify.spec.ts'],
     },
     // The budgets of spec §7 (e2e/budgets.ts writes test-results/budgets.json). Live mode on its
     // own port; the live parts skip themselves without tmux, the idle server without /proc.
