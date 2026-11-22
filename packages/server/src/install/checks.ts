@@ -372,10 +372,9 @@ async function serviceChecks(d: CheckDeps): Promise<{ checks: Check[]; installed
   if (why !== null) return none([warn('service', "Kage's service can't run here.", why)]);
 
   // R111: 'starting' is systemd's activating, the restart loop while Tailscale has no address.
-  // (Widened until Task 3's fix round adds 'starting' to ServiceState.)
-  let state: ServiceState | 'starting';
+  let state: ServiceState;
   try {
-    state = (await m.state()) as ServiceState | 'starting';
+    state = await m.state();
   } catch (err) {
     return none([
       warn('service', "Kage couldn't read the service's state.", (err as Error).message),

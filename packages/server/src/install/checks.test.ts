@@ -54,7 +54,7 @@ const GOOD: Record<string, Partial<RunResult>> = {
 
 /** A fake service manager in a given state, with a PATH in its "file". */
 function fakeManager(
-  state: ServiceState | 'starting',
+  state: ServiceState,
   path: string | null,
   extra: Partial<ServiceManager> = {},
 ): ServiceManager {
@@ -66,7 +66,7 @@ function fakeManager(
     install: async () => {},
     restart: async () => {},
     remove: async () => {},
-    state: async () => state as ServiceState,
+    state: async () => state,
     pathOfInstalled: async () => path,
     lingerEnabled: async () => true,
     ...extra,

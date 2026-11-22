@@ -1,4 +1,13 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -17,11 +26,13 @@ const SPEC: ServiceSpec = {
 
 function fakeRun(answer: (cmd: string, args: string[]) => Partial<RunResult> = () => ({})) {
   const calls: string[] = [];
-  const run: Run = async (cmd, args) => {
+  const opts: { cmd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }[] = [];
+  const run: Run = async (cmd, args, o = {}) => {
     calls.push([cmd, ...args].join(' '));
+    opts.push({ cmd: [cmd, ...args].join(' '), ...o });
     return { code: 0, stdout: '', stderr: '', missing: false, ...answer(cmd, args) };
   };
-  return { run, calls };
+  return { run, calls, opts };
 }
 
 let dir: string;
@@ -35,7 +46,20 @@ afterEach(() => {
 const home = () => join(dir, 'home');
 const plistPath = () => join(home(), 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
 const logPath = () => join(home(), 'Library', 'Logs', 'kage.log');
-const deps = (run: Run): ServiceDeps => ({ run, home: home(), env: {}, uid: 501 });
+const sleeps: number[] = [];
+const deps = (run: Run, extra: Partial<ServiceDeps> = {}): ServiceDeps => ({
+  run,
+  home: home(),
+  env: {},
+  uid: 501,
+  sleep: async (ms) => {
+    sleeps.push(ms);
+  },
+  ...extra,
+});
+beforeEach(() => {
+  sleeps.length = 0;
+});
 
 describe('xmlEscape', () => {
   it('Review Focus 2: escapes & < > " \'', () => {
@@ -54,6 +78,7 @@ describe('renderPlist', () => {
       [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+        '<!-- Written by kage setup -->',
         '<plist version="1.0">',
         '<dict>',
         '  <key>Label</key>',
@@ -125,7 +150,7 @@ describe('launchdManager', () => {
     expect(m.file).toBe(plistPath());
   });
 
-  it('install: writes the plist and the log folder, boots out (ignored), bootstraps', async () => {
+  it('install: writes the plist and the log folder, boots out (ignored), enables, bootstraps', async () => {
     const { run, calls } = fakeRun((_c, args) =>
       args[0] === 'bootout' ? { code: 113, stderr: 'Boot-out failed: 3: No such process' } : {},
     );
@@ -135,6 +160,7 @@ describe('launchdManager', () => {
     expect(existsSync(join(home(), 'Library', 'Logs'))).toBe(true);
     expect(calls).toEqual([
       'launchctl bootout gui/501/io.eridian.kage',
+      'launchctl enable gui/501/io.eridian.kage',
       `launchctl bootstrap gui/501 ${plistPath()}`,
     ]);
   });
@@ -147,8 +173,32 @@ describe('launchdManager', () => {
     await m.install(SPEC);
     expect(calls).toEqual([
       'launchctl bootout gui/501/io.eridian.kage',
+      'launchctl enable gui/501/io.eridian.kage',
       `launchctl bootstrap gui/501 ${plistPath()}`,
     ]);
+  });
+
+  it('bootstrap is retried on "5: Input/output error" after a bootout, then succeeds', async () => {
+    let fails = 2;
+    const { run, calls } = fakeRun((_c, args) =>
+      args[0] === 'bootstrap' && fails-- > 0
+        ? { code: 5, stderr: 'Bootstrap failed: 5: Input/output error' }
+        : {},
+    );
+    await launchdManager(deps(run)).install(SPEC);
+    expect(calls.filter((c) => c.startsWith('launchctl bootstrap'))).toHaveLength(3);
+    expect(sleeps).toEqual([500, 500]);
+  });
+
+  it('bootstrap is not retried on another error', async () => {
+    const { run, calls } = fakeRun((_c, args) =>
+      args[0] === 'bootstrap'
+        ? { code: 37, stderr: 'Bootstrap failed: 37: Operation already in progress' }
+        : {},
+    );
+    await expect(launchdManager(deps(run)).install(SPEC)).rejects.toThrow(/exited 37/);
+    expect(calls.filter((c) => c.startsWith('launchctl bootstrap'))).toHaveLength(1);
+    expect(sleeps).toEqual([]);
   });
 
   it.runIf(!isWin)('the plist is 0644', async () => {
@@ -156,11 +206,71 @@ describe('launchdManager', () => {
     expect(statSync(plistPath()).mode & 0o777).toBe(0o644);
   });
 
-  it('a failing bootstrap fails the install with its stderr', async () => {
-    const { run } = fakeRun((_c, args) =>
+  it('a bootstrap that keeps failing fails the install with its stderr, after 3 retries', async () => {
+    const { run, calls } = fakeRun((_c, args) =>
       args[0] === 'bootstrap' ? { code: 5, stderr: 'Bootstrap failed: 5: Input/output error' } : {},
     );
     await expect(launchdManager(deps(run)).install(SPEC)).rejects.toThrow(/Input\/output/);
+    expect(calls.filter((c) => c.startsWith('launchctl bootstrap'))).toHaveLength(4);
+  });
+
+  it('install and remove refuse a plist kage setup did not write, and run nothing', async () => {
+    const foreign = '<?xml version="1.0"?><plist version="1.0"><dict/></plist>\n';
+    mkdirSync(join(home(), 'Library', 'LaunchAgents'), { recursive: true });
+    writeFileSync(plistPath(), foreign);
+    const { run, calls } = fakeRun();
+    const m = launchdManager(deps(run));
+    await expect(m.install(SPEC)).rejects.toThrow(`${plistPath()} wasn't written by kage setup`);
+    await expect(m.remove()).rejects.toThrow(plistPath());
+    expect(readFileSync(plistPath(), 'utf8')).toBe(foreign);
+    expect(calls).toEqual([]);
+  });
+
+  it('writes atomically: no temp file is left behind', async () => {
+    const m = launchdManager(deps(fakeRun().run));
+    await m.install(SPEC);
+    await m.install(SPEC);
+    expect(readdirSync(join(home(), 'Library', 'LaunchAgents'))).toEqual([
+      `${LAUNCHD_LABEL}.plist`,
+    ]);
+  });
+
+  it('bootstrap and kickstart -k get 60 s; every run gets ServiceDeps.env', async () => {
+    const env = { HOME: '/Users/u' };
+    const { run, opts } = fakeRun();
+    const m = launchdManager(deps(run, { env }));
+    await m.install(SPEC);
+    await m.restart();
+    await m.state();
+    await m.unavailable();
+    await m.remove();
+    const t = (prefix: string) =>
+      opts.filter((o) => o.cmd.startsWith(prefix)).map((o) => o.timeoutMs);
+    expect(t('launchctl kickstart')).toEqual([60_000]);
+    expect(t('launchctl bootstrap')).toEqual([60_000]);
+    expect(t('launchctl bootout')).toEqual([undefined, undefined]);
+    expect(opts.every((o) => o.env === env)).toBe(true);
+  });
+
+  it('a missing launchctl is named: "launchctl" is not installed.', async () => {
+    const { run } = fakeRun(() => ({ code: -1, missing: true }));
+    await expect(launchdManager(deps(run)).install(SPEC)).rejects.toThrow(
+      /^"launchctl" is not installed\.$/,
+    );
+    await expect(launchdManager(deps(run)).restart()).rejects.toThrow(
+      /^"launchctl" is not installed\.$/,
+    );
+  });
+
+  it("ProgramArguments' program must be absolute", () => {
+    expect(() => renderPlist({ argv: ['kage', 'serve'], env: {} }, '/l')).toThrow(/absolute/);
+  });
+
+  it('lone surrogates are refused; a whole pair is fine', () => {
+    expect(() => xmlEscape('a\uD800b')).toThrow(/lone surrogate/);
+    expect(() => xmlEscape('a\uDFFF')).toThrow(/lone surrogate/);
+    expect(() => xmlEscape('a￾')).toThrow();
+    expect(xmlEscape('a😀')).toBe('a😀');
   });
 
   it('restart is kickstart -k', async () => {

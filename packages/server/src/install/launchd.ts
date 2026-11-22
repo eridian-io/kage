@@ -5,12 +5,18 @@
  */
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import type { RunResult } from './run.ts';
 import {
+  assertAbsoluteProgram,
+  assertOurs,
+  assertWritable,
   mustSucceed,
+  SERVICE_MARKER,
   type ServiceDeps,
   type ServiceManager,
   type ServiceSpec,
   type ServiceState,
+  START_TIMEOUT_MS,
   writeServiceFile,
 } from './service.ts';
 
@@ -21,9 +27,9 @@ const NO_LAUNCHCTL_SENTENCE =
 
 /** Text for an XML element or attribute: & < > " ' escaped; characters XML 1.0 can't hold throw. */
 export function xmlEscape(text: string): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point.
-  if (/[\u0000-\u001f\u007f￾￿]/.test(text)) {
-    throw new Error(`A service value can't hold a control character: ${JSON.stringify(text)}`);
+  assertWritable(text);
+  if (/[\ufffe\uffff]/.test(text)) {
+    throw new Error(`A service value can't hold U+FFFE or U+FFFF: ${JSON.stringify(text)}`);
   }
   return text
     .replace(/&/g, '&amp;')
@@ -46,9 +52,11 @@ const str = (indent: string, text: string) => `${indent}<string>${xmlEscape(text
 
 /** The plist's text; `logPath` is ~/Library/Logs/kage.log. */
 export function renderPlist(spec: ServiceSpec, logPath: string): string {
+  assertAbsoluteProgram(spec.argv);
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
+    `<!-- ${SERVICE_MARKER} -->`,
     '<plist version="1.0">',
     '<dict>',
     '  <key>Label</key>',
@@ -93,12 +101,25 @@ export function plistEnvValue(xml: string, key: string): string | null {
   return null;
 }
 
+const BOOTSTRAP_RETRIES = 3;
+const BOOTSTRAP_RETRY_MS = 500;
+
+/** bootstrap's "5: Input/output error", which a job still being booted out gives. */
+function isBusy(r: RunResult): boolean {
+  return r.code === 5 || /\b5: Input\/output error/.test(r.stderr);
+}
+
 export function launchdManager(d: ServiceDeps): ServiceManager {
   const file = join(d.home, 'Library', 'LaunchAgents', `${LAUNCHD_LABEL}.plist`);
   const logPath = join(d.home, 'Library', 'Logs', 'kage.log');
   const domain = `gui/${d.uid}`;
   const target = `${domain}/${LAUNCHD_LABEL}`;
-  const launchctl = (...args: string[]) => d.run('launchctl', args);
+  const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const launchctl = (args: string[], timeoutMs?: number): Promise<RunResult> =>
+    d.run('launchctl', args, {
+      env: d.env,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
 
   return {
     kind: 'launchd',
@@ -106,32 +127,45 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
     name: `launchd agent ${LAUNCHD_LABEL}`,
 
     async unavailable() {
-      const r = await launchctl('version');
+      const r = await launchctl(['version']);
       return r.missing ? NO_LAUNCHCTL_SENTENCE : null;
     },
 
     async install(spec) {
+      const text = renderPlist(spec, logPath);
+      assertOurs(file);
       // launchd creates the log file, not its folder.
       mkdirSync(join(d.home, 'Library', 'Logs'), { recursive: true });
-      writeServiceFile(file, renderPlist(spec, logPath));
+      writeServiceFile(file, text);
       // Bootstrapping a loaded label fails, so a reinstall boots it out first (ignored if not loaded).
-      await launchctl('bootout', target);
+      await launchctl(['bootout', target]);
+      // A label someone disabled (launchctl disable) won't bootstrap.
+      const enable = ['enable', target];
+      mustSucceed(await launchctl(enable), ['launchctl', ...enable]);
       const args = ['bootstrap', domain, file];
-      mustSucceed(await launchctl(...args), ['launchctl', ...args]);
+      let r = await launchctl(args, START_TIMEOUT_MS);
+      // Right after a bootout launchd may still be tearing the job down: "5: Input/output error".
+      for (let retry = 0; retry < BOOTSTRAP_RETRIES && isBusy(r); retry++) {
+        await sleep(BOOTSTRAP_RETRY_MS);
+        r = await launchctl(args, START_TIMEOUT_MS);
+      }
+      mustSucceed(r, ['launchctl', ...args]);
     },
 
     async restart() {
       const args = ['kickstart', '-k', target];
-      mustSucceed(await launchctl(...args), ['launchctl', ...args]);
+      mustSucceed(await launchctl(args, START_TIMEOUT_MS), ['launchctl', ...args]);
     },
 
     async remove() {
-      await launchctl('bootout', target);
+      // The label is Kage's own; a plist of that name kage setup didn't write is left alone.
+      assertOurs(file);
+      await launchctl(['bootout', target]);
       rmSync(file, { force: true });
     },
 
     async state(): Promise<ServiceState> {
-      const r = await launchctl('print', target);
+      const r = await launchctl(['print', target]);
       if (r.code !== 0) return existsSync(file) ? 'inactive' : 'missing';
       // print's output is not API (Apple): only "state = running" counts as running.
       if (/^\s*state = running\s*$/m.test(r.stdout)) return 'active';

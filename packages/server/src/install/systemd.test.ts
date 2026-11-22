@@ -1,10 +1,13 @@
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -35,11 +38,13 @@ const BUNDLE: ServiceSpec = {
 /** A Run that records each call and answers from a script (default: exit 0, no output). */
 function fakeRun(answer: (cmd: string, args: string[]) => Partial<RunResult> = () => ({})) {
   const calls: string[] = [];
-  const run: Run = async (cmd, args) => {
+  const opts: { cmd: string; timeoutMs?: number; env?: NodeJS.ProcessEnv }[] = [];
+  const run: Run = async (cmd, args, o = {}) => {
     calls.push([cmd, ...args].join(' '));
+    opts.push({ cmd: [cmd, ...args].join(' '), ...o });
     return { code: 0, stdout: '', stderr: '', missing: false, ...answer(cmd, args) };
   };
-  return { run, calls };
+  return { run, calls, opts };
 }
 
 let dir: string;
@@ -59,6 +64,7 @@ const unitPath = () => join(dir, 'home', '.config', 'systemd', 'user', SYSTEMD_U
 describe('renderUnit', () => {
   it('the bundle spec gives the unit, line for line', () => {
     expect(renderUnit(BUNDLE).split('\n')).toEqual([
+      '# Written by kage setup',
       '[Unit]',
       'Description=Kage: a dashboard for your Claude Code sessions',
       "# User units can't wait for tailscaled.service; Kage exits while Tailscale has no address and systemd starts it again.",
@@ -242,7 +248,15 @@ describe('systemdManager', () => {
     expect(existsSync(join(wants, SYSTEMD_UNIT))).toBe(false);
   });
 
-  it('remove on a missing service succeeds', async () => {
+  it('remove on a missing service succeeds and disables nothing', async () => {
+    const { run, calls } = fakeRun();
+    await expect(systemdManager(deps(run)).remove()).resolves.toBeUndefined();
+    expect(calls).toEqual([]);
+  });
+
+  it('remove of an installed unit that fails to disable (not loaded) still succeeds', async () => {
+    const m0 = systemdManager(deps(fakeRun().run));
+    await m0.install(BUNDLE);
     const { run, calls } = fakeRun((_c, args) =>
       args.includes('disable')
         ? { code: 1, stderr: 'Failed to disable unit: Unit file kage.service does not exist.' }
@@ -253,6 +267,7 @@ describe('systemdManager', () => {
       'systemctl --user disable --now kage.service',
       'systemctl --user daemon-reload',
     ]);
+    expect(existsSync(unitPath())).toBe(false);
   });
 
   it('remove without systemctl at all still deletes the file', async () => {
@@ -267,7 +282,7 @@ describe('systemdManager', () => {
     const cases: [string, number, string, boolean, string][] = [
       ['active', 0, 'active', true, 'active'],
       ['reloading', 0, 'reloading', true, 'active'],
-      ['activating (auto-restart: no Tailscale yet)', 3, 'activating', true, 'failed'],
+      ['activating (R111: auto-restart, no Tailscale yet)', 3, 'activating', true, 'starting'],
       ['failed', 3, 'failed', true, 'failed'],
       ['inactive', 3, 'inactive', true, 'inactive'],
       ['deactivating', 3, 'deactivating', true, 'inactive'],
@@ -362,6 +377,93 @@ describe('systemdManager', () => {
       expect(calls.every((c) => !/\bsudo\b/.test(c))).toBe(true);
       expect(calls).toEqual(['loginctl enable-linger']);
     });
+  });
+});
+
+describe('systemd fix round 1', () => {
+  const FOREIGN = '[Service]\nExecStart=/usr/bin/someone-else\n';
+
+  it('install refuses a kage.service it did not write, naming the file, and runs nothing', async () => {
+    mkdirSync(join(dir, 'home', '.config', 'systemd', 'user'), { recursive: true });
+    writeFileSync(unitPath(), FOREIGN);
+    const { run, calls } = fakeRun();
+    await expect(systemdManager(deps(run)).install(BUNDLE)).rejects.toThrow(
+      `${unitPath()} wasn't written by kage setup, so Kage leaves it alone.`,
+    );
+    expect(readFileSync(unitPath(), 'utf8')).toBe(FOREIGN);
+    expect(calls).toEqual([]);
+  });
+
+  it('remove refuses a kage.service it did not write and never disables it', async () => {
+    mkdirSync(join(dir, 'home', '.config', 'systemd', 'user'), { recursive: true });
+    writeFileSync(unitPath(), FOREIGN);
+    const { run, calls } = fakeRun();
+    await expect(systemdManager(deps(run)).remove()).rejects.toThrow(unitPath());
+    expect(readFileSync(unitPath(), 'utf8')).toBe(FOREIGN);
+    expect(calls).toEqual([]);
+  });
+
+  it('writes atomically: no temp file is left behind', async () => {
+    const m = systemdManager(deps(fakeRun().run));
+    await m.install(BUNDLE);
+    await m.install(BUNDLE);
+    expect(readdirSync(join(dir, 'home', '.config', 'systemd', 'user'))).toEqual([SYSTEMD_UNIT]);
+  });
+
+  it.runIf(!isWin)(
+    'replaces a symlink at the unit path instead of writing through it',
+    async () => {
+      const elsewhere = join(dir, 'elsewhere.service');
+      writeFileSync(elsewhere, `# Written by kage setup\nold\n`);
+      mkdirSync(join(dir, 'home', '.config', 'systemd', 'user'), { recursive: true });
+      symlinkSync(elsewhere, unitPath());
+      await systemdManager(deps(fakeRun().run)).install(BUNDLE);
+      expect(lstatSync(unitPath()).isSymbolicLink()).toBe(false);
+      expect(readFileSync(unitPath(), 'utf8')).toBe(renderUnit(BUNDLE));
+      expect(readFileSync(elsewhere, 'utf8')).toBe('# Written by kage setup\nold\n');
+      expect(statSync(unitPath()).mode & 0o777).toBe(0o644);
+    },
+  );
+
+  it('enable --now and restart get 60 s; every run gets ServiceDeps.env', async () => {
+    const env = { XDG_RUNTIME_DIR: '/run/user/1000', DBUS_SESSION_BUS_ADDRESS: 'unix:path=/x' };
+    const { run, opts } = fakeRun();
+    const m = systemdManager(deps(run, { env }));
+    await m.install(BUNDLE);
+    await m.install(BUNDLE);
+    await m.restart();
+    await m.state();
+    await m.lingerEnabled();
+    await m.enableLinger();
+    await m.remove();
+    const t = (cmd: string) => opts.filter((o) => o.cmd === cmd).map((o) => o.timeoutMs);
+    expect(t('systemctl --user enable --now kage.service')).toEqual([60_000]);
+    expect(t('systemctl --user restart kage.service')).toEqual([60_000, 60_000]);
+    expect(t('systemctl --user daemon-reload')).toEqual([undefined, undefined, undefined]);
+    expect(opts.length).toBeGreaterThan(8);
+    expect(opts.every((o) => o.env === env)).toBe(true);
+  });
+
+  it('a missing systemctl is named: "systemctl" is not installed.', async () => {
+    const { run } = fakeRun(() => ({ code: -1, missing: true, stderr: 'spawn systemctl ENOENT' }));
+    await expect(systemdManager(deps(run)).install(BUNDLE)).rejects.toThrow(
+      /^"systemctl" is not installed\.$/,
+    );
+    await expect(systemdManager(deps(run)).restart()).rejects.toThrow(
+      /^"systemctl" is not installed\.$/,
+    );
+  });
+
+  it("ExecStart's program must be absolute", () => {
+    expect(() => renderUnit({ argv: ['kage', 'serve'], env: {} })).toThrow(/absolute path/);
+    expect(() => renderUnit({ argv: [], env: {} })).toThrow(/absolute path/);
+    expect(() => renderUnit({ argv: ['./kage', 'serve'], env: {} })).toThrow(/absolute path/);
+  });
+
+  it('lone surrogates are refused; a whole pair is fine', () => {
+    expect(() => systemdQuote('/x/\uD800/kage')).toThrow(/lone surrogate/);
+    expect(() => systemdQuote('/x/\uDC00', 'env')).toThrow(/lone surrogate/);
+    expect(systemdQuote('/x/😀', 'path')).toBe('"/x/😀"');
   });
 });
 

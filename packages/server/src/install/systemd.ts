@@ -7,11 +7,16 @@ import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunResult } from './run.ts';
 import {
+  assertAbsoluteProgram,
+  assertOurs,
+  assertWritable,
   mustSucceed,
+  SERVICE_MARKER,
   type ServiceDeps,
   type ServiceManager,
   type ServiceSpec,
   type ServiceState,
+  START_TIMEOUT_MS,
   writeServiceFile,
 } from './service.ts';
 
@@ -37,10 +42,7 @@ export type SystemdContext = 'exec' | 'path' | 'env';
  * unit line, and an executable can't hold a quote or a backslash, so those throw.
  */
 export function systemdQuote(word: string, context: SystemdContext = 'exec'): string {
-  // biome-ignore lint/suspicious/noControlCharactersInRegex: refusing them is the point.
-  if (/[\u0000-\u001f\u007f]/.test(word)) {
-    throw new Error(`A service value can't hold a control character: ${JSON.stringify(word)}`);
-  }
+  assertWritable(word);
   if (context === 'path' && /["'\\]/.test(word)) {
     throw new Error(
       `systemd can't run a program whose path holds a quote or a backslash: ${word}. Install Kage in another folder.`,
@@ -89,11 +91,13 @@ export function parseSystemdWords(value: string, context: SystemdContext): strin
 
 /** The unit file's text (the brief's block, every value quoted). */
 export function renderUnit(spec: ServiceSpec): string {
+  assertAbsoluteProgram(spec.argv);
   const exec = spec.argv.map((w, i) => systemdQuote(w, i === 0 ? 'path' : 'exec')).join(' ');
   const env = Object.entries(spec.env)
     .map(([k, v]) => systemdQuote(`${k}=${v}`, 'env'))
     .join(' ');
   return [
+    `# ${SERVICE_MARKER}`,
     '[Unit]',
     'Description=Kage: a dashboard for your Claude Code sessions',
     "# User units can't wait for tailscaled.service; Kage exits while Tailscale has no address and systemd starts it again.",
@@ -132,13 +136,16 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
   const file = join(unitDir, SYSTEMD_UNIT);
   const wsl = d.wsl ?? (() => inWsl(d.env));
 
-  const systemctl = (...args: string[]): Promise<RunResult> =>
-    d.run('systemctl', ['--user', ...args]);
-  const must = async (...args: string[]): Promise<void> =>
-    mustSucceed(await systemctl(...args), ['systemctl', '--user', ...args]);
+  const systemctl = (args: string[], timeoutMs?: number): Promise<RunResult> =>
+    d.run('systemctl', ['--user', ...args], {
+      env: d.env,
+      ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+    });
+  const must = async (args: string[], timeoutMs?: number): Promise<void> =>
+    mustSucceed(await systemctl(args, timeoutMs), ['systemctl', '--user', ...args]);
 
   const unavailable = async (): Promise<string | null> => {
-    const r = await systemctl('is-active', SYSTEMD_UNIT);
+    const r = await systemctl(['is-active', SYSTEMD_UNIT]);
     if (!r.missing && ANSWERED.has(r.code)) return null;
     return wsl() ? WSL_SENTENCE : NO_MANAGER_SENTENCE;
   };
@@ -150,27 +157,32 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
     unavailable,
 
     async install(spec) {
+      const text = renderUnit(spec);
+      assertOurs(file);
       const first = !existsSync(file);
-      writeServiceFile(file, renderUnit(spec));
-      await must('daemon-reload');
+      writeServiceFile(file, text);
+      await must(['daemon-reload']);
       if (first) {
-        await must('enable', '--now', SYSTEMD_UNIT);
+        await must(['enable', '--now', SYSTEMD_UNIT], START_TIMEOUT_MS);
       } else {
-        await must('enable', SYSTEMD_UNIT);
-        await must('restart', SYSTEMD_UNIT);
+        await must(['enable', SYSTEMD_UNIT]);
+        await must(['restart', SYSTEMD_UNIT], START_TIMEOUT_MS);
       }
     },
 
     async restart() {
-      await must('restart', SYSTEMD_UNIT);
+      await must(['restart', SYSTEMD_UNIT], START_TIMEOUT_MS);
     },
 
     async remove() {
-      // A unit that isn't there fails to disable; that's fine.
-      await systemctl('disable', '--now', SYSTEMD_UNIT);
+      // No file of ours: nothing to remove. A kage.service elsewhere isn't Kage's to disable.
+      if (!existsSync(file)) return;
+      assertOurs(file);
+      // A unit that isn't loaded fails to disable; that's fine.
+      await systemctl(['disable', '--now', SYSTEMD_UNIT], START_TIMEOUT_MS);
       rmSync(file, { force: true });
       rmSync(join(unitDir, 'default.target.wants', SYSTEMD_UNIT), { force: true });
-      const reload = await systemctl('daemon-reload');
+      const reload = await systemctl(['daemon-reload']);
       // Without a user manager nothing is loaded, so there is nothing to reload.
       if (reload.code !== 0 && (await unavailable()) === null) {
         mustSucceed(reload, ['systemctl', '--user', 'daemon-reload']);
@@ -178,7 +190,7 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
     },
 
     async state(): Promise<ServiceState> {
-      const r = await systemctl('is-active', SYSTEMD_UNIT);
+      const r = await systemctl(['is-active', SYSTEMD_UNIT]);
       if (r.missing || !ANSWERED.has(r.code)) {
         mustSucceed(r, ['systemctl', '--user', 'is-active', SYSTEMD_UNIT]);
       }
@@ -186,8 +198,9 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
       // R110-9: the word tells them apart; activating, inactive and failed all exit 3.
       const word = r.stdout.trim().split(/\s+/)[0] ?? '';
       if (word === 'active' || word === 'reloading' || word === 'refreshing') return 'active';
-      // Our unit is Type=simple, so activating means auto-restart after a failed start.
-      if (word === 'failed' || word === 'activating') return 'failed';
+      // R111: our unit is Type=simple, so activating is the auto-restart loop (no Tailscale yet).
+      if (word === 'activating') return 'starting';
+      if (word === 'failed') return 'failed';
       return existsSync(file) ? 'inactive' : 'missing';
     },
 
@@ -209,13 +222,15 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
     },
 
     async lingerEnabled() {
-      const r = await d.run('loginctl', ['show-user', String(d.uid), '-p', 'Linger', '--value']);
+      const r = await d.run('loginctl', ['show-user', String(d.uid), '-p', 'Linger', '--value'], {
+        env: d.env,
+      });
       return r.code === 0 && r.stdout.trim() === 'yes';
     },
 
     async enableLinger() {
       // For oneself (no user argument): polkit's set-self-linger, which needs no root.
-      const r = await d.run('loginctl', ['enable-linger']);
+      const r = await d.run('loginctl', ['enable-linger'], { env: d.env });
       return r.code === 0;
     },
   };
