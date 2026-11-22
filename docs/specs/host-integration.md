@@ -8,6 +8,8 @@ Fixtures: `packages/server/test/fixtures/ports/ss.txt` and `ps.txt` keep the obs
 
 ## Read first: where this differs from the phase 4 plan
 
+The design spec records what phase 4 built from these facts: the terminal in §5.6, the git checks in §5.7 and §5.8, the routes in §5.12 and the new copy in §6.6 (all amended 2026-11-22, phase 4).
+
 1. **tmux 3.4 reports a closed window of the client's own session as `%unlinked-window-close @W`, never as `%window-close`.** That happened for `kill-window` from the control client, `kill-window` from another tmux client, and a window whose process exited. Task 11 must treat both notifications as "window closed" (4409). `burst.txt` carries both.
 2. **There is no per-pane opt-in.** `refresh-client -f no-output` stops all `%output`, and `refresh-client -A '%N:on'` does not bring one pane back. `-A '%N:off'` works as an opt-out for a known pane, but new panes start on. Use the planned fallback: filter by pane id.
 3. **`resize-window -A` sets `window-size` back to `manual`.** It must not be in the restore sequence. `set-option -w -u -t @W window-size` alone restores normal sizing. `refresh-client -S` changes nothing.

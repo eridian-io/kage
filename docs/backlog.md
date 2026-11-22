@@ -39,13 +39,26 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 
 ## Phase 2 or 4
 
-- **B7** The "ended" chip and the Resume footer (spec §6.5): sessions whose process exits need their own state and a way back in.
+- **B7** (done, phase 4) The "ended" chip and the Resume footer (spec §6.5): sessions whose process exits need their own state and a way back in.
 - **B12** (done, phase 2) Only accept `name` from the config as a Host and Origin name when it's a single label or ends in `.ts.net` or `.local`: a public domain the owner doesn't control would let that domain pass the guards after DNS rebinding.
 
 ## Phase 4
 
-- **B9** The WebSocket terminal route needs its own Origin check: `csrfGuard` skips GET upgrades, and browsers can't send `X-Kage` on a WebSocket.
-- **B10** Show an error when DELETE fails (copy to be designed): today a failed delete just re-enables the button, with no word why.
+- **B9** (done, phase 4) The WebSocket terminal route needs its own Origin check: `csrfGuard` skips GET upgrades, and browsers can't send `X-Kage` on a WebSocket.
+- **B10** (done, phase 4) Show an error when DELETE fails (copy to be designed): today a failed delete just re-enables the button, with no word why.
+
+## Found in phase 4
+
+Deferred from the phase 4 reviews. None blocks use.
+
+- **B34** The resume race (R63): a resumed window that dies before Kage's first listing of it loses the failed-resume `SessionEnd`, so the record can't tell a failed resume from a quiet one. Fix: claim the window with the pane id that `new-window` printed, so the first hook or the window's death is matched without a listing.
+- **B35** Pending terminal upgrades have no cap. `LIMITS.terminals` caps open terminals, but sockets that have passed the upgrade check and are still opening aren't counted. Cap them at about twice `LIMITS.terminals` and answer 4429.
+- **B36** `FileChange.path` is not stripped of control and bidi characters in the files list (the diff strips its own paths). Strip it where the list is built.
+- **B37** `listChanges` reads up to 100 MiB of untracked files on every request (the list and the diff both call it). Cache the untracked counts by file size and mtime, or read less.
+- **B38** A time-of-check to time-of-use gap on Windows, inherited from phase 3's file list: a path is checked and then read, and a swap between the two is not closed there. A fix needs an open-then-check on the file handle.
+- **B39** The delete e2e races after `extra.txt` is written: it should poll the board for "3 files" before it opens the confirmation. It failed once in three Docker runs.
+- **B40** An e2e for auto-archive skipping a session that has a terminal open (F11/R70). Unit tests cover it; no browser test opens a terminal and then merges.
+- **B41** Smaller e2e tidying from the Task 14 review: check that a pinned session stays before the archive step, give each fake scenario distinct file content, and assert the `sentIn` frames on the terminal socket.
 
 ## Later
 

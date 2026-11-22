@@ -21,7 +21,7 @@
 
 You leave your desk, but your agents keep working. Kage is a small web dashboard that runs on your server or home PC and gives you every Claude Code session in one place. It works from the couch, the office or a train. When an agent needs an answer, Kage pings your phone. When it starts a dev server, Kage gives you the preview link.
 
-It is a thin layer over tools you already trust: **tmux** keeps the sessions alive, **git** tracks what changed, and **Tailscale** keeps everything private. Kage adds no database, no build step and no open router ports.
+It is a thin layer over tools you already trust: **tmux** keeps the sessions alive, **git** tracks what changed, and **Tailscale** keeps everything private. Kage adds no database and no open router ports.
 
 ## Features
 
@@ -31,7 +31,9 @@ It is a thin layer over tools you already trust: **tmux** keeps the sessions ali
 - **Answer from your phone.** When an agent asks a question, reply in the browser and Kage sends your answer to the session.
 - **Preview links.** Kage finds the ports your agents are serving and links you straight to `http://your-pc:PORT`.
 - **Files changed.** See what each agent touched, with a diff view.
-- **Notifications.** Get a ping through [ntfy](https://ntfy.sh) or a browser notification when a session needs input.
+- **Finish sessions.** Pin, archive, resume and delete sessions. Delete tells you what you would lose first.
+- **A terminal in the browser.** Open the real tmux window of a session when the buttons are not enough.
+- **Notifications (coming in phase 5).** A ping through [ntfy](https://ntfy.sh) or a browser notification when a session needs input. Kage does not send any yet.
 - **Attach any time.** Kage only adds to your setup: `tmux attach -t kage` still drops you into the real terminal.
 - **Phone-friendly.** It works in a phone browser too.
 
@@ -122,6 +124,22 @@ Kage can start and steer tasks from the board. This needs `claude` on Kage's `PA
 
 **Token login.** Set `token` in the config (at least 16 characters) and restart. The board then asks for it once and keeps you signed in for 30 days. To sign out every device, change the token and restart Kage. Five wrong tries from one address lock that address out for a minute.
 
+## Finish and terminal
+
+**Pin.** Press `S`, or click the ★ in the session's header. A pinned session sorts first among the done ones and is never archived automatically.
+
+**Archive.** Press `E` on a done or ended session. Kage closes its `claude` window and hides it, and keeps the worktree and the branch. Archived sessions are listed under "archived N" at the bottom of the left column, and Restore brings one back. A running session can't be archived: stop it first.
+
+**Auto-archive.** With `autoArchive.onMerge`, a done session is archived once its branch is merged into the base branch. With `autoArchive.afterDays`, it is archived that many days after it finished (`0` turns the age rule off). Pinned sessions are exempt, and so is a session with a terminal open. Restoring or unpinning a session starts its clock again.
+
+**Resume.** When `claude` has exited (after a reboot, say), the session shows "ended". Press `U` and Kage opens a new window in the same worktree and runs `claude --resume` on the old conversation. Kage never resumes sessions by itself.
+
+**Delete.** Click Delete…. The confirmation lists what would be lost: commits only this branch has, files with uncommitted changes, and ignored files such as `.env`. Press Delete session to confirm. A click within a moment of the counts changing is ignored, since it was meant for the old counts. Kage then removes the worktree and the branch. If the counts changed since you looked, nothing is removed and the new counts show. Kage deletes only worktrees and branches it made (a branch with the configured `branchPrefix`; with `branchPrefix` set to `""` that check is off), and it never runs `git worktree prune`.
+
+**View diff.** "View diff →" in the right column opens a read-only diff of the same files as the list: everything since the branch left its base, uncommitted and untracked files included. Long diffs come a page at a time (Previous and Next). `J` and `K` jump between the files on a page, and `Esc` goes back.
+
+**Terminal.** Press `T`. The session's tmux window opens in the browser, and every key goes to Claude, including `Esc`. Press `Shift+Esc` (or `Ctrl+Shift+X`) to return to the board. Chrome's Task Manager may take `Shift+Esc` on Windows and Linux: use `Ctrl+Shift+X` there. A window Kage didn't start is view-only. The terminal code (about 90 KB) loads the first time you open one.
+
 ## Configuration
 
 Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. It lives outside the checkout, so hostnames and secrets never end up in the repo.
@@ -150,11 +168,11 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `tmuxSession` | `"kage"` | The tmux session Kage uses for agent windows |
 | `worktreeDir` | `".worktrees"` | The folder, inside each project, for the agents' git worktrees |
 | `branchPrefix` | `"kage/"` | The prefix for the branches Kage creates |
-| `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or after this many days |
+| `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or this many days after it finished (`0` turns the age rule off) |
 | `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
 | `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in. Change the token to sign out every device. |
 
-Live sessions use `tmuxSession`, `token`, `projectsRoot`, `worktreeDir`, `branchPrefix` and the host, port and name keys. `autoArchive` and `ntfyTopic` take effect in later phases; Kage already reads and checks every key.
+Live sessions use `tmuxSession`, `token`, `projectsRoot`, `worktreeDir`, `branchPrefix`, `autoArchive` and the host, port and name keys. `ntfyTopic` takes effect in phase 5; Kage already reads and checks every key.
 
 The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`. `KAGE_CLAUDE_BIN` names the `claude` program for new tasks.
 
@@ -162,11 +180,7 @@ The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `nam
 
 ## Run on boot
 
-To keep Kage running across reboots, install it as a systemd user service:
-
-```sh
-npm run install-service
-```
+There is no command for this yet. The installer and the systemd and launchd services come in phase 6. Until then, start Kage yourself with `kage serve`. After a reboot, sessions show as "ended", and you resume the ones you want with `U`.
 
 ## Safety
 
@@ -180,7 +194,9 @@ npm run install-service
 - [x] **Phase 1, skeleton:** dashboard served over Tailscale
 - [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
 - [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
-- [ ] **Phase 4, polish:** notifications, diffs, run on boot, phone layout
+- [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser
+- [ ] **Phase 5, polish:** notifications, a command palette, performance budgets
+- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases
 
 ## Contributing
 

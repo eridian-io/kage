@@ -281,6 +281,8 @@ Fixtures: `panes/real-edit-60.txt` and `panes/real-edit-160.txt` are `capture-pa
 
 ### Read first: where this differs from the phase 4 plan
 
+The design spec records the resulting rules: the first-prompt fallback and resume in §5.3, resume in §5.8a and the Esc handling in the terminal in §5.6 (amended 2026-11-22, phase 4).
+
 1. **Esc at an Edit permission prompt shows `⎿  Rejected update to notes.txt`** with the diff under it, not `Interrupted · What should Claude do instead?` (that is the Bash wording, §1). As for Bash, no hook fires after it. The R11 pane fallback ("the pane no longer shows a prompt") still covers it, but a matcher that looks for "Interrupted" would miss Edit.
 2. **A start-up screen can drop a key sent the moment it first draws.** A `-H 1b 5b 42` (Down) sent as soon as the trust screen appeared was lost. The `0d` (Enter) that followed chose the default `No, exit`, Claude quit and the window closed. The same Down sent 0.8 s later worked. A sender must check that the selection moved before it sends Enter. That also applies to answering trust from the board (R25).
 3. **`--resume <unknown uuid>` in a pane exits 1 with nothing readable left on screen**, and fires a `SessionEnd` (reason `other`) with a new, random `session_id` and no `SessionStart` before it.
