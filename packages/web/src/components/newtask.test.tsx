@@ -304,7 +304,7 @@ describe('starting a task', () => {
     expect(selectWhenSeen.value).toBeNull();
   });
 
-  it("a 422 shows Couldn't start: <error> and keeps the text", async () => {
+  it("a 422 shows Couldn't start. <error> and keeps the text", async () => {
     vi.mocked(apiPost).mockImplementation(async () =>
       json({ error: 'git worktree add failed: invalid reference' }, 422),
     );
@@ -314,7 +314,7 @@ describe('starting a task', () => {
     press(area(container), 'Enter');
     await waitFor(() =>
       expect(q(container, '.k-nt-err').textContent).toBe(
-        "Couldn't start: git worktree add failed: invalid reference",
+        "Couldn't start. Git worktree add failed: invalid reference",
       ),
     );
     expect(area(container).value).toBe('fix it');
@@ -331,7 +331,7 @@ describe('starting a task', () => {
     type(area(container), 'fix it');
     press(area(container), 'Enter');
     await waitFor(() =>
-      expect(q(container, '.k-nt-err').textContent).toBe("Couldn't start: Kage didn't answer."),
+      expect(q(container, '.k-nt-err').textContent).toBe("Couldn't start. Kage didn't answer."),
     );
   });
 });

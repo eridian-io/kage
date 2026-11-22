@@ -1,6 +1,7 @@
 import { type ArchivedResponse, type ArchivedSession, formatAge } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, archive, canAct, errorOf, NO_ANSWER } from '../api.ts';
+import { couldnt } from '../copy.ts';
 import { actionError, archivedCount, archiveOpen, now } from '../store.ts';
 
 const LIST_ID = 'k-archived';
@@ -67,7 +68,7 @@ function Rows({ count }: { count: number }) {
       ))}
       {loaded.error !== null && (
         <div class="k-err k-arc-err" role="alert">
-          Couldn't load the archive: {loaded.error}
+          {couldnt('load the archive', loaded.error)}
         </div>
       )}
       {restoreError !== null && (

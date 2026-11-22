@@ -1,4 +1,5 @@
 import type { DeleteBody, Session } from '@kage/shared';
+import { couldnt } from './copy.ts';
 import {
   actionError,
   authRequired,
@@ -102,7 +103,7 @@ export const canAct = (id: string): boolean => !busy.value.has(id) && connection
 
 /**
  * One action on a session, as act describes; `verb` names it in the error line ("Couldn't
- * archive: …"). The path `''` is the session itself: its DELETE.
+ * archive. …"). The path `''` is the session itself: its DELETE.
  */
 async function request(
   id: string,
@@ -126,7 +127,7 @@ async function request(
     left.delete(id);
     busy.value = left;
   }
-  if (error !== null) actionError.value = { id, text: `Couldn't ${verb}: ${error}` };
+  if (error !== null) actionError.value = { id, text: couldnt(verb, error) };
   return false;
 }
 

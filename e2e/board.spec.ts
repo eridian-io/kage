@@ -50,7 +50,7 @@ test('keys typed right after R go into the reply field, never to the board', asy
   await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
   // Demo mode refuses the send; the text stays and the server's sentence shows.
   await page.keyboard.press('Enter');
-  await expect(page.locator('.k-err')).toHaveText("Couldn't send: Demo mode can't run tasks.");
+  await expect(page.locator('.k-err')).toHaveText("Couldn't send. Demo mode can't run tasks.");
   await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
   await page.keyboard.press('Escape');
   await expect(page.locator('.k-ask .k-follow')).toHaveCount(0);

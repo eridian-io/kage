@@ -306,7 +306,9 @@ describe('the diff view', () => {
       pages.set(0, [status, error]);
       const c = await openDiff();
       const err = q(c, '.k-dv .k-err');
-      expect(err.textContent).toBe(`Couldn't load the diff: ${error}`);
+      expect(err.textContent).toBe(
+        `Couldn't load the diff. ${error[0].toUpperCase()}${error.slice(1)}`,
+      );
       expect(err.getAttribute('role')).toBe('alert');
       cleanup();
     }
@@ -319,7 +321,7 @@ describe('the diff view', () => {
     fireEvent.click(button(c, 'Next →'));
     await waitFor(() => expect(c.querySelector('.k-dv .k-err')).not.toBeNull());
     expect(q(c, '.k-dv .k-err').textContent).toBe(
-      "Couldn't load the diff: Kage is still working on the last diff.",
+      "Couldn't load the diff. Kage is still working on the last diff.",
     );
     // The last page stays, with its top line and buttons.
     expect(c.querySelectorAll('.k-diff-file')).toHaveLength(5);
@@ -388,7 +390,7 @@ describe('the diff view', () => {
       throw new TypeError('fetch failed');
     });
     const c = await openDiff();
-    expect(q(c, '.k-dv .k-err').textContent).toBe("Couldn't load the diff: Kage didn't answer.");
+    expect(q(c, '.k-dv .k-err').textContent).toBe("Couldn't load the diff. Kage didn't answer.");
   });
 
   describe('paging', () => {

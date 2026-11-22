@@ -188,7 +188,7 @@ describe('the archived list', () => {
       expect(el).not.toBeNull();
       return el as Element;
     });
-    expect(line.textContent).toBe("Couldn't load the archive: Kage couldn’t read its state.");
+    expect(line.textContent).toBe("Couldn't load the archive. Kage couldn’t read its state.");
     expect(line.getAttribute('role')).toBe('alert');
     const rule = /\.k-err\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
     expect(rule).toContain('var(--fg-2)');
@@ -203,7 +203,7 @@ describe('the archived list', () => {
     fireEvent.click(rows(container)[1]?.querySelector('button') as HTMLButtonElement);
     await waitFor(() =>
       expect(container.querySelector('.k-arch .k-err')?.textContent).toBe(
-        "Couldn't restore: The screen is still drawing. Try again in a moment.",
+        "Couldn't restore. The screen is still drawing. Try again in a moment.",
       ),
     );
     expect(container.querySelector('.k-arch .k-err')?.getAttribute('role')).toBe('alert');
@@ -229,9 +229,9 @@ describe('the archived list', () => {
     const { container } = render(<Board />);
     fireEvent.click(toggle(container) as HTMLButtonElement);
     await waitFor(() => expect(rows(container)).toHaveLength(2));
-    actionError.value = { id: 'docs', text: "Couldn't archive: no." };
+    actionError.value = { id: 'docs', text: "Couldn't archive. No." };
     fireEvent.click(toggle(container) as HTMLButtonElement);
-    expect(actionError.value).toEqual({ id: 'docs', text: "Couldn't archive: no." });
+    expect(actionError.value).toEqual({ id: 'docs', text: "Couldn't archive. No." });
   });
 
   it('Restore is disabled while disconnected or busy, and a double click sends one request', async () => {

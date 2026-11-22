@@ -1,6 +1,7 @@
 import { LIMITS, type NewTaskResponse, type Project, type ProjectsResponse } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, apiPost, errorOf, NO_ANSWER } from '../api.ts';
+import { couldnt } from '../copy.ts';
 import { connection, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
 
 const COUNT_FROM = 3600;
@@ -116,9 +117,9 @@ export function NewTask() {
         return;
       }
       // A 401 has already sent the board to the login screen; anything else is shown here.
-      if (res.status !== 401) failure = `Couldn't start: ${await errorOf(res)}`;
+      if (res.status !== 401) failure = couldnt('start', await errorOf(res));
     } catch {
-      failure = `Couldn't start: ${NO_ANSWER}`;
+      failure = couldnt('start', NO_ANSWER);
     } finally {
       busyRef.current = false;
     }

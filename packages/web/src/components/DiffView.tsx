@@ -2,6 +2,7 @@ import { type DiffFile, type DiffPage, LIMITS, type Session, shortWorktree } fro
 import { Component } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, errorOf, NO_ANSWER } from '../api.ts';
+import { couldnt } from '../copy.ts';
 import { projectsRoot } from '../store.ts';
 
 const GUTTER = { add: '+', del: '−', ctx: ' ' } as const;
@@ -209,7 +210,7 @@ export function DiffView({ session: s }: { session: Session }) {
       {st.error !== null && (
         <div class="k-diff-error">
           <span class="k-err" role="alert">
-            Couldn't load the diff: {st.error}
+            {couldnt('load the diff', st.error)}
           </span>
           <button type="button" class="k-act" onClick={again}>
             Try again

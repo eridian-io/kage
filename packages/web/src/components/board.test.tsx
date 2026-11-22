@@ -1021,7 +1021,7 @@ describe('controls', () => {
       replies = [[409, CHANGED]];
       const { container } = render(<Board />);
       fireEvent.click(optButtons(container)[0] as Element);
-      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send: ${CHANGED}`));
+      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send. ${CHANGED}`));
       expect(q(container, '.k-err').nextElementSibling?.classList.contains('k-foot')).toBe(true);
       const rule = /\.k-err\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
       expect(rule).toContain('var(--fg-2)');
@@ -1057,7 +1057,7 @@ describe('controls', () => {
       fetchMock.mockRejectedValueOnce(new TypeError('offline'));
       const { container } = render(<Board />);
       fireEvent.click(optButtons(container)[0] as Element);
-      await waitFor(() => expect(errLine(container)).toBe("Couldn't send: Kage didn't answer."));
+      await waitFor(() => expect(errLine(container)).toBe("Couldn't send. Kage didn't answer."));
     });
   });
 
@@ -1108,7 +1108,7 @@ describe('controls', () => {
       const input = await openReply(container);
       fireEvent.input(input, { target: { value: '/compact' } });
       fireEvent.keyDown(input, { key: 'Enter' });
-      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send: ${refusal}`));
+      await waitFor(() => expect(errLine(container)).toBe(`Couldn't send. ${refusal}`));
       expect(input.value).toBe('/compact');
       expect(replyInput(container)).toBe(input);
     });
@@ -1195,7 +1195,7 @@ describe('controls', () => {
       const { container, input } = open();
       fireEvent.input(input, { target: { value: 'Also add a FAQ section' } });
       fireEvent.keyDown(input, { key: 'Enter' });
-      await waitFor(() => expect(errLine(container)).toBe("Couldn't send: The session is busy."));
+      await waitFor(() => expect(errLine(container)).toBe("Couldn't send. The session is busy."));
       expect(input.value).toBe('Also add a FAQ section');
     });
 
@@ -1469,7 +1469,7 @@ describe('finish controls (Task 9)', () => {
       fireEvent.click(button(container, 'Archive'));
       await waitFor(() => expect(errLine(container)).not.toBeNull());
       expect(errLine(container)?.textContent).toBe(
-        "Couldn't archive: This session is still running.",
+        "Couldn't archive. This session is still running.",
       );
       expect(errLine(container)?.getAttribute('role')).toBe('alert');
       applyEvent({ type: 'session.removed', id: 'docs' });
@@ -1555,7 +1555,7 @@ describe('finish controls (Task 9)', () => {
       fireEvent.click(button(container, 'Delete…'));
       fireEvent.click(button(container, 'Delete session'));
       await waitFor(() => expect(errLine(container)).not.toBeNull());
-      expect(errLine(container)?.textContent).toBe(`Couldn't delete: ${CHANGED}`);
+      expect(errLine(container)?.textContent).toBe(`Couldn't delete. ${CHANGED}`);
       expect(errLine(container)?.getAttribute('role')).toBe('alert');
       expect(container.querySelector('.k-confirm')).not.toBeNull();
       expect(button(container, 'Delete session').disabled).toBe(false);
@@ -1573,7 +1573,7 @@ describe('finish controls (Task 9)', () => {
       fireEvent.click(row(container, 'docs'));
       fireEvent.click(button(container, 'Delete…'));
       fireEvent.click(button(container, 'Delete session'));
-      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't delete: ${OFF}`));
+      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't delete. ${OFF}`));
     });
 
     it('a 204 and the removal show the delete toast', async () => {
@@ -1621,7 +1621,7 @@ describe('finish controls (Task 9)', () => {
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'docs'));
       fireEvent.click(button(container, 'Resume'));
-      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't resume: ${GONE}`));
+      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't resume. ${GONE}`));
     });
 
     it('a resume Claude could not find shows its line in the output (R63)', async () => {
@@ -1660,7 +1660,7 @@ describe('finish controls (Task 9)', () => {
       fireEvent.keyDown(document, { key: 's' });
       await waitFor(() =>
         expect(errLine(container)?.textContent).toBe(
-          "Couldn't pin: Kage only pins sessions it started.",
+          "Couldn't pin. Kage only pins sessions it started.",
         ),
       );
     });
