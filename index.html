@@ -52,7 +52,7 @@
 <main id="main">
   <section class="hero" aria-labelledby="hero-title">
     <div class="wrap">
-      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development · phases 1–3 built</span>
+      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development</span>
       <h1 id="hero-title">Your Claude Code agents, <span>working in the shadows.</span></h1>
       <p class="lede">Kage is a small web dashboard that runs on your server or home PC. It shows every Claude Code session in one place, so you can start, watch, answer and stop them from your laptop or phone.</p>
       <div class="actions">
@@ -98,7 +98,7 @@
     <div class="wrap">
       <span class="eyebrow">features</span>
       <h2 id="features-title">You leave your desk. Your agents keep working.</h2>
-      <p class="intro">Kage gives you one calm screen that shows what every session is doing, and which ones are waiting for you.</p>
+      <p class="intro">Kage gives you one calm screen that shows what every session is doing, and which ones are waiting for you. Most of it is built but not merged yet: see the <a href="#roadmap">roadmap</a>.</p>
       <div class="grid">
         <article class="feature">
           <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="1.4"/><circle cx="5" cy="12" r="1.4"/><circle cx="5" cy="18" r="1.4"/><path d="M10 6h10M10 12h10M10 18h7"/></svg></div>
@@ -133,9 +133,25 @@
         </article>
         <article class="feature">
           <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg></div>
-          <h3>Files changed</h3>
-          <p>See every file a task touched, uncommitted ones too, with line counts. A diff view is on the way.</p>
-          <div class="keys"><span class="chip soon">diff view: phase 4</span></div>
+          <h3>Files changed, and the diff</h3>
+          <p>See every file a task touched, uncommitted ones too, with line counts. View diff opens the same files as a read-only diff, a page at a time.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h14v4H5z"/><path d="M6 8v11a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg></div>
+          <h3>Pin and archive</h3>
+          <p>Pin a session to keep it first and out of auto-archive. Archive one to close Claude and tuck it away; its worktree and branch stay, and you can restore it. Kage archives a done session once its branch is merged. A session whose Claude has exited can be resumed.</p>
+          <div class="keys"><span class="sr-only">Keyboard shortcuts: </span><kbd>S</kbd><kbd>E</kbd><kbd>U</kbd></div>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7h14M10 7V5h4v2M7 7l1 12h8l1-12"/></svg></div>
+          <h3>Delete safely</h3>
+          <p>Before it removes a worktree and its branch, Kage says what would be lost: commits that aren't pushed, uncommitted files and ignored files such as <code>.env</code>. It deletes only after you confirm those counts, and only worktrees it made.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="1.5"/><path d="m7 10 3 2-3 2M12 14h4"/></svg></div>
+          <h3>A terminal when you need it</h3>
+          <p>Open the session's real tmux window in the browser and type to Claude as you would at the PC. It loads only when you open it. Windows Kage didn't start are view-only.</p>
+          <div class="keys"><span class="sr-only">Keyboard shortcut: </span><kbd>T</kbd></div>
         </article>
       </div>
     </div>
@@ -220,15 +236,15 @@
       <div class="start">
         <div class="card">
           <h3>Run from source</h3>
-          <p>You need Node 24.2 or newer, and Tailscale up.</p>
+          <p>You need Node 24.2 or newer, and Tailscale up. The newest work lives on the <code>phase-4</code> branch until it's merged into main.</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
-            <pre><code><span>git clone https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
+            <pre><code><span>git clone --branch phase-4 https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
           </div>
           <p>Then open the address it prints. No Tailscale on this machine? Stay on loopback instead:</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
             <pre><code><span>KAGE_HOST=127.0.0.1 pnpm dev</span></code></pre>
           </div>
-          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
+          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage/tree/phase-4#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
         </div>
         <div class="stack">
           <div class="card">
@@ -260,25 +276,25 @@
           <span class="n">01</span>
           <h3>Skeleton</h3>
           <p>The server, config, Tailscale bind and security checks, and the board in demo mode.</p>
-          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>released on main</span>
         </li>
         <li class="done">
           <span class="n">02</span>
           <h3>Sessions</h3>
           <p>Live tmux sessions, with status from hooks and output from transcripts.</p>
-          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
         <li class="done">
           <span class="n">03</span>
           <h3>Control</h3>
           <p>Start, answer, reply to and stop tasks; preview links, changed files and token login.</p>
-          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
-        <li>
+        <li class="done">
           <span class="n">04</span>
           <h3>Finish and terminal</h3>
           <p>Pin, archive and delete sessions, a diff view, and a full terminal in the browser, loaded only when you open it.</p>
-          <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>in progress</span>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
         <li class="later">
           <span class="n">05</span>
