@@ -63,6 +63,10 @@ const CAPTURE_LINES = 200;
 /** After Escape, and after typing: look every 100 ms, at most 10 times. */
 const POLL_MS = 100;
 const POLLS = 10;
+/** R63: a startup screen is answered once two captures this far apart match… */
+const STABLE_MS = 300;
+/** …comparing at most this many times (about 1.5 s). */
+const STABLE_TRIES = 5;
 
 const CHANGED = 'The prompt on screen changed. Look again.';
 /** R36: the card's question is not the one on the server or on screen any more. */
@@ -135,7 +139,10 @@ export class SessionControls {
       const plan = answerPlan(kind, question.options, option, this.#attach);
       if (plan.kind === 'refuse') throw new ActionError(409, plan.reason);
 
-      const before = await this.#capture(paneId);
+      // R63: a startup screen drops a key sent while it draws; wait until it holds still.
+      const before = STARTUP_KINDS.has(kind)
+        ? await this.#stableCapture(paneId)
+        : await this.#capture(paneId);
       if (kind === 'ask' && hasCheckboxes(parsePermissionPrompt(before)?.options ?? [])) {
         throw new ActionError(409, MULTI);
       }
@@ -280,6 +287,21 @@ export class SessionControls {
 
   #capture(paneId: string): Promise<string> {
     return this.#tmux.capturePane(paneId, CAPTURE_LINES);
+  }
+
+  /**
+   * R63: a capture equal to the one STABLE_MS before it, comparing at most STABLE_TRIES times;
+   * a screen that never holds still is 409, with no key sent.
+   */
+  async #stableCapture(paneId: string): Promise<string> {
+    let prev = await this.#capture(paneId);
+    for (let i = 0; i < STABLE_TRIES; i++) {
+      await this.#sleep(STABLE_MS);
+      const next = await this.#capture(paneId);
+      if (next === prev) return next;
+      prev = next;
+    }
+    throw new ActionError(409, 'The screen is still drawing. Try again in a moment.');
   }
 
   #keys(paneId: string, keys: Key[]): Promise<void> {

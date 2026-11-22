@@ -1050,6 +1050,8 @@ export class LiveSource implements SessionSource {
       return;
     }
     if (text === null && !retried) {
+      // A SessionStart during the capture may have armed a fresh fallback in this slot.
+      this.#clearTimers(st, ['firstPrompt']);
       st.timers.firstPrompt = setTimeout(() => {
         delete st.timers.firstPrompt;
         void this.#firstPromptFallback(st, true);

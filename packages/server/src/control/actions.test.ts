@@ -263,9 +263,11 @@ describe('SessionControls.answer', () => {
       question: { text: 'Trust this folder?', options: TRUST, startup: true },
       promptKind: 'trust',
     });
-    const { tmux, source, controls } = setup(t, pane('trust'), trustOnYes());
+    const { tmux, source, controls, sleeps } = setup(t, pane('trust'), pane('trust'), trustOnYes());
     await controls.answer('k-1', 2, shown('k-1'));
-    expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture', 'keys Enter']);
+    // R63: two equal captures 300 ms apart before the first key.
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys Down', 'capture', 'keys Enter']);
+    expect(sleeps).toEqual([300, 100]);
     expectCaptureBeforeEveryKey(tmux);
     expect(source.marks).toEqual(['answered k-1']);
   });
@@ -277,7 +279,7 @@ describe('SessionControls.answer', () => {
     });
     const { tmux, controls } = setup(t, pane('trust'));
     await controls.answer('k-1', 1, shown('k-1'));
-    expect(tmux.log()).toEqual(['capture', 'keys Enter']);
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys Enter']);
   });
 
   it('the delta comes from the observed ❯: from "Yes" to "No" is Up', async () => {
@@ -285,9 +287,9 @@ describe('SessionControls.answer', () => {
       question: { text: 'Trust this folder?', options: TRUST, startup: true },
       promptKind: 'trust',
     });
-    const { tmux, controls } = setup(t, trustOnYes(), pane('trust'));
+    const { tmux, controls } = setup(t, trustOnYes(), trustOnYes(), pane('trust'));
     await controls.answer('k-1', 1, shown('k-1'));
-    expect(tmux.log()).toEqual(['capture', 'keys Up', 'capture', 'keys Enter']);
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys Up', 'capture', 'keys Enter']);
   });
 
   it('trust where the ❯ never leaves "No, exit" after Down → 409 after 10 looks, no Enter', async () => {
@@ -298,8 +300,8 @@ describe('SessionControls.answer', () => {
     const { tmux, source, controls, sleeps } = setup(t, pane('trust'), pane('trust'));
     const e = await refusal(controls.answer('k-1', 2, shown('k-1')));
     expect([e.status, e.message]).toEqual([409, CHANGED]);
-    expect(tmux.log()).toEqual(['capture', 'keys Down', ...Array(10).fill('capture')]);
-    expect(sleeps).toEqual(Array(10).fill(100));
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys Down', ...Array(10).fill('capture')]);
+    expect(sleeps).toEqual([300, ...Array(10).fill(100)]);
     expect(source.marks).toEqual([]);
   });
 
@@ -314,10 +316,12 @@ describe('SessionControls.answer', () => {
       pane('trust'),
       pane('trust'),
       pane('trust'),
+      pane('trust'),
       trustOnYes(),
     );
     await controls.answer('k-1', 2, shown('k-1'));
     expect(tmux.log()).toEqual([
+      'capture',
       'capture',
       'keys Down',
       'capture',
@@ -334,9 +338,9 @@ describe('SessionControls.answer', () => {
       question: { text: 'Trust this folder?', options: TRUST, startup: true },
       promptKind: 'trust',
     });
-    const { tmux, controls } = setup(t, pane('trust'), idle(''));
+    const { tmux, controls } = setup(t, pane('trust'), pane('trust'), idle(''));
     expect((await refusal(controls.answer('k-1', 2, shown('k-1')))).message).toBe(CHANGED);
-    expect(tmux.log()).toEqual(['capture', 'keys Down', 'capture']);
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys Down', 'capture']);
   });
 
   it('the renderer offer takes the digit; the security notes take Enter', async () => {
@@ -349,7 +353,7 @@ describe('SessionControls.answer', () => {
       ' Try the new fullscreen renderer?\n\n ❯ 1. Yes, try it\n   2. Not now\n',
     );
     await a.controls.answer('k-1', 2, shown('k-1'));
-    expect(a.tmux.log()).toEqual(['capture', 'keys 2']);
+    expect(a.tmux.log()).toEqual(['capture', 'capture', 'keys 2']);
 
     const security = target({
       question: { text: 'Security notes', options: ['Continue'] },
@@ -360,7 +364,7 @@ describe('SessionControls.answer', () => {
       ' Security notes:\n\n 1. Claude can make mistakes\n\n Press Enter to continue…',
     );
     await b.controls.answer('k-1', 1, shown('k-1'));
-    expect(b.tmux.log()).toEqual(['capture', 'keys Enter']);
+    expect(b.tmux.log()).toEqual(['capture', 'capture', 'keys Enter']);
   });
 
   it('a startup screen of another kind on screen → 409 (security notes asked, theme shown)', async () => {
@@ -373,7 +377,51 @@ describe('SessionControls.answer', () => {
       ' Welcome.\n\n Choose the text style that looks best with your terminal\n\n ❯ Auto\n   Dark\n',
     );
     expect((await refusal(controls.answer('k-1', 1, shown('k-1')))).message).toBe(QCHANGED);
-    expect(tmux.log()).toEqual(['capture']);
+    expect(tmux.log()).toEqual(['capture', 'capture']);
+  });
+
+  it('R63: a startup screen still drawing: the first key waits until two captures 300 ms apart match', async () => {
+    const t = target({
+      question: { text: 'Trust this folder?', options: TRUST, startup: true },
+      promptKind: 'trust',
+    });
+    // Half drawn, then drawn, then drawn again (stable), then the ❯ moved after Down.
+    const half = pane('trust').split('\n').slice(0, 3).join('\n');
+    const { tmux, controls, sleeps } = setup(t, half, pane('trust'), pane('trust'), trustOnYes());
+    await controls.answer('k-1', 2, shown('k-1'));
+    expect(tmux.log()).toEqual([
+      'capture',
+      'capture',
+      'capture',
+      'keys Down',
+      'capture',
+      'keys Enter',
+    ]);
+    expect(sleeps).toEqual([300, 300, 100]);
+  });
+
+  it('R63: a startup screen that never holds still → 409 after 5 comparisons, no key', async () => {
+    const t = target({
+      question: { text: 'Trust this folder?', options: TRUST, startup: true },
+      promptKind: 'trust',
+    });
+    const frames = Array.from({ length: 6 }, (_, i) => `${pane('trust')}\n${'·'.repeat(i + 1)}`);
+    const { tmux, source, controls, sleeps } = setup(t, ...frames, pane('trust'));
+    const e = await refusal(controls.answer('k-1', 2, shown('k-1')));
+    expect([e.status, e.message]).toEqual([
+      409,
+      'The screen is still drawing. Try again in a moment.',
+    ]);
+    expect(tmux.log()).toEqual(Array(6).fill('capture'));
+    expect(sleeps).toEqual(Array(5).fill(300));
+    expect(source.marks).toEqual([]);
+  });
+
+  it('R63: a permission prompt is answered after one capture (no stability wait)', async () => {
+    const { tmux, sleeps, controls } = setup(target(), pane('permission-bash'));
+    await controls.answer('k-1', 1, shown('k-1'));
+    expect(tmux.log()).toEqual(['capture', 'keys 1']);
+    expect(sleeps).toEqual([]);
   });
 
   it('login → 409 with the attach command, no keys and no capture', async () => {
@@ -807,7 +855,7 @@ describe('fix round 1: SessionControls', () => {
     expect(e.status).toBe(409);
     expect(tmux.calls).toEqual([]);
     await controls.answer('k-1', 2, shown('k-1'));
-    expect(tmux.log()).toEqual(['capture', 'keys 2']);
+    expect(tmux.log()).toEqual(['capture', 'capture', 'keys 2']);
   });
 
   it('a multi-select AskUserQuestion (multiSelect from the hook) → 409, no capture', async () => {

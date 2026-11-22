@@ -272,7 +272,7 @@ export class TaskLauncher {
     let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;
     // Windows already named after the slug before this launch (not ours to kill on rollback);
-    // null while unknown (the listing failed or never ran), which authorises no kill.
+    // null while unknown (the listing failed or never ran), which authorises no untagged kill.
     let before: Set<string> | null = null;
     try {
       // K3: tmux would start the window in $HOME if the folder were missing.
@@ -298,7 +298,7 @@ export class TaskLauncher {
     } catch (e) {
       // Only what this request created: a window new-window left behind (it can time out after
       // tmux opened it), then its worktree, its branch and its record.
-      if (step === 'tmux' && before !== null) await this.#killLeftover(slug, kageId, before);
+      if (step === 'tmux') await this.#killLeftover(slug, kageId, before);
       await d.git(['worktree', 'remove', '--force', '--', path], { cwd: repo }).catch(() => {});
       await d.git(['branch', '-D', '--', branch], { cwd: repo }).catch(() => {});
       if (step === 'tmux') await d.source.abandon(kageId).catch(() => {});
@@ -319,15 +319,23 @@ export class TaskLauncher {
    * After a failed new-window: windows named `slug` that weren't there before the launch and
    * are untagged (or tagged with this launch's id) are killed, each re-checked by tmux just
    * before the kill. Best effort: a failure here leaves the window, never the launch half-done.
-   * Skipped when the listing before the launch failed: an unknown "before" authorises no kill.
+   * When the listing before the launch failed (`before` null), the unknown "before" authorises
+   * no untagged kill; a window tagged with this launch's fresh id is still Kage's own (and
+   * killOwnedWindow re-checks the tag), so it goes.
    */
-  async #killLeftover(slug: string, kageId: string, before: ReadonlySet<string>): Promise<void> {
+  async #killLeftover(
+    slug: string,
+    kageId: string,
+    before: ReadonlySet<string> | null,
+  ): Promise<void> {
     const tmux = this.#d.tmux;
     try {
       for (const w of await tmux.listWindows()) {
-        if (w.name !== slug || before.has(w.windowId)) continue;
-        if (w.kageId === null) await tmux.killUntaggedWindow(w.windowId);
-        else if (w.kageId === kageId) await tmux.killOwnedWindow(w.windowId, kageId);
+        if (w.name !== slug) continue;
+        if (w.kageId === kageId) await tmux.killOwnedWindow(w.windowId, kageId);
+        else if (w.kageId === null && before !== null && !before.has(w.windowId)) {
+          await tmux.killUntaggedWindow(w.windowId);
+        }
       }
     } catch {}
   }

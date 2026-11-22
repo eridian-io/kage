@@ -2153,6 +2153,62 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
       await flush();
       expect(source.get('k-1')?.status).toBe('done');
     });
+
+    // Phase 4 Task 4: Task 0's carried minors.
+    it('a SessionStart during the fallback capture leaves one first-prompt timer (the slot is cleared before re-use)', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 1;
+      let release: () => void = () => {};
+      tmux.gate = new Promise((r) => {
+        release = r;
+      });
+      await vi.advanceTimersByTimeAsync(10_100);
+      // The fallback's capture is waiting; a second SessionStart arms a fresh 10 s timer.
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.gate = null;
+      release();
+      await flush();
+      // The failed capture schedules its 2 s retry in the same slot: the 10 s timer must go.
+      await source.stop();
+      expect(vi.getTimerCount()).toBe(0);
+    });
+
+    it('stop() cancels the first-prompt retry', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 1;
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      const captures = tmux.captureCalls.length;
+      await source.stop();
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(tmux.captureCalls.length).toBe(captures);
+    });
+
+    it('removing the session (abandon) cancels the first-prompt retry', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.failCaptures = 1;
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      const captures = tmux.captureCalls.length;
+      await source.abandon('k-9');
+      await vi.advanceTimersByTimeAsync(3_000);
+      expect(tmux.captureCalls.length).toBe(captures);
+      expect(source.get('k-9')).toBeUndefined();
+    });
+
+    it('10 s after SessionStart, a dialog on screen with "esc to interrupt" in the footer is still needs-you', async () => {
+      const { source, hooks, tmux } = await launchedWindow();
+      hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+      tmux.setCapture('%7', `✻ Thinking… (esc to interrupt)\n${pane('permission-bash')}`);
+      await vi.advanceTimersByTimeAsync(10_100);
+      await flush();
+      expect(source.get('k-9')?.status).toBe('needs-you');
+      expect(source.get('k-9')?.question?.options.length).toBeGreaterThan(1);
+    });
   });
 });
 

@@ -158,6 +158,12 @@ describe('StateStore', () => {
     expect(b).toMatchObject({ doneAt: null, archivedAt: null });
   });
 
+  it('a record that is not archived loads with archivedAt null, whatever the file says', async () => {
+    const store = new StateStore(path);
+    await writeRecords(store, [{ ...rec({ archived: false }), archivedAt: 7 }]);
+    expect((await store.load())[0]).toMatchObject({ archived: false, archivedAt: null });
+  });
+
   it('serialises concurrent saves: the last one wins', async () => {
     const store = new StateStore(path);
     await Promise.all([

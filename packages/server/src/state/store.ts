@@ -104,7 +104,8 @@ function toRecord(v: unknown): SessionRecord | null {
     permissionMode: o.permissionMode === 'acceptEdits' ? 'acceptEdits' : 'default',
     baseCommit: isStr(o.baseCommit) && HEX_COMMIT.test(o.baseCommit) ? o.baseCommit : null,
     doneAt: timeOrNull(o.doneAt),
-    archivedAt: timeOrNull(o.archivedAt) ?? (o.archived ? o.createdAt : null),
+    // Only an archived record has an archive time; one without gets its creation time.
+    archivedAt: o.archived ? (timeOrNull(o.archivedAt) ?? o.createdAt) : null,
     restoredAt: timeOrNull(o.restoredAt),
   };
 }

@@ -630,6 +630,23 @@ describe('TaskLauncher: hardening (Task 6 review)', () => {
     expect(existsSync(join(repo, '.worktrees', 'fix-the-cart-total'))).toBe(false);
   });
 
+  it('when the listing before the launch failed, a leftover tagged with this launch’s id is still killed (owned only)', async () => {
+    const { launcher, tmux, log } = setup();
+    // An untagged window named after the slug stays: the failed listing authorises no untagged kill.
+    tmux.windows = [{ windowId: '@3', name: 'fix-the-cart-total', kageId: null }];
+    tmux.strayOnFail = { windowId: '@9', kageId: 'k-1' };
+    tmux.fail = new Error('tmux timed out');
+    let lists = 0;
+    const list = tmux.listWindows.bind(tmux);
+    tmux.listWindows = async () => {
+      if (lists++ === 0) throw new Error('no server running');
+      return list();
+    };
+    await launchError(launcher.start(body()));
+    expect(log).toEqual(['adopt', 'newWindow', 'kill-owned @9', 'abandon k-1']);
+    expect(tmux.windows.map((w) => w.windowId)).toEqual(['@3']);
+  });
+
   it('without a PATH in serve, the window env leaves PATH out', async () => {
     const { launcher, tmux } = setup({ windowPath: null });
     await launcher.start(body());

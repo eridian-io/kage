@@ -304,17 +304,26 @@ export function showsPrompt(pane: string): boolean {
   return parsePrompt(raw) !== null || parseStartup(raw.map((l) => l.trim())) !== null;
 }
 
-/** What Claude shows under the tool line after No or Esc on a prompt (spec §1, R11). */
-const DENIAL = /^⎿\s+Interrupted · What should Claude do instead\?/;
+/**
+ * What Claude shows under the tool line after No or Esc on a prompt (spec §1, R11), and after Esc
+ * at an Edit prompt (R63, claude-code-integration.md §8: "Rejected update to <file>").
+ */
+const DENIAL = /^⎿\s+(?:Interrupted · What should Claude do instead\?|Rejected update to )/;
+/** The rejected Edit's line; the declined diff follows it. */
+const REJECTED = /^⎿\s+Rejected update to /;
 /** The denial must be live: within this many non-empty lines of the bottom, above the input box. */
 const DENIAL_WINDOW = 8;
 
-/** True when the bottom of the pane shows Claude's denial line: a prompt was answered No or Esc. */
+/**
+ * True when the bottom of the pane shows Claude's denial line: a prompt was answered No or Esc.
+ * A rejected Edit's diff can push its line out of the window, so that one is also live while it
+ * sits right under the last tool line.
+ */
 export function showsDenial(pane: string): boolean {
-  return cleanLines(pane)
-    .filter((l) => l !== '')
-    .slice(-DENIAL_WINDOW)
-    .some((l) => DENIAL.test(l));
+  const lines = cleanLines(pane).filter((l) => l !== '');
+  if (lines.slice(-DENIAL_WINDOW).some((l) => DENIAL.test(l))) return true;
+  const tool = lines.findLastIndex((l) => l.startsWith('●'));
+  return tool !== -1 && REJECTED.test(lines[tool + 1] ?? '');
 }
 
 /**

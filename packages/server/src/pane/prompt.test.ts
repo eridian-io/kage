@@ -324,6 +324,33 @@ describe('showsDenial', () => {
     const later = Array.from({ length: 12 }, (_, i) => `  ⎿  line ${i + 1}`).join('\n');
     expect(showsDenial(`${DENIED}\n● Bash(npm test)\n${later}\n${APPROVED}`)).toBe(false);
   });
+
+  // R63 (claude-code-integration.md §8): Esc at an Edit prompt shows "Rejected update to <file>"
+  // and the declined diff under it, however long that diff is.
+  const diff = (n: number) =>
+    Array.from({ length: n }, (_, i) => `      ${i + 1} ${i % 2 ? '+' : '-'}line ${i + 1}`);
+  const rejected = (n: number) =>
+    [
+      '● Update(notes.txt)',
+      '  ⎿  Rejected update to notes.txt',
+      ...diff(n),
+      '',
+      RULE,
+      '❯ ',
+      RULE,
+      '  ? for shortcuts',
+      '',
+    ].join('\n');
+  it('is true for a rejected Edit, with a short or a long diff under it', () => {
+    expect(showsDenial(rejected(2))).toBe(true);
+    expect(showsDenial(rejected(20))).toBe(true);
+    expect(showsDenialLast(rejected(20))).toBe(true);
+  });
+  it('ignores a rejected Edit followed by a later tool line', () => {
+    const p = `${rejected(2)}\n● Bash(npm test)\n${diff(12).join('\n')}\n${APPROVED}`;
+    expect(showsDenial(p)).toBe(false);
+    expect(showsDenialLast(p)).toBe(false);
+  });
 });
 
 describe('paneLines', () => {
