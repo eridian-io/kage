@@ -12,7 +12,7 @@ import {
 } from 'node:fs/promises';
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { NewTaskBody, NewTaskResponse } from '@kage/shared';
-import { BUSY, OFF_BRANCH } from '../finish/actions.ts';
+import { BUSY, kageWorktree, notKageWorktree, OFF_BRANCH } from '../finish/actions.ts';
 import { firstLine, type GitExec } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
@@ -58,8 +58,13 @@ export function claudeArgv(
   ];
 }
 
-/** A Claude session id Kage passes to `--resume` (a UUID; integration §8). */
-const SESSION_ID = /^[0-9A-Fa-f-]{8,64}$/;
+/** A Claude session id Kage passes to `--resume`: a strict UUID (integration §8). */
+const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** The id `--resume` gets for a record's session id; null means `--continue`. */
+export function resumeId(sessionId: string | null): string | null {
+  return sessionId !== null && SESSION_ID.test(sessionId) ? sessionId : null;
+}
 
 /**
  * The resume command (B7; R4, R19): the record's permission mode and Kage's settings as at the
@@ -73,9 +78,8 @@ export function resumeArgv(
   sessionId: string | null,
 ): string[] {
   const base = [bin, '--settings', settingsPath, '--permission-mode', mode];
-  return sessionId !== null && SESSION_ID.test(sessionId)
-    ? [...base, '--resume', sessionId]
-    : [...base, '--continue'];
+  const id = resumeId(sessionId);
+  return id !== null ? [...base, '--resume', id] : [...base, '--continue'];
 }
 
 async function isExecutableFile(path: string): Promise<boolean> {
@@ -237,8 +241,14 @@ export class TaskLauncher {
       if (bin === null) throw new LaunchError(503, NO_CLAUDE);
       // K3: tmux would start the window in $HOME if the folder were missing.
       const folder = isAbsolute(r.worktree) ? await stat(r.worktree).catch(() => null) : null;
-      if (!folder?.isDirectory()) {
-        throw new LaunchError(409, "The worktree is gone, so Kage can't resume this session.");
+      const gone = new LaunchError(409, "The worktree is gone, so Kage can't resume this session.");
+      if (!folder?.isDirectory()) throw gone;
+      // Delete's containment: under the project's worktree root (links resolved), on a branch
+      // with the configured prefix. A hand-edited record can't point claude anywhere else.
+      const project = await findProject(d.projectsRoot, r.project, d.git);
+      if (!project) throw gone;
+      if (!(await kageWorktree(r, project.path, d.worktreeDir, d.branchPrefix))) {
+        throw new LaunchError(409, notKageWorktree(r.worktree));
       }
       await this.#onBranch(r.worktree, r.branch);
       let windowId: string;
@@ -256,7 +266,7 @@ export class TaskLauncher {
       } catch (e) {
         throw new LaunchError(422, `tmux couldn't open a window: ${firstLine(e)}`);
       }
-      d.source.resumed(r.kageId);
+      d.source.resumed(r.kageId, resumeId(r.sessionId));
       d.source.claim(r.kageId, windowId);
     } finally {
       release();

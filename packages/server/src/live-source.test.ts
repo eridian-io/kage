@@ -3265,7 +3265,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
   async function resumedSession(capture = IDLE) {
     const s = await endedSession();
     vi.setSystemTime(T0 + 60_000);
-    s.source.resumed('k-1');
+    s.source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
     s.tmux.setCapture('%7', capture);
     s.source.claim('k-1', '@7');
@@ -3277,7 +3277,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     const { source, updates, auto, store } = await endedSession();
     vi.setSystemTime(T0 + 60_000);
     auto.calls = [];
-    source.resumed('k-1');
+    source.resumed('k-1', 's-1');
     expect(updates('k-1').at(-1)).toMatchObject({
       status: 'running',
       now: 'Starting Claude…',
@@ -3295,9 +3295,9 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     await flush();
     const before = updates().length;
     const status = source.get('k-1')?.status;
-    source.resumed('k-1');
-    source.resumed('ext-@1');
-    source.resumed('nope');
+    source.resumed('k-1', 's-1');
+    source.resumed('ext-@1', 's-1');
+    source.resumed('nope', 's-1');
     expect(updates().length).toBe(before);
     expect(source.get('k-1')?.status).toBe(status);
   });
@@ -3377,7 +3377,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     source.subscribe((e) => events.push(e));
     await source.start();
     await flush();
-    source.resumed('k-1');
+    source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
     source.claim('k-1', '@7');
     await flush();
@@ -3429,7 +3429,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     const s = setup({ records: [rec({ windowId: '@2' })] });
     await s.source.start();
     await flush();
-    s.source.resumed('k-1');
+    s.source.resumed('k-1', null);
     s.tmux.windows = [resumedWin()];
     s.source.claim('k-1', '@7');
     await flush();
@@ -3437,5 +3437,106 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     await flush();
     expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
     expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-9');
+  });
+});
+
+describe('LiveSource: resume hardening (Task 7 review)', () => {
+  const resumedWin = (over: Partial<TmuxWindow> = {}) =>
+    kageWin({
+      windowId: '@7',
+      paneId: '%7',
+      kageId: null,
+      activity: Math.floor(T0 / 1000),
+      ...over,
+    });
+  const ended = () => rec({ windowId: '@2', sessionId: 's-1', transcriptPath: TRANSCRIPT });
+  const failed = "Claude couldn't find this conversation, so the session wasn't resumed.";
+
+  it('a claim whose window a later listing does not show is dropped: hasWindow is false again', async () => {
+    const { source } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.claim('k-1', '@9');
+    expect(source.hasWindow('k-1')).toBe(true);
+    // The claim's own re-list started after it and found no @9: the window died at launch.
+    await flush();
+    expect(source.hasWindow('k-1')).toBe(false);
+  });
+
+  it('a listing that started before the claim does not drop it', async () => {
+    const { source, tmux, watcher } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    tmux.windows = [];
+    watcher.emit({ type: 'windows-changed' }); // this listing starts now, before the window exists
+    tmux.windows = [resumedWin({ windowId: '@9', paneId: '%9' })];
+    source.claim('k-1', '@9');
+    await flush();
+    expect(source.hasWindow('k-1')).toBe(true);
+    expect(source.get('ext-@9')).toBeUndefined();
+    expect(source.finishTarget('k-1')?.windowId).toBe('@9');
+  });
+
+  it('a resumed window that vanishes before any hook ends the wait: a later claude is not "Starting Claude…" and is no failed resume', async () => {
+    const s = setup({ records: [ended()] });
+    await s.source.start();
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [resumedWin()];
+    s.source.claim('k-1', '@7');
+    await flush();
+    // claude exits back to a shell before sending any hook (#endInWindow)…
+    s.tmux.windows = [resumedWin({ command: 'bash' })];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    // …then someone starts claude there by hand: R21, done after its SessionStart.
+    s.tmux.windows = [resumedWin()];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'startup', sessionId: 's-7' }));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(s.source.get('k-1')?.now).toBeUndefined();
+    expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-7');
+  });
+
+  it('a resumed window that is gone before any hook (#detach) clears the resume: a later SessionEnd with another id links', async () => {
+    const s = setup({ records: [ended()] });
+    await s.source.start();
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [resumedWin()];
+    s.source.claim('k-1', '@7');
+    await flush();
+    s.tmux.windows = [];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.hasWindow('k-1')).toBe(false);
+    // A window Kage opens later for the record (a second resume) is a fresh start.
+    s.source.resumed('k-1', null);
+    s.tmux.windows = [resumedWin({ windowId: '@8', paneId: '%8' })];
+    s.source.claim('k-1', '@8');
+    await flush();
+    s.hooks.fire(hook('SessionEnd', '%8', { sessionId: 's-8' }));
+    await flush();
+    expect(s.source.lines('k-1')).not.toContainEqual({ kind: 'out', text: failed });
+    expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-8');
+  });
+
+  it('with --continue (null), a SessionEnd naming any id is not a failed resume', async () => {
+    const s = setup({ records: [ended()] });
+    await s.source.start();
+    await flush();
+    s.source.resumed('k-1', null);
+    s.tmux.windows = [resumedWin()];
+    s.source.claim('k-1', '@7');
+    await flush();
+    s.hooks.fire(hook('SessionEnd', '%7', { sessionId: 's-other' }));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.lines('k-1')).not.toContainEqual({ kind: 'out', text: failed });
+    expect(s.source.finishTarget('k-1')?.record?.sessionId).toBe('s-other');
   });
 });

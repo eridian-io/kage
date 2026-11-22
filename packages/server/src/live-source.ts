@@ -286,6 +286,10 @@ export class LiveSource implements SessionSource {
   readonly #records = new Map<string, SessionRecord>();
   /** Window id → kageId for windows Kage just opened, until a listing shows the tag (claim). */
   readonly #claims = new Map<string, string>();
+  /** Window id → the listing count when it was claimed: a later listing without it ends the claim. */
+  readonly #claimSeq = new Map<string, number>();
+  /** Listings started so far. */
+  #listSeq = 0;
   #running = false;
   #ready = false;
   #early: HookEvent[] = [];
@@ -452,6 +456,7 @@ export class LiveSource implements SessionSource {
   claim(kageId: string, windowId: string): void {
     if (!this.#records.has(kageId)) return;
     this.#claims.set(windowId, kageId);
+    this.#claimSeq.set(windowId, this.#listSeq);
     const ext = this.#sessions.get(`ext-${windowId}`);
     if (ext) this.#removeSession(ext);
     if (this.#running) void this.#relist();
@@ -462,15 +467,16 @@ export class LiveSource implements SessionSource {
    * "Starting Claude…", statusSince now, until the P3F1 rule ends the wait (its first prompt,
    * PreToolUse, SessionEnd or the fallback after SessionStart). The record's transcript is
    * followed again (a resume appends to the same file). Leaving ended re-syncs auto-archive.
-   * Anything but an ended record is left alone.
+   * Anything but an ended record is left alone. `sessionId` is the id passed to `--resume`, or
+   * null for `--continue` (then whatever session Claude picks is linked).
    */
-  resumed(kageId: string): void {
+  resumed(kageId: string, sessionId: string | null): void {
     const st = this.#sessions.get(kageId);
     if (!st?.record || st.record.kageId !== kageId || st.status !== 'ended' || !this.#running) {
       return;
     }
     this.#clearTimers(st, ['retire', 'firstPrompt']);
-    st.resuming = { sessionId: st.sessionId };
+    st.resuming = { sessionId };
     st.firstPromptPending = true;
     // A new claude in a new window: its startup screens are checked afresh (R9).
     st.claudeExited = true;
@@ -484,7 +490,10 @@ export class LiveSource implements SessionSource {
     this.#emitNow(st);
   }
 
-  /** A listed window carries this kage id, or Kage just opened one for it (a claim). */
+  /**
+   * A listed window carries this kage id, or Kage just opened one for it (a claim). A claim
+   * whose window a later listing didn't show is gone already (#reconcile drops it).
+   */
   hasWindow(kageId: string): boolean {
     const st = this.#sessions.get(kageId);
     if (st?.record?.kageId === kageId && st.window) return true;
@@ -747,12 +756,12 @@ export class LiveSource implements SessionSource {
     } catch {
       // No tmux: every record shows as ended; the watcher retries with backoff.
     }
-    let windows: TmuxWindow[] = [];
+    let listing: { windows: TmuxWindow[]; seq: number } = { windows: [], seq: this.#listSeq };
     try {
-      windows = await this.#listWindows();
+      listing = await this.#listWindows();
     } catch {}
     if (!this.#running) return;
-    await this.#reconcile(windows);
+    await this.#reconcile(listing.windows, listing.seq);
     // A record saved before phase 4 that is done or ended now gets the load time as its doneAt.
     for (const st of this.#sessions.values()) this.#trackDone(st);
     await Promise.all(
@@ -844,12 +853,13 @@ export class LiveSource implements SessionSource {
    * Lists windows, each by its hook pane when it has one (B14). Hook panes the listing asked
    * about and found in no window are forgotten; ones that arrived meanwhile stay.
    */
-  async #listWindows(): Promise<TmuxWindow[]> {
+  async #listWindows(): Promise<{ windows: TmuxWindow[]; seq: number }> {
+    const seq = ++this.#listSeq;
     const asked = new Set(this.#hookPanes);
     const windows = await this.#d.tmux.listWindows(asked);
     const listed = new Set(windows.map((w) => w.paneId));
     for (const p of asked) if (!listed.has(p)) this.#hookPanes.delete(p);
-    return windows;
+    return { windows, seq };
   }
 
   /** Re-lists windows; calls during a listing run once more after it. */
@@ -862,14 +872,14 @@ export class LiveSource implements SessionSource {
       try {
         do {
           this.#listAgain = false;
-          let windows: TmuxWindow[];
+          let listing: { windows: TmuxWindow[]; seq: number };
           try {
-            windows = await this.#listWindows();
+            listing = await this.#listWindows();
           } catch {
             continue; // a failed listing changes nothing; the watcher reports a dead server
           }
           if (!this.#running) return;
-          await this.#reconcile(windows);
+          await this.#reconcile(listing.windows, listing.seq);
         } while (this.#listAgain && this.#running);
       } finally {
         this.#listing = null;
@@ -883,13 +893,23 @@ export class LiveSource implements SessionSource {
     return this.#clock() - Math.max(0, this.#now() - w.activity * 1000);
   }
 
-  async #reconcile(windows: TmuxWindow[]): Promise<void> {
+  /** `seq`: the listing's number (#listWindows), to tell which claims it can end. */
+  async #reconcile(windows: TmuxWindow[], seq: number): Promise<void> {
     const seen = new Set<string>();
     const attaching: Promise<void>[] = [];
     // A claim lasts until a listing shows the window's tag (or abandon, or the server goes
-    // down). Not until the window is missing from a listing: one begun before new-window ran
+    // down), or until a listing that started after the claim doesn't show the window (it died
+    // just after the launch). Not any listing without it: one begun before new-window ran
     // would drop it too early.
     for (const w of windows) if (w.kageId) this.#claims.delete(w.windowId);
+    const listed = new Set(windows.map((w) => w.windowId));
+    for (const [w, at] of this.#claimSeq) {
+      if (!this.#claims.has(w)) this.#claimSeq.delete(w);
+      else if (at < seq && !listed.has(w)) {
+        this.#claims.delete(w);
+        this.#claimSeq.delete(w);
+      }
+    }
     for (const w of windows) {
       const claimed = this.#claims.get(w.windowId);
       if (claimed && this.#records.has(claimed)) w.kageId = claimed;
@@ -1648,6 +1668,12 @@ export class LiveSource implements SessionSource {
     st.shellEnded = false;
     st.statusSince = this.#now();
     st.gen++;
+    // Ended (SessionEnd, the window gone, claude back at a shell, a kill) before any hook: no
+    // resume or first prompt is awaited any more.
+    if (status === 'ended') {
+      st.resuming = null;
+      if (st.firstPromptPending) this.#endFirstPromptWait(st);
+    }
     this.#trackDone(st);
     if (status !== 'needs-you') {
       st.question = null;

@@ -145,8 +145,8 @@ class FakeSource {
     const t = this.targets.get(id);
     return t ? { ...t, record: t.record ? { ...t.record } : null } : null;
   }
-  resumed(kageId: string): void {
-    this.log.push(`resumed ${kageId}`);
+  resumed(kageId: string, sessionId: string | null): void {
+    this.log.push(`resumed ${kageId} ${sessionId}`);
     const t = this.targets.get(kageId);
     if (t) t.status = 'running';
   }
@@ -799,7 +799,7 @@ describe('TaskLauncher.resume (B7)', () => {
         kageId: 'k-1',
       },
     ]);
-    expect(log).toEqual(['newWindow', 'resumed k-1', 'claim k-1 @7']);
+    expect(log).toEqual(['newWindow', `resumed k-1 ${SID}`, 'claim k-1 @7']);
   });
 
   it('the mode comes from the record; no session id resumes with --continue', async () => {
@@ -936,5 +936,128 @@ describe('TaskLauncher.resume (B7)', () => {
     expect(tmux.calls).toHaveLength(1);
     // Released after the resume: another action can take the lock again.
     expect(lock.tryAcquire('k-1')).not.toBeNull();
+  });
+});
+
+describe('resume hardening (Task 7 review)', () => {
+  const SID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+
+  it('resumeArgv: only a strict UUID (any case) reaches --resume; anything else is --continue', () => {
+    expect(resumeArgv('/c', '/s', 'default', SID.toUpperCase()).slice(-2)).toEqual([
+      '--resume',
+      SID.toUpperCase(),
+    ]);
+    for (const id of [
+      `-${SID.slice(1)}`,
+      '--------',
+      'deadbeef',
+      `${SID}-0`,
+      `${SID.slice(0, 8)}${SID.slice(9)}-`,
+      `-0f8fad5b-d9cb-469f-a165-70867728950`,
+      `${SID}\n`,
+      `g${SID.slice(1)}`,
+    ]) {
+      const argv = resumeArgv('/c', '/s', 'default', id);
+      expect(argv.at(-1), JSON.stringify(id)).toBe('--continue');
+      expect(argv).not.toContain(id);
+    }
+  });
+
+  const record = (wt: string, over: Partial<SessionRecord> = {}): SessionRecord => ({
+    kageId: 'k-1',
+    windowId: null,
+    project: 'shop',
+    task: 'Fix the cart total',
+    branch: 'kage/fix-the-cart-total',
+    worktree: wt,
+    createdAt: 1_700_000_000_000,
+    pinned: false,
+    archived: false,
+    sessionId: SID,
+    transcriptPath: null,
+    base: 'main',
+    permissionMode: 'default',
+    baseCommit: null,
+    doneAt: 1,
+    archivedAt: null,
+    restoredAt: null,
+    unpinnedAt: null,
+    ...over,
+  });
+  function resumable(r: SessionRecord) {
+    const s = setup();
+    s.source.targets.set(r.kageId, {
+      id: r.kageId,
+      record: r,
+      windowId: null,
+      paneId: null,
+      status: 'ended',
+      external: false,
+    });
+    return s;
+  }
+
+  it('resumed gets the id passed to --resume, or null for --continue (a hand-edited id included)', async () => {
+    const wt = join(repo, '.worktrees', 'fix-the-cart-total');
+    git(repo, 'worktree', 'add', '-q', '-b', 'kage/fix-the-cart-total', '--', wt, 'main');
+    for (const [sessionId, passed] of [
+      [SID, SID],
+      [null, null],
+      ['--help-0000000', null],
+    ] as const) {
+      const { launcher, log, tmux } = resumable(record(wt, { sessionId }));
+      await launcher.resume('k-1');
+      expect(log[1]).toBe(`resumed k-1 ${passed}`);
+      expect(tmux.calls[0]?.argv.at(-1)).toBe(passed ?? '--continue');
+      expect(tmux.calls[0]?.argv).not.toContain('--help-0000000');
+    }
+  });
+
+  const notKages = (wt: string) => `Kage won't delete ${wt}: it isn't one of Kage's worktrees.`;
+
+  it('a worktree outside the project’s worktree root is 409 (delete’s sentence), and nothing opens', async () => {
+    const wt = join(root, 'elsewhere');
+    git(repo, 'worktree', 'add', '-q', '-b', 'kage/elsewhere', '--', wt, 'main');
+    const { launcher, tmux, log } = resumable(record(wt, { branch: 'kage/elsewhere' }));
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([409, notKages(wt)]);
+    expect(tmux.calls).toEqual([]);
+    expect(log).toEqual([]);
+  });
+
+  it('a branch without the configured prefix is 409 (R74), and nothing opens', async () => {
+    const wt = join(repo, '.worktrees', 'feature');
+    git(repo, 'worktree', 'add', '-q', '-b', 'feature/x', '--', wt, 'main');
+    const { launcher, tmux } = resumable(record(wt, { branch: 'feature/x' }));
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([409, notKages(wt)]);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'a worktree path through a symlink out of the worktree root is 409 (realpath)',
+    async () => {
+      const outside = join(root, 'outside');
+      git(repo, 'worktree', 'add', '-q', '-b', 'kage/outside', '--', outside, 'main');
+      await mkdir(join(repo, '.worktrees'), { recursive: true });
+      const link = join(repo, '.worktrees', 'link');
+      await symlink(outside, link);
+      const { launcher, tmux } = resumable(record(link, { branch: 'kage/outside' }));
+      const err = await launchError(launcher.resume('k-1'));
+      expect([err.status, err.message]).toEqual([409, notKages(link)]);
+      expect(tmux.calls).toEqual([]);
+    },
+  );
+
+  it('a record whose project is gone is 409 "The worktree is gone…"', async () => {
+    const wt = join(repo, '.worktrees', 'fix-the-cart-total');
+    git(repo, 'worktree', 'add', '-q', '-b', 'kage/fix-the-cart-total', '--', wt, 'main');
+    const { launcher, tmux } = resumable(record(wt, { project: 'no-such-project' }));
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      409,
+      "The worktree is gone, so Kage can't resume this session.",
+    ]);
+    expect(tmux.calls).toEqual([]);
   });
 });

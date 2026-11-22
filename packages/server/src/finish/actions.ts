@@ -37,7 +37,7 @@ const NOT_KAGES = "That window isn't Kage's any more.";
 const ACTIVE = 'Stop the session before archiving it.';
 const ACTIVE_DELETE = 'Stop the session before deleting it.';
 const CHANGED = 'The branch changed since you looked. Look again before deleting.';
-const notKageWorktree = (worktree: string) =>
+export const notKageWorktree = (worktree: string) =>
   `Kage won't delete ${worktree}: it isn't one of Kage's worktrees.`;
 /** R71: git lists the record's worktree, but on another branch or a detached HEAD. */
 export const OFF_BRANCH =
@@ -84,6 +84,28 @@ async function canonical(path: string): Promise<string> {
 /** On Windows paths compare without case (git prints `C:/…` with forward slashes). */
 const samePath = (a: string, b: string): boolean =>
   process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+/**
+ * Delete's containment check, shared with resume: the record's branch passes SAFE_REF, carries
+ * the branch prefix (R74) and isn't its base, and its absolute worktree path resolves (links
+ * too) strictly inside `<project>/<worktreeDir>/`. Gives the canonical repo and worktree, or null
+ * when the record doesn't describe one of Kage's worktrees. Read-only; no git.
+ */
+export async function kageWorktree(
+  r: Pick<SessionRecord, 'branch' | 'base' | 'worktree'>,
+  projectPath: string,
+  worktreeDir: string,
+  branchPrefix: string,
+): Promise<{ repo: string; worktree: string } | null> {
+  if (!SAFE_REF.test(r.branch) || r.branch === r.base) return null;
+  if (!r.branch.startsWith(branchPrefix) || r.branch === branchPrefix) return null;
+  if (!isAbsolute(r.worktree)) return null;
+  const repo = await canonical(projectPath);
+  const root = await canonical(resolve(projectPath, worktreeDir));
+  const worktree = await canonical(r.worktree);
+  if (!below(repo, root) || !below(root, worktree)) return null;
+  return { repo, worktree };
+}
 
 interface WorktreeEntry {
   path: string;
@@ -246,14 +268,9 @@ export class FinishActions {
   /** Step 2 of remove (read-only): refuses with 409 unless the worktree and branch are Kage's. */
   async #plan(r: SessionRecord, projectPath: string): Promise<DeletePlan> {
     const refuse = () => new ActionError(409, notKageWorktree(r.worktree));
-    const prefix = this.#d.branchPrefix;
-    if (!SAFE_REF.test(r.branch) || r.branch === r.base) throw refuse();
-    if (!r.branch.startsWith(prefix) || r.branch === prefix) throw refuse();
-    if (!isAbsolute(r.worktree)) throw refuse();
-    const repo = await canonical(projectPath);
-    const root = await canonical(resolve(projectPath, this.#d.worktreeDir));
-    const wt = await canonical(r.worktree);
-    if (!below(repo, root) || !below(root, wt)) throw refuse();
+    const contained = await kageWorktree(r, projectPath, this.#d.worktreeDir, this.#d.branchPrefix);
+    if (!contained) throw refuse();
+    const wt = contained.worktree;
     const git = (args: string[]) => this.#d.git(args, { cwd: projectPath });
     let entries: WorktreeEntry[];
     try {
