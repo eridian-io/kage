@@ -34,6 +34,27 @@ export const authRequired: Signal<boolean> = signal(false);
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
 /**
+ * Bumped whenever this tab's view changes (a selection, even of the selected row, an automatic
+ * pick, or a new stream): the server then recounts the viewed session's branch.
+ */
+export const viewGen: Signal<number> = signal(0);
+/** The session whose branch counts arrived during view `gen` (see countsKnown). */
+const countsSeen: Signal<{ id: string; gen: number } | null> = signal(null);
+/**
+ * The selected session's branch counts are known: since the last view, its files arrived (the
+ * server sends the counts just before them) or a count changed (a recount published them). Until
+ * then the delete confirmation can't say what would be lost.
+ */
+export const countsKnown: ReadonlySignal<boolean> = computed(
+  () =>
+    countsSeen.value !== null &&
+    countsSeen.value.gen === viewGen.value &&
+    countsSeen.value.id === selectedId.value,
+);
+const markCounts = (id: string) => {
+  if (id === selectedId.value) countsSeen.value = { id, gen: viewGen.value };
+};
+/**
  * What the middle column shows for the selected session: its output, the branch's diff (Task 10)
  * or the terminal (Task 13). Every selection, explicit or automatic, returns it to 'output'.
  */
@@ -161,6 +182,7 @@ export function select(id: string | null): void {
   batch(() => {
     toast.value = null;
     selectedId.value = id;
+    viewGen.value++;
     confirmingDelete.value = false;
     mainView.value = 'output';
     termNote.value = null;
@@ -187,6 +209,7 @@ function keepSelection(): void {
     // Replacing a selected session is automatic; the first selection on load is not a switch.
     if (selectedId.value !== null) autoPickedAt = Date.now();
     selectedId.value = sorted.value[0]?.id ?? null;
+    viewGen.value++;
     confirmingDelete.value = false;
     mainView.value = 'output';
     // A note about the session that went away doesn't belong to the one picked instead.
@@ -227,6 +250,8 @@ export function applyEvent(e: ServerEvent): void {
       // A new stream (a reconnect) starts without lines: the view brings them again.
       const fresh = streamId.value !== e.streamId;
       streamId.value = e.streamId;
+      // A new stream posts the view again.
+      if (fresh) viewGen.value++;
       projectsRoot.value = e.projectsRoot;
       archivedCount.value = e.archived;
       hadSnapshot.value = true;
@@ -248,6 +273,15 @@ export function applyEvent(e: ServerEvent): void {
       const list = sessions.value;
       const i = list.findIndex((s) => s.id === e.session.id);
       const incoming = keepLive(e.session);
+      const held = i < 0 ? undefined : list[i];
+      if (
+        held &&
+        (held.unpushed !== incoming.unpushed ||
+          held.uncommitted !== incoming.uncommitted ||
+          held.ignored !== incoming.ignored)
+      ) {
+        markCounts(incoming.id);
+      }
       sessions.value = i < 0 ? [...list, incoming] : list.map((s, j) => (j === i ? incoming : s));
     } else if (e.type === 'session.lines') {
       const prev = e.reset ? [] : (linesById.value.get(e.id) ?? []);
@@ -259,6 +293,7 @@ export function applyEvent(e: ServerEvent): void {
         sessions.value = sessions.value.map((s) => (s.id === e.id ? { ...s, ports: e.ports } : s));
       }
     } else if (e.type === 'session.files') {
+      markCounts(e.id);
       if (sessions.value.some((s) => s.id === e.id)) {
         sessions.value = sessions.value.map((s) =>
           s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,

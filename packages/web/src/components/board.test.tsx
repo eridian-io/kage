@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
+import { effect, untracked } from '@preact/signals';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiDelete, apiPost } from '../api.ts';
@@ -28,6 +29,7 @@ import {
   stopSent,
   termNote,
   toast,
+  viewGen,
 } from '../store.ts';
 
 // The board's own actions (act) use the real api module, so they reach the stubbed fetch below.
@@ -49,6 +51,12 @@ const posts = () =>
   ]);
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
+/**
+ * Like the server after a view: each view (selection) of a session brings its files, and with
+ * them its counts, so the delete confirmation knows them. A test of the unknown state turns it off.
+ */
+let autoCounts = true;
+let stopAutoCounts: () => void = () => {};
 const board = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'utf8');
 
 function reset(list: Session[] = demoSessions(NOW)) {
@@ -101,6 +109,17 @@ const button = (c: Element, label: string) => {
   return b;
 };
 beforeEach(() => {
+  autoCounts = true;
+  stopAutoCounts = effect(() => {
+    void viewGen.value;
+    const id = selectedId.value;
+    untracked(() => {
+      const s = sessions.value.find((x) => x.id === id);
+      if (autoCounts && s) {
+        applyEvent({ type: 'session.files', id: s.id, files: s.files, filesTotal: s.filesTotal });
+      }
+    });
+  });
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.mocked(apiDelete).mockClear();
   vi.mocked(apiPost).mockClear();
@@ -115,6 +134,7 @@ beforeEach(() => {
   reset();
 });
 afterEach(() => {
+  stopAutoCounts();
   cleanup();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -1914,5 +1934,49 @@ describe('carried from Task 9 (R77)', () => {
       await Promise.resolve();
       expect(document.activeElement).toBe(button(container, 'Archive'));
     });
+  });
+});
+
+describe('delete before the counts are known (fix wave)', () => {
+  beforeEach(() => {
+    autoCounts = false;
+  });
+  const files = (id: string) => {
+    const s = sessions.value.find((x) => x.id === id) as Session;
+    applyEvent({ type: 'session.files', id, files: s.files, filesTotal: s.filesTotal });
+  };
+
+  it('says "Checking the branch…" and keeps Delete session off until the view brings counts', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'footer'));
+    fireEvent.click(button(container, 'Delete…'));
+    const text = () => q(container, '.k-confirm div').textContent ?? '';
+    expect(text()).toContain('Checking the branch…');
+    expect(text()).not.toContain('nothing is lost');
+    expect(button(container, 'Delete session').disabled).toBe(true);
+    files('footer');
+    await Promise.resolve();
+    expect(text()).toContain('Everything on the branch is pushed, so nothing is lost.');
+    expect(text()).not.toContain('Checking the branch…');
+    expect(button(container, 'Delete session').disabled).toBe(false);
+  });
+
+  it('a counts change (a publish) makes them known too; selecting again forgets them', async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    expect(button(container, 'Delete session').disabled).toBe(true);
+    const docs = sessions.value.find((s) => s.id === 'docs') as Session;
+    applyEvent({ type: 'session.updated', session: { ...docs, uncommitted: 2 } });
+    await Promise.resolve();
+    expect(button(container, 'Delete session').disabled).toBe(false);
+    // Files for another session say nothing about this one.
+    fireEvent.click(row(container, 'footer'));
+    files('docs');
+    fireEvent.click(button(container, 'Delete…'));
+    expect(button(container, 'Delete session').disabled).toBe(true);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Delete…'));
+    expect(button(container, 'Delete session').disabled).toBe(true);
   });
 });

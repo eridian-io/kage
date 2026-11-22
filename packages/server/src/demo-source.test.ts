@@ -4,6 +4,24 @@ import { DemoSource } from './demo-source.ts';
 import { NotFoundError, type SourceEvent } from './source.ts';
 
 describe('DemoSource', () => {
+  it('a view brings the viewed session its files, as in live mode (the board then knows its counts)', () => {
+    const s = new DemoSource(1_000_000);
+    const events: SourceEvent[] = [];
+    s.subscribe((e) => events.push(e));
+    const docs = s.get('docs');
+    s.setViewed(new Set(['docs']));
+    expect(events).toEqual([
+      { type: 'session.files', id: 'docs', files: docs?.files, filesTotal: docs?.filesTotal },
+    ]);
+    // Still viewed: nothing new until another stream views it too (refreshView).
+    s.setViewed(new Set(['docs', 'nope']));
+    expect(events).toHaveLength(1);
+    s.refreshView('docs');
+    expect(events).toHaveLength(2);
+    s.setViewed(new Set());
+    s.setViewed(new Set(['docs']));
+    expect(events).toHaveLength(3);
+  });
   it('lists six sessions', () => {
     expect(new DemoSource(1_000_000).list()).toHaveLength(6);
   });

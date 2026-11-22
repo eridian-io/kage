@@ -7,6 +7,7 @@ import {
   closeDiff,
   closeTerminal,
   confirmingDelete,
+  countsKnown,
   mainView,
   now,
   openTerminal,
@@ -126,6 +127,8 @@ export function focusDelete(): void {
 
 function Confirm({ s }: { s: Session }) {
   const loss = lossWarning(s);
+  // Until this view's counts arrive, the ones held may be old: nothing to confirm yet.
+  const known = countsKnown.value;
   // When the counts on screen last changed; 0 for the ones shown on opening.
   const key = `${s.unpushed},${s.uncommitted},${s.ignored}`;
   const seen = useRef({ key, at: 0 });
@@ -150,7 +153,9 @@ function Confirm({ s }: { s: Session }) {
         <code>{s.worktree}</code>
         {' and the branch '}
         <code>{s.branch}</code>.
-        {loss !== '' ? (
+        {!known ? (
+          ' Checking the branch…'
+        ) : loss !== '' ? (
           <>
             {' '}
             <span class="warn">{loss}</span>
@@ -163,7 +168,7 @@ function Confirm({ s }: { s: Session }) {
         <button
           type="button"
           class="k-act danger-solid"
-          disabled={!canAct(s.id)}
+          disabled={!canAct(s.id) || !known}
           aria-disabled={held ? 'true' : undefined}
           onClick={() => {
             if (Date.now() - seen.current.at >= FRESH_MS) void remove(s);

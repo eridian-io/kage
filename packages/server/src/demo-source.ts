@@ -6,6 +6,7 @@ export class DemoSource implements SessionSource {
   private sessions = new Map<string, Session>();
   private transcripts = new Map<string, DisplayLine[]>();
   private readonly listeners = new Set<(e: SourceEvent) => void>();
+  private viewed = new Set<string>();
 
   constructor(now: number = Number(process.env.KAGE_DEMO_NOW) || Date.now()) {
     this.now = now;
@@ -40,6 +41,28 @@ export class DemoSource implements SessionSource {
     if (!this.sessions.delete(id)) throw new NotFoundError(`No session "${id}"`);
     this.transcripts.delete(id);
     this.emit({ type: 'session.removed', id });
+  }
+
+  /** Sessions some tab views: a newly viewed one gets its files, like live mode's first value after a view. */
+  setViewed(ids: ReadonlySet<string>): void {
+    for (const id of ids) if (!this.viewed.has(id)) this.sendFiles(id);
+    this.viewed = new Set(ids);
+  }
+
+  /** Another stream views a session already viewed: its files again. */
+  refreshView(id: string): void {
+    this.sendFiles(id);
+  }
+
+  private sendFiles(id: string): void {
+    const s = this.sessions.get(id);
+    if (!s) return;
+    this.emit({
+      type: 'session.files',
+      id,
+      files: s.files.map((f) => ({ ...f })),
+      filesTotal: s.filesTotal,
+    });
   }
 
   /** Restores the original demo sessions and announces each one. */
