@@ -1,4 +1,5 @@
 import { LIMITS } from '@kage/shared';
+import { isClaude } from '../tmux/format.ts';
 import {
   type ControlClient,
   type ControlLine,
@@ -94,7 +95,7 @@ export function parsePaneInfo(row: string): PaneInfo | null {
   if (mb) modes += '\x1b[?1002h';
   if (ma) modes += '\x1b[?1003h';
   if (sgr) modes += '\x1b[?1006h';
-  if (command === 'claude') modes += CLAUDE_MODES;
+  if (isClaude(command)) modes += CLAUDE_MODES;
   return {
     paneId,
     windowId,

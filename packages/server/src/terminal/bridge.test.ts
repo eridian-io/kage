@@ -191,6 +191,11 @@ describe('parsePaneInfo', () => {
       '\x1b[?2004h\x1b[?1004h\x1b[?2031h',
     );
   });
+  it('replays them for a claude pane named by its version string (2.1.330)', () => {
+    expect(parsePaneInfo(infoRow({ cmd: '2.1.330' }))?.modes).toBe(
+      '\x1b[?2004h\x1b[?1004h\x1b[?2031h',
+    );
+  });
   it('refuses a short or malformed row', () => {
     expect(parsePaneInfo('40 6 0 2 4 1 0 0 0 0 0 0 0 sh')).toBeNull();
     expect(parsePaneInfo(infoRow({ pane: 'x' }))).toBeNull();
