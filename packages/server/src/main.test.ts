@@ -712,3 +712,109 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     }
   });
 });
+
+describe('kage --version (Task 2)', () => {
+  it('prints KAGE_VERSION and exits 0, as --version and as version', async () => {
+    const { KAGE_VERSION } = await import('./install/runtime.ts');
+    expect(await main(['--version'], io(env()))).toBe(0);
+    expect(await main(['version'], io(env()))).toBe(0);
+    expect(out).toEqual([KAGE_VERSION, KAGE_VERSION]);
+    expect(err).toEqual([]);
+  });
+
+  /** Runs a built file under a temp HOME and XDG dirs (F12); resolves its exit and output. */
+  const runBuilt = (file: string, args: string[]) =>
+    new Promise<{ code: number | null; stdout: string; stderr: string }>((resolve) => {
+      const e = env();
+      const child = spawn(process.execPath, [file, ...args], {
+        env: {
+          ...e,
+          PATH: process.env.PATH ?? '',
+          KAGE_SOCKET: join(e.XDG_RUNTIME_DIR as string, 'k.sock'),
+        },
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.on('data', (d) => {
+        stdout += d;
+      });
+      child.stderr.on('data', (d) => {
+        stderr += d;
+      });
+      child.on('close', (code) => resolve({ code, stdout, stderr }));
+    });
+
+  it("a bundle built with bundleServer prints packages/server/package.json's version, without esbuild inside", async () => {
+    const { bundleServer } = await import('./bundle.ts');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const file = join(root, 'kage.mjs');
+    await bundleServer(file);
+    expect(await runBuilt(file, ['--version'])).toEqual({
+      code: 0,
+      stdout: `${pkg.version}\n`,
+      stderr: '',
+    });
+    // F4: esbuild (a native binary) never reaches the shipped bundle.
+    expect(readFileSync(file, 'utf8')).not.toMatch(
+      /from\s*["']esbuild["']|require\(["']esbuild["']\)/,
+    );
+  }, 60_000);
+
+  it('the SEA entry is CommonJS with no import.meta, and runs under plain node', async () => {
+    const { bundleSeaEntry } = await import('./bundle.ts');
+    const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+    const file = join(root, 'kage-sea.cjs');
+    await bundleSeaEntry(file);
+    const text = readFileSync(file, 'utf8');
+    expect(text).not.toContain('import.meta');
+    expect(text).not.toMatch(/^\s*import\s/m);
+    expect(await runBuilt(file, ['--version'])).toEqual({
+      code: 0,
+      stdout: `${pkg.version}\n`,
+      stderr: '',
+    });
+    // The hook path through the CommonJS entry: silent, exit 0, nothing listening.
+    expect(await runBuilt(file, ['hook', 'Stop'])).toEqual({ code: 0, stdout: '', stderr: '' });
+  }, 60_000);
+});
+
+describe('kage serve: the service environment (R105, F7)', () => {
+  it('KAGE_SERVICE=1: MALLOC_ARENA_MAX, NODE_OPTIONS and KAGE_SERVICE are gone before the first tmux call', async () => {
+    const keys = ['KAGE_SERVICE', 'MALLOC_ARENA_MAX', 'NODE_OPTIONS'] as const;
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    process.env.KAGE_SERVICE = '1';
+    process.env.MALLOC_ARENA_MAX = '2';
+    process.env.NODE_OPTIONS = '--v8-pool-size=1';
+    const p = port();
+    const e = env({
+      KAGE_HOST: '127.0.0.1',
+      KAGE_PORT: String(p),
+      KAGE_SERVICE: '1',
+      MALLOC_ARENA_MAX: '2',
+      NODE_OPTIONS: '--v8-pool-size=1',
+    });
+    const ac = new AbortController();
+    let seen: { proc: NodeJS.ProcessEnv; io: NodeJS.ProcessEnv } | null = null;
+    const tmuxExec: ExecFn = async () => {
+      seen ??= { proc: { ...process.env }, io: { ...e } };
+      ac.abort();
+      return { stdout: '', stderr: '' };
+    };
+    try {
+      const r = await main(['serve'], io(e, { dist: makeDist(), signal: ac.signal, tmuxExec }));
+      expect(r).toBe(130);
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+    expect(seen).not.toBeNull();
+    const s = seen as unknown as { proc: NodeJS.ProcessEnv; io: NodeJS.ProcessEnv };
+    for (const k of keys) {
+      expect(s.proc[k]).toBeUndefined();
+      expect(s.io[k]).toBeUndefined();
+    }
+  });
+});

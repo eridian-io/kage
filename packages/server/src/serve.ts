@@ -6,7 +6,7 @@ import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import type { ArchivedSession, ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
-import { type Asset, loadAssets } from './assets.ts';
+import { type Asset, type BoardFiles, boardFor, dirFiles, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
 import { ActionLock, attachCommand, SessionControls } from './control/actions.ts';
 import { resolveClaude, TaskLauncher } from './control/launcher.ts';
@@ -19,6 +19,7 @@ import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
+import { runMode, serviceCleanEnv } from './install/runtime.ts';
 import {
   defaultTailscaleIp,
   displayHost,
@@ -43,8 +44,6 @@ import { TerminalServer } from './terminal/server.ts';
 import { parseTmuxVersion, TmuxClient, tmuxVersionOutput } from './tmux/client.ts';
 import { TmuxWatcher } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
-
-const DIST = join(import.meta.dirname, '../../web/dist');
 
 /** R53: live mode without a token, said once at startup. */
 export const NO_TOKEN = 'No token set: anyone on your tailnet can start and approve tasks.';
@@ -339,6 +338,9 @@ export async function serveCommand(
   io: Io,
   cli: CliParts,
 ): Promise<number | Running> {
+  // R105, F7: under the service, R91's tuning is Kage's own; tmux and Claude must not inherit it.
+  serviceCleanEnv(process.env);
+  if (io.env !== process.env) serviceCleanEnv(io.env);
   let values: { demo?: boolean; 'unsafe-listen-all'?: boolean; port?: string };
   try {
     ({ values } = parseArgs({
@@ -427,16 +429,22 @@ async function startServer(
   }
   checkSignal(io);
 
-  const dist = io.dist ?? DIST;
-  if (!existsSync(join(dist, 'index.html'))) {
+  // A folder from the test seam, else this run mode's board (a folder, or the SEA's own files).
+  const board: BoardFiles | null =
+    io.dist !== undefined
+      ? existsSync(join(io.dist, 'index.html'))
+        ? dirFiles(io.dist)
+        : null
+      : boardFor(runMode());
+  if (board === null) {
     io.err('The board is not built yet. Run "corepack pnpm build" first.');
     return 1;
   }
-  const assets = await (io.loadAssets ?? loadAssets)(dist);
+  const assets = await (io.loadAssets ?? loadAssets)(board);
   checkSignal(io);
 
-  if (process.execArgv.some((a) => a.startsWith('--watch'))) {
-    cleanups.push(reloadOnChange(dist, assets, io));
+  if (board.dir !== undefined && process.execArgv.some((a) => a.startsWith('--watch'))) {
+    cleanups.push(reloadOnChange(board.dir, assets, io));
   }
 
   let source: SessionSource;

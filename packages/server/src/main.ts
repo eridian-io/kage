@@ -5,10 +5,10 @@
  */
 import { homedir } from 'node:os';
 import type { Readable } from 'node:stream';
-import { fileURLToPath } from 'node:url';
-import type { Asset } from './assets.ts';
+import type { Asset, BoardFiles } from './assets.ts';
 import { runHookCli } from './hooks/cli.ts';
 import { writeHooksSettings } from './hooks/settings.ts';
+import { hookArgv, KAGE_VERSION, runMode } from './install/runtime.ts';
 import { stateDir } from './state/store.ts';
 import type { ExecFn } from './tmux/client.ts';
 
@@ -22,6 +22,8 @@ export const USAGE = `Usage:
       Forward one hook event to Kage (Claude runs this; it prints nothing).
   kage ping
       Send a test ping through ntfy (ntfyTopic in ~/.config/kage/config.json).
+  kage --version
+      Print Kage's version.
 
 Environment:
   KAGE_SOCKET       The hook socket path. Its directory must be owned by you:
@@ -29,9 +31,6 @@ Environment:
   KAGE_TMUX_SOCKET  Use a separate tmux server (tmux -L <name>).
   KAGE_CLAUDE_BIN   The claude program for new tasks (default: the first claude on PATH).
   KAGE_HOST, KAGE_PORT, KAGE_NAME  Override the config's host, port and name.`;
-
-/** This file: the hook command runs it again with `hook <Event>`. */
-export const ENTRY = fileURLToPath(import.meta.url);
 
 export interface Io {
   env: NodeJS.ProcessEnv;
@@ -42,7 +41,7 @@ export interface Io {
   platform?: NodeJS.Platform | undefined;
   /** `tmux -V` output, or null when tmux doesn't run. */
   tmuxVersion?: string | null | undefined;
-  /** The built board (default: packages/web/dist). */
+  /** A folder with the built board (default: the run mode's board, see boardFor). */
   dist?: string | undefined;
   /** A tmux config file for the tmux server Kage may start (tests pass /dev/null). */
   tmuxConfigFile?: string | undefined;
@@ -50,7 +49,7 @@ export interface Io {
   signal?: AbortSignal | undefined;
   /** Test seams: how serve runs tmux for its session, and how it reads the built board. */
   tmuxExec?: ExecFn | undefined;
-  loadAssets?: ((dist: string) => Promise<Map<string, Asset>>) | undefined;
+  loadAssets?: ((src: BoardFiles | string) => Promise<Map<string, Asset>>) | undefined;
 }
 
 /** A started `kage serve`; stop() shuts everything down in reverse start order. */
@@ -59,16 +58,11 @@ export interface Running {
 }
 
 /**
- * The command Claude runs for each hook (before `hook <Event>`). `--no-warnings` keeps Node's
- * experimental-feature notices off stderr: a hook must print nothing.
+ * Writes the hooks settings file and returns its path (`kage hooks-path` and `kage serve`).
+ * The hook command runs this program again (install/runtime.ts hookArgv).
  */
-export function hookCommandBase(): string[] {
-  return [process.execPath, '--no-warnings', ENTRY];
-}
-
-/** Writes the hooks settings file and returns its path (`kage hooks-path` and `kage serve`). */
 export function writeSettings(env: NodeJS.ProcessEnv): Promise<string> {
-  return writeHooksSettings(stateDir(env), hookCommandBase());
+  return writeHooksSettings(stateDir(env), hookArgv(runMode()));
 }
 
 /**
@@ -155,6 +149,10 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
     }
     case 'ping':
       return pingCommand(io);
+    case 'version':
+    case '--version':
+      io.out(KAGE_VERSION);
+      return 0;
     case undefined:
     case 'help':
     case '--help':
@@ -209,8 +207,12 @@ export function serveSignals(
   };
 }
 
-if (import.meta.main) {
-  const argv = process.argv.slice(2);
+/**
+ * The program: runs one command for this process's argv and exits, or leaves `kage serve`
+ * running. The ESM entry (below) and the SEA's CommonJS entry (sea-main.ts) both call it; no
+ * top-level await, so the CommonJS bundle can hold it.
+ */
+export async function run(argv: string[]): Promise<void> {
   if (argv[0] === 'hook') {
     // Silent whatever happens, including an unexpected throw.
     try {
@@ -235,3 +237,6 @@ if (import.meta.main) {
   if (typeof result === 'number') process.exit(result);
   signals.started(result);
 }
+
+// No top-level await here either: the CommonJS SEA bundle includes this module.
+if (import.meta.main) void run(process.argv.slice(2));
