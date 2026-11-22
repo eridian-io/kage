@@ -553,6 +553,8 @@ button {
   color: var(--del);
 }
 .k-diff {
+  all: unset;
+  display: block;
   margin-top: 8px;
   font-size: 12.5px;
   color: var(--fg-2);
@@ -693,6 +695,9 @@ button {
 .k-act:focus-visible,
 .k-arch > .k-g:focus-visible,
 .k-restore:focus-visible,
+.k-diff:focus-visible,
+.k-pin:focus-visible,
+.k-diff-stale:focus-visible,
 .k-opts button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--lime) 45%, transparent);
   outline-offset: 2px;
@@ -935,4 +940,135 @@ a.k-port {
 }
 .k-arch .k-err.k-arc-err {
   margin: 6px 10px 0;
+}
+
+/* Not in the target: the quiet pin toggle at the right of the session header (R77). */
+.k-pin {
+  all: unset;
+  margin-left: auto;
+  padding: 0 2px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 27px;
+  color: var(--fg-3);
+}
+.k-pin:hover {
+  color: var(--fg-2);
+}
+.k-pin:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+
+/* Not in the target: the diff view (spec §6.5) in place of the output, in the list's form. The
+   top line names the branch and pages; file headings stay in view while their lines scroll. */
+.k-dv {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 12px;
+}
+.k-diff-top {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 30px;
+  padding-bottom: 6px;
+  font: 12px var(--mono);
+  color: var(--fg-3);
+}
+.k-diff-ref {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.k-diff-pages {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+.k-diff-pages .k-act {
+  padding: 3px 9px;
+  font: 12.5px var(--sans);
+}
+.k-diff-stale {
+  all: unset;
+  align-self: start;
+  margin-bottom: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--fg-2);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+.k-diff-stale:hover {
+  color: var(--lime);
+}
+.k-diff-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  padding: 0 10px 16px 0;
+  font: 12.5px / 1.6 var(--mono);
+  color: var(--fg-2);
+  tab-size: 4;
+  outline-offset: -2px;
+}
+.k-diff-h {
+  position: sticky;
+  top: 0;
+  display: flex;
+  gap: 8px;
+  padding: 10px 0 4px;
+  background: var(--bg);
+  font: 500 12.5px / 1.5 var(--mono);
+  letter-spacing: 0;
+  color: var(--fg-strong);
+}
+.k-diff-file:first-child .k-diff-h {
+  padding-top: 0;
+}
+.k-diff-h .p {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.k-diff-h .a {
+  color: var(--add);
+}
+.k-diff-h .r {
+  color: var(--del);
+}
+.k-dl {
+  padding-left: 2ch;
+  text-indent: -2ch;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.k-dl .g {
+  display: inline-block;
+  width: 2ch;
+  text-indent: 0;
+  user-select: none;
+}
+.k-dl.add {
+  color: var(--add);
+}
+.k-dl.del {
+  color: var(--del);
+}
+.k-dl.hunk {
+  margin-top: 4px;
+  color: var(--fg-3);
+}
+.k-diff-note {
+  color: var(--fg-3);
+}
+.k-diff-msg {
+  font-size: 13px;
+  color: var(--fg-2);
 }

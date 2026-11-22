@@ -1361,7 +1361,8 @@ describe('controls', () => {
       expect(texts(container, '.k-aside .k-sec h4')[1]).toBe('Files changed · 150');
       expect(container.querySelectorAll('.k-file')).toHaveLength(100);
       expect(q(container, '.k-more').textContent).toBe('and 50 more');
-      expectInert(q(container, '.k-diff'));
+      // View diff is wired now (Task 10): a real button, not inert.
+      expect(q(container, '.k-diff').getAttribute('aria-disabled')).toBeNull();
     });
 
     it('lists no "more" row when every file is listed', () => {
@@ -1697,6 +1698,175 @@ describe('finish controls (Task 9)', () => {
       fireEvent.click(button(container, 'Archive'));
       await waitFor(() => expect(busy.value.size).toBe(0));
       expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+});
+
+describe('carried from Task 9 (R77)', () => {
+  const withSession = (patch: Partial<Session>, id = 'docs') =>
+    reset(demoSessions(NOW).map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const star = (c: Element) => c.querySelector<HTMLButtonElement>('.k-head .k-pin');
+  const bodies = () =>
+    (fetchMock.mock.calls as [string, RequestInit][]).map(([url, init]) => [
+      url,
+      init.method,
+      init.body,
+    ]);
+  const docs = () => sessions.value.find((s) => s.id === 'docs') as Session;
+
+  describe('the ★ pin toggle', () => {
+    it('is a quiet toggle in the header: outlined, aria-pressed false; a click pins', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      const b = star(container) as HTMLButtonElement;
+      expect(b.textContent).toBe('☆');
+      expect(b.getAttribute('aria-pressed')).toBe('false');
+      expect(b.getAttribute('aria-label')).toBe('Pin');
+      fireEvent.click(b);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/docs/pin', '1', { pinned: true }]]);
+    });
+
+    it('is filled and pressed when pinned; a click unpins', async () => {
+      withSession({ pinned: true });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      const b = star(container) as HTMLButtonElement;
+      expect(b.textContent).toBe('★');
+      expect(b.getAttribute('aria-pressed')).toBe('true');
+      fireEvent.click(b);
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/docs/pin', '1', { pinned: false }]]);
+    });
+
+    it('shows for record sessions only, in --fg-3, and is off while busy or disconnected', async () => {
+      withSession({ external: true }, 'shop');
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      expect(star(container)).toBeNull();
+      fireEvent.click(row(container, 'docs'));
+      busy.value = new Set(['docs']);
+      await Promise.resolve();
+      expect(star(container)?.disabled).toBe(true);
+      const rule = /\.k-pin \{([^}]*)\}/.exec(board)?.[1] ?? '';
+      expect(rule).toContain('var(--fg-3)');
+      expect(rule).not.toMatch(/--(amber|lime|red)/);
+    });
+  });
+
+  describe('the delete 409 loop', () => {
+    it('a 409 with new counts re-renders the warning, and the next click sends the new counts', async () => {
+      const CHANGED = 'The branch changed since you looked. Check the warning again.';
+      withSession({ unpushed: 1, uncommitted: 0 });
+      replies = [[409, CHANGED]];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(container.querySelector('.k-err')).not.toBeNull());
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      // The server's fresh counts arrive as a session.updated.
+      applyEvent({ type: 'session.updated', session: { ...docs(), unpushed: 2, uncommitted: 3 } });
+      await Promise.resolve();
+      expect(texts(container, '.k-confirm .warn')).toEqual([
+        '2 commits aren’t pushed and will be lost. 3 files have uncommitted changes and will be lost.',
+      ]);
+      vi.mocked(Date.now).mockReturnValue(NOW + 500);
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      expect(bodies()).toEqual([
+        ['/api/sessions/docs', 'DELETE', '{"unpushed":1,"uncommitted":0,"ignored":0}'],
+        ['/api/sessions/docs', 'DELETE', '{"unpushed":2,"uncommitted":3,"ignored":0}'],
+      ]);
+    });
+
+    it('ignores a Delete session click within 400 ms of the counts changing', async () => {
+      withSession({ unpushed: 1 });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_000);
+      applyEvent({ type: 'session.updated', session: { ...docs(), ignored: 4 } });
+      await Promise.resolve();
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_399);
+      fireEvent.click(button(container, 'Delete session'));
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_400);
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(bodies()[0]?.[2]).toBe('{"unpushed":1,"uncommitted":0,"ignored":4}');
+    });
+
+    it('a click right after opening the confirmation is not held back', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    });
+  });
+
+  describe('focus', () => {
+    it('Cancel returns focus to Delete…', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      button(container, 'Cancel').focus();
+      fireEvent.click(button(container, 'Cancel'));
+      await waitFor(() => expect(container.querySelector('.k-confirm')).toBeNull());
+      expect(document.activeElement).toBe(button(container, 'Delete…'));
+    });
+
+    it('Esc returns focus to Delete…', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      button(container, 'Delete session').focus();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await waitFor(() => expect(container.querySelector('.k-confirm')).toBeNull());
+      expect(document.activeElement).toBe(button(container, 'Delete…'));
+    });
+
+    it('Esc with no confirmation open leaves focus alone', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      row(container, 'docs').focus();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      await Promise.resolve();
+      expect(document.activeElement).toBe(row(container, 'docs'));
+    });
+
+    it('after a delete succeeds, focus goes to the selected list row', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      button(container, 'Delete session').focus();
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(container.querySelector('.k-confirm')).toBeNull());
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await waitFor(() => expect(document.activeElement?.classList.contains('on')).toBe(true));
+      expect(document.activeElement).toBe(row(container, selectedId.value as string));
+    });
+
+    it('after an archive succeeds, focus goes to the selected list row', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      button(container, 'Archive').focus();
+      fireEvent.click(button(container, 'Archive'));
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await waitFor(() => expect(document.activeElement?.classList.contains('on')).toBe(true));
+    });
+
+    it('a removal nobody here asked for does not move focus', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      button(container, 'Archive').focus();
+      applyEvent({ type: 'session.removed', id: 'shop' });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(document.activeElement).toBe(button(container, 'Archive'));
     });
   });
 });

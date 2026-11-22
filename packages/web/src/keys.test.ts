@@ -7,6 +7,7 @@ import {
   busy,
   confirmingDelete,
   connection,
+  mainView,
   newTaskOpen,
   releaseDigits,
   replyOpen,
@@ -434,5 +435,63 @@ describe('installKeys: pin, archive and resume (S, E, U)', () => {
     for (const k of ['s', 'e', 'u']) press(k);
     await flush();
     expect(sent()).toEqual([]);
+  });
+});
+
+describe('installKeys: the diff view (Task 10)', () => {
+  beforeEach(() => {
+    select('web');
+    mainView.value = 'diff';
+  });
+  afterEach(() => {
+    mainView.value = 'output';
+  });
+
+  it('Esc closes the diff and keeps the session selected', () => {
+    press('Escape');
+    expect(mainView.value).toBe('output');
+    expect(selectedId.value).toBe('web');
+  });
+
+  it('a held Esc does nothing', () => {
+    holdKey('Escape');
+    expect(mainView.value).toBe('diff');
+  });
+
+  it('Esc while typing leaves the diff open', () => {
+    const field = document.createElement('input');
+    document.body.append(field);
+    press('Escape', field);
+    expect(mainView.value).toBe('diff');
+  });
+
+  it('digits answer nothing while the diff hides the question', async () => {
+    expect(sessions.value.find((s) => s.id === 'web')?.status).toBe('needs-you');
+    press('1');
+    await flush();
+    expect(posted()).toEqual([]);
+  });
+
+  it('J and K on the page move the list (and the view resets)', () => {
+    press('j');
+    expect(selectedId.value).not.toBe('web');
+    expect(mainView.value).toBe('output');
+  });
+
+  it('J and K inside the diff are left to the diff', () => {
+    const view = document.createElement('section');
+    view.className = 'k-dv';
+    const body = document.createElement('div');
+    view.append(body);
+    document.body.append(view);
+    press('j', body);
+    press('k', body);
+    expect(selectedId.value).toBe('web');
+    expect(mainView.value).toBe('diff');
+  });
+
+  it('R leaves the diff', () => {
+    press('r');
+    expect(mainView.value).toBe('output');
   });
 });

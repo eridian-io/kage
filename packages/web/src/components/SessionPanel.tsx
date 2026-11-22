@@ -1,15 +1,19 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
-import { archive, canAct, remove, resume, stop } from '../api.ts';
+import { useRef } from 'preact/hooks';
+import { archive, canAct, pin, remove, resume, stop } from '../api.ts';
 import {
   actionError,
+  closeDiff,
   confirmingDelete,
+  mainView,
   now,
   projectsRoot,
   stopArmed,
   stopPending,
 } from '../store.ts';
 import { Ask } from './Ask.tsx';
+import { DiffView } from './DiffView.tsx';
 import { FollowUp } from './FollowUp.tsx';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
@@ -55,15 +59,18 @@ interface ActProps {
   icon?: ComponentChildren;
   onClick?: () => void;
   disabled?: boolean;
+  /** data-act, for focus to find the button again. */
+  act?: string;
 }
 
 /** A footer action. Without onClick it is shown but inert in this phase. */
-function Act({ label, hotkey, cls, icon, onClick, disabled }: ActProps) {
+function Act({ label, hotkey, cls, icon, onClick, disabled, act }: ActProps) {
   return (
     <button
       type="button"
       class={cls ? `k-act ${cls}` : 'k-act'}
       disabled={disabled}
+      data-act={act}
       {...(onClick ? { onClick } : INERT)}
     >
       {icon}
@@ -105,8 +112,20 @@ function lossWarning(s: Session): string {
   return parts.join(' ');
 }
 
+/** A Delete session click this soon after the counts changed is ignored: it was aimed at the old ones. */
+export const FRESH_MS = 400;
+
+/** Focus back on Delete… once the confirmation closes without deleting (Cancel, Esc). */
+export function focusDelete(): void {
+  document.querySelector<HTMLElement>('[data-act="del"]')?.focus();
+}
+
 function Confirm({ s }: { s: Session }) {
   const loss = lossWarning(s);
+  // When the counts on screen last changed; 0 for the ones shown on opening.
+  const key = `${s.unpushed},${s.uncommitted},${s.ignored}`;
+  const seen = useRef({ key, at: 0 });
+  if (seen.current.key !== key) seen.current = { key, at: Date.now() };
   return (
     <div class="k-confirm">
       <div>
@@ -129,7 +148,9 @@ function Confirm({ s }: { s: Session }) {
           type="button"
           class="k-act danger-solid"
           disabled={!canAct(s.id)}
-          onClick={() => remove(s)}
+          onClick={() => {
+            if (Date.now() - seen.current.at >= FRESH_MS) void remove(s);
+          }}
         >
           Delete session
         </button>
@@ -138,6 +159,7 @@ function Confirm({ s }: { s: Session }) {
           class="k-act"
           onClick={() => {
             confirmingDelete.value = false;
+            focusDelete();
           }}
         >
           Cancel
@@ -153,7 +175,9 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const ended = s.status === 'ended';
   // Kage never stops, archives or deletes a window it didn't create (spec §5.2).
   const own = !s.external;
-  const confirming = done && own && confirmingDelete.value;
+  // The diff replaces the output, the question, the follow-up and the confirmation.
+  const diff = mainView.value === 'diff';
+  const confirming = done && own && confirmingDelete.value && !diff;
   const chip = ended ? 'ended' : group;
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
   const error = actionError.value?.id === s.id ? actionError.value.text : null;
@@ -171,6 +195,20 @@ export function SessionPanel({ session: s }: { session: Session }) {
             <span class={`k-chip ${CHIP[chip]}`}>{chip}</span>
           </h3>
         </div>
+        {/* R77: pinning by mouse, next to S; only Kage's own sessions have a record to pin. */}
+        {own && (
+          <button
+            type="button"
+            class="k-pin"
+            aria-label="Pin"
+            aria-pressed={s.pinned ? 'true' : 'false'}
+            title="Pin (S)"
+            disabled={off}
+            onClick={() => pin(s)}
+          >
+            {s.pinned ? '★' : '☆'}
+          </button>
+        )}
       </div>
       <div class="k-meta">
         <span class="k-clip" title={s.branch}>
@@ -190,11 +228,17 @@ export function SessionPanel({ session: s }: { session: Session }) {
         )}
       </div>
       <Toast />
-      <Output session={s} />
-      {/* Keyed by session, so a half-typed reply never carries over to another session. */}
-      {s.question && <Ask key={s.id} session={s} question={s.question} />}
-      {done && !ended && !confirming && (
-        <FollowUp key={s.id} id={s.id} placeholder="Follow up in this session…" hotkey="R" />
+      {diff ? (
+        <DiffView key={s.id} session={s} />
+      ) : (
+        <>
+          <Output session={s} />
+          {/* Keyed by session, so a half-typed reply never carries over to another session. */}
+          {s.question && <Ask key={s.id} session={s} question={s.question} />}
+          {done && !ended && !confirming && (
+            <FollowUp key={s.id} id={s.id} placeholder="Follow up in this session…" hotkey="R" />
+          )}
+        </>
       )}
       {confirming && <Confirm s={s} />}
       {error !== null && (
@@ -205,7 +249,9 @@ export function SessionPanel({ session: s }: { session: Session }) {
       <div class="k-foot">
         <div class="l">
           {/* Kage resumes only sessions it launched; an external window keeps its Terminal. */}
-          {ended && own ? (
+          {diff ? (
+            <Act label="Back to session" hotkey="Esc" onClick={closeDiff} />
+          ) : ended && own ? (
             <Act
               label="Resume"
               hotkey="U"
@@ -232,7 +278,9 @@ export function SessionPanel({ session: s }: { session: Session }) {
                 cls="stop"
                 icon={ICON.del}
                 disabled={off}
+                act="del"
                 onClick={() => {
+                  mainView.value = 'output';
                   confirmingDelete.value = true;
                 }}
               />

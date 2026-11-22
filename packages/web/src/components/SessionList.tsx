@@ -1,7 +1,7 @@
 import { formatAge, groupOf, type Session } from '@kage/shared';
 import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
-import { newTaskOpen, now, select, selectedId, sorted } from '../store.ts';
+import { focusList, newTaskOpen, now, select, selectedId, sorted } from '../store.ts';
 import { Archived } from './Archived.tsx';
 import { NewTask } from './NewTask.tsx';
 
@@ -51,6 +51,16 @@ export function SessionList() {
     if (wasOpen.current && !open) button.current?.focus();
     wasOpen.current = open;
   }, [open]);
+  // After this page's archive or delete, the selected row takes the focus the removed session's
+  // button had (R77), unless focus is somewhere else that matters (a field, another control).
+  const side = useRef<HTMLElement>(null);
+  const focus = focusList.value;
+  useEffect(() => {
+    const a = document.activeElement;
+    const elsewhere = a !== null && a !== document.body && !a.closest('.k-main');
+    if (focus === 0 || elsewhere || a?.matches('input, textarea')) return;
+    side.current?.querySelector<HTMLElement>('.k-it.on')?.focus();
+  }, [focus]);
   const items: JSX.Element[] = [];
   let group: string | null = null;
   for (const s of sorted.value) {
@@ -66,7 +76,7 @@ export function SessionList() {
     items.push(<Row s={s} key={s.id} />);
   }
   return (
-    <aside class="k-side">
+    <aside class="k-side" ref={side}>
       {open ? (
         <NewTask />
       ) : (

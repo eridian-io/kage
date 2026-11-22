@@ -209,6 +209,31 @@ describe('the archived list', () => {
     expect(container.querySelector('.k-arch .k-err')?.getAttribute('role')).toBe('alert');
   });
 
+  it('closing the list clears its restore error, so it is gone when it opens again (R77)', async () => {
+    snapshot(2);
+    post = [409, 'The screen is still drawing. Try again in a moment.'];
+    const { container } = render(<Board />);
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    await waitFor(() => expect(rows(container)).toHaveLength(2));
+    fireEvent.click(rows(container)[1]?.querySelector('button') as HTMLButtonElement);
+    await waitFor(() => expect(actionError.value?.id).toBe('older'));
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    expect(actionError.value).toBeNull();
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    await waitFor(() => expect(rows(container)).toHaveLength(2));
+    expect(container.querySelector('.k-arch .k-err')).toBeNull();
+  });
+
+  it('closing the list keeps an error that belongs to a listed session', async () => {
+    snapshot(2);
+    const { container } = render(<Board />);
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    await waitFor(() => expect(rows(container)).toHaveLength(2));
+    actionError.value = { id: 'docs', text: "Couldn't archive: no." };
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    expect(actionError.value).toEqual({ id: 'docs', text: "Couldn't archive: no." });
+  });
+
   it('Restore is disabled while disconnected or busy, and a double click sends one request', async () => {
     snapshot(2);
     const { container } = render(<Board />);

@@ -1,5 +1,5 @@
 import type { Port, Session } from '@kage/shared';
-import { INERT } from './inert.ts';
+import { mainView } from '../store.ts';
 
 const label = (p: Port) => (
   <span>
@@ -68,9 +68,17 @@ export function PreviewPane({ session }: { session: Session }) {
           </div>
         ))}
         {more > 0 && <div class="k-more">and {more} more</div>}
-        <div class="k-diff" {...INERT}>
+        <button
+          type="button"
+          class="k-diff"
+          aria-expanded={mainView.value === 'diff' ? 'true' : 'false'}
+          aria-controls={mainView.value === 'diff' ? 'k-diff-view' : undefined}
+          onClick={() => {
+            mainView.value = 'diff';
+          }}
+        >
           View diff →
-        </div>
+        </button>
       </div>
     </aside>
   );

@@ -3,8 +3,10 @@ import { answer, archive, pin, resume, stop } from './api.ts';
 import {
   authRequired,
   canStop,
+  closeDiff,
   confirmingDelete,
   digitsHeld,
+  mainView,
   newTaskOpen,
   releaseDigits,
   replyOpen,
@@ -27,7 +29,8 @@ function typing(target: EventTarget | null): boolean {
 
 /**
  * N opens the New task form, J/K move the selection, 1–9 answer, R replies or follows up, X twice
- * stops, S pins, E archives, U resumes, and Esc cancels the delete confirmation or closes the reply field. While the form is
+ * stops, S pins, E archives, U resumes, and Esc closes the diff, cancels the delete confirmation
+ * or closes the reply field. While the form is
  * open it owns the keyboard (Esc, Enter), so these are off. Returns the uninstaller.
  */
 export function installKeys(target: Document = document): () => void {
@@ -38,18 +41,34 @@ export function installKeys(target: Document = document): () => void {
     const k = e.key.toLowerCase();
     // A held key repeats: J/K may move on, but nothing else acts twice (a held X must not stop).
     if (e.repeat && k !== 'j' && k !== 'k') return;
+    // Inside the diff, J/K move between its files (DiffView handles them).
+    if ((k === 'j' || k === 'k') && e.target instanceof Element && e.target.closest('.k-dv')) {
+      return;
+    }
     const s = selected.value;
+    const diff = mainView.value === 'diff';
     if (k === 'n') {
       releaseDigits();
       newTaskOpen.value = true;
     } else if (k === 'j') selectNext(1);
     else if (k === 'k') selectNext(-1);
     else if (k === 'escape') {
-      confirmingDelete.value = false;
+      if (diff) closeDiff();
+      else if (confirmingDelete.value) {
+        confirmingDelete.value = false;
+        // Focus back on Delete…, which opened it (R77).
+        target.querySelector<HTMLElement>('[data-act="del"]')?.focus();
+      }
       replyOpen.value = false;
     } else if (k.length === 1 && k >= '1' && k <= '9') {
-      if (s?.status === 'needs-you' && !digitsHeld()) void answer(s, Number(k));
+      // The diff hides the question: a digit must not answer what isn't on screen.
+      if (s?.status === 'needs-you' && !digitsHeld() && !diff) void answer(s, Number(k));
     } else if (k === 'r' && s) {
+      if (diff) {
+        // R leaves the diff for the reply or follow-up field, focused once it has rendered.
+        mainView.value = 'output';
+        setTimeout(() => target.querySelector<HTMLInputElement>('.k-follow input')?.focus());
+      }
       if (s.status === 'needs-you') {
         // Startup screens take buttons only (R9).
         if (!s.question || s.question.startup) return;

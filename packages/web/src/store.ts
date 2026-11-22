@@ -33,6 +33,16 @@ export const authRequired: Signal<boolean> = signal(false);
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
+/**
+ * What the middle column shows for the selected session: its output, the branch's diff (Task 10)
+ * or the terminal (Task 13). Every selection, explicit or automatic, returns it to 'output'.
+ */
+export const mainView: Signal<'output' | 'diff' | 'terminal'> = signal('output');
+/**
+ * Bumped when a removal this page asked for (archive, delete) arrives: the list then focuses the
+ * newly selected row, since the button that had focus went away with the session (R77).
+ */
+export const focusList: Signal<number> = signal(0);
 export type RemovalKind = 'deleted' | 'archived';
 /** The removed session's kind and name (`project · task`) while the toast shows, else null. */
 export const toast: Signal<{ kind: RemovalKind; name: string } | null> = signal(null);
@@ -150,6 +160,7 @@ export function select(id: string | null): void {
     toast.value = null;
     selectedId.value = id;
     confirmingDelete.value = false;
+    mainView.value = 'output';
     selectWhenSeen.value = null;
     replyOpen.value = false;
     actionError.value = null;
@@ -174,6 +185,7 @@ function keepSelection(): void {
     if (selectedId.value !== null) autoPickedAt = Date.now();
     selectedId.value = sorted.value[0]?.id ?? null;
     confirmingDelete.value = false;
+    mainView.value = 'output';
   }
   // The confirmation belongs to a done session; it ends when the session leaves that group.
   const s = selected.value;
@@ -257,6 +269,7 @@ export function applyEvent(e: ServerEvent): void {
       if (asked !== undefined) {
         removing.delete(e.id);
         toast.value = { kind: asked.kind, name: asked.name };
+        focusList.value++;
       }
     }
     const waiting = selectWhenSeen.value;
@@ -286,4 +299,10 @@ export function endRemoval(id: string, ok: boolean): void {
   if (!entry || entry.accepted) return;
   if (ok) entry.accepted = true;
   else removing.delete(id);
+}
+
+/** Esc or Back to session: the output comes back, and focus returns to "View diff →", which opened it. */
+export function closeDiff(): void {
+  mainView.value = 'output';
+  document.querySelector<HTMLElement>('.k-diff')?.focus();
 }

@@ -1,5 +1,5 @@
 import { type ArchivedResponse, type ArchivedSession, formatAge } from '@kage/shared';
-import { useEffect, useState } from 'preact/hooks';
+import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, archive, canAct, errorOf, NO_ANSWER } from '../api.ts';
 import { actionError, archivedCount, archiveOpen, now } from '../store.ts';
 
@@ -34,6 +34,16 @@ function Rows({ count }: { count: number }) {
   }, [count]);
 
   const rows = loaded.rows ?? [];
+  // Closing the list clears a restore error it showed (R77): it must not greet the next opening.
+  const shownRows = useRef(rows);
+  shownRows.current = rows;
+  useEffect(
+    () => () => {
+      const f = actionError.peek();
+      if (f && shownRows.current.some((a) => a.id === f.id)) actionError.value = null;
+    },
+    [],
+  );
   const failed = actionError.value;
   const restoreError = failed && rows.some((a) => a.id === failed.id) ? failed.text : null;
   return (
