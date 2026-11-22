@@ -119,13 +119,22 @@ export const UNTRACKED_CACHE_MAX = 2000;
 /**
  * Untracked files' line counts by worktree and path, valid while the file's size and mtimeMs are
  * the ones seen (B37): a refresh re-reads only what changed. Bounded; the least recently used
- * entry goes first. The session's removal forgets its worktree.
+ * entry goes first. The session's removal forgets its worktree. An entry recorded within 2 s of its
+ * file's mtime is racy (git's rule) and is read again.
  */
+/** An entry recorded less than this long after its file's mtime is racy: never trusted. */
+const RACY_MS = 2000;
+
 export class UntrackedCache {
   readonly #max: number;
-  readonly #entries = new Map<string, { size: number; mtimeMs: number; lines: number }>();
-  constructor(max = UNTRACKED_CACHE_MAX) {
+  readonly #now: () => number;
+  readonly #entries = new Map<
+    string,
+    { size: number; mtimeMs: number; lines: number; recordedAt: number }
+  >();
+  constructor(max = UNTRACKED_CACHE_MAX, now: () => number = Date.now) {
     this.#max = max;
+    this.#now = now;
   }
   get size(): number {
     return this.#entries.size;
@@ -134,14 +143,28 @@ export class UntrackedCache {
     const key = `${worktree}\0${path}`;
     const e = this.#entries.get(key);
     if (!e || e.size !== size || e.mtimeMs !== mtimeMs) return undefined;
+    // Git's racy rule: a file changed within RACY_MS of its read may have changed again since,
+    // at the same size, without its mtime moving (coarse timestamps). Read it again.
+    if (e.recordedAt - e.mtimeMs < RACY_MS) return undefined;
     this.#entries.delete(key);
     this.#entries.set(key, e);
     return e.lines;
   }
-  set(worktree: string, path: string, size: number, mtimeMs: number, lines: number): void {
+  /** The cache's clock: callers take it before their stat, so an entry is judged by when it was seen. */
+  now(): number {
+    return this.#now();
+  }
+  set(
+    worktree: string,
+    path: string,
+    size: number,
+    mtimeMs: number,
+    lines: number,
+    seenAt: number = this.#now(),
+  ): void {
     const key = `${worktree}\0${path}`;
     this.#entries.delete(key);
-    this.#entries.set(key, { size, mtimeMs, lines });
+    this.#entries.set(key, { size, mtimeMs, lines, recordedAt: seenAt });
     while (this.#entries.size > this.#max) {
       const oldest = this.#entries.keys().next().value as string;
       this.#entries.delete(oldest);
@@ -173,6 +196,7 @@ async function cachedLines(
   if (!cache) return untrackedLines(root, rel, read);
   const full = resolve(root, rel);
   if (!inside(root, full)) return 0;
+  const seenAt = cache.now();
   const st = await lstat(full).catch(() => null);
   if (!st) return 0;
   const hit = cache.get(worktree, rel, st.size, st.mtimeMs);
@@ -180,7 +204,7 @@ async function cachedLines(
   const lines = await untrackedLines(root, rel, read);
   // Keyed by the stat taken before the read: a write in between changes the mtime, so the next
   // refresh reads the file again.
-  cache.set(worktree, rel, st.size, st.mtimeMs, lines);
+  cache.set(worktree, rel, st.size, st.mtimeMs, lines, seenAt);
   return lines;
 }
 

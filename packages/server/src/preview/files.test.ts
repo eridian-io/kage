@@ -259,12 +259,18 @@ describe('the untracked line-count cache (B37)', () => {
     };
     return { reads, read };
   };
+  /** Writes a file whose mtime is a minute old: past git's racy window, so the cache may trust it. */
+  const old = async (path: string, text: string, agoMs = 60_000) => {
+    await writeFile(path, text);
+    const t = new Date(Date.now() - agoMs);
+    await utimes(path, t, t);
+  };
   const counts = (changes: Change[]) =>
     Object.fromEntries(changes.filter((c) => c.untracked).map((c) => [c.path, c.added]));
 
   it('a second listChanges with unchanged untracked files reads none of them', async () => {
     const dir = await repo('cache-same');
-    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await writeFile(join(dir, n), 'a\nb\n');
+    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await old(join(dir, n), 'a\nb\n');
     const cache = new UntrackedCache();
     const { reads, read } = counting();
     const first = await listChanges(dir, 'main', undefined, { cache, read });
@@ -278,15 +284,13 @@ describe('the untracked line-count cache (B37)', () => {
 
   it('a changed mtimeMs re-reads that file only', async () => {
     const dir = await repo('cache-mtime');
-    for (const n of ['u1.txt', 'u2.txt']) await writeFile(join(dir, n), 'a\nb\n');
+    for (const n of ['u1.txt', 'u2.txt']) await old(join(dir, n), 'a\nb\n', 120_000);
     const cache = new UntrackedCache();
     const { reads, read } = counting();
     await listChanges(dir, 'main', undefined, { cache, read });
     reads.length = 0;
     // Same size, new content and a new mtime: only the mtime tells it changed.
-    await writeFile(join(dir, 'u2.txt'), 'abc\n');
-    const later = new Date(Date.now() + 60_000);
-    await utimes(join(dir, 'u2.txt'), later, later);
+    await old(join(dir, 'u2.txt'), 'abc\n');
     const { changes } = await listChanges(dir, 'main', undefined, { cache, read });
     expect(reads).toEqual(['u2.txt']);
     expect(counts(changes)).toEqual({ 'u1.txt': 2, 'u2.txt': 1 });
@@ -295,8 +299,8 @@ describe('the untracked line-count cache (B37)', () => {
   it('holds at most its bound, and forget(worktree) drops that worktree only', async () => {
     const a = await repo('cache-a');
     const b = await repo('cache-b');
-    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await writeFile(join(a, n), 'a\n');
-    await writeFile(join(b, 'v.txt'), 'v\n');
+    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await old(join(a, n), 'a\n');
+    await old(join(b, 'v.txt'), 'v\n');
     const cache = new UntrackedCache(2);
     const { reads, read } = counting();
     await listChanges(a, 'main', undefined, { cache, read });
@@ -318,5 +322,35 @@ describe('the untracked line-count cache (B37)', () => {
 
   it('the default bound is 2,000 entries', () => {
     expect(UNTRACKED_CACHE_MAX).toBe(2000);
+  });
+});
+
+describe("UntrackedCache: racy entries (git's rule)", () => {
+  it('an entry whose mtime is within 2 s of when it was recorded is a miss', () => {
+    let now = 100_000;
+    const cache = new UntrackedCache(10, () => now);
+    cache.set('/w', 'fresh.txt', 4, 99_000, 1);
+    cache.set('/w', 'settled.txt', 4, 97_000, 2);
+    now = 200_000;
+    // Written 1 s before it was read: a same-size write in that second could share its mtime.
+    expect(cache.get('/w', 'fresh.txt', 4, 99_000)).toBeUndefined();
+    expect(cache.get('/w', 'settled.txt', 4, 97_000)).toBe(2);
+    // Read again later, the same file is no longer racy.
+    cache.set('/w', 'fresh.txt', 4, 99_000, 1);
+    expect(cache.get('/w', 'fresh.txt', 4, 99_000)).toBe(1);
+  });
+
+  it('a file written just now is read again on the next refresh', async () => {
+    const dir = await repo('cache-racy');
+    await writeFile(join(dir, 'new.txt'), 'a\n');
+    const cache = new UntrackedCache();
+    const reads: string[] = [];
+    const read: typeof readUntracked = (r, rel) => {
+      reads.push(rel);
+      return readUntracked(r, rel);
+    };
+    await listChanges(dir, 'main', undefined, { cache, read });
+    await listChanges(dir, 'main', undefined, { cache, read });
+    expect(reads).toEqual(['new.txt', 'new.txt']);
   });
 });
