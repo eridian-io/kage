@@ -56,23 +56,44 @@ function real(path: string): string | null {
 }
 
 /**
+ * A PATH folder whose entries can be trusted to stay put: owned by this user (or root) and not
+ * writable by the group or others, so no one else can swap the link the hooks will name. Without
+ * a uid (Windows) any folder passes.
+ */
+function trustedDir(dir: string, uid: number | undefined): boolean {
+  if (uid === undefined) return true;
+  try {
+    const s = statSync(dir);
+    return (s.uid === uid || s.uid === 0) && (s.mode & 0o022) === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * The SEA's stable path (R110-5). `process.execPath` is a symlink's target, which an update may
  * replace; what the user ran (`argv1`: a path, or a name found on `PATH`) stays valid. It is
- * used when it leads to the same file as `execPath`, else `execPath` is.
+ * used when it leads to the same file as `execPath`, else `execPath` is. A name found on `PATH`
+ * counts only in a folder trustedDir accepts.
  */
-export function installedExe(argv1: string | undefined, path: string, execPath: string): string {
+export function installedExe(
+  argv1: string | undefined,
+  path: string,
+  execPath: string,
+  uid: number | undefined = process.getuid?.(),
+): string {
   if (!argv1) return execPath;
   const target = real(execPath);
   if (target === null) return execPath;
-  let candidates: string[];
-  if (argv1.includes('/') || argv1.includes('\\')) candidates = [resolve(argv1)];
-  else
-    candidates = path
-      .split(delimiter)
-      .filter((d) => d !== '' && isAbsolute(d))
-      .map((d) => join(d, argv1));
-  for (const c of candidates) {
-    if (isFile(c)) return real(c) === target ? c : execPath;
+  if (argv1.includes('/') || argv1.includes('\\')) {
+    const c = resolve(argv1);
+    return isFile(c) && real(c) === target ? c : execPath;
+  }
+  for (const d of path.split(delimiter)) {
+    if (d === '' || !isAbsolute(d)) continue;
+    const c = join(d, argv1);
+    // The first one on PATH is what the user ran; if it isn't safe to name, don't look further.
+    if (isFile(c)) return real(c) === target && trustedDir(d, uid) ? c : execPath;
   }
   return execPath;
 }

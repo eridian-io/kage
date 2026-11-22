@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -186,5 +186,29 @@ describe('installedExe (R110-5: the stable path, not the symlink target)', () =>
     const real = join(root, 'kage');
     writeFileSync(real, '');
     expect(installedExe('kage', root, real)).toBe(real);
+  });
+
+  it('a PATH folder others can write to, or owned by someone else, is passed over for execPath', () => {
+    if (isWin) return; // no symlinks or modes to speak of
+    const real = join(root, 'versions', 'kage');
+    mkdirSync(join(root, 'versions'));
+    writeFileSync(real, '');
+    const bin = join(root, 'bin');
+    mkdirSync(bin);
+    symlinkSync(real, join(bin, 'kage'));
+    const self = process.getuid?.() ?? 1000;
+    // Safe: ours and not group- or world-writable.
+    chmodSync(bin, 0o755);
+    expect(installedExe('kage', bin, real, self)).toBe(join(bin, 'kage'));
+    // Writable by the group or by everyone: someone else could swap the link later.
+    chmodSync(bin, 0o775);
+    expect(installedExe('kage', bin, real, self)).toBe(real);
+    chmodSync(bin, 0o777);
+    expect(installedExe('kage', bin, real, self)).toBe(real);
+    // Owned by another user (root's own folders stay fine: test:linux runs as root).
+    chmodSync(bin, 0o755);
+    expect(installedExe('kage', bin, real, self + 4242)).toBe(
+      self === 0 ? join(bin, 'kage') : real,
+    );
   });
 });

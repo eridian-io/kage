@@ -1,10 +1,15 @@
 /**
  * The client half of `GET /status` (phase 6, Task 4): asks the running `kage serve` over its hook
  * socket, so `kage status`, setup's final check and `kage doctor` need neither the token nor the
- * network.
+ * network. `kage status` itself (Task 5) is at the end.
  */
 import { type ClientRequest, request } from 'node:http';
+import { socketPath } from '../hooks/cli.ts';
 import type { ServerStatus } from '../hooks/server.ts';
+import type { Io } from '../main.ts';
+import type { CheckDeps } from './checks.ts';
+import { KAGE_VERSION } from './runtime.ts';
+import type { ServiceManager, ServiceState } from './service.ts';
 
 const MAX_ANSWER = 64 * 1024;
 
@@ -77,4 +82,43 @@ export function fetchStatus(socket: string, timeoutMs = 1000): Promise<ServerSta
     timer = setTimeout(() => done(null), timeoutMs);
     req.end();
   });
+}
+
+const SERVICE_WORDS: Record<ServiceState, (name: string) => string> = {
+  active: (name) => `running (${name})`,
+  starting: () => 'starting (waiting for Tailscale?)',
+  inactive: () => 'stopped',
+  failed: () => 'failed',
+  missing: () => 'not installed',
+};
+
+/** The Service line's words; unavailable() comes first, since state() needs a user manager (R112). */
+async function serviceWords(m: ServiceManager | null): Promise<string> {
+  if (m === null) return SERVICE_WORDS.missing('');
+  const why = await m.unavailable();
+  if (why !== null) return `can't run here. ${why}`;
+  try {
+    return SERVICE_WORDS[await m.state()](m.name);
+  } catch {
+    return "unknown (Kage couldn't read its state)";
+  }
+}
+
+/** `kage status`: the version, the service, and the server's address and sessions. 0 when the server answers, else 1. */
+export async function statusCommand(io: Io, deps: CheckDeps): Promise<number> {
+  io.out(`Kage ${KAGE_VERSION}`);
+  io.out(`Service: ${await serviceWords(deps.manager)}`);
+  const socket = socketPath(deps.env, deps.platform);
+  const status = await deps.status(socket);
+  if (status === null) {
+    io.out(`Kage isn't answering on ${socket}.`);
+    return 1;
+  }
+  io.out(`Address: ${status.url}`);
+  const waiting =
+    status.needsYou === 0
+      ? ''
+      : ` (${status.needsYou} ${status.needsYou === 1 ? 'needs' : 'need'} you)`;
+  io.out(`Sessions: ${status.sessions}${waiting}`);
+  return 0;
 }

@@ -8,11 +8,18 @@ import type { Readable } from 'node:stream';
 import type { Asset, BoardFiles } from './assets.ts';
 import { runHookCli } from './hooks/cli.ts';
 import { writeHooksSettings } from './hooks/settings.ts';
+import type { CheckDeps } from './install/checks.ts';
 import { hookArgv, KAGE_VERSION, runMode } from './install/runtime.ts';
 import { stateDir } from './state/store.ts';
 import type { ExecFn } from './tmux/client.ts';
 
 export const USAGE = `Usage:
+  kage setup [--yes] [--projects DIR] [--host NAME] [--port N] [--token | --no-token]
+             [--no-service] [--linger | --no-linger]
+      Check what Kage needs, ask for its settings, then install and start its service.
+      Run it again to change a setting. --yes takes every default and asks nothing.
+  kage status
+      Show the service, Kage's address and how many sessions it has.
   kage serve [--demo] [--unsafe-listen-all] [--port N]
       Run the board: live tmux sessions, or the demo sessions with --demo.
   kage hooks-path
@@ -125,9 +132,8 @@ async function pingCommand(io: Io): Promise<number> {
   return 1;
 }
 
-/** `kage doctor` with the real programs, file system, socket and fetch; loaded on demand. */
-async function doctorMain(args: string[], io: Io): Promise<number> {
-  const { doctorCommand } = await import('./install/doctor.ts');
+/** What doctor, status and setup check with: the real programs, socket and fetch; loaded on demand. */
+async function checkDeps(io: Io): Promise<CheckDeps> {
   const { realRun } = await import('./install/run.ts');
   const { serviceManager } = await import('./install/service.ts');
   const { fetchStatus } = await import('./install/status.ts');
@@ -136,7 +142,7 @@ async function doctorMain(args: string[], io: Io): Promise<number> {
   const uid = process.getuid?.();
   const manager =
     uid === undefined ? null : serviceManager(platform, { run: realRun, home, env: io.env, uid });
-  return doctorCommand(args, io, {
+  return {
     run: realRun,
     env: io.env,
     platform,
@@ -146,7 +152,39 @@ async function doctorMain(args: string[], io: Io): Promise<number> {
     manager,
     status: (socket) => fetchStatus(socket),
     fetch: (input, init) => fetch(input, init),
-  });
+  };
+}
+
+async function doctorMain(args: string[], io: Io): Promise<number> {
+  const { doctorCommand } = await import('./install/doctor.ts');
+  return doctorCommand(args, io, await checkDeps(io));
+}
+
+async function statusMain(args: string[], io: Io): Promise<number> {
+  if (args.length > 0) {
+    io.err('kage status takes no arguments.');
+    return 1;
+  }
+  const { statusCommand } = await import('./install/status.ts');
+  return statusCommand(io, await checkDeps(io));
+}
+
+/** `kage setup`: its questions go to this terminal, when stdin is one. */
+async function setupMain(args: string[], io: Io): Promise<number> {
+  const { setupCommand } = await import('./install/setup.ts');
+  const { ttyPrompter } = await import('./install/prompt.ts');
+  const isTty = (io.stdin as { isTTY?: boolean }).isTTY === true;
+  const prompt = isTty ? ttyPrompter(io.stdin, process.stdout) : null;
+  try {
+    return await setupCommand(args, io, {
+      ...(await checkDeps(io)),
+      prompt,
+      isTty,
+      writeSettings,
+    });
+  } finally {
+    prompt?.close();
+  }
 }
 
 /** Runs one command; a number is the exit code, a Running is a server still up. */
@@ -177,6 +215,10 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
       return pingCommand(io);
     case 'doctor':
       return doctorMain(rest, io);
+    case 'setup':
+      return setupMain(rest, io);
+    case 'status':
+      return statusMain(rest, io);
     case 'version':
     case '--version':
       io.out(KAGE_VERSION);
