@@ -3,8 +3,8 @@
  * xterm creates three <style> elements and writes truecolor cells with setAttribute('style', …);
  * CSP blocks both. CSSOM writes aren't checked by CSP, so (host-integration.md §4.7):
  * - document.createElement('style') returns an inert <template> whose textContent goes into a
- *   constructable sheet in document.adoptedStyleSheets, and whose remove() drops that sheet
- *   (an empty real <style> still reports a violation);
+ *   constructable sheet in document.adoptedStyleSheets, and whose remove() (or its parent's
+ *   removeChild) drops that sheet (an empty real <style> still reports a violation);
  * - setAttribute('style', v) on an HTMLElement sets el.style.cssText instead.
  * Every other element and attribute goes through untouched. Installed once per document, by the
  * terminal chunk only, before `new Terminal()`.
@@ -15,12 +15,21 @@ export function installStyleShim(doc: Document = document): void {
   if (done.has(doc)) return;
   done.add(doc);
   const create = doc.createElement;
+  /** Each stand-in <template> and its sheet. */
+  const sheets = new WeakMap<Node, CSSStyleSheet>();
+  const drop = (el: Node) => {
+    const sheet = sheets.get(el);
+    if (!sheet) return;
+    sheets.delete(el);
+    doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter((s) => s !== sheet);
+  };
   doc.createElement = function (this: Document, tag: string, o?: ElementCreationOptions) {
     const style = String(tag).toLowerCase() === 'style';
     const el = create.call(this, style ? 'template' : tag, o);
     if (style) {
       const sheet = new CSSStyleSheet();
       doc.adoptedStyleSheets = [...doc.adoptedStyleSheets, sheet];
+      sheets.set(el, sheet);
       let text = '';
       Object.defineProperty(el, 'textContent', {
         configurable: true,
@@ -32,13 +41,20 @@ export function installStyleShim(doc: Document = document): void {
       });
       const rm = el.remove.bind(el);
       el.remove = () => {
-        doc.adoptedStyleSheets = doc.adoptedStyleSheets.filter((s) => s !== sheet);
+        drop(el);
         rm();
       };
     }
     return el;
   } as Document['createElement'];
   const view = doc.defaultView ?? globalThis;
+  const nodeProto = (view as typeof globalThis).Node.prototype;
+  const removeChild = nodeProto.removeChild;
+  nodeProto.removeChild = function <T extends Node>(this: Node, child: T): T {
+    const out = removeChild.call(this, child) as T;
+    drop(child);
+    return out;
+  };
   const proto = (view as typeof globalThis).Element.prototype;
   const set = proto.setAttribute;
   const Html = (view as typeof globalThis).HTMLElement;

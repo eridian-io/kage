@@ -1,3 +1,4 @@
+import { Terminal } from '@xterm/xterm';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { installStyleShim } from './shim.ts';
 
@@ -43,6 +44,38 @@ describe('the CSSOM style shim (R60)', () => {
     el.remove();
     expect(document.adoptedStyleSheets).toHaveLength(before);
     expect(el.isConnected).toBe(false);
+  });
+
+  it('drops the sheet when its <template> is taken out with removeChild', () => {
+    const before = document.adoptedStyleSheets.length;
+    const parent = document.createElement('div');
+    const el = document.createElement('style');
+    parent.appendChild(el);
+    expect(document.adoptedStyleSheets).toHaveLength(before + 1);
+    expect(parent.removeChild(el)).toBe(el);
+    expect(document.adoptedStyleSheets).toHaveLength(before);
+    expect(el.parentNode).toBeNull();
+    // Other children go through untouched.
+    const span = document.createElement('span');
+    parent.appendChild(span);
+    expect(parent.removeChild(span)).toBe(span);
+    expect(parent.childNodes).toHaveLength(0);
+  });
+
+  it('opening and disposing a real terminal ten times leaves the adopted sheets as they were', () => {
+    const before = document.adoptedStyleSheets.length;
+    for (let i = 0; i < 10; i++) {
+      const el = document.createElement('div');
+      document.body.append(el);
+      const t = new Terminal();
+      t.open(el);
+      t.write('hi');
+      // xterm's DOM renderer makes its three <style> elements.
+      expect(document.adoptedStyleSheets.length).toBeGreaterThan(before);
+      t.dispose();
+      el.remove();
+    }
+    expect(document.adoptedStyleSheets).toHaveLength(before);
   });
 
   it("writes an HTML element's style attribute through CSSOM, never setAttribute", () => {
