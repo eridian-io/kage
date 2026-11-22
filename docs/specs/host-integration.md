@@ -6,6 +6,10 @@ Fixtures: `packages/server/test/fixtures/ports/ss.txt` and `ps.txt` keep the obs
 
 §4 (tmux control mode and xterm.js) and §5 (git for finishing) were recorded on 2026-11-22 for phase 4, with the same versions plus Node 24.22 in WSL, Node 26.13 and Playwright's Chromium on Windows. Their own "Read first" list is just below.
 
+## Read first: what phase 5 built from §6
+
+The ntfy facts in §6 are used by the notifier and the client as the design spec's §5.9 (notifications), §5.10 (the one outbound call) and §5.11 (the ntfy keys) describe them, and the new copy is in §6.7 of the design spec (all amended 2026-11-22, phase 5).
+
 ## Read first: where this differs from the phase 4 plan
 
 The design spec records what phase 4 built from these facts: the terminal in §5.6, the git checks in §5.7 and §5.8, the routes in §5.12 and the new copy in §6.6 (all amended 2026-11-22, phase 4).

@@ -30,12 +30,12 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 - **B25** processLabel cosmetics: some long or wrapped commands give an odd label on the port card.
 - **B26** The 5 s window after a reply ignores a real Esc that the user presses in the terminal during it.
 - **B27** Two hooked claude processes in one window: the first wins. Side-pane activity re-lists the windows.
-- **B28** The web doesn't clamp the files list to its limit. The server owns the bound, so this only matters if the server changes.
+- **B28** (done, phase 5 Task 9) The web doesn't clamp the files list to its limit. The server owns the bound, so this only matters if the server changes.
 - **B29** The 404 for an unknown project or branch echoes the name without a length cap (cosmetic).
 - **B30** K2's guard is narrow: after a failed `git worktree add`, Kage deletes `kage/<slug>` unless git's message says the branch already existed. A branch someone else creates between the slug check and the `worktree add`, followed by a failure for another reason, would be deleted. Compare the branch's ref before and after instead of reading git's message.
 - **B31** If Kage dies between `git worktree add` and `adopt`, the worktree and branch stay with no record, so the board never shows them. A start-up sweep for `kage/*` worktrees with no record (listed, never deleted by itself) would surface them.
 - **B32** The live e2e specs depend on their order: later tests reuse sessions an earlier one left (for example the follow-up test needs the answered task's done session). A fixture helper that makes its own done session would let each test run alone.
-- **B33** Double-X Stop and the stale-card 409 are unit-tested only. Add live e2e cases: one X does nothing, a second within 2 s stops; a card answered after its question changed gets 409.
+- **B33** (done, phase 5 Task 10) Double-X Stop and the stale-card 409 are unit-tested only. Add live e2e cases: one X does nothing, a second within 2 s stops; a card answered after its question changed gets 409.
 
 ## Phase 2 or 4
 
@@ -52,9 +52,9 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 Deferred from the phase 4 reviews. None blocks use.
 
 - **B34** (done, phase 5 Task 9) The resume race (R63): a resumed window that dies before Kage's first listing of it loses the failed-resume `SessionEnd`, so the record can't tell a failed resume from a quiet one. Fix: claim the window with the pane id that `new-window` printed, so the first hook or the window's death is matched without a listing.
-- **B35** Pending terminal upgrades have no cap. `LIMITS.terminals` caps open terminals, but sockets that have passed the upgrade check and are still opening aren't counted. Cap them at about twice `LIMITS.terminals` and answer 4429.
-- **B36** `FileChange.path` is not stripped of control and bidi characters in the files list (the diff strips its own paths). Strip it where the list is built.
-- **B37** `listChanges` reads up to 100 MiB of untracked files on every request (the list and the diff both call it). Cache the untracked counts by file size and mtime, or read less.
+- **B35** (done, phase 5 Task 0) Pending terminal upgrades have no cap. `LIMITS.terminals` caps open terminals, but sockets that have passed the upgrade check and are still opening aren't counted. Cap them at about twice `LIMITS.terminals` and answer 4429.
+- **B36** (done, phase 5 Task 9) `FileChange.path` is not stripped of control and bidi characters in the files list (the diff strips its own paths). Strip it where the list is built.
+- **B37** (done, phase 5 Task 4) `listChanges` reads up to 100 MiB of untracked files on every request (the list and the diff both call it). Cache the untracked counts by file size and mtime, or read less.
 - **B38** A time-of-check to time-of-use gap on Windows, inherited from phase 3's file list: a path is checked and then read, and a swap between the two is not closed there. A fix needs an open-then-check on the file handle.
 - **B39** (done, phase 4 fix wave) The delete e2e races after `extra.txt` is written: it should poll the board for "3 files" before it opens the confirmation. It failed once in three Docker runs.
 - **B40** An e2e for auto-archive skipping a session that has a terminal open (F11/R70). Unit tests cover it; no browser test opens a terminal and then merges.
@@ -65,6 +65,14 @@ Deferred from the phase 4 reviews. None blocks use.
 ## Found in phase 5
 
 - **B44** A trust screen drawn after the 60 s first-prompt look (phase 5 Task 0's cap on a still-starting launch) is seen only by the capture that pane activity triggers. A screen drawn with no activity after it stays unseen until the next activity. Fix if it shows up: one more look when the cap ends, or a slow look (every 10 s) until the first hook.
+
+- **B45** Hooks don't say which tmux server they came from. A pane id such as `%3` is only unique within one tmux server, so with a second server (`KAGE_TMUX_SOCKET`, or a user's own tmux) a hook from `%3` there can be taken for Kage's `%3`, and a hook set aside for a later claim can be claimed by the wrong window. Fix: `kage hook` sends the socket from `$TMUX` with the event, and the server matches it against its own.
+- **B46** The set-aside of hooks from unknown panes (the B34 claim) keeps up to 32 in all and has no cap per pane, so one noisy pane can push out the others. Cap it per pane, or keep only `SessionStart` and `SessionEnd`, the two a claim needs. A `SessionEnd` that arrives after the lost reconcile is still not matched.
+- **B47** Pressing Ctrl+K (or ⌘K) while the diff is still loading lets the diff view's mount effect (`DiffView.tsx`, the `el.focus()` at line 96) take focus from the open palette's field: the palette stays open but typing goes to the diff. Fix: skip that focus while the palette holds it.
+- **B48** Smaller things from the phase 5 reviews, each optional: a test for a hook from another pane inside the 5 s window; `closeDiff`'s fallback selector, `[data-id].k-it.on`, is broader than it needs to be; an ignored-mark that has expired can be seen out of order with the session's next event; the revert pair `808e21a`/`029d197` is in the branch history (squash at merge if wanted).
+- **B49** Pings can be quieter. Skip a ping while a board tab for that session is visible and focused (the board already says so with the title count). Collect a burst of pings (several sessions at once) into one, "3 sessions need you".
+- **B50** A sign-out action on the board. It needs to know whether a token is set, which the API doesn't say today, so the button can be hidden when there is none.
+- **B51** A phone layout for the page a ping opens: the link `#s=<id>` lands on the desktop layout (at least 1100 px), which is cramped on a phone.
 
 ## Later
 

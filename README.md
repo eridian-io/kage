@@ -33,7 +33,8 @@ It is a thin layer over tools you already trust: **tmux** keeps the sessions ali
 - **Files changed.** See what each agent touched, with a diff view.
 - **Finish sessions.** Pin, archive, resume and delete sessions. Delete tells you what you would lose first.
 - **A terminal in the browser.** Open the real tmux window of a session when the buttons are not enough.
-- **Notifications (coming in phase 5).** A ping through [ntfy](https://ntfy.sh) or a browser notification when a session needs input. Kage does not send any yet.
+- **Notifications.** A ping on your phone through [ntfy](https://ntfy.sh) when a session needs you, and the count in the browser's tab title.
+- **A command palette.** `⌘K` (`Ctrl+K` off a Mac) jumps to a session or runs a command.
 - **Attach any time.** Kage only adds to your setup: `tmux attach -t kage` still drops you into the real terminal.
 - **Phone-friendly.** It works in a phone browser too.
 
@@ -140,6 +141,41 @@ Kage can start and steer tasks from the board. This needs `claude` on Kage's `PA
 
 **Terminal.** Press `T`. The session's tmux window opens in the browser, and every key goes to Claude, including `Esc`. Press `Shift+Esc` (or `Ctrl+Shift+X`) to return to the board. Chrome's Task Manager may take `Shift+Esc` on Windows and Linux: use `Ctrl+Shift+X` there. A window Kage didn't start is view-only. The terminal code (about 90 KB) loads the first time you open one.
 
+## Notifications
+
+Kage tells you when a session needs you, in two ways.
+
+**On your phone, through [ntfy](https://ntfy.sh).** It is off until you set a topic.
+
+1. Install the ntfy app on your phone and subscribe to a topic name.
+2. Put the same name in the config as `ntfyTopic`, and restart Kage.
+3. Run `kage ping`. Your phone should show "Kage test ping". If it can't send, the command says why (for example `HTTP 401` or `ECONNREFUSED`) and exits with 1.
+
+A topic on ntfy.sh is public: anyone who guesses the name can read your pings, and send their own. So pick a long random one. Kage refuses to start with a topic shorter than 16 characters on ntfy.sh unless you also set `ntfyToken`. For example, run `openssl rand -hex 12` and use the result.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `ntfyTopic` | `""` | The topic to publish to. Empty means no pings. 1 to 64 letters, digits, `-` or `_` |
+| `ntfyServer` | `"https://ntfy.sh"` | The ntfy server. It must be `https:`. Plain `http:` is allowed only for this machine or your tailnet (an address in `100.64.0.0/10`, or a `*.ts.net` name). Use plain `http:` to a `*.ts.net` name only for a machine on your own tailnet: Tailscale Funnel names also end in `.ts.net` and resolve publicly, and Kage can't tell them apart |
+| `ntfyToken` | `""` | An ntfy access token, for a server that needs one. Kage sends it as a bearer token |
+| `ntfyOnDone` | `false` | Also ping when a session that worked for a minute or more is done |
+
+When you get a ping:
+- A session that moves into "needs you" is pinged after 3 seconds, if it is still waiting. Answer it at the board within that time and nothing is sent.
+- A session is pinged at most once every 2 minutes, and a question asked again inside that time is pinged when the 2 minutes are over.
+- With `ntfyOnDone`, a session that worked for at least a minute and then finished is pinged "is done". A session you stopped is not.
+- At most 10 pings go out in any 10 minutes. Kage logs how many it skipped.
+- Sessions already waiting when Kage starts are not pinged.
+- A failed ping is tried again after 2, 8 and 30 seconds, then given up. Tapping a ping opens that session on the board.
+
+**What the ntfy server sees.** The topic, a title such as "my-app needs you", the task text (cut to 100 characters), the board link (your machine's name, the port and the session's id), and your PC's address and the time. It never gets the question, the output, a command, a branch or a path. A window Kage didn't start has no task to show: its ping says "Claude needs you" with the PC's name. Kage logs no topic, token or server address; a failure is named by a status or an error code only. If the task text itself is private, use your own ntfy server, or leave ntfy off.
+
+**In the browser.** The tab's title shows how many sessions need you, as "(2) kage". Browser notifications need `https:` or `localhost`: a browser doesn't offer them on a plain `http://my-pc:8080` over the tailnet. Over plain tailnet `http:`, you get the tab title and ntfy. On `localhost`, open the command palette and choose "Turn on browser notifications". A notification shows only when a session starts to need you while the page has no focus, with the same text as a ping.
+
+## Command palette
+
+Press `⌘K` on a Mac, or `Ctrl+K` elsewhere (or click the hint at the top right). Type to jump to a session, or to run a command on the selected session: View diff, Open the terminal, Pin, Archive, Resume, Stop, Delete…. It also starts a New task, shows archived sessions and turns on browser notifications. Arrow keys move, `Enter` runs, and `Esc` closes. The palette loads the first time you open it.
+
 ## Configuration
 
 Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. It lives outside the checkout, so hostnames and secrets never end up in the repo.
@@ -155,6 +191,9 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
   "branchPrefix": "kage/",
   "autoArchive": { "onMerge": true, "afterDays": 14 },
   "ntfyTopic": "",
+  "ntfyServer": "https://ntfy.sh",
+  "ntfyToken": "",
+  "ntfyOnDone": false,
   "token": ""
 }
 ```
@@ -169,10 +208,13 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `worktreeDir` | `".worktrees"` | The folder, inside each project, for the agents' git worktrees |
 | `branchPrefix` | `"kage/"` | The prefix for the branches Kage creates |
 | `autoArchive` | `{ "onMerge": true, "afterDays": 14 }` | Archive a done session when its branch is merged, or this many days after it finished (`0` turns the age rule off) |
-| `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone notifications |
+| `ntfyTopic` | `""` | Optional: your [ntfy](https://ntfy.sh) topic for phone pings. On ntfy.sh it must be a long random name (see Notifications) |
+| `ntfyServer` | `"https://ntfy.sh"` | The ntfy server (see Notifications) |
+| `ntfyToken` | `""` | Optional ntfy access token |
+| `ntfyOnDone` | `false` | Also ping when a long-running session is done |
 | `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in. Change the token to sign out every device. |
 
-Live sessions use `tmuxSession`, `token`, `projectsRoot`, `worktreeDir`, `branchPrefix`, `autoArchive` and the host, port and name keys. `ntfyTopic` takes effect in phase 5; Kage already reads and checks every key.
+Live sessions use every key. Kage checks them all when it starts and stops with one line if a value is wrong. The pings need live mode: the demo sends none.
 
 The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `name`, `host` and `port`. `KAGE_CLAUDE_BIN` names the `claude` program for new tasks.
 
@@ -195,7 +237,7 @@ There is no command for this yet. The installer and the systemd and launchd serv
 - [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
 - [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
 - [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser
-- [ ] **Phase 5, polish:** notifications, a command palette, performance budgets
+- [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets
 - [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases
 
 ## Contributing

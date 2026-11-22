@@ -29,9 +29,8 @@ describe('allowFailVerdict (a budget known to fail today, ruling PF5, F5)', () =
 /** The files that may hold allowFail markers: the perf spec and the build test. */
 const MARKED = ['../../e2e/perf.spec.ts', 'build.test.ts'];
 
-// Task 11 removes this skip: by then Tasks 3 and 4 have removed every allowFail marker, and
-// every §7 budget must pass outright.
-describe.skip('no allowFail markers remain (Phase 5 end)', () => {
+// Every §7 budget passes outright: no marker may come back.
+describe('no allowFail markers remain (Phase 5 end)', () => {
   it.each(MARKED)('%s has no allowFail marker', (file) => {
     const text = readFileSync(join(import.meta.dirname, file), 'utf8');
     // `allowFail: {` (perf spec) and `const allowFail = {` (build test).

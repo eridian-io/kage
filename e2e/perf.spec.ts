@@ -10,9 +10,10 @@ import { PERF_BASE, PERF_PORT } from './env.ts';
 import { blur, chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } from './harness.ts';
 
 /**
- * The budgets of spec §7, each through recordBudget (test-results/budgets.json). A budget that
- * fails today carries `allowFail: '<owning task>'` (ruling PF5, F5); the owning task removes it.
- * The definitions are Task 1's rules in the phase 5 plan (Task 11 copies them into §7):
+ * The budgets of spec §7, each through recordBudget (test-results/budgets.json). Every budget
+ * passes outright: an `allowFail` marker (ruling PF5, F5) is for a budget known to fail while a
+ * phase runs, and perf-markers.test.ts fails if one is left in. The definitions are the rules
+ * of spec §7 ("As built"):
  * - sizes, read from packages/web/dist with the limits build.test.ts uses (packages/web/sizes.ts);
  * - time to a usable board: the `kage:board` mark, fresh context, tailnet LAN emulation, median
  *   of 5 against live mode with 10 sessions;
