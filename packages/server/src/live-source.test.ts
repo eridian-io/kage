@@ -1986,7 +1986,7 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     await source.start();
     await source.adopt(launched());
     tmux.windows = [newWin()];
-    source.claim('k-9', '@7');
+    source.claim('k-9', '@7', '%7');
     await flush();
     expect(source.get('ext-@7')).toBeUndefined();
     expect(events.some((e) => e.type === 'session.updated' && e.session.id === 'ext-@7')).toBe(
@@ -2006,7 +2006,7 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     await flush();
     expect(source.get('ext-@7')).toBeDefined();
     events.length = 0;
-    source.claim('k-9', '@7');
+    source.claim('k-9', '@7', '%7');
     await flush();
     expect(events[0]).toEqual({ type: 'session.removed', id: 'ext-@7' });
     expect(source.get('ext-@7')).toBeUndefined();
@@ -2024,7 +2024,7 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     await source.start();
     await source.adopt(launched());
     tmux.windows = [newWin()];
-    source.claim('k-9', '@7');
+    source.claim('k-9', '@7', '%7');
     await flush();
     hooks.fire(hook('UserPromptSubmit', '%7'));
     await flush();
@@ -2045,7 +2045,7 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
     await flush();
     expect(source.get('ext-@7')).toBeDefined();
-    source.claim('k-9', '@7');
+    source.claim('k-9', '@7', '%7');
     await flush();
     // The record's session has no Claude session yet; the next hook links it.
     hooks.fire(hook('UserPromptSubmit', '%7'));
@@ -2132,7 +2132,7 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
       await s.source.adopt(launched());
       s.tmux.windows = [newWin()];
       s.tmux.setCapture('%7', capture);
-      s.source.claim('k-9', '@7');
+      s.source.claim('k-9', '@7', '%7');
       await flush();
       return s;
     }
@@ -3391,7 +3391,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     s.source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
     s.tmux.setCapture('%7', capture);
-    s.source.claim('k-1', '@7');
+    s.source.claim('k-1', '@7', '%7');
     await flush();
     return s;
   }
@@ -3435,7 +3435,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     expect(s.source.hasWindow('k-1')).toBe(true);
     expect(s.source.hasWindow('k-2')).toBe(false);
     expect(s.source.hasWindow('nope')).toBe(false);
-    s.source.claim('k-2', '@9');
+    s.source.claim('k-2', '@9', '%9');
     expect(s.source.hasWindow('k-2')).toBe(true);
   });
 
@@ -3502,7 +3502,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     await flush();
     source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
-    source.claim('k-1', '@7');
+    source.claim('k-1', '@7', '%7');
     await flush();
     s.hooks.fire(
       hook('SessionEnd', '%7', {
@@ -3554,7 +3554,7 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
     await flush();
     s.source.resumed('k-1', null);
     s.tmux.windows = [resumedWin()];
-    s.source.claim('k-1', '@7');
+    s.source.claim('k-1', '@7', '%7');
     await flush();
     s.hooks.fire(hook('SessionStart', '%7', { source: 'resume', sessionId: 's-9' }));
     await flush();
@@ -3579,7 +3579,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     const { source } = setup({ records: [ended()] });
     await source.start();
     await flush();
-    source.claim('k-1', '@9');
+    source.claim('k-1', '@9', '%9');
     expect(source.hasWindow('k-1')).toBe(true);
     // The claim's own re-list started after it and found no @9: the window died at launch.
     await flush();
@@ -3593,7 +3593,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     tmux.windows = [];
     watcher.emit({ type: 'windows-changed' }); // this listing starts now, before the window exists
     tmux.windows = [resumedWin({ windowId: '@9', paneId: '%9' })];
-    source.claim('k-1', '@9');
+    source.claim('k-1', '@9', '%9');
     await flush();
     expect(source.hasWindow('k-1')).toBe(true);
     expect(source.get('ext-@9')).toBeUndefined();
@@ -3606,7 +3606,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     await flush();
     s.source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
-    s.source.claim('k-1', '@7');
+    s.source.claim('k-1', '@7', '%7');
     await flush();
     // claude exits back to a shell before sending any hook (#endInWindow)…
     s.tmux.windows = [resumedWin({ command: 'bash' })];
@@ -3630,7 +3630,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     await flush();
     s.source.resumed('k-1', 's-1');
     s.tmux.windows = [resumedWin()];
-    s.source.claim('k-1', '@7');
+    s.source.claim('k-1', '@7', '%7');
     await flush();
     s.tmux.windows = [];
     s.watcher.emit({ type: 'windows-changed' });
@@ -3640,7 +3640,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     // A window Kage opens later for the record (a second resume) is a fresh start.
     s.source.resumed('k-1', null);
     s.tmux.windows = [resumedWin({ windowId: '@8', paneId: '%8' })];
-    s.source.claim('k-1', '@8');
+    s.source.claim('k-1', '@8', '%8');
     await flush();
     s.hooks.fire(hook('SessionEnd', '%8', { sessionId: 's-8' }));
     await flush();
@@ -3654,7 +3654,7 @@ describe('LiveSource: resume hardening (Task 7 review)', () => {
     await flush();
     s.source.resumed('k-1', null);
     s.tmux.windows = [resumedWin()];
-    s.source.claim('k-1', '@7');
+    s.source.claim('k-1', '@7', '%7');
     await flush();
     s.hooks.fire(hook('SessionEnd', '%7', { sessionId: 's-other' }));
     await flush();
@@ -3672,7 +3672,7 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     await source.start();
     await flush();
     source.resumed('k-1', 's-1');
-    source.claim('k-1', '@9'); // the claim's own re-list finds no @9
+    source.claim('k-1', '@9', '%9'); // the claim's own re-list finds no @9
     await flush();
     expect(source.get('k-1')?.status).toBe('ended');
     expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended' });
@@ -3690,7 +3690,7 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     await source.start();
     await flush();
     source.resumed('k-1', 's-1');
-    source.claim('k-1', '@9');
+    source.claim('k-1', '@9', '%9');
     await flush();
     expect(source.get('k-1')?.status).toBe('ended');
     // The record's window shows up later, tagged (say, opened by hand), with another session.
@@ -3706,11 +3706,59 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-2');
   });
 
+  const failedLine = {
+    kind: 'out',
+    text: "Claude couldn't find this conversation, so the session wasn't resumed.",
+  };
+  const otherEnd = () =>
+    hook('SessionEnd', '%7', { sessionId: '7d444840-9dc0-11d1-b245-5ffdce74fad2' });
+
+  it('B34: a failed resume whose window dies before any listing still reports the failure (claimed by pane id)', async () => {
+    const { source, hooks } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    source.claim('k-1', '@7', '%7'); // no listing ever shows @7
+    hooks.fire(otherEnd());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).toContainEqual(failedLine);
+    expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-1');
+  });
+
+  it('B34: the SessionEnd that came before the claim (window already gone) is matched once the claim names its pane', async () => {
+    const { source, hooks } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    hooks.fire(otherEnd());
+    await vi.advanceTimersByTimeAsync(200); // the re-list finds no %7: the hook is set aside
+    expect(source.lines('k-1')).not.toContainEqual(failedLine);
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).toContainEqual(failedLine);
+  });
+
+  it('B34: a set-aside hook from another pane, or older than 5 s, is not replayed', async () => {
+    const { source, hooks } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    hooks.fire(hook('SessionEnd', '%8', { sessionId: 's-other' }));
+    hooks.fire(otherEnd());
+    await vi.advanceTimersByTimeAsync(6_000);
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).not.toContainEqual(failedLine);
+  });
+
   it('a launched window that dies unseen ends the launch too', async () => {
     const { source } = setup();
     await source.start();
     await source.adopt(rec({ kageId: 'k-9', windowId: null, branch: 'kage/x', createdAt: T0 }));
-    source.claim('k-9', '@7');
+    source.claim('k-9', '@7', '%7');
     await flush();
     expect(source.get('k-9')?.status).toBe('ended');
   });
@@ -3743,7 +3791,7 @@ describe('LiveSource: a launch on its startup screens (P4F1)', () => {
     await s.source.adopt(launched());
     s.tmux.windows = [newWin()];
     s.tmux.setCapture('%7', '');
-    s.source.claim('k-9', '@7');
+    s.source.claim('k-9', '@7', '%7');
     await flush();
     for (let t = 0; t < 5; t++) {
       s.watcher.emit({ type: 'activity', paneId: '%7' });

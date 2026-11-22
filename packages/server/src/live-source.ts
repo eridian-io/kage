@@ -150,6 +150,8 @@ const STARTUP_RECHECK_MS = 1000;
 const STARTING_LOOKS_MS = 60_000;
 /** A hook pane still unknown after a re-list is dropped without re-listing for this long. */
 const UNKNOWN_PANE_MS = 5000;
+/** B34: hooks from unknown panes kept this many deep (for UNKNOWN_PANE_MS) for a later claim. */
+const SET_ASIDE_MAX = 32;
 /** Pane fallback: a new capture continues the last one when they overlap by this many lines (or all of the last). */
 const MIN_OVERLAP = 3;
 /** After an answer, look at the pane once more this much later (a next question or screen). */
@@ -307,6 +309,10 @@ export class LiveSource implements SessionSource {
   readonly #claims = new Map<string, string>();
   /** Window id → the listing count when it was claimed: a later listing without it ends the claim. */
   readonly #claimSeq = new Map<string, number>();
+  /** B34: window id → the pane id new-window printed, so a claim matches hooks with no listing. */
+  readonly #claimPanes = new Map<string, string>();
+  /** B34: hooks dropped as from an unknown pane, newest last, for a claim that names the pane. */
+  #setAside: { e: HookEvent; at: number }[] = [];
   /** Listings started so far. */
   #listSeq = 0;
   #running = false;
@@ -472,14 +478,27 @@ export class LiveSource implements SessionSource {
    * Hooks already applied to that `ext-<windowId>` session are not replayed: every hook names
    * its Claude session and transcript, so the record's session re-learns them (link, tail,
    * status) from the next hook its pane sends.
+   * B34: `paneId` is the pane new-window printed. A window that dies before any listing shows
+   * it (a failed `--resume` exits at once) still has its hooks matched: those queued for the
+   * pane, and those set aside as unknown in the last 5 s, go to the record's session.
    */
-  claim(kageId: string, windowId: string): void {
+  claim(kageId: string, windowId: string, paneId: string): void {
     if (!this.#records.has(kageId)) return;
     this.#claims.set(windowId, kageId);
     this.#claimSeq.set(windowId, this.#listSeq);
+    this.#claimPanes.set(windowId, paneId);
     const ext = this.#sessions.get(`ext-${windowId}`);
     if (ext) this.#removeSession(ext);
-    if (this.#running) void this.#relist();
+    if (!this.#running) return;
+    this.#ignoredPanes.delete(paneId);
+    const since = this.#clock() - UNKNOWN_PANE_MS;
+    const mine = this.#setAside.filter((x) => x.e.pane === paneId && x.at >= since);
+    this.#setAside = this.#setAside.filter((x) => x.e.pane !== paneId);
+    if (mine.length > 0) {
+      this.#unknown.push(...mine.map((x) => x.e));
+      this.#unknownTimer ??= setTimeout(() => void this.#resolveUnknown(), RELIST_DEBOUNCE_MS);
+    }
+    void this.#relist();
   }
 
   /**
@@ -533,7 +552,7 @@ export class LiveSource implements SessionSource {
    * An archived record also sends archive {count}. An unknown id does nothing.
    */
   async forget(id: string): Promise<void> {
-    for (const [w, k] of this.#claims) if (k === id) this.#claims.delete(w);
+    for (const [w, k] of this.#claims) if (k === id) this.#dropClaim(w);
     const st = this.#sessions.get(id);
     if (st) this.#removeSession(st);
     const r = this.#records.get(id);
@@ -849,6 +868,7 @@ export class LiveSource implements SessionSource {
     this.#recheckTimer = null;
     this.#unknown = [];
     this.#early = [];
+    this.#setAside = [];
     for (const st of this.#sessions.values()) {
       this.#clearTimers(st);
       this.#stopTail(st);
@@ -957,16 +977,15 @@ export class LiveSource implements SessionSource {
     // down), or until a listing that started after the claim doesn't show the window (it died
     // just after the launch). Not any listing without it: one begun before new-window ran
     // would drop it too early.
-    for (const w of windows) if (w.kageId) this.#claims.delete(w.windowId);
+    for (const w of windows) if (w.kageId) this.#dropClaim(w.windowId);
     const listed = new Set(windows.map((w) => w.windowId));
-    /** Records whose claimed window died before any listing showed it. */
-    const lost = new Set<string>();
+    /** Records whose claimed window died before any listing showed it → the claimed pane. */
+    const lost = new Map<string, string | undefined>();
     for (const [w, at] of this.#claimSeq) {
-      if (!this.#claims.has(w)) this.#claimSeq.delete(w);
+      if (!this.#claims.has(w)) this.#dropClaim(w);
       else if (at < seq && !listed.has(w)) {
-        lost.add(this.#claims.get(w) as string);
-        this.#claims.delete(w);
-        this.#claimSeq.delete(w);
+        lost.set(this.#claims.get(w) as string, this.#claimPanes.get(w));
+        this.#dropClaim(w);
       }
     }
     for (const w of windows) {
@@ -1021,9 +1040,17 @@ export class LiveSource implements SessionSource {
     // A launched or resumed window that died before any listing showed it: the session was
     // never attached, so nothing above ends it. Ended now (which also ends the resume and the
     // first-prompt wait), unless another listed window carries its id.
-    for (const id of lost) {
+    for (const [id, pane] of lost) {
       const st = this.#sessions.get(id);
       if (!st?.record || st.window || st.status === 'ended') continue;
+      // B34: the pane's hooks waiting on this listing are its own (a failed resume's SessionEnd).
+      const mine = this.#unknown.filter((e) => e.pane === pane);
+      if (mine.length > 0) {
+        this.#unknown = this.#unknown.filter((e) => e.pane !== pane);
+        for (const e of mine) this.#applyHook(st, e);
+        // TS keeps the narrowing from above; #applyHook may have ended it (resumeFailed).
+        if ((st.status as SessionStatus) === 'ended') continue;
+      }
       this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
       st.mode = 'hooks';
       st.pending = false;
@@ -1170,6 +1197,9 @@ export class LiveSource implements SessionSource {
         this.#hookPanes.clear();
         // …and its windows afresh: a claimed id could name someone else's window.
         this.#claims.clear();
+        this.#claimSeq.clear();
+        this.#claimPanes.clear();
+        this.#setAside = [];
         for (const st of [...this.#sessions.values()]) {
           if (!st.record) this.#removeSession(st);
           else if (st.window) this.#detach(st);
@@ -1275,7 +1305,10 @@ export class LiveSource implements SessionSource {
     if (!st) {
       // A hooks-enabled Claude outside the kage session: one re-list per 5 s, not per burst.
       const until = this.#ignoredPanes.get(e.pane);
-      if (until !== undefined && this.#clock() < until) return;
+      if (until !== undefined && this.#clock() < until) {
+        this.#setAsideHook(e);
+        return;
+      }
       this.#ignoredPanes.delete(e.pane);
     }
     // Keep a pane's events in order while an earlier one waits for the re-list.
@@ -1297,8 +1330,24 @@ export class LiveSource implements SessionSource {
       if (e.pane === null || !this.#running) continue;
       const st = this.#byPane(e.pane);
       if (st) this.#applyHook(st, e);
-      else this.#ignoredPanes.set(e.pane, this.#clock() + UNKNOWN_PANE_MS);
+      else {
+        this.#ignoredPanes.set(e.pane, this.#clock() + UNKNOWN_PANE_MS);
+        this.#setAsideHook(e);
+      }
     }
+  }
+
+  /** B34: keeps a dropped hook for a claim that may name its pane soon (the newest 32). */
+  #setAsideHook(e: HookEvent): void {
+    this.#setAside.push({ e, at: this.#clock() });
+    if (this.#setAside.length > SET_ASIDE_MAX) this.#setAside.shift();
+  }
+
+  /** A claim ends: its window, listing number and pane go together. */
+  #dropClaim(windowId: string): void {
+    this.#claims.delete(windowId);
+    this.#claimSeq.delete(windowId);
+    this.#claimPanes.delete(windowId);
   }
 
   #applyHook(st: Live, e: HookEvent): void {

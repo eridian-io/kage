@@ -75,7 +75,7 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
       const client = new TmuxClient({ session: 'kage', socket: sock, configFile: '/dev/null' });
       await client.ensureSession();
       const records: SessionRecord[] = [];
-      const claims: [string, string][] = [];
+      const claims: [string, string, string][] = [];
       const launcher = new TaskLauncher({
         projectsRoot: root,
         worktreeDir: '.worktrees',
@@ -86,8 +86,8 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
           adopt: async (r) => {
             records.push(r);
           },
-          claim: (k, w) => {
-            claims.push([k, w]);
+          claim: (k, w, p) => {
+            claims.push([k, w, p]);
           },
           abandon: async () => {},
           branchTaken: () => false,
@@ -114,8 +114,10 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
       );
       expect(records.map((r) => r.kageId)).toEqual([id]);
 
-      const [claimedId, windowId] = claims[0] ?? [];
+      const [claimedId, windowId, paneId] = claims[0] ?? [];
       expect(claimedId).toBe(id);
+      // B34: the claim names the pane new-window printed.
+      expect(tmux('list-panes', '-t', windowId as string, '-F', '#{pane_id}').trim()).toBe(paneId);
       expect(await client.windowKageId(windowId as string)).toBe(id);
       const panes = tmux(
         'list-panes',

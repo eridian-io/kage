@@ -126,8 +126,8 @@ class FakeSource {
     this.log.push('adopt');
     this.records.push(r);
   }
-  claim(kageId: string, windowId: string): void {
-    this.log.push(`claim ${kageId} ${windowId}`);
+  claim(kageId: string, windowId: string, paneId: string): void {
+    this.log.push(`claim ${kageId} ${windowId} ${paneId}`);
     this.live.add(kageId);
   }
   async abandon(kageId: string): Promise<void> {
@@ -270,7 +270,7 @@ describe('TaskLauncher', () => {
     const path = join(repo, '.worktrees', 'fix-the-cart-total');
     expect(existsSync(path)).toBe(true);
     expect(git(path, 'rev-parse', '--abbrev-ref', 'HEAD').trim()).toBe('kage/fix-the-cart-total');
-    expect(log).toEqual(['adopt', 'newWindow', 'claim k-1 @7']);
+    expect(log).toEqual(['adopt', 'newWindow', 'claim k-1 @7 %7']);
     expect(source.records).toEqual([
       {
         kageId: 'k-1',
@@ -799,7 +799,7 @@ describe('TaskLauncher.resume (B7)', () => {
         kageId: 'k-1',
       },
     ]);
-    expect(log).toEqual(['newWindow', `resumed k-1 ${SID}`, 'claim k-1 @7']);
+    expect(log).toEqual(['newWindow', `resumed k-1 ${SID}`, 'claim k-1 @7 %7']);
   });
 
   it('the mode comes from the record; no session id resumes with --continue', async () => {
@@ -811,7 +811,7 @@ describe('TaskLauncher.resume (B7)', () => {
   it('an unknown id is 404; an external session 403', async () => {
     const { launcher, tmux } = resumable();
     let err = await launchError(launcher.resume('nope'));
-    expect([err.status, err.message]).toEqual([404, 'No session with id nope']);
+    expect([err.status, err.message]).toEqual([404, 'No session with id nope.']);
     const s = setup();
     s.source.targets.set('ext-@3', {
       id: 'ext-@3',

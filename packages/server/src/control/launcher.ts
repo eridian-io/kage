@@ -223,13 +223,13 @@ export class TaskLauncher {
    */
   async resume(id: string): Promise<void> {
     const d = this.#d;
-    if (!d.source.finishTarget(id)) throw new LaunchError(404, `No session with id ${id}`);
+    if (!d.source.finishTarget(id)) throw new LaunchError(404, `No session with id ${id}.`);
     const release = this.#lock.tryAcquire(id);
     if (!release) throw new LaunchError(409, BUSY);
     try {
       // Read again under the lock.
       const t = d.source.finishTarget(id);
-      if (!t) throw new LaunchError(404, `No session with id ${id}`);
+      if (!t) throw new LaunchError(404, `No session with id ${id}.`);
       const r = t.record;
       if (!r) throw new LaunchError(403, 'Kage only resumes sessions it started.');
       if (r.archived) throw new LaunchError(409, 'Restore the session before resuming it.');
@@ -252,8 +252,9 @@ export class TaskLauncher {
       }
       await this.#onBranch(r.worktree, r.branch);
       let windowId: string;
+      let paneId: string;
       try {
-        ({ windowId } = await d.tmux.newWindow({
+        ({ windowId, paneId } = await d.tmux.newWindow({
           name: basename(r.worktree),
           cwd: r.worktree,
           env: {
@@ -267,7 +268,7 @@ export class TaskLauncher {
         throw new LaunchError(422, `tmux couldn't open a window: ${firstLine(e)}`);
       }
       d.source.resumed(r.kageId, resumeId(r.sessionId));
-      d.source.claim(r.kageId, windowId);
+      d.source.claim(r.kageId, windowId, paneId);
     } finally {
       release();
     }
@@ -378,6 +379,7 @@ export class TaskLauncher {
     };
     let step: 'folder' | 'adopt' | 'tmux' = 'folder';
     let windowId: string;
+    let paneId: string;
     // Windows already named after the slug before this launch (not ours to kill on rollback);
     // null while unknown (the listing failed or never ran), which authorises no untagged kill.
     let before: Set<string> | null = null;
@@ -392,7 +394,7 @@ export class TaskLauncher {
         (ws) => new Set(ws.filter((w) => w.name === slug).map((w) => w.windowId)),
         () => null,
       );
-      ({ windowId } = await d.tmux.newWindow({
+      ({ windowId, paneId } = await d.tmux.newWindow({
         name: slug,
         cwd: path,
         env: {
@@ -418,7 +420,7 @@ export class TaskLauncher {
             : `tmux couldn't open a window: ${firstLine(e)}`,
       );
     }
-    d.source.claim(kageId, windowId);
+    d.source.claim(kageId, windowId, paneId);
     return { id: kageId };
   }
 
