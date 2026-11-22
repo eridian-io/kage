@@ -156,14 +156,14 @@ A topic on ntfy.sh is public: anyone who guesses the name can read your pings, a
 | Key | Default | Meaning |
 |---|---|---|
 | `ntfyTopic` | `""` | The topic to publish to. Empty means no pings. 1 to 64 letters, digits, `-` or `_` |
-| `ntfyServer` | `"https://ntfy.sh"` | The ntfy server. It must be `https:`. Plain `http:` is allowed only for this machine or your tailnet (an address in `100.64.0.0/10`, or a `*.ts.net` name). Use plain `http:` to a `*.ts.net` name only for a machine on your own tailnet: Tailscale Funnel names also end in `.ts.net` and resolve publicly, and Kage can't tell them apart |
-| `ntfyToken` | `""` | An ntfy access token, for a server that needs one. Kage sends it as a bearer token |
+| `ntfyServer` | `"https://ntfy.sh"` | The ntfy server. It must be `https:`. Plain `http:` is allowed only for this machine (`localhost`, `127.x.x.x` or `[::1]`) or your tailnet (an address in `100.64.0.0/10` or `fd7a:115c:a1e0::/48`, or a `*.ts.net` name). Use plain `http:` to a `*.ts.net` name only for a machine on your own tailnet: Tailscale Funnel names also end in `.ts.net` and resolve publicly, and Kage can't tell them apart |
+| `ntfyToken` | `""` | An ntfy access token, for a server that needs one. 1 to 128 letters, digits, `-` or `_`. Kage sends it as a bearer token |
 | `ntfyOnDone` | `false` | Also ping when a session that worked for a minute or more is done |
 
 When you get a ping:
 - A session that moves into "needs you" is pinged after 3 seconds, if it is still waiting. Answer it at the board within that time and nothing is sent.
 - A session is pinged at most once every 2 minutes, and a question asked again inside that time is pinged when the 2 minutes are over.
-- With `ntfyOnDone`, a session that worked for at least a minute and then finished is pinged "is done". A session you stopped is not.
+- With `ntfyOnDone`, a session that worked for at least a minute and then finished is pinged "is done". A session you stopped is not, nor one whose prompt you answered No or Esc.
 - At most 10 pings go out in any 10 minutes. Kage logs how many it skipped.
 - Sessions already waiting when Kage starts are not pinged.
 - A failed ping is tried again after 2, 8 and 30 seconds, then given up. Tapping a ping opens that session on the board.
