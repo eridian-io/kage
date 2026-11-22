@@ -7,6 +7,7 @@ import { SessionPanel } from './components/SessionPanel.tsx';
 import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
+import { installNotify } from './notify.ts';
 import { connect } from './sse.ts';
 import {
   authRequired,
@@ -113,5 +114,7 @@ const root = typeof document !== 'undefined' ? document.getElementById('app') : 
 if (root) {
   render(<Board />, root);
   installView();
+  // Before the stream: a #s= link must be waiting when the first snapshot arrives.
+  installNotify();
   connect();
 }

@@ -6,6 +6,7 @@
  * `Authorization: Bearer`. Neither, nor the server URL, is ever logged, thrown or returned:
  * failures are named by `redact`, which returns a fixed word, an HTTP status or an error code.
  */
+import { LIMITS } from '@kage/shared';
 import { plainLine } from '../text/bounds.ts';
 
 /** `server` has no trailing slash; it may carry a path (a reverse-proxy prefix). */
@@ -24,13 +25,13 @@ export type FetchFn = (url: string, init: RequestInit) => Promise<Response>;
 
 /**
  * `messageChars` is the one owner of the ping's text cut (PF5 F6): `pingText` applies it, and
- * the notifier and the browser body use the same constant.
+ * the board's browser notifications read the same constant from `LIMITS.pingChars`.
  */
 export const NTFY = {
   timeoutMs: 5000,
   backoffMs: [2000, 8000, 30000],
   maxRetryAfterMs: 60_000,
-  messageChars: 100,
+  messageChars: LIMITS.pingChars,
 } as const;
 
 /** Ping text: one line, no escape, control, bidi or format characters, at most 100 characters. */

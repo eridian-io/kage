@@ -55,6 +55,7 @@ describe('protocol v3 types', () => {
       terminals: 8,
       terminalsPerPane: 3,
       deleteCount: 1_000_000,
+      pingChars: 100,
     });
   });
 });

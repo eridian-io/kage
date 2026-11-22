@@ -3,6 +3,7 @@ import {
   groupOf,
   type ServerEvent,
   type Session,
+  type SessionStatus,
   sortSessions,
 } from '@kage/shared';
 import { batch, computed, effect, type ReadonlySignal, type Signal, signal } from '@preact/signals';
@@ -243,7 +244,17 @@ function keepLive(incoming: Session): Session {
     : incoming;
 }
 
+/**
+ * Told of each event once the store has applied it (notify.ts, W1), with the status a
+ * session.updated replaced (undefined for a session new to the store). One listener.
+ */
+let appliedHook: ((e: ServerEvent, was: SessionStatus | undefined) => void) | null = null;
+export function onApplied(fn: typeof appliedHook): void {
+  appliedHook = fn;
+}
+
 export function applyEvent(e: ServerEvent): void {
+  let was: SessionStatus | undefined;
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
@@ -274,6 +285,7 @@ export function applyEvent(e: ServerEvent): void {
       const i = list.findIndex((s) => s.id === e.session.id);
       const incoming = keepLive(e.session);
       const held = i < 0 ? undefined : list[i];
+      was = held?.status;
       if (
         held &&
         (held.unpushed !== incoming.unpushed ||
@@ -321,6 +333,7 @@ export function applyEvent(e: ServerEvent): void {
     if (waiting !== null && sorted.value.some((s) => s.id === waiting)) select(waiting);
     keepSelection();
   });
+  appliedHook?.(e, was);
 }
 
 export function selectNext(delta: 1 | -1): void {

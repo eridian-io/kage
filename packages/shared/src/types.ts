@@ -189,4 +189,6 @@ export const LIMITS = {
   terminalsPerPane: 3,
   /** The largest count a delete confirmation can carry (unpushed, uncommitted, ignored). */
   deleteCount: 1_000_000,
+  /** A ping's and a browser notification's text, in characters (N2): NTFY.messageChars on the server. */
+  pingChars: 100,
 } as const;
