@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { homedir, hostname } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { serverAllowed } from './notify/ntfy.ts';
 
 export interface KageConfig {
@@ -187,16 +187,27 @@ function expandHome(p: string, home: string): string {
   return p;
 }
 
+/** The config file `loadConfig` reads: under XDG_CONFIG_HOME, else HOME/.config. */
+export function configPath(env: NodeJS.ProcessEnv): string {
+  const home = env.HOME || env.USERPROFILE || homedir();
+  return env.XDG_CONFIG_HOME
+    ? join(env.XDG_CONFIG_HOME, 'kage', 'config.json')
+    : join(home, '.config', 'kage', 'config.json');
+}
+
+/** `~/…` for a path under `home`, else the path itself. */
+export function displayPath(path: string, home: string): string {
+  const rel = relative(home, path);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return path;
+  return `~/${rel.split(sep).join('/')}`;
+}
+
 export async function loadConfig(
   opts: { path?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<KageConfig> {
   const env = opts.env ?? process.env;
   const home = env.HOME || env.USERPROFILE || homedir();
-  const path =
-    opts.path ??
-    (env.XDG_CONFIG_HOME
-      ? join(env.XDG_CONFIG_HOME, 'kage', 'config.json')
-      : join(home, '.config', 'kage', 'config.json'));
+  const path = opts.path ?? configPath(env);
 
   let raw: Obj = {};
   let text: string | null = null;

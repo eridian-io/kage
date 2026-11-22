@@ -3,6 +3,7 @@
  * The `kage` command. This file stays light: `kage hook` runs on every Claude hook and must start
  * fast and print nothing, so the server code is imported only by `kage serve`.
  */
+import { homedir } from 'node:os';
 import type { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import type { Asset } from './assets.ts';
@@ -76,7 +77,7 @@ export function writeSettings(env: NodeJS.ProcessEnv): Promise<string> {
  * the server's path (N1, PF5 F15). The modules load here, so `kage hook` stays light.
  */
 async function pingCommand(io: Io): Promise<number> {
-  const { ConfigError, loadConfig } = await import('./config.ts');
+  const { ConfigError, configPath, displayPath, loadConfig } = await import('./config.ts');
   const { NtfyClient, redact } = await import('./notify/ntfy.ts');
   let cfg: Awaited<ReturnType<typeof loadConfig>>;
   try {
@@ -89,7 +90,8 @@ async function pingCommand(io: Io): Promise<number> {
     throw err;
   }
   if (cfg.ntfyTopic === '') {
-    io.err('No ntfyTopic in ~/.config/kage/config.json.');
+    const home = io.env.HOME || io.env.USERPROFILE || homedir();
+    io.err(`No ntfyTopic in ${displayPath(configPath(io.env), home)}.`);
     return 1;
   }
   // The client never says why a try failed, so the fetch it uses remembers it.

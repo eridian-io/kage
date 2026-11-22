@@ -2,7 +2,14 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ConfigError, DEFAULT_CONFIG, loadConfig, startupWarnings } from './config.ts';
+import {
+  ConfigError,
+  configPath,
+  DEFAULT_CONFIG,
+  displayPath,
+  loadConfig,
+  startupWarnings,
+} from './config.ts';
 
 let dir: string;
 beforeEach(async () => {
@@ -322,5 +329,20 @@ describe('ntfy keys (N4)', () => {
     expect(err).toBeInstanceOf(ConfigError);
     expect((err as Error).message).toContain(path);
     expect((err as Error).message).not.toContain('secret');
+  });
+});
+
+describe('configPath and displayPath (phase 6 Task 0, B52)', () => {
+  it('configPath follows XDG_CONFIG_HOME, else HOME/.config', () => {
+    expect(configPath({ XDG_CONFIG_HOME: '/x' })).toBe(join('/x', 'kage', 'config.json'));
+    expect(configPath({ HOME: '/h' })).toBe(join('/h', '.config', 'kage', 'config.json'));
+  });
+
+  it('displayPath shortens a path under home to ~/…', () => {
+    expect(displayPath('/home/u/.config/kage/config.json', '/home/u')).toBe(
+      '~/.config/kage/config.json',
+    );
+    expect(displayPath('/etc/kage/config.json', '/home/u')).toBe('/etc/kage/config.json');
+    expect(displayPath('/home/user2/x', '/home/u')).toBe('/home/user2/x');
   });
 });

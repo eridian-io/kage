@@ -1278,6 +1278,8 @@ export class LiveSource implements SessionSource {
       if (this.#clock() - st.lastActivity < ACTIVE_MS) this.#scheduleIdle(st);
       else if (this.#stillStarting(st)) void this.#startingCheck(st);
       else {
+        // R104: the looks are over, so is the resume: its replayed question no longer hides a new one.
+        st.resuming = null;
         this.#setStatus(st, 'done');
         this.#emitNow(st);
       }
@@ -1471,6 +1473,7 @@ export class LiveSource implements SessionSource {
   /** The wait ends (its fallback and retry timers too); "Starting Claude…" goes with it. */
   #endFirstPromptWait(st: Live): void {
     st.firstPromptPending = false;
+    st.resuming = null;
     this.#clearTimers(st, ['firstPrompt']);
     if (st.now === STARTING) st.now = st.tail?.now() ?? null;
   }

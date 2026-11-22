@@ -3716,6 +3716,72 @@ describe('LiveSource: resume (phase 4 Task 7)', () => {
   });
 });
 
+describe('LiveSource: phase 5 residuals (phase 6 Task 0)', () => {
+  const OLD: DisplayLine[] = [
+    { kind: 'say', text: 'Fixed the total.' },
+    { kind: 'tool', text: 'Bash', detail: 'npm test' },
+  ];
+  const IDLE = ['', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+  const resumedWin = (over: Partial<TmuxWindow> = {}) =>
+    kageWin({
+      windowId: '@7',
+      paneId: '%7',
+      kageId: null,
+      activity: Math.floor(T0 / 1000),
+      ...over,
+    });
+  const ended = () => rec({ windowId: '@2', sessionId: 's-1', transcriptPath: TRANSCRIPT });
+  const A: Question = { text: 'Which separator?', options: ['Dash', 'Underscore'] };
+  const B: Question = { text: 'Add a test?', options: ['Yes', 'No'] };
+  async function replaying(capture: string) {
+    const s = setup({
+      records: [ended()],
+      tails: { [TRANSCRIPT]: { lines: OLD.slice(), question: A } },
+    });
+    await s.source.start();
+    await flush();
+    vi.setSystemTime(T0 + 60_000);
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [resumedWin()];
+    s.tmux.setCapture('%7', capture);
+    s.source.claim('k-1', '@7', '%7');
+    await flush();
+    expect(s.source.get('k-1')?.status).not.toBe('needs-you');
+    return s;
+  }
+
+  it('R104: a hookless resumed session drops the resume when its first-prompt wait ends; a new tail question then shows', async () => {
+    const s = await replaying('Loading…');
+    // The P4F1 looks run their 60 s; then the idle rule gives done.
+    await vi.advanceTimersByTimeAsync(70_000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    const tail = s.tails.at(-1);
+    tail?.push([], { question: B, now: 'Asking a question' });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: B });
+    expect(s.source.target('k-1')?.promptKind).toBe('ask');
+    // B answered: a later tail change with B gone shows nothing, and no needs-you comes back.
+    tail?.push([], { question: null, now: null });
+    s.hooks.fire(hook('UserPromptSubmit', '%7'));
+    await flush();
+    tail?.push([{ kind: 'say', text: 'ok' }]);
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.source.get('k-1')?.status).not.toBe('needs-you');
+  });
+
+  it('R104: the P3F1 fallback also ends the resume', async () => {
+    const s = await replaying(IDLE);
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'resume' }));
+    await vi.advanceTimersByTimeAsync(10_500);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    s.tails.at(-1)?.push([], { question: B, now: 'Asking a question' });
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: B });
+  });
+});
+
 describe('LiveSource: resume hardening (Task 7 review)', () => {
   const resumedWin = (over: Partial<TmuxWindow> = {}) =>
     kageWin({

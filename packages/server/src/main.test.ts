@@ -366,7 +366,9 @@ describe('kage ping (against the fake ntfy, R85)', () => {
     writeConfig(e, { name: 'box' });
     expect(await main(['ping'], io(e))).toBe(1);
     expect(out).toEqual([]);
-    expect(err).toEqual(['No ntfyTopic in ~/.config/kage/config.json.']);
+    expect(err).toEqual([
+      `No ntfyTopic in ${join(e.XDG_CONFIG_HOME as string, 'kage', 'config.json')}.`,
+    ]);
   });
 
   it('a refused ping: the redacted reason and exit 1, without the topic', async () => {
