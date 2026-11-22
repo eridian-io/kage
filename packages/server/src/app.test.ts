@@ -130,7 +130,7 @@ describe('loadAssets', () => {
     expect(most).toBe(1);
     // Every compressible file went through it; fonts and images did not.
     expect(seen).toHaveLength(
-      [...loaded.keys()].filter((k) => !/.(woff2|png|jpg|webp)$/.test(k) && k !== '/').length,
+      [...loaded.keys()].filter((k) => !/\.(woff2|png|jpe?g|webp)$/.test(k) && k !== '/').length,
     );
   });
 });

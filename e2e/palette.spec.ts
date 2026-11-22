@@ -10,6 +10,13 @@ import { DEMO_NOW, resetDemo } from './env.ts';
 test.beforeEach(async ({ page }) => {
   await resetDemo();
   await page.clock.setFixedTime(DEMO_NOW);
+  // The notification command depends on the permission, which differs between browser builds
+  // (the headless shell says denied): pinned, so the options and their count are the same.
+  await page.addInitScript(() => {
+    if ('Notification' in window) {
+      Object.defineProperty(Notification, 'permission', { get: () => 'denied' });
+    }
+  });
   await page.goto('/');
   await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
 });

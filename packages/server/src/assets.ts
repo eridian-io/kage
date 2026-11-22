@@ -65,9 +65,12 @@ async function files(dir: string): Promise<string[]> {
  * except formats that are compressed already (fonts, images), which stay raw.
  * Keys are URL paths ('/index.html', '/fonts/…'); '/' maps to index.html.
  *
- * One file and one encoder at a time (R100): brotli 11 encoders running side by side on the
- * thread pool left 3–4 MB more of the freed memory resident at idle, varying run to run
- * (71.5–76.5 MB against 71.5–72.1 MB one at a time, the shipped bundle with no sessions).
+ * One file and one encoder at a time (R100). Run side by side, the brotli and gzip encoders
+ * share libuv's 4 pool threads and, under MALLOC_ARENA_MAX=2, the same two malloc arenas; with
+ * glibc's dynamic mmap threshold their large buffers land in those arenas, and how the threads
+ * interleave decides how fragmented the arenas are left and how much freed memory stays
+ * resident. Measured on the shipped bundle with no sessions: 71.5–76.5 MB idle concurrently,
+ * 71.5–72.1 MB one at a time.
  */
 export async function loadAssets(
   distDir: string,

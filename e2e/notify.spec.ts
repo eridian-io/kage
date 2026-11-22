@@ -17,7 +17,7 @@ import {
  * Notifications end to end (spec §5.9): `kage serve` in live mode pings the fake ntfy on
  * 127.0.0.1, never a real ntfy server (R85; the harness refuses any other ntfyServer). The hold is
  * the shipped 3 s; the done threshold is 1 s (KAGE_NOTIFY_DONE_AFTER_MS, test only). Then the
- * board's own side: `#s=` links, and a browser notification under the real CSP.
+ * board's `#s=` links. The browser notification is notify-browser.spec.ts.
  *
  * The full Chromium (its new headless mode): the headless shell reports notification permission
  * as denied whatever is granted, and keeps the page focused.
@@ -25,13 +25,11 @@ import {
 
 test.skip(!hasTmux(), 'Live sessions need tmux (Linux or macOS)');
 test.describe.configure({ mode: 'serial', timeout: 90_000 });
-test.use({ channel: 'chromium' });
 
 /** Random, as a real topic is; it must never show in Kage's output (N1). */
 const TOPIC = `kage-e2e-${randomBytes(12).toString('hex')}`;
 const WAIT_TASK = 'needs-permission Clear the build cache';
 const BARRIER_TASK = 'needs-permission Tidy the logs';
-const BROWSER_TASK = 'needs-permission Rotate the keys';
 const FLOOD_TASK = 'flood Write a long answer';
 
 const h = new LiveHarness();
@@ -132,81 +130,6 @@ test("opening a ping's link selects its session", async ({ page }) => {
   await expect(page.locator('.k-head .k-task')).toHaveText(WAIT_TASK);
   // The hash is dropped, so a reload doesn't follow it again.
   await expect.poll(() => new URL(page.url()).hash).toBe('');
-});
-
-test.describe('in the browser', () => {
-  // The app's own CSP, as shipped: the notification's lazy chunk must load under it.
-  test.use({ bypassCSP: false });
-
-  test('a waiting session shows a notification while the board has no focus', async ({
-    page,
-    context,
-  }) => {
-    await context.grantPermissions(['notifications'], { origin: LIVE_BASE });
-    await page.addInitScript(() => {
-      const w = window as unknown as {
-        kageNotes: { title: string; body: string }[];
-        cspViolations: string[];
-        Notification: typeof Notification;
-      };
-      w.kageNotes = [];
-      w.cspViolations = [];
-      document.addEventListener('securitypolicyviolation', (e) =>
-        w.cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`),
-      );
-      const Real = w.Notification;
-      class Spy extends Real {
-        constructor(title: string, o?: NotificationOptions) {
-          w.kageNotes.push({ title, body: o?.body ?? '' });
-          super(title, o);
-        }
-      }
-      Object.defineProperty(Spy, 'permission', { get: () => Real.permission });
-      w.Notification = Spy;
-    });
-    const requested: string[] = [];
-    page.on('request', (r) => requested.push(new URL(r.url()).pathname));
-    await page.goto('/');
-    await expect(page.locator('.k-host')).toContainText('my-pc');
-    // 127.0.0.1 is a secure context: the board reads the granted permission.
-    expect(await page.evaluate(() => [isSecureContext, Notification.permission])).toEqual([
-      true,
-      'granted',
-    ]);
-    const loaded = requested.length;
-
-    // No focus: Playwright's focus emulation off, and another tab in front.
-    const cdp = await context.newCDPSession(page);
-    await cdp.send('Emulation.setFocusEmulationEnabled', { enabled: false });
-    const other = await context.newPage();
-    await other.bringToFront();
-    await expect.poll(() => page.evaluate(() => document.hasFocus())).toBe(false);
-
-    // Started by the API, so nothing on the board takes focus back.
-    const res = await fetch(`${LIVE_BASE}/api/sessions`, {
-      method: 'POST',
-      headers: { 'X-Kage': '1', Origin: LIVE_BASE, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        project: 'demo',
-        base: 'main',
-        task: BROWSER_TASK,
-        acceptEdits: false,
-      }),
-    });
-    expect(res.status, await res.text()).toBe(201);
-
-    const notes = () =>
-      page.evaluate(() => (window as unknown as { kageNotes: unknown[] }).kageNotes);
-    await expect
-      .poll(notes, { timeout: STATUS_MS })
-      .toEqual([{ title: 'demo needs you', body: BROWSER_TASK }]);
-    // The text came from a chunk loaded only now, and the CSP let it in.
-    expect(requested.slice(loaded).some((p) => /^\/chunk-\w+\.js$/.test(p))).toBe(true);
-    expect(
-      await page.evaluate(() => (window as unknown as { cspViolations: string[] }).cspViolations),
-    ).toEqual([]);
-    await other.close();
-  });
 });
 
 test('with ntfyOnDone, a long turn that finishes pings done', async ({ page }) => {
