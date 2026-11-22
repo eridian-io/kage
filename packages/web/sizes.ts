@@ -18,6 +18,36 @@ export const SIZE_LIMITS = {
   fonts: 60 * 1024,
 } as const;
 
+/** A budget that fails today: its owning task and its first measurement (ruling PF5, F5). */
+export interface AllowFail {
+  owner: string;
+  baseline: number;
+}
+
+/** How far an allowFail budget may regress past its baseline before it fails anyway. */
+export const CEILING = 1.25;
+
+const num = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
+
+/**
+ * The verdict on an allowFail budget (shared by e2e/budgets.ts and build.test.ts): null while it
+ * fails within baseline × CEILING; else the failure message. A pass fails too, so the marker
+ * can't be forgotten once the owning task has fixed the budget.
+ */
+export function allowFailVerdict(
+  name: string,
+  value: number,
+  limit: number,
+  allow: AllowFail,
+): string | null {
+  if (value <= limit) return `${name} passes now: remove its allowFail marker (${allow.owner})`;
+  const ceiling = allow.baseline * CEILING;
+  if (value > ceiling) {
+    return `${name} regressed past its allowFail ceiling: ${num(value)} > ${num(ceiling)} (baseline ${num(allow.baseline)} × ${CEILING}; ${allow.owner})`;
+  }
+  return null;
+}
+
 export interface Sizes {
   firstLoad: number;
   termChunk: number;

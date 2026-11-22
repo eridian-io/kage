@@ -1,20 +1,23 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
+import { type AllowFail, allowFailVerdict } from '../packages/web/sizes.ts';
 
 /** One measured budget (spec §7). */
 export interface Budget {
   name: string;
   value: number;
   limit: number;
-  unit: 'B' | 'ms' | '%' | 'MB' | '/s' | 'nodes';
+  unit: 'B' | 'ms' | '%' | 'MB' | '/s' | 'nodes' | 'frames';
 }
 
 /** A budget row as test-results/budgets.json holds it. */
 export interface BudgetRow extends Budget {
   pass: boolean;
-  /** The owning task while the budget is known to fail (ruling PF5, F5); absent otherwise. */
-  allowFail?: string;
+  /** The test that measured it: a retry replaces its rows instead of adding to them. */
+  testId: string;
+  /** The owning task and baseline while the budget is known to fail (PF5, F5); else absent. */
+  allowFail?: AllowFail;
 }
 
 /** Playwright's outputDir; it is emptied at the start of every run. */
@@ -29,30 +32,43 @@ export function readBudgets(): BudgetRow[] {
 const fmt = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(2));
 
 /**
- * Appends to test-results/budgets.json and asserts value <= limit.
+ * Writes the budget's row to test-results/budgets.json (one row per test and name: a retry
+ * replaces it) and asserts value <= limit. The row and a log line come before the (soft)
+ * assertion, so a failing budget is in the table too (the Docker run keeps only the log).
  *
- * `allowFail: '<owning task>'` is the baseline's marker for a budget that fails today (ruling PF5,
- * F5): the row is still written, with its value, and the test passes with an annotation. The
- * owning task removes the marker. The row and a log line are written before the (soft) assertion,
- * so a failing budget is in the table too (the Docker run keeps only the log).
+ * `allowFail: { owner, baseline }` marks a budget that fails today (ruling PF5, F5): it may stay
+ * over its limit up to baseline × CEILING. It fails once it passes (the owner must remove the
+ * marker) and past the ceiling (a regression). packages/web/perf-markers.test.ts fails while any
+ * marker remains, from Task 11 on.
  */
-export function recordBudget(b: Budget, opts: { allowFail?: string } = {}): void {
+export function recordBudget(b: Budget, opts: { allowFail?: AllowFail } = {}): void {
   const pass = b.value <= b.limit;
-  const row: BudgetRow = { ...b, pass, ...(opts.allowFail ? { allowFail: opts.allowFail } : {}) };
+  const testId = test.info().testId;
+  const row: BudgetRow = {
+    ...b,
+    pass,
+    testId,
+    ...(opts.allowFail ? { allowFail: opts.allowFail } : {}),
+  };
+  const rows = readBudgets().filter((r) => !(r.testId === testId && r.name === b.name));
   mkdirSync(join(BUDGETS_FILE, '..'), { recursive: true });
-  writeFileSync(BUDGETS_FILE, `${JSON.stringify([...readBudgets(), row], null, 2)}\n`);
-  const verdict = pass ? 'pass' : opts.allowFail ? `FAIL (allowed: ${opts.allowFail})` : 'FAIL';
+  writeFileSync(
+    BUDGETS_FILE,
+    `${JSON.stringify([...rows, row], null, 2)}
+`,
+  );
+  const allow = opts.allowFail;
+  const verdict = pass ? 'pass' : allow ? `FAIL (allowed: ${allow.owner})` : 'FAIL';
   console.log(`budget: ${b.name}: ${fmt(b.value)} ${b.unit} (limit ${fmt(b.limit)}) ${verdict}`);
-  if (opts.allowFail) {
+  // Soft: a test that measures two budgets records both before it fails.
+  if (allow) {
+    expect.soft(allowFailVerdict(b.name, b.value, b.limit, allow), b.name).toBeNull();
     test.info().annotations.push({
       type: 'budget',
-      description: pass
-        ? `${b.name} is within budget now; ${opts.allowFail} can remove its allowFail marker.`
-        : `${b.name} fails (${fmt(b.value)} > ${fmt(b.limit)} ${b.unit}); ${opts.allowFail} owns it.`,
+      description: `${b.name} fails (${fmt(b.value)} > ${fmt(b.limit)} ${b.unit}); ${allow.owner} owns it.`,
     });
     return;
   }
-  // Soft: a test that measures two budgets records both before it fails.
   expect.soft(b.value, `${b.name} (${b.unit})`).toBeLessThanOrEqual(b.limit);
 }
 

@@ -8,6 +8,6 @@
     "allowImportingTsExtensions": true,
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["src", "build.ts", "build.test.ts", "sizes.ts"],
+  "include": ["src", "build.ts", "build.test.ts", "sizes.ts", "perf-markers.test.ts"],
   "references": [{ "path": "../shared" }]
 }

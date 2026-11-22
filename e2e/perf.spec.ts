@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { type IncomingMessage, request } from 'node:http';
@@ -7,7 +7,7 @@ import { expect, type Page, test } from '@playwright/test';
 import { measureSizes, SIZE_LIMITS } from '../packages/web/sizes.ts';
 import { median, percentile, readBudgets, recordBudget } from './budgets.ts';
 import { PERF_BASE, PERF_PORT } from './env.ts';
-import { chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } from './harness.ts';
+import { blur, chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } from './harness.ts';
 
 /**
  * The budgets of spec §7, each through recordBudget (test-results/budgets.json). A budget that
@@ -65,7 +65,7 @@ test('sizes: first load, the terminal chunk and loader, the fonts (packages/web/
   });
   recordBudget(
     { name: 'Fonts (woff2)', value: s.fonts, limit: SIZE_LIMITS.fonts, unit: 'B' },
-    { allowFail: 'Task 3' },
+    { allowFail: { owner: 'Task 3', baseline: 72_968 } },
   );
 });
 
@@ -78,7 +78,7 @@ test.afterAll(() => {
       'budgets.json:',
       ...rows.map(
         (r) =>
-          `  ${r.pass ? 'pass' : 'FAIL'}  ${r.name}: ${r.value} ${r.unit} (limit ${r.limit})${r.allowFail ? ` [allowFail ${r.allowFail}]` : ''}`,
+          `  ${r.pass ? 'pass' : 'FAIL'}  ${r.name}: ${r.value} ${r.unit} (limit ${r.limit})${r.allowFail ? ` [allowFail ${r.allowFail.owner}]` : ''}`,
       ),
     ].join('\n'),
   );
@@ -205,12 +205,72 @@ async function installProbe(page: Page): Promise<void> {
   });
 }
 
+/** Whether process `pid` is still alive (signal 0 only checks). */
+const alive = (pid: number) => {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 test.describe('live budgets', () => {
   test.skip(!hasTmux(), 'Live sessions need tmux (Linux or macOS)');
 
   const h = new LiveHarness(PERF_PORT);
   const { dirOf, tmux, newWindow, postHook } = h;
-  const IDLE = Array.from({ length: 10 }, (_, i) => `idle-${i + 1}`);
+  /** The ten idle fakes' panes, until freeIdle has closed them. */
+  let idlePanes: string[] = [];
+
+  /** A pane's process and its children (a fake typed into a shell runs as the shell's child). */
+  const paneProcesses = async (pane: string): Promise<number[]> => {
+    const { stdout } = await tmux('display-message', '-p', '-t', pane, '#{pane_pid}').catch(() => ({
+      stdout: '',
+    }));
+    const pid = Number(stdout.trim());
+    if (!(pid > 0)) return [];
+    let kids: number[] = [];
+    try {
+      kids = execFileSync('ps', ['-o', 'pid=', '--ppid', String(pid)], { encoding: 'utf8' })
+        .split('\n')
+        .map(Number)
+        .filter((n) => n > 0);
+    } catch {} // ps exits 1 when there are no children
+    return [pid, ...kids];
+  };
+
+  /**
+   * Closes the panes' windows and checks their processes exited (a fake reads the pty's end and
+   * gets its SIGHUP). Whatever is still alive after 10 s is killed, and the check fails.
+   */
+  const closePanes = async (panes: string[]): Promise<void> => {
+    const pids: number[] = [];
+    for (const pane of panes) {
+      pids.push(...(await paneProcesses(pane)));
+      await tmux('kill-window', '-t', pane).catch(() => {});
+    }
+    try {
+      await expect.poll(() => pids.filter(alive), { timeout: 10_000 }).toEqual([]);
+    } finally {
+      for (const pid of pids.filter(alive)) {
+        try {
+          process.kill(pid, 'SIGKILL');
+        } catch {}
+      }
+    }
+  };
+
+  /** The idle fakes have served the idle budget; no Node fake outlives it. */
+  const freeIdle = async () => {
+    const panes = idlePanes;
+    idlePanes = [];
+    await closePanes(panes);
+  };
+
+  /** A row by its exact task (`board-1` must not match `board-10`). */
+  const exactRow = (page: Page, task: string) =>
+    page.locator('.k-it', { has: page.locator('.k-name', { hasText: new RegExp(`/ ${task}$`) }) });
 
   test.beforeAll(async () => {
     test.setTimeout(120_000);
@@ -221,20 +281,24 @@ test.describe('live budgets', () => {
     await tmux('set-option', '-w', '-t', 'kage:placeholder', '@kage_placeholder', '1');
     await h.startServe();
     // One after another, so ten Node starts and their hook processes don't pile up at once.
-    for (const [i, name] of IDLE.entries()) {
-      await h.startFake(name, dirOf(i % 2 ? 'projects/shop' : 'projects/demo'), 'edit-and-test');
+    const idle = Array.from({ length: 10 }, (_, i) => `idle-${i + 1}`);
+    for (const [i, name] of idle.entries()) {
+      idlePanes.push(
+        await h.startFake(name, dirOf(i % 2 ? 'projects/shop' : 'projects/demo'), 'edit-and-test'),
+      );
       await sleep(400);
     }
     await expect
       .poll(
         async () =>
-          (await snapshot()).filter((s) => IDLE.includes(s.task) && s.status === 'done').length,
+          (await snapshot()).filter((s) => idle.includes(s.task) && s.status === 'done').length,
         { timeout: 60_000, intervals: [1000] },
       )
       .toBe(10);
   });
 
   test.afterAll(async () => {
+    await freeIdle().catch(() => {});
     await h.tearDown();
   });
 
@@ -243,146 +307,214 @@ test.describe('live budgets', () => {
   });
 
   test('idle server: CPU and RSS with 10 done sessions and no page or stream open', async () => {
-    test.skip(!existsSync('/proc/self/stat'), 'Reads /proc/<pid>: Linux only');
     test.setTimeout(90_000);
-    await sleep(10_000);
-    const cpu0 = h.serveCpuMs();
-    const t0 = performance.now();
-    await sleep(30_000);
-    const cpu = ((h.serveCpuMs() - cpu0) / (performance.now() - t0)) * 100;
-    recordBudget({ name: 'Idle server CPU (30 s)', value: cpu, limit: 1, unit: '%' });
-    recordBudget(
-      { name: 'Idle server RSS', value: h.serveRss(), limit: 80, unit: 'MB' },
-      { allowFail: 'Task 4' },
-    );
+    try {
+      test.skip(!existsSync('/proc/self/stat'), 'Reads /proc/<pid>: Linux only');
+      await sleep(10_000);
+      const cpu0 = h.serveCpuMs();
+      const t0 = performance.now();
+      await sleep(30_000);
+      const cpu = ((h.serveCpuMs() - cpu0) / (performance.now() - t0)) * 100;
+      recordBudget({ name: 'Idle server CPU (30 s)', value: cpu, limit: 1, unit: '%' });
+      recordBudget(
+        { name: 'Idle server RSS', value: h.serveRss(), limit: 80, unit: 'MB' },
+        { allowFail: { owner: 'Task 4', baseline: 136.7 } },
+      );
+    } finally {
+      // Ten Node fakes would weigh on every later test (memory): they go now, checked.
+      await freeIdle();
+    }
   });
 
-  test('time to a usable board: median of 5 fresh loads on a tailnet LAN', async ({ browser }) => {
-    test.setTimeout(60_000);
-    const times: number[] = [];
-    let termBytes = 0;
-    for (let i = 0; i < 5; i++) {
-      const ctx = await browser.newContext({
-        baseURL: PERF_BASE,
-        viewport: { width: 1320, height: 900 },
-        deviceScaleFactor: 1,
+  test('time to a usable board (median of 5 on a tailnet LAN); the terminal fetched once', async ({
+    browser,
+  }) => {
+    test.setTimeout(90_000);
+    await freeIdle();
+    // Ten sessions on the board, from windows that cost nothing (`sleep`), not Node fakes.
+    const cwd = dirOf('projects/demo');
+    const names = Array.from({ length: 10 }, (_, i) => `board-${i + 1}`);
+    const panes: string[] = [];
+    try {
+      for (const name of names) panes.push(await newWindow(name, cwd, 'exec sleep 3600'));
+      await expect
+        .poll(async () => (await snapshot()).filter((s) => names.includes(s.task)).length, {
+          timeout: STATUS_MS,
+        })
+        .toBe(10);
+      const fresh = () =>
+        browser.newContext({
+          baseURL: PERF_BASE,
+          viewport: { width: 1320, height: 900 },
+          deviceScaleFactor: 1,
+        });
+
+      const times: number[] = [];
+      let termBytes = 0;
+      for (let i = 0; i < 5; i++) {
+        const ctx = await fresh();
+        try {
+          const page = await ctx.newPage();
+          const cdp = await ctx.newCDPSession(page);
+          await cdp.send('Network.enable');
+          // A tailnet LAN: 10 ms latency, 50 Mbit/s down, 20 Mbit/s up (bytes per second).
+          await cdp.send('Network.emulateNetworkConditions', {
+            offline: false,
+            latency: 10,
+            downloadThroughput: 50_000_000 / 8,
+            uploadThroughput: 20_000_000 / 8,
+          });
+          page.on('response', async (r) => {
+            if (/\/term-/.test(new URL(r.url()).pathname))
+              termBytes += (await r.body().catch(() => Buffer.alloc(1))).length;
+          });
+          await page.goto('/');
+          const at = await page.waitForFunction(
+            () => performance.getEntriesByName('kage:board')[0]?.startTime,
+          );
+          times.push((await at.jsonValue()) as number);
+          await expect(page.locator('.k-it')).toHaveCount(10);
+        } finally {
+          await ctx.close();
+        }
+      }
+      console.log(`board times: ${times.map((t) => t.toFixed(1)).join(', ')} ms`);
+      recordBudget({
+        name: 'Time to a usable board (median of 5)',
+        value: median(times),
+        limit: 300,
+        unit: 'ms',
       });
-      const page = await ctx.newPage();
-      const cdp = await ctx.newCDPSession(page);
-      await cdp.send('Network.enable');
-      // A tailnet LAN: 10 ms latency, 50 Mbit/s down, 20 Mbit/s up (bytes per second).
-      await cdp.send('Network.emulateNetworkConditions', {
-        offline: false,
-        latency: 10,
-        downloadThroughput: 50_000_000 / 8,
-        uploadThroughput: 20_000_000 / 8,
+      // The terminal is loaded only on demand (§7): nothing of it at load.
+      recordBudget({
+        name: 'Terminal chunk fetched at load',
+        value: termBytes,
+        limit: 0,
+        unit: 'B',
       });
-      page.on('response', async (r) => {
-        if (/\/term-/.test(new URL(r.url()).pathname))
-          termBytes += (await r.body().catch(() => Buffer.alloc(1))).length;
-      });
-      await page.goto('/');
-      const at = await page.waitForFunction(
-        () => performance.getEntriesByName('kage:board')[0]?.startTime,
-      );
-      times.push((await at.jsonValue()) as number);
-      await expect(page.locator('.k-it')).toHaveCount(10);
-      await ctx.close();
+
+      // …and once (§7): opened again after a reload, it comes from the browser's cache.
+      const ctx = await fresh();
+      try {
+        const page = await ctx.newPage();
+        const cdp = await ctx.newCDPSession(page);
+        await cdp.send('Network.enable');
+        const fromNet = new Set<string>();
+        const net = { first: 0, second: 0 };
+        let phase: keyof typeof net = 'first';
+        cdp.on('Network.responseReceived', (e) => {
+          const cached = e.response.fromDiskCache || e.response.fromPrefetchCache;
+          if (/\/term-/.test(new URL(e.response.url).pathname) && !cached) fromNet.add(e.requestId);
+        });
+        // A memory-cache hit is reported on its own event.
+        cdp.on('Network.requestServedFromCache', (e) => fromNet.delete(e.requestId));
+        cdp.on('Network.loadingFinished', (e) => {
+          if (fromNet.has(e.requestId)) net[phase] += e.encodedDataLength;
+        });
+        const openTerminal = async () => {
+          await exactRow(page, 'board-1').click();
+          await blur(page);
+          await page.keyboard.press('t');
+          await expect(page.locator('.k-term .xterm-rows')).toBeVisible({ timeout: STATUS_MS });
+          await page.keyboard.press('Shift+Escape');
+          await expect(page.locator('.k-term')).toHaveCount(0);
+        };
+        await page.goto('/');
+        await openTerminal();
+        expect(net.first, 'the first open fetched the terminal chunk').toBeGreaterThan(0);
+        phase = 'second';
+        await page.reload();
+        await openTerminal();
+        recordBudget({
+          name: 'Terminal bytes from the network on a second open (after a reload)',
+          value: net.second,
+          limit: 0,
+          unit: 'B',
+        });
+      } finally {
+        await ctx.close();
+      }
+    } finally {
+      await closePanes(panes);
     }
-    console.log(`board times: ${times.map((t) => t.toFixed(1)).join(', ')} ms`);
-    recordBudget({
-      name: 'Time to a usable board (median of 5)',
-      value: median(times),
-      limit: 300,
-      unit: 'ms',
-    });
-    // The terminal is loaded only on demand (§7): nothing of it at load.
-    recordBudget({ name: 'Terminal chunk fetched at load', value: termBytes, limit: 0, unit: 'B' });
   });
 
   test('hook to screen: p95 of 40 status changes; kage hook wall time noted', async ({ page }) => {
     test.setTimeout(90_000);
+    await freeIdle();
     const cwd = dirOf('projects/demo');
     const pane = await newWindow('hook-probe', cwd, 'exec sleep 3600');
-    const sid = randomUUID();
-    const body = (event: string, extra: Record<string, unknown> = {}) => ({
-      session_id: sid,
-      cwd,
-      hook_event_name: event,
-      ...extra,
-    });
-    const tool = { tool_name: 'Bash', tool_input: { command: 'npm test' } };
-    await page.goto('/');
-    await installProbe(page);
-    await postHook('PostToolUse', body('PostToolUse', tool), pane);
-    await expect(row(page, 'hook-probe')).toHaveCount(1, { timeout: STATUS_MS });
-    const id = (await row(page, 'hook-probe').getAttribute('data-id')) as string;
-    await expect.poll(() => rowStatus(page, id), { timeout: STATUS_MS }).toBe('running');
-
-    const samples: number[] = [];
-    for (let i = 0; i < 40; i++) {
-      // Alternating: PermissionRequest to needs you, PostToolUse back to running (R7).
-      const [event, want] =
-        i % 2 === 0 ? ['PermissionRequest', 'needs you+w'] : ['PostToolUse', 'running'];
-      await page.evaluate(
-        ([i2, s]) =>
-          (window as unknown as { kageArm: (a: string, b: string) => void }).kageArm(
-            i2 as string,
-            s as string,
-          ),
-        [id, want],
-      );
-      const t0 = Date.now();
-      await postHook(event as string, body(event as string, tool), pane);
-      const hit = await page.waitForFunction(
-        () => (window as unknown as { kageHit: number | null }).kageHit,
-        null,
-        {
-          timeout: STATUS_MS,
-        },
-      );
-      samples.push(((await hit.jsonValue()) as number) - t0);
-      await sleep(50);
-    }
-    console.log(`hook to screen: ${samples.map((t) => t.toFixed(0)).join(', ')} ms`);
-    recordBudget({
-      name: 'Hook to screen (p95 of 40)',
-      value: percentile(samples, 95),
-      limit: 150,
-      unit: 'ms',
-    });
-
-    // `kage hook`'s own wall time, spawn to exit: reported, not asserted (phase 6's single
-    // executable owns it; ruling PF5, F5).
-    const walls: number[] = [];
-    for (let i = 0; i < 10; i++) {
-      const t = performance.now();
-      await new Promise<void>((resolve, reject) => {
-        const c = spawn(
-          process.execPath,
-          ['--no-warnings', 'packages/server/src/main.ts', 'hook', 'PostToolUse'],
-          {
-            cwd: ROOT,
-            env: { ...h.env, TMUX_PANE: pane },
-            stdio: ['pipe', 'ignore', 'ignore'],
-          },
-        );
-        c.once('error', reject);
-        c.once('exit', () => resolve());
-        c.stdin.end(JSON.stringify(body('PostToolUse', tool)));
+    try {
+      const sid = randomUUID();
+      const body = (event: string, extra: Record<string, unknown> = {}) => ({
+        session_id: sid,
+        cwd,
+        hook_event_name: event,
+        ...extra,
       });
-      walls.push(performance.now() - t);
-    }
-    const wall = median(walls);
-    const note = `kage hook wall time: median of 10 = ${wall.toFixed(0)} ms (limit 300 ms; reported, not asserted)`;
-    console.log(note);
-    test.info().annotations.push({ type: 'budget (not asserted)', description: note });
-  });
+      const tool = { tool_name: 'Bash', tool_input: { command: 'npm test' } };
+      await page.goto('/');
+      await installProbe(page);
+      await postHook('PostToolUse', body('PostToolUse', tool), pane);
+      await expect(row(page, 'hook-probe')).toHaveCount(1, { timeout: STATUS_MS });
+      const id = (await row(page, 'hook-probe').getAttribute('data-id')) as string;
+      await expect.poll(() => rowStatus(page, id), { timeout: STATUS_MS }).toBe('running');
 
-  /** The idle fakes have served their budgets; their Node processes go before the heavy tests. */
-  const freeIdle = async () => {
-    for (const name of IDLE) await tmux('kill-window', '-t', `kage:${name}`).catch(() => {});
-  };
+      const samples: number[] = [];
+      for (let i = 0; i < 40; i++) {
+        // Alternating: PermissionRequest to needs you, PostToolUse back to running (R7).
+        const [event, want] =
+          i % 2 === 0 ? ['PermissionRequest', 'needs you+w'] : ['PostToolUse', 'running'];
+        await page.evaluate(
+          ([i2, s]) =>
+            (window as unknown as { kageArm: (a: string, b: string) => void }).kageArm(
+              i2 as string,
+              s as string,
+            ),
+          [id, want],
+        );
+        const t0 = Date.now();
+        await postHook(event as string, body(event as string, tool), pane);
+        const hit = await page.waitForFunction(
+          () => (window as unknown as { kageHit: number | null }).kageHit,
+          null,
+          { timeout: STATUS_MS },
+        );
+        samples.push(((await hit.jsonValue()) as number) - t0);
+        await sleep(50);
+      }
+      console.log(`hook to screen: ${samples.map((t) => t.toFixed(0)).join(', ')} ms`);
+      recordBudget({
+        name: 'Hook to screen (p95 of 40)',
+        value: percentile(samples, 95),
+        limit: 150,
+        unit: 'ms',
+      });
+
+      // `kage hook`'s own wall time, spawn to exit: reported, not asserted (phase 6's single
+      // executable owns it; ruling PF5, F5).
+      const walls: number[] = [];
+      for (let i = 0; i < 10; i++) {
+        const t = performance.now();
+        await new Promise<void>((resolve, reject) => {
+          const c = spawn(
+            process.execPath,
+            ['--no-warnings', 'packages/server/src/main.ts', 'hook', 'PostToolUse'],
+            { cwd: ROOT, env: { ...h.env, TMUX_PANE: pane }, stdio: ['pipe', 'ignore', 'ignore'] },
+          );
+          c.once('error', reject);
+          c.once('exit', () => resolve());
+          c.stdin.end(JSON.stringify(body('PostToolUse', tool)));
+        });
+        walls.push(performance.now() - t);
+      }
+      const note = `kage hook wall time: median of 10 = ${median(walls).toFixed(0)} ms (limit 300 ms; reported, not asserted)`;
+      console.log(note);
+      test.info().annotations.push({ type: 'budget (not asserted)', description: note });
+    } finally {
+      await closePanes([pane]);
+    }
+  });
 
   test('rendering: at most 500 line nodes and stable line elements under a 2,000-line flood', async ({
     page,
@@ -390,60 +522,64 @@ test.describe('live budgets', () => {
     test.setTimeout(90_000);
     await freeIdle();
     const pane = await h.startFake('flood-view', dirOf('projects/demo'), 'flood');
-    await page.goto('/');
-    await row(page, 'flood-view').click();
-    await expect(chip(page)).toHaveText('running', { timeout: STATUS_MS });
-    await page.evaluate(() => {
-      const w = window as unknown as {
-        kageMax: number;
-        kageSampler: ReturnType<typeof setInterval>;
-      };
-      w.kageMax = 0;
-      // Every 100 ms; the think ("now") line counts too (ruling PF5, F13).
-      w.kageSampler = setInterval(() => {
-        w.kageMax = Math.max(w.kageMax, document.querySelectorAll('.k-tr .ln').length);
-      }, 100);
-    });
-    await tmux('send-keys', '-t', pane, 'Enter');
-
-    const lastN = () =>
-      page.evaluate(() => {
-        const say = [...document.querySelectorAll('.k-tr .ln-say')].at(-1)?.textContent ?? '';
-        return Number(/^Flood line (\d+)$/.exec(say)?.[1] ?? 0);
+    try {
+      await page.goto('/');
+      await row(page, 'flood-view').click();
+      await expect(chip(page)).toHaveText('running', { timeout: STATUS_MS });
+      await page.evaluate(() => {
+        const w = window as unknown as {
+          kageMax: number;
+          kageSampler: ReturnType<typeof setInterval>;
+        };
+        w.kageMax = 0;
+        // Every 100 ms; the think ("now") line counts too (ruling PF5, F13).
+        w.kageSampler = setInterval(() => {
+          w.kageMax = Math.max(w.kageMax, document.querySelectorAll('.k-tr .ln').length);
+        }, 100);
       });
-    // Mark a line that stays on screen; after 200 more it must be the same element.
-    await expect.poll(lastN, { timeout: STATUS_MS }).toBeGreaterThanOrEqual(300);
-    const probe = await page.evaluate(() => {
-      const el = [...document.querySelectorAll('.k-tr .ln-say')].at(-1) as HTMLElement;
-      el.dataset.probe = '1';
-      return el.textContent ?? '';
-    });
-    const n = Number(/(\d+)$/.exec(probe)?.[1]);
-    await expect.poll(lastN, { timeout: STATUS_MS }).toBeGreaterThanOrEqual(n + 200);
-    await expect(page.locator('.k-tr .ln', { hasText: new RegExp(`^${probe}$`) })).toHaveCount(1);
-    const kept = await page.locator('.k-tr .ln[data-probe]').allTextContents();
+      await tmux('send-keys', '-t', pane, 'Enter');
 
-    await expect(chip(page)).toHaveText('done', { timeout: 30_000 });
-    const max = await page.evaluate(() => {
-      const w = window as unknown as {
-        kageMax: number;
-        kageSampler: ReturnType<typeof setInterval>;
-      };
-      clearInterval(w.kageSampler);
-      return Math.max(w.kageMax, document.querySelectorAll('.k-tr .ln').length);
-    });
-    recordBudget({
-      name: 'Output line nodes under a flood (max)',
-      value: max,
-      limit: 500,
-      unit: 'nodes',
-    });
-    recordBudget({
-      name: 'Output lines re-created after 200 more (probe)',
-      value: kept.length === 1 && kept[0] === probe ? 0 : 1,
-      limit: 0,
-      unit: 'nodes',
-    });
+      const lastN = () =>
+        page.evaluate(() => {
+          const say = [...document.querySelectorAll('.k-tr .ln-say')].at(-1)?.textContent ?? '';
+          return Number(/^Flood line (\d+)$/.exec(say)?.[1] ?? 0);
+        });
+      // Mark a line that stays on screen; after 200 more it must be the same element.
+      await expect.poll(lastN, { timeout: STATUS_MS }).toBeGreaterThanOrEqual(300);
+      const probe = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('.k-tr .ln-say')].at(-1) as HTMLElement;
+        el.dataset.probe = '1';
+        return el.textContent ?? '';
+      });
+      const n = Number(/(\d+)$/.exec(probe)?.[1]);
+      await expect.poll(lastN, { timeout: STATUS_MS }).toBeGreaterThanOrEqual(n + 200);
+      await expect(page.locator('.k-tr .ln', { hasText: new RegExp(`^${probe}$`) })).toHaveCount(1);
+      const kept = await page.locator('.k-tr .ln[data-probe]').allTextContents();
+
+      await expect(chip(page)).toHaveText('done', { timeout: 30_000 });
+      const max = await page.evaluate(() => {
+        const w = window as unknown as {
+          kageMax: number;
+          kageSampler: ReturnType<typeof setInterval>;
+        };
+        clearInterval(w.kageSampler);
+        return Math.max(w.kageMax, document.querySelectorAll('.k-tr .ln').length);
+      });
+      recordBudget({
+        name: 'Output line nodes under a flood (max)',
+        value: max,
+        limit: 500,
+        unit: 'nodes',
+      });
+      recordBudget({
+        name: 'Output lines re-created after 200 more (probe)',
+        value: kept.length === 1 && kept[0] === probe ? 0 : 1,
+        limit: 0,
+        unit: 'nodes',
+      });
+    } finally {
+      await closePanes([pane]);
+    }
   });
 
   test('rendering: a 3,000-line change shows at most 1,000 diff line elements', async ({
@@ -451,103 +587,112 @@ test.describe('live budgets', () => {
   }) => {
     test.setTimeout(90_000);
     await freeIdle();
-    await page.goto('/');
-    const id = await startTask(page, 'commit-only Big diff', 'demo');
-    await expect(chip(page)).toHaveText('done', { timeout: STATUS_MS });
-    const state = JSON.parse(readFileSync(dirOf('state', 'kage', 'state.json'), 'utf8')) as {
-      records: { kageId: string; worktree: string }[];
-    };
-    const worktree = state.records.find((r) => r.kageId === id)?.worktree as string;
-    const big = Array.from({ length: 3000 }, (_, i) => `Invented line ${i + 1}`).join('\n');
-    writeFileSync(join(worktree, 'big.txt'), `${big}\n`);
-    await h.git(worktree, 'add', 'big.txt');
-    await h.git(
-      worktree,
-      '-c',
-      'user.name=Fake',
-      '-c',
-      'user.email=fake@example.invalid',
-      'commit',
-      '-q',
-      '-m',
-      'Add big.txt',
-    );
-    await page.getByRole('button', { name: 'View diff →' }).click();
-    await expect(page.locator('.k-diff-h .p', { hasText: 'big.txt' })).toHaveCount(1, {
-      timeout: STATUS_MS,
-    });
-    const count = await page.locator('.k-dv .k-dl').count();
-    // It measured a real page of the change, not an empty one.
-    expect(count).toBeGreaterThan(500);
-    recordBudget({
-      name: 'Diff line elements (3,000-line change)',
-      value: count,
-      limit: 1000,
-      unit: 'nodes',
-    });
+    let id: string | null = null;
+    try {
+      await page.goto('/');
+      id = await startTask(page, 'commit-only Big diff', 'demo');
+      await expect(chip(page)).toHaveText('done', { timeout: STATUS_MS });
+      const state = JSON.parse(readFileSync(dirOf('state', 'kage', 'state.json'), 'utf8')) as {
+        records: { kageId: string; worktree: string }[];
+      };
+      const worktree = state.records.find((r) => r.kageId === id)?.worktree as string;
+      const big = Array.from({ length: 3000 }, (_, i) => `Invented line ${i + 1}`).join('\n');
+      writeFileSync(join(worktree, 'big.txt'), `${big}\n`);
+      await h.git(worktree, 'add', 'big.txt');
+      await h.git(
+        worktree,
+        '-c',
+        'user.name=Fake',
+        '-c',
+        'user.email=fake@example.invalid',
+        'commit',
+        '-q',
+        '-m',
+        'Add big.txt',
+      );
+      await page.getByRole('button', { name: 'View diff →' }).click();
+      await expect(page.locator('.k-diff-h .p', { hasText: 'big.txt' })).toHaveCount(1, {
+        timeout: STATUS_MS,
+      });
+      const count = await page.locator('.k-dv .k-dl').count();
+      // It measured a real page of the change, not an empty one.
+      expect(count).toBeGreaterThan(500);
+      recordBudget({
+        name: 'Diff line elements (3,000-line change)',
+        value: count,
+        limit: 1000,
+        unit: 'nodes',
+      });
+    } finally {
+      const win = id ? await h.kageWindow(id) : null;
+      if (win) await closePanes([win.paneId]);
+    }
   });
 
-  test('SSE under load: 30 sessions posting tool hooks for 10 s', async ({ page }) => {
+  test('SSE under load: 30 sessions writing transcripts and posting tool hooks for 10 s', async ({
+    page,
+  }) => {
     test.setTimeout(120_000);
     await freeIdle();
     const cwd = dirOf('projects/demo');
     const names = Array.from({ length: 30 }, (_, i) => `busy-${i + 1}`);
     const panes: string[] = [];
-    for (const name of names) panes.push(await newWindow(name, cwd, 'exec sleep 3600'));
-    const sids = names.map(() => randomUUID());
-    const transcripts = names.map((_, i) => dirOf('claude', `perf-${i}.jsonl`));
-    for (const t of transcripts) writeFileSync(t, '');
-    /**
-     * As Claude does it: the transcript record first (tool_use before PreToolUse, tool_result
-     * before PostToolUse), then the hook. The records move each session's now line, so the burst
-     * drives the activity path that the 4-a-second rule bounds; hooks alone change no visible
-     * field, and Kage sends nothing for them.
-     */
-    const hook = (i: number, event: string, n: number) => {
-      const sid = sids[i] as string;
-      const id = `toolu_perf_${i}_${n}`;
-      const command = `npm run step-${n}`;
-      appendFileSync(
-        transcripts[i] as string,
-        event === 'PreToolUse'
-          ? transcriptRecord(sid, cwd, {
-              type: 'assistant',
-              message: {
-                model: 'claude-opus-5-5',
-                id: `msg_${id}`,
-                type: 'message',
-                role: 'assistant',
-                content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
-                stop_reason: 'tool_use',
-                stop_sequence: null,
-                usage: { input_tokens: 2, output_tokens: 40 },
-              },
-            })
-          : transcriptRecord(sid, cwd, {
-              type: 'user',
-              message: {
-                role: 'user',
-                content: [{ tool_use_id: id, type: 'tool_result', content: 'ok' }],
-              },
-              toolUseResult: { stdout: 'ok', stderr: '', interrupted: false },
-            }),
-      );
-      return postHook(
-        event,
-        {
-          session_id: sid,
-          transcript_path: transcripts[i],
-          cwd,
-          hook_event_name: event,
-          tool_name: 'Bash',
-          tool_input: { command },
-          tool_use_id: id,
-        },
-        panes[i] as string,
-      );
-    };
     const reader = sseReader(PERF_BASE);
     try {
+      for (const name of names) panes.push(await newWindow(name, cwd, 'exec sleep 3600'));
+      const sids = names.map(() => randomUUID());
+      const transcripts = names.map((_, i) => dirOf('claude', `perf-${i}.jsonl`));
+      for (const t of transcripts) writeFileSync(t, '');
+      /**
+       * As Claude does it: the transcript record first (tool_use before PreToolUse, tool_result
+       * before PostToolUse), then the hook. The records move each session's now line, so the
+       * burst drives the activity path that the 4-a-second rule bounds; hooks alone change no
+       * visible field, and Kage sends nothing for them.
+       */
+      const hook = (i: number, event: string, n: number) => {
+        const sid = sids[i] as string;
+        const id = `toolu_perf_${i}_${n}`;
+        const command = `npm run step-${n}`;
+        appendFileSync(
+          transcripts[i] as string,
+          event === 'PreToolUse'
+            ? transcriptRecord(sid, cwd, {
+                type: 'assistant',
+                message: {
+                  model: 'claude-opus-5-5',
+                  id: `msg_${id}`,
+                  type: 'message',
+                  role: 'assistant',
+                  content: [{ type: 'tool_use', id, name: 'Bash', input: { command } }],
+                  stop_reason: 'tool_use',
+                  stop_sequence: null,
+                  usage: { input_tokens: 2, output_tokens: 40 },
+                },
+              })
+            : transcriptRecord(sid, cwd, {
+                type: 'user',
+                message: {
+                  role: 'user',
+                  content: [{ tool_use_id: id, type: 'tool_result', content: 'ok' }],
+                },
+                toolUseResult: { stdout: 'ok', stderr: '', interrupted: false },
+              }),
+        );
+        return postHook(
+          event,
+          {
+            session_id: sid,
+            transcript_path: transcripts[i],
+            cwd,
+            hook_event_name: event,
+            tool_name: 'Bash',
+            tool_input: { command },
+            tool_use_id: id,
+          },
+          panes[i] as string,
+        );
+      };
+
       // Step 1's check: hooks posted from a `sleep` pane link to its window (each turns running).
       await Promise.all(names.map((_, i) => hook(i, 'PreToolUse', 0)));
       const running = () =>
@@ -555,6 +700,12 @@ test.describe('live budgets', () => {
           (s) => names.includes(s.task) && s.status === 'running',
         ).length;
       await expect.poll(running, { timeout: STATUS_MS }).toBe(30);
+      // A session the reader can't name fails here; it never counts as 0 frames.
+      const ids = names.map((name) => {
+        const s = [...reader.sessions.values()].find((x) => x.task === name);
+        if (!s) throw new Error(`No session for ${name}`);
+        return s.id;
+      });
 
       await page.goto('/');
       await expect(page.locator('.k-it')).not.toHaveCount(0);
@@ -578,42 +729,48 @@ test.describe('live budgets', () => {
         }
       }
       await Promise.all(posts);
-      // The burst's last throttled frame may land up to 250 ms after its hook.
-      const end = start + 10_000 + 500;
+      /**
+       * The window: the 10 s burst plus 500 ms for its last throttled frame. At one update per
+       * 250 ms a session sends at most 43 frames in it: the leading edge at 0 (the throttle sends
+       * the first change at once) and one per 250 ms through 10.5 s. Task 11 records this in §7.
+       */
+      const WINDOW_MS = 10_500;
+      const PER_SESSION = 1 + WINDOW_MS / 250;
+      const end = start + WINDOW_MS;
       if (end > performance.now()) await sleep(end - performance.now());
-      const secs = 10;
-      const perSession = names.map((_, i) => {
-        const s = [...reader.sessions.values()].find((x) => x.task === names[i]);
-        return s ? (reader.updated.get(s.id) ?? 0) : 0;
-      });
-      const total = [...reader.updated.values()].reduce((a, b) => a + b, 0);
+      const perSession = ids.map((id) => reader.updated.get(id) ?? 0);
+      const total = perSession.reduce((a, b) => a + b, 0);
       const bytes = reader.bytes();
       const long = await page.evaluate(() => (window as unknown as { kageLong: number }).kageLong);
       console.log(
         `SSE: per-session frames ${perSession.join(',')}; total ${total}; ${bytes} B; longest task ${long} ms`,
       );
-      // F8: counted over the whole window, ≤ 41 per session (4 a second plus the boundary frame).
+      // Not vacuous: every session sent frames, and the burst moved them all.
+      expect(Math.min(...perSession), 'every session sends updates in the burst').toBeGreaterThan(
+        0,
+      );
+      expect(total, 'the burst produced updates').toBeGreaterThan(30 * 5);
       recordBudget(
         {
-          name: 'SSE session.updated per session (10 s window)',
-          value: Math.max(...perSession) / secs,
-          limit: 4.1,
-          unit: '/s',
+          name: 'SSE session.updated per session (frames in 10.5 s)',
+          value: Math.max(...perSession),
+          limit: PER_SESSION,
+          unit: 'frames',
         },
-        { allowFail: 'Task 4' },
+        { allowFail: { owner: 'Task 4', baseline: 101 } },
       );
       recordBudget(
         {
-          name: 'SSE session.updated, all sessions',
-          value: total / secs,
-          limit: 123,
-          unit: '/s',
+          name: 'SSE session.updated, all 30 sessions (frames in 10.5 s)',
+          value: total,
+          limit: 30 * PER_SESSION,
+          unit: 'frames',
         },
-        { allowFail: 'Task 4' },
+        { allowFail: { owner: 'Task 4', baseline: 2949 } },
       );
       recordBudget({
         name: 'SSE bytes per second',
-        value: bytes / secs,
+        value: bytes / (WINDOW_MS / 1000),
         limit: 200 * 1024,
         unit: 'B',
       });
@@ -625,6 +782,7 @@ test.describe('live budgets', () => {
       });
     } finally {
       reader.close();
+      await closePanes(panes);
     }
   });
 });

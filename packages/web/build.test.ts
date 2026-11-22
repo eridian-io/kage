@@ -6,7 +6,13 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, FONTS } from './build.ts';
-import { measureSizes, SIZE_LIMITS, type Sizes, termLoaderCode } from './sizes.ts';
+import {
+  allowFailVerdict,
+  measureSizes,
+  SIZE_LIMITS,
+  type Sizes,
+  termLoaderCode,
+} from './sizes.ts';
 
 // The limits live in sizes.ts, shared with e2e/perf.spec.ts (ruling PF5, F6).
 const BUDGET = SIZE_LIMITS.firstLoad;
@@ -73,6 +79,13 @@ describe('web build', () => {
     const css = await built(/^app-.*\.css$/);
     const urls = [...(await readFile(join(out, css), 'utf8')).matchAll(/url\(\/fonts\/([^)]+)\)/g)];
     expect(urls.map((m) => m[1]).sort()).toEqual([...FONTS].sort());
+  });
+
+  it(`keeps the fonts (dist/fonts, as served) within ${SIZE_LIMITS.fonts} bytes`, () => {
+    console.log(`fonts: ${sizes.fonts} bytes`);
+    // Failing today (six static files); Task 3 removes the marker (ruling PF5, F5).
+    const allowFail = { owner: 'Task 3', baseline: 72_968 };
+    expect(allowFailVerdict('Fonts', sizes.fonts, SIZE_LIMITS.fonts, allowFail)).toBeNull();
   });
 
   it('bundles exactly one copy of preact', () => {

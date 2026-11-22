@@ -5,6 +5,6 @@ export default defineConfig({
   test: {
     name: 'web',
     environment: 'happy-dom',
-    include: ['src/**/*.test.{ts,tsx}', 'build.test.ts'],
+    include: ['src/**/*.test.{ts,tsx}', 'build.test.ts', 'perf-markers.test.ts'],
   },
 });
