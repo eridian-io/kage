@@ -6,7 +6,14 @@ import { join } from 'node:path';
 import { LIMITS } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { gitStream } from '../git/exec.ts';
-import { DiffError, DiffService, diffPage, parseUnified, untrackedDiff } from './diff.ts';
+import {
+  DiffError,
+  DiffService,
+  diffPage,
+  parseUnified,
+  STILL_WORKING,
+  untrackedDiff,
+} from './diff.ts';
 import { changedFiles } from './files.ts';
 
 let root: string;
@@ -147,6 +154,42 @@ describe('parseUnified', () => {
       ['add', 'world'],
     ]);
     expect(files[3]?.lines).toEqual([]);
+  });
+
+  it('a type change (two sections for one path) becomes one file with both sides', () => {
+    const text = [
+      'diff --git a/b.txt b/b.txt',
+      'deleted file mode 100644',
+      '--- a/b.txt',
+      '+++ /dev/null',
+      '@@ -1,2 +0,0 @@',
+      '-alpha',
+      '-beta',
+      'diff --git a/b.txt b/b.txt',
+      'new file mode 120000',
+      '--- /dev/null',
+      '+++ b/b.txt',
+      '@@ -0,0 +1 @@',
+      '+a.txt',
+      '\\ No newline at end of file',
+      '',
+    ].join('\n');
+    expect(parseUnified(text, O)).toEqual([
+      {
+        path: 'b.txt',
+        kind: 'modified',
+        added: 1,
+        removed: 2,
+        clipped: 0,
+        lines: [
+          ['hunk', '@@ -1,2 +0,0 @@'],
+          ['del', 'alpha'],
+          ['del', 'beta'],
+          ['hunk', '@@ -0,0 +1 @@'],
+          ['add', 'a.txt'],
+        ],
+      },
+    ]);
   });
 
   it('a pure rename (no hunks) keeps both paths', () => {
@@ -421,7 +464,7 @@ describe('diffPage', () => {
     expect(page.files.map((f) => f.path)).toEqual(['b.txt']);
   });
 
-  it('a stream clip keeps the lines read and marks the files after it clipped with no lines', async () => {
+  it('a stream clip cuts only the first file; the next file ends the page and starts the next one', async () => {
     const dir = await repo('p-clip');
     await writeFile(join(dir, 'a.txt'), 'A\n'.repeat(200));
     await writeFile(join(dir, 'b.txt'), 'B\n'.repeat(200));
@@ -429,13 +472,98 @@ describe('diffPage', () => {
     const real = gitStream;
     const stream: typeof gitStream = (args, o) => real(args, { ...o, maxBytes: 300 });
     const page = await diffPage(target(dir), 0, { stream });
-    const [a, b] = page.files;
-    expect(a?.path).toBe('a.txt');
+    expect(page.next).toBe(1);
+    expect(page.files.map((f) => f.path)).toEqual(['a.txt']);
+    const [a] = page.files;
     expect(a?.lines.length).toBeGreaterThan(0);
     expect(a?.clipped).toBeGreaterThan(0);
-    expect(b).toMatchObject({ path: 'b.txt', lines: [] });
-    expect(b?.clipped).toBeGreaterThan(0);
+    const second = await diffPage(target(dir), 1, { stream });
+    expect(second.files[0]?.path).toBe('b.txt');
+    expect(second.files[0]?.lines.length).toBeGreaterThan(0);
   });
+
+  it('a partial file counts only added and removed lines as clipped, not context', async () => {
+    const dir = await repo('p-partial');
+    const lines = Array.from({ length: 30 }, (_, i) => `l${i}`);
+    await writeFile(join(dir, 'a.txt'), `${lines.join('\n')}\n`);
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'base');
+    lines.splice(15, 0, ...Array.from({ length: 10 }, (_, i) => `new${i}`));
+    await writeFile(join(dir, 'a.txt'), `${lines.join('\n')}\n`);
+    // 10 added lines; the stream stops after three context lines and two of them.
+    const cutShort = [
+      'diff --git a/a.txt b/a.txt',
+      '--- a/a.txt',
+      '+++ b/a.txt',
+      '@@ -13,6 +13,16 @@',
+      ' l12',
+      ' l13',
+      ' l14',
+      '+new0',
+      '+new1',
+      '+new',
+    ].join('\n');
+    const page = await diffPage(target(dir, null), 0, {
+      stream: async () => ({ stdout: cutShort, clipped: true }),
+    });
+    expect(page.files[0]).toMatchObject({ path: 'a.txt', added: 10, removed: 0, clipped: 8 });
+  });
+
+  it('a tracked file git printed no text for, with a non-zero count, is shown as left out', async () => {
+    const dir = await repo('p-notext');
+    await writeFile(join(dir, 'a.txt'), 'one\ntwo\nthree\nfour\n');
+    const page = await diffPage(target(dir, null), 0, {
+      stream: async () => ({ stdout: '', clipped: false }),
+    });
+    expect(page.files[0]).toMatchObject({ path: 'a.txt', added: 1, lines: [], clipped: 1 });
+  });
+
+  it('scattered edits across 10 files: every file appears with all its lines on some page', async () => {
+    const dir = await repo('p-scatter');
+    const body = (n: number, edit: boolean) =>
+      Array.from({ length: 600 }, (_, j) =>
+        edit && j % 10 === 5 ? `f${n} edited ${j}` : `f${n} line ${j}`,
+      ).join('\n');
+    for (let n = 0; n < 10; n++) await writeFile(join(dir, `s${n}.txt`), `${body(n, false)}\n`);
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'base');
+    for (let n = 0; n < 10; n++) await writeFile(join(dir, `s${n}.txt`), `${body(n, true)}\n`);
+    const seen = new Map<string, number>();
+    const starts: number[] = [];
+    let from: number | null = 0;
+    while (from !== null) {
+      starts.push(from);
+      const page = await diffPage(target(dir, null), from);
+      expect(page.files.length).toBeGreaterThan(0);
+      for (const f of page.files) {
+        expect(f.clipped).toBe(0);
+        seen.set(f.path, f.lines.filter(([k]) => k === 'add').length);
+      }
+      from = page.next;
+    }
+    expect([...seen.keys()]).toEqual(Array.from({ length: 10 }, (_, n) => `s${n}.txt`));
+    expect([...seen.values()].every((adds) => adds === 60)).toBe(true);
+    expect(starts.length).toBeGreaterThan(1);
+  });
+
+  it.skipIf(process.platform === 'win32')(
+    'a file turned into a symlink keeps both sides (one entry, delete and add)',
+    async () => {
+      const dir = await repo('p-typechange');
+      await rm(join(dir, 'b.txt'));
+      await symlink('a.txt', join(dir, 'b.txt'));
+      const page = await diffPage(target(dir, null), 0);
+      expect(page.files.map((f) => f.path)).toEqual(['b.txt']);
+      const [b] = page.files;
+      expect(b?.lines).toEqual(
+        expect.arrayContaining([
+          ['del', 'alpha'],
+          ['del', 'beta'],
+          ['add', 'a.txt'],
+        ]),
+      );
+    },
+  );
 
   it('matches files with spaces and non-ASCII names in real git output (renamed, deleted, modified)', async () => {
     const dir = await repo('p-names');
@@ -520,6 +648,36 @@ describe('DiffService', () => {
       status: 422,
       message: "git couldn't show the diff: fatal: bad thing",
     });
+  });
+
+  it('a third pending request for one session gets 429; an aborted waiter never runs git', async () => {
+    const dir = await repo('s-queue');
+    const ran: number[] = [];
+    let open = () => {};
+    const gate = new Promise<void>((r) => {
+      open = r;
+    });
+    const svc = new DiffService({
+      target: () => ({ worktree: dir, base: null, branch: 'x' }),
+      page: async (_t, from) => {
+        ran.push(from);
+        if (from === 0) await gate;
+        return page(from);
+      },
+    });
+    const ctl = new AbortController();
+    const first = svc.page('a', 0);
+    const second = svc.page('a', 1, ctl.signal);
+    const third = await svc.page('a', 2).catch((e: unknown) => e);
+    expect(third).toMatchObject({ status: 429, message: STILL_WORKING });
+    expect(STILL_WORKING).toBe('Kage is still working on the last diff.');
+    ctl.abort();
+    open();
+    await first;
+    await expect(second).rejects.toMatchObject({ status: 422 });
+    expect(ran).toEqual([0]);
+    // The queue is free again.
+    expect((await svc.page('a', 3)).from).toBe(3);
   });
 
   it('one diff at a time per session, two at a time in all', async () => {

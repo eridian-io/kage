@@ -1254,8 +1254,8 @@ describe('GET /api/sessions/:id/diff (phase 4 Task 8)', () => {
     expect(calls).toEqual([]);
   });
 
-  it('maps DiffError statuses (404, 422) and messages', async () => {
-    for (const status of [404, 422] as const) {
+  it('maps DiffError statuses (404, 422, 429) and messages', async () => {
+    for (const status of [404, 422, 429] as const) {
       const { a } = withDiff(new DiffError(status, `Problem ${status}.`));
       const res = await a.fetch(req('/api/sessions/k-1/diff'));
       expect(res.status).toBe(status);

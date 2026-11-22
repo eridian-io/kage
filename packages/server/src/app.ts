@@ -332,7 +332,12 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'from must be a whole number.' }, 400);
     }
     try {
-      const page = await differ.page(c.req.param('id'), raw === undefined ? 0 : Number(raw));
+      // The request's signal aborts when the tab goes away: a queued diff is then dropped.
+      const page = await differ.page(
+        c.req.param('id'),
+        raw === undefined ? 0 : Number(raw),
+        c.req.raw.signal,
+      );
       c.header('Cache-Control', 'no-store');
       return c.json(page);
     } catch (err) {

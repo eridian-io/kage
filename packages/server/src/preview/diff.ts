@@ -165,9 +165,35 @@ export function parseUnified(text: string, o: ParseOptions): DiffFile[] {
     if (kind === 'hunk' && b.content >= o.maxLines) return;
     b.lines.push([kind, clipLine(raw, o.maxLineChars)]);
   };
+  // A type change (a file turned into a symlink, or back) is two sections for one path: a delete
+  // and an add. They become one file, so neither side is lost.
+  const add = (f: DiffFile) => {
+    const prev = files.at(-1);
+    if (!prev || prev.path !== f.path) {
+      files.push(f);
+      return;
+    }
+    const kind: DiffFile['kind'] =
+      prev.kind === 'binary' || f.kind === 'binary'
+        ? 'binary'
+        : prev.kind === 'deleted' && f.kind === 'added'
+          ? 'modified'
+          : prev.kind;
+    const oldPath = prev.oldPath ?? f.oldPath;
+    const merged: DiffFile = {
+      path: f.path,
+      ...(oldPath !== undefined ? { oldPath } : {}),
+      kind,
+      added: prev.added + f.added,
+      removed: prev.removed + f.removed,
+      lines: [...prev.lines, ...f.lines],
+      clipped: prev.clipped + f.clipped,
+    };
+    files[files.length - 1] = capTo(merged, o.maxLines);
+  };
   for (const line of text.split('\n')) {
     if (line.startsWith('diff --git ')) {
-      if (b) files.push(finish(b));
+      if (b) add(finish(b));
       b = {
         header: headerPath(line.slice('diff --git '.length)),
         minus: undefined,
@@ -208,7 +234,7 @@ export function parseUnified(text: string, o: ParseOptions): DiffFile[] {
     else if (line.startsWith('--- ')) b.minus = sidePath(line.slice(4), 'a/');
     else if (line.startsWith('+++ ')) b.plus = sidePath(line.slice(4), 'b/');
   }
-  if (b) files.push(finish(b));
+  if (b) add(finish(b));
   return files;
 }
 
@@ -272,6 +298,8 @@ const ARGV_BUDGET = 16_000;
 const DIFF_TIMEOUT_MS = 30_000;
 
 const contentCount = (f: DiffFile): number => f.lines.filter(([k]) => k !== 'hunk').length;
+const changedCount = (f: DiffFile): number =>
+  f.lines.filter(([k]) => k === 'add' || k === 'del').length;
 
 /** Keeps at most `budget` content lines; the rest count in `clipped`. */
 function capTo(f: DiffFile, budget: number): DiffFile {
@@ -371,7 +399,8 @@ async function trackedDiffs(
  * starting at index `from`. Tracked files come from `git diff <merge base>` with no external
  * diff, textconv or colour (fsmonitor is off through gitArgs); untracked ones from
  * untrackedDiff. A page holds at most LIMITS.diffLines content lines in all and at most
- * LIMITS.diffBytes of git output; what doesn't fit counts in each file's `clipped`. `base` is
+ * LIMITS.diffBytes of git output. A later file that doesn't fit ends the page (`next` is its
+ * index); only the first file is cut, and what it leaves out counts in its `clipped`. `base` is
  * null when there was no base to compare with (HEAD was used).
  */
 export async function diffPage(
@@ -400,23 +429,26 @@ export async function diffPage(
   const root = await realpath(t.worktree).catch(() => resolve(t.worktree));
   let budget = LIMITS.diffLines;
   const files: DiffFile[] = [];
-  for (const c of page) {
+  // Only the page's first file may be cut by the line budget or the byte cap: a later file that
+  // doesn't fit ends the page, so it starts the next one (no file is skipped by paging).
+  let stop = end;
+  for (let i = from; i < end; i++) {
+    const c = changes[i] as Change;
+    const first = i === from;
     const path = wirePath(c.path);
     const total = c.added + c.removed;
     let f: DiffFile;
     if (c.untracked) {
-      f =
-        budget > 0
-          ? await untrackedDiff(root, c.path, { ...o, maxLines: budget })
-          : {
-              path,
-              kind: 'untracked',
-              added: c.added,
-              removed: 0,
-              lines: [],
-              clipped: Math.max(1, c.added),
-            };
+      if (!first && budget <= 0) {
+        stop = i;
+        break;
+      }
+      f = await untrackedDiff(root, c.path, o);
     } else {
+      if (!first && (tracked.cut.has(path) || tracked.partial.has(path))) {
+        stop = i;
+        break;
+      }
       const got = tracked.files.get(path);
       const kind: DiffFile['kind'] = c.oldPath !== undefined ? 'renamed' : 'modified';
       f = got ?? { path, kind, added: 0, removed: 0, lines: [], clipped: 0 };
@@ -425,20 +457,38 @@ export async function diffPage(
       if (c.oldPath !== undefined) f.oldPath = wirePath(c.oldPath);
       if (tracked.cut.has(path)) f.clipped = Math.max(1, total);
       else if (tracked.partial.has(path)) {
-        f.clipped = Math.max(f.clipped, total - contentCount(f), 1);
+        // Only added and removed lines count as left out; context lines are not changes.
+        f.clipped = Math.max(f.clipped, total - changedCount(f), 1);
+      } else if (contentCount(f) === 0 && f.kind !== 'binary' && total > 0) {
+        // The list counts changes git printed no text for (an undecodable name, a rename edge):
+        // shown as left out, not as empty.
+        f.clipped = Math.max(f.clipped, total);
       }
-      f = capTo(f, budget);
     }
+    if (!first && contentCount(f) > budget) {
+      stop = i;
+      break;
+    }
+    f = capTo(f, budget);
     budget -= contentCount(f);
     files.push(f);
   }
-  return { ...head, next: end < changes.length ? end : null, files };
+  return { ...head, next: stop < changes.length ? stop : null, files };
 }
 
-/** A diff request that can't be answered: 404 (no such session) or 422 (git or the folder). */
+/** Requests per session running or waiting at once; the next one is refused (429). */
+const MAX_PER_SESSION = 2;
+export const STILL_WORKING = 'Kage is still working on the last diff.';
+/** A request dropped because its tab went away; nobody reads the answer. */
+const CANCELLED = 'The diff request was cancelled.';
+
+/**
+ * A diff request that can't be answered: 404 (no such session), 422 (git or the folder, or a
+ * cancelled request) or 429 (too many waiting for one session).
+ */
 export class DiffError extends Error {
-  readonly status: 404 | 422;
-  constructor(status: 404 | 422, message: string) {
+  readonly status: 404 | 422 | 429;
+  constructor(status: 404 | 422 | 429, message: string) {
     super(message);
     this.status = status;
   }
@@ -462,13 +512,15 @@ export interface DiffServiceDeps {
 
 /**
  * GET /api/sessions/:id/diff: one diff at a time per session (a second request waits for the
- * first) and two at a time server-wide. External sessions diff their pane's folder with a null
+ * first, a third is refused while two are pending) and two at a time server-wide. External sessions diff their pane's folder with a null
  * base, as their file list does; an ended record diffs its worktree while the folder exists.
  */
 export class DiffService {
   readonly #d: DiffServiceDeps;
   readonly #max: number;
   readonly #tails = new Map<string, Promise<void>>();
+  /** Requests running or waiting, per session. */
+  readonly #pending = new Map<string, number>();
   #running = 0;
   readonly #waiting: (() => void)[] = [];
 
@@ -477,8 +529,16 @@ export class DiffService {
     this.#max = d.maxRunning ?? 2;
   }
 
-  async page(id: string, from: number): Promise<DiffPage> {
+  /**
+   * One page for session `id`. At most MAX_PER_SESSION requests per session are running or
+   * waiting; another gets 429. A request whose `signal` aborts (the tab went away) while it
+   * waits is dropped before it runs git.
+   */
+  async page(id: string, from: number, signal?: AbortSignal): Promise<DiffPage> {
     if (!this.#d.target(id)) throw new DiffError(404, `No session with id ${id}`);
+    const pending = this.#pending.get(id) ?? 0;
+    if (pending >= MAX_PER_SESSION) throw new DiffError(429, STILL_WORKING);
+    this.#pending.set(id, pending + 1);
     const prev = this.#tails.get(id) ?? Promise.resolve();
     let release = () => {};
     const mine = new Promise<void>((r) => {
@@ -488,8 +548,10 @@ export class DiffService {
     this.#tails.set(id, tail);
     try {
       await prev;
+      if (signal?.aborted) throw new DiffError(422, CANCELLED);
       await this.#acquire();
       try {
+        if (signal?.aborted) throw new DiffError(422, CANCELLED);
         return await this.#run(id, from);
       } finally {
         this.#release();
@@ -497,6 +559,9 @@ export class DiffService {
     } finally {
       release();
       if (this.#tails.get(id) === tail) this.#tails.delete(id);
+      const left = (this.#pending.get(id) ?? 1) - 1;
+      if (left > 0) this.#pending.set(id, left);
+      else this.#pending.delete(id);
     }
   }
 
