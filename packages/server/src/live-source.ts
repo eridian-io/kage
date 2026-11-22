@@ -15,6 +15,7 @@ import { nextStatus } from './hooks/status.ts';
 import {
   ACTIVE_MS,
   multiSelectByQuestion,
+  onlyNowChanged,
   previewTarget,
   questionFromToolInput,
   questionKey,
@@ -1355,7 +1356,9 @@ export class LiveSource implements SessionSource {
     }
     if (next === 'ended') this.#retireTailSoon(st);
     if (e.event === 'Stop' || e.event === 'SessionEnd') this.#recheckSoon(STOP_RECHECK_MS);
-    this.#emitNow(st);
+    // Status, question and count changes go at once; a hook that only moved the now line (a
+    // tool hook in a running turn) shares the 250 ms throttle with the transcript (spec §5.5).
+    this.#emitThrottled(st);
     if (e.event === 'PostToolUse' && e.toolName !== null && EDIT_TOOLS.has(e.toolName)) {
       this.#preview?.touch(st.id, 'edit');
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
@@ -1838,9 +1841,18 @@ export class LiveSource implements SessionSource {
     this.#emit({ type: 'session.updated', session: s });
   }
 
-  /** Activity- and transcript-driven updates: at most one per 250 ms per session. */
+  /**
+   * Hook-, activity- and transcript-driven updates. A change to the now line alone goes out at
+   * most once per 250 ms per session, with a trailing edge that carries the latest state; any
+   * other visible change (status, question, counts) goes at once and takes the pending one along.
+   */
   #emitThrottled(st: Live): void {
-    if (!this.#running || st.timers.emit) return;
+    if (!this.#running) return;
+    if (!onlyNowChanged(st.last, toSession(st))) {
+      this.#emitNow(st);
+      return;
+    }
+    if (st.timers.emit) return;
     const wait = st.lastEmitAt + THROTTLE_MS - this.#clock();
     if (wait <= 0) this.#emitNow(st);
     else {

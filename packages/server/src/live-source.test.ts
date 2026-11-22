@@ -1022,6 +1022,51 @@ describe('LiveSource: pane captures and throttling', () => {
     expect(updates('k-1').at(-1)?.now).toBe('Running step 39');
   });
 
+  /** A running session whose transcript moves the now line before each tool hook (as Claude does). */
+  async function toolBurst() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    const step = (i: number) => {
+      s.tails[0]?.push([{ kind: 'tool', text: 'Bash', detail: `step ${i}` }], {
+        now: `Running step ${i}`,
+      });
+      s.hooks.fire(hook(i % 2 === 0 ? 'PreToolUse' : 'PostToolUse', '%2'));
+    };
+    return { ...s, step };
+  }
+
+  it('10 tool hooks in 1 s emit at most 4 session.updated, the last with the last now line', async () => {
+    const { source, updates, step } = await toolBurst();
+    const before = updates('k-1').length;
+    for (let i = 0; i < 10; i++) {
+      step(i);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    expect(updates('k-1').length - before).toBeLessThanOrEqual(4);
+    // The trailing edge: the final state is never dropped.
+    await vi.advanceTimersByTimeAsync(250);
+    expect(source.get('k-1')?.now).toBe('Running step 9');
+    expect(updates('k-1').at(-1)?.now).toBe('Running step 9');
+    expect(updates('k-1').length - before).toBeLessThanOrEqual(5);
+  });
+
+  it('a PermissionRequest in a burst of tool hooks emits at once', async () => {
+    const { hooks, updates, step } = await toolBurst();
+    for (let i = 0; i < 5; i++) {
+      step(i);
+      await vi.advanceTimersByTimeAsync(100);
+    }
+    hooks.fire(hook('PermissionRequest', '%2'));
+    // No timer has run: the update went out synchronously.
+    expect(updates('k-1').at(-1)?.status).toBe('needs-you');
+    hooks.fire(hook('PostToolUse', '%2'));
+    expect(updates('k-1').at(-1)?.status).toBe('running');
+  });
+
   it('a hook update is not delayed by the activity throttle', async () => {
     const { source, hooks, tails, updates } = setup({ windows: [kageWin()], records: [rec()] });
     await source.start();

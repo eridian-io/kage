@@ -118,6 +118,14 @@ export function sameSession(a: Session | null, b: Session): boolean {
   return Object.keys(a).length === Object.keys(b).length && sameQuestion(a.question, b.question);
 }
 
+/** Whether `b` differs from the last sent `a` in its now line only (no difference counts too). */
+export function onlyNowChanged(a: Session | null, b: Session): boolean {
+  if (!a) return false;
+  const { now: _a, ...restA } = a;
+  const { now: _b, ...restB } = b;
+  return sameSession(restA, restB);
+}
+
 export const sameLines = (a: DisplayLine[], b: DisplayLine[]): boolean =>
   a.length === b.length &&
   a.every((l, i) => {
