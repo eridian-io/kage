@@ -179,13 +179,21 @@ async function installProbe(page: Page): Promise<void> {
     };
     w.statusInPage = status;
     let want: { id: string; status: string } | null = null;
+    /**
+     * t1 is read on the page's monotonic clock (performance.timeOrigin + performance.now()),
+     * which drifts from the wall clock the test's t0 uses whenever the system clock is stepped
+     * (Docker Desktop's VM resyncs it: a run once showed a constant 490 ms jump between two
+     * samples). Re-based onto the wall clock at each arm, so a step can't land in a sample.
+     */
+    let skew = 0;
     w.kageArm = (id: string, s: string) => {
       want = { id, status: s };
       w.kageHit = null;
+      skew = performance.timeOrigin + performance.now() - Date.now();
     };
     new MutationObserver(() => {
       if (want && status(want.id) === want.status) {
-        w.kageHit = performance.timeOrigin + performance.now();
+        w.kageHit = performance.timeOrigin + performance.now() - skew;
         want = null;
       }
     }).observe(document.body, {
