@@ -161,7 +161,24 @@ site/index.html                         Task 12
 
 ### Task 0: Phase 4 residuals (filled in by the controller)
 
-The controller fills this task from the phase 4 final review and the Phase 4 check findings (P4F1, P4F2 and the final wave items the phase 4 ledger lists: B34/R63, B35, B39, B40, B41, the happy-dom noise). Until then it is a placeholder. No task below depends on it except through the shared files it touches.
+This task covers the residuals from phase 4's fix-wave re-review (ruling R86). P4F1 and P4F2 were verified on real Claude, and B39 is done.
+
+**Files:**
+- `packages/web/src/view.ts`
+- `packages/web/src/store.ts`
+- `packages/web/src/components/board.test.tsx`
+- `packages/server/src/live-source.ts`
+- `packages/server/src/terminal/server.ts`
+
+- [ ] **Step 1: Write the failing tests.**
+  - **Hang:** re-selecting the already-selected session (a click, or J/K in a list of one) posts a view, so the server re-sends the counts and "Checking the branch…" always resolves. The view effect depends on `viewGen`. The board-test stub drives `session.files` from the actual view post, not from `viewGen`.
+  - **First-prompt cap:** the per-second capture that P4F1 adds for a launch with no hook and no idle box stops after 60 s. The session then falls back to the activity rule (done after 5 s idle). A test checks that no capture runs after the cap.
+  - **B35:** the terminal server refuses a new upgrade with 4429 while more than `2 × LIMITS.terminals` upgraded sockets are still waiting for `bridge.open`.
+  - **Test noise:** the vitest output is clean, with no happy-dom stack trace from `term-loader.ts`.
+- [ ] **Step 2: Run them.** Expected: FAIL.
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the tests** on Windows, in the WSL fresh clone and with `corepack pnpm test:linux`. Expected: PASS.
+- [ ] **Step 5: Commit.** `fix: phase 4 residuals (view re-post on re-select, first-prompt capture cap, upgrade cap)`
 
 ---
 
