@@ -174,14 +174,14 @@ test.describe('the terminal (Task 13)', () => {
     await expect(page.locator('.k-foot .l .k-hint')).toHaveText(
       'Shift+Esc (or Ctrl+Shift+X) to leave',
     );
-    const color = await rows
-      .locator('span', { hasText: 'TRUECOLOR' })
-      .evaluate((e) => getComputedStyle(e).color);
-    expect(color).toBe('rgb(215, 119, 87)');
-    const bg = await rows
-      .locator('span', { hasText: 'TRUEBG' })
-      .evaluate((e) => getComputedStyle(e).backgroundColor);
-    expect(bg).toBe('rgb(40, 80, 40)');
+    // The text can show a frame before xterm's style for it lands: poll, never read once.
+    const style = (text: string, prop: 'color' | 'backgroundColor') => () =>
+      rows
+        .locator('span', { hasText: text })
+        .first()
+        .evaluate((e, p) => getComputedStyle(e)[p], prop);
+    await expect.poll(style('TRUECOLOR', 'color')).toBe('rgb(215, 119, 87)');
+    await expect.poll(style('TRUEBG', 'backgroundColor')).toBe('rgb(40, 80, 40)');
     // Keys go to the pane, Esc included; board keys don't act (F9).
     await page.keyboard.type('j1');
     await page.keyboard.press('Escape');
