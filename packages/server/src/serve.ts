@@ -36,7 +36,7 @@ import type { SessionSource } from './source.ts';
 import { StateStore, stateDir } from './state/store.ts';
 import { TerminalBridge } from './terminal/bridge.ts';
 import { ControlClient } from './terminal/control.ts';
-import { TerminalServer } from './terminal/server.ts';
+import { LazyTerminals } from './terminal/lazy.ts';
 import { parseTmuxVersion, TmuxClient, tmuxVersionOutput } from './tmux/client.ts';
 import { TmuxWatcher } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
@@ -468,8 +468,9 @@ async function startServer(
     ...(archivedList ? { archivedList } : {}),
     ...(differ ? { differ } : {}),
   });
-  // The terminal WebSocket (B9), in both modes: demo answers 4501 after its guards.
-  const terminals = new TerminalServer({
+  // The terminal WebSocket (B9), in both modes: demo answers 4501 after its guards. `ws` and the
+  // terminal server load on the first upgrade (idle cost, spec §7).
+  const terminals = new LazyTerminals({
     allowed,
     token: cfg.token,
     source: liveParts?.source ?? null,
