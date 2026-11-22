@@ -307,7 +307,7 @@ describe('the diff view', () => {
       const c = await openDiff();
       const err = q(c, '.k-dv .k-err');
       expect(err.textContent).toBe(
-        `Couldn't load the diff. ${error[0].toUpperCase()}${error.slice(1)}`,
+        `Couldn't load the diff. ${error.charAt(0).toUpperCase()}${error.slice(1)}`,
       );
       expect(err.getAttribute('role')).toBe('alert');
       cleanup();
