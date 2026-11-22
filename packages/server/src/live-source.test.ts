@@ -2011,6 +2011,48 @@ describe('LiveSource: launches (phase 3 Task 6)', () => {
     expect(source.branchTaken('shop', 'kage/add-a-dark-mode')).toBe(false);
   });
 
+  it('forget (delete): drops the record and the session (session.removed), saves at once and syncs auto-archive', async () => {
+    const { source, store, events, auto } = setup({
+      windows: [kageWin()],
+      records: [rec(), rec({ kageId: 'k-2', windowId: null, branch: 'kage/other' })],
+    });
+    await source.start();
+    events.length = 0;
+    auto.calls = [];
+    const saves = store.saves.length;
+    await source.forget('k-1');
+    expect(events).toEqual([{ type: 'session.removed', id: 'k-1' }]);
+    expect(source.get('k-1')).toBeUndefined();
+    expect(source.finishTarget('k-1')).toBeNull();
+    expect(store.saves.length).toBe(saves + 1);
+    expect(store.saves.at(-1)?.map((r) => r.kageId)).toEqual(['k-2']);
+    expect(auto.calls).toContain('sync');
+    expect(source.branchTaken('shop', 'kage/fix-the-cart-total')).toBe(false);
+    // The window's close listing that follows brings nothing back.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(source.get('k-1')).toBeUndefined();
+  });
+
+  it('forget of an archived record: also archive {count} goes out; an unknown id does nothing', async () => {
+    const { source, store, events } = setup({
+      records: [rec({ windowId: null, archived: true, archivedAt: 5 })],
+    });
+    await source.start();
+    expect(source.archivedCount()).toBe(1);
+    events.length = 0;
+    await source.forget('k-1');
+    expect(events).toEqual([
+      { type: 'session.removed', id: 'k-1' },
+      { type: 'archive', count: 0 },
+    ]);
+    expect(store.saves.at(-1)).toEqual([]);
+    const saves = store.saves.length;
+    events.length = 0;
+    await source.forget('nope');
+    expect(events).toEqual([]);
+    expect(store.saves.length).toBe(saves);
+  });
+
   it('branchTaken: any record of the project using the branch, archived ones included', async () => {
     const { source } = setup({ records: [rec({ archived: true })] });
     await source.start();
@@ -2869,7 +2911,15 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     await flush();
     expect(source.get('k-1')?.status).toBe('done');
     const calls: string[] = [];
-    const finish = new FinishActions({ tmux: killer(tmux, calls), source });
+    const finish = new FinishActions({
+      tmux: killer(tmux, calls),
+      source,
+      git: async () => ({ stdout: '', stderr: '' }),
+      projectsRoot: '/p',
+      worktreeDir: '.worktrees',
+      counts: async () => ({ unpushed: 0, uncommitted: 0 }),
+      publish: () => {},
+    });
     events.length = 0;
     await finish.archive('k-1', true);
     expect(calls).toEqual(['kill @2 k-1']);

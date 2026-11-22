@@ -1,5 +1,8 @@
+import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, sep } from 'node:path';
 import type { SessionStatus } from '@kage/shared';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActionError, ActionLock } from '../control/actions.ts';
 import type { FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
@@ -94,14 +97,33 @@ class FakeSource {
     const t = this.targets.get(id);
     if (t) t.status = 'ended';
   }
+  async forget(id: string): Promise<void> {
+    this.log.push(`forget ${id}`);
+    this.targets.delete(id);
+  }
 }
+
+/** Delete deps that refuse every use: pin and archive must never reach git. */
+const NO_DELETE = {
+  git: async (args: string[]): Promise<{ stdout: string; stderr: string }> => {
+    throw new Error(`unexpected git ${args.join(' ')}`);
+  },
+  projectsRoot: '/home/dev/projects',
+  worktreeDir: '.worktrees',
+  counts: async (): Promise<{ unpushed: number; uncommitted: number }> => {
+    throw new Error('unexpected count');
+  },
+  publish: () => {
+    throw new Error('unexpected publish');
+  },
+};
 
 function setup(t: FinishTarget | null = target(), lock = new ActionLock()) {
   const tmux = new FakeTmux();
   const source = new FakeSource();
   if (t) source.targets.set(t.id, t);
   else source.targets.clear();
-  const finish = new FinishActions({ tmux, source, lock });
+  const finish = new FinishActions({ tmux, source, lock, ...NO_DELETE });
   return { tmux, source, finish, lock };
 }
 
@@ -358,5 +380,366 @@ describe('ActionLock', () => {
     // A stale release must not free the new holder's lock.
     a?.();
     expect(lock.tryAcquire('k-1')).toBeNull();
+  });
+});
+
+describe('FinishActions.remove (delete with the warning, B10)', () => {
+  const NOT_OURS = (wt: string) => `Kage won't delete ${wt}: it isn't one of Kage's worktrees.`;
+  const CHANGED = 'The branch changed since you looked. Look again before deleting.';
+  /** git prints forward slashes on Windows too. */
+  const gitPath = (p: string) => p.replace(/\\/g, '/');
+  const porcelain = (entries: { path: string; branch: string | null }[]) =>
+    entries
+      .map(
+        (e) =>
+          `worktree ${gitPath(e.path)}\nHEAD ${'a'.repeat(40)}\n${e.branch ? `branch ${e.branch}` : 'detached'}\n`,
+      )
+      .join('\n');
+
+  let tmp: string;
+  let repo: string;
+  let wt: string;
+  beforeEach(async () => {
+    tmp = await realpath(await mkdtemp(join(tmpdir(), 'kage-del-')));
+    repo = join(tmp, 'projects', 'shop');
+    wt = join(repo, '.worktrees', 'x');
+    await mkdir(wt, { recursive: true });
+    await mkdir(join(repo, '.git'));
+  });
+  afterEach(() => rm(tmp, { recursive: true, force: true }));
+
+  /**
+   * One log for tmux, git, counts and the source, in call order. git answers from `g`: the
+   * listing, whether the branch exists, counts, and failures for remove and branch -D.
+   */
+  function del(
+    o: {
+      t?: Partial<FinishTarget>;
+      r?: Partial<SessionRecord>;
+      fresh?: { unpushed: number; uncommitted: number }[];
+      project?: boolean;
+      countError?: Error;
+    } = {},
+  ) {
+    const log: string[] = [];
+    const g = {
+      list: null as string | null,
+      branchExists: true,
+      removeError: null as Error | null,
+      branchError: null as Error | null,
+      revList: '0\n',
+      status: '',
+    };
+    const git = async (args: string[], opts?: { cwd?: string; timeoutMs?: number }) => {
+      const line = args.join(' ');
+      log.push(`git ${line}`);
+      if (line === 'worktree list --porcelain') {
+        return {
+          stdout:
+            g.list ??
+            porcelain([
+              { path: repo, branch: 'refs/heads/main' },
+              { path: wt, branch: 'refs/heads/kage/x' },
+            ]),
+          stderr: '',
+        };
+      }
+      if (args[0] === 'show-ref') {
+        if (g.branchExists) return { stdout: '', stderr: '' };
+        throw Object.assign(new Error('exit 1'), { code: 1, stderr: '' });
+      }
+      if (args[0] === 'worktree' && args[1] === 'remove') {
+        expect(opts?.timeoutMs).toBe(60_000);
+        if (g.removeError) throw g.removeError;
+        return { stdout: '', stderr: '' };
+      }
+      if (args[0] === 'branch') {
+        if (g.branchError) throw g.branchError;
+        return { stdout: '', stderr: '' };
+      }
+      if (args[0] === 'rev-list') return { stdout: g.revList, stderr: '' };
+      if (args[0] === 'status') return { stdout: g.status, stderr: '' };
+      if (line === 'worktree prune') return { stdout: '', stderr: '' };
+      throw new Error(`unexpected git ${line}`);
+    };
+    const fresh = [...(o.fresh ?? [{ unpushed: 1, uncommitted: 0 }])];
+    const published: string[] = [];
+    const tmux = new FakeTmux();
+    tmux.log = log;
+    const source = new FakeSource();
+    source.log = log;
+    source.targets.set(
+      'k-1',
+      target({ record: rec({ branch: 'kage/x', worktree: wt, ...o.r }), ...o.t }),
+    );
+    const finish = new FinishActions({
+      tmux,
+      source,
+      lock: new ActionLock(),
+      git,
+      projectsRoot: join(tmp, 'projects'),
+      worktreeDir: '.worktrees',
+      counts: async (worktree, branch) => {
+        log.push(`counts ${worktree === wt ? '<wt>' : worktree} ${branch}`);
+        if (o.countError) throw o.countError;
+        return (fresh.length > 1 ? fresh.shift() : fresh[0]) as {
+          unpushed: number;
+          uncommitted: number;
+        };
+      },
+      publish: (id, p) => published.push(`${id} ${JSON.stringify(p)}`),
+      findProject: async (name) => (o.project === false || name !== 'shop' ? null : { path: repo }),
+    });
+    const removals = () =>
+      log.filter((l) => /^git (worktree (remove|prune)|branch )|^forget/.test(l));
+    const kills = () => log.filter((l) => l.startsWith('kill'));
+    return { log, g, tmux, source, finish, published, removals, kills };
+  }
+
+  it('confirmed {1, 0}: recount, kill, recount, worktree remove (no --force), branch -D, forget, in order', async () => {
+    const { finish, log, published } = del();
+    await finish.remove('k-1', { unpushed: 1, uncommitted: 0 });
+    expect(log).toEqual([
+      'git worktree list --porcelain',
+      'git show-ref --verify --quiet refs/heads/kage/x',
+      'counts <wt> kage/x',
+      'kill @2 k-1',
+      'stopped k-1',
+      'git worktree list --porcelain',
+      'git show-ref --verify --quiet refs/heads/kage/x',
+      'counts <wt> kage/x',
+      `git worktree remove -- ${wt}`,
+      'git branch -D -- kage/x',
+      'forget k-1',
+    ]);
+    expect(published).toEqual([]);
+  });
+
+  it('confirmed {0, 2} that still match → worktree remove --force', async () => {
+    const { finish, removals } = del({ fresh: [{ unpushed: 0, uncommitted: 2 }] });
+    await finish.remove('k-1', { unpushed: 0, uncommitted: 2 });
+    expect(removals()).toEqual([
+      `git worktree remove --force -- ${wt}`,
+      'git branch -D -- kage/x',
+      'forget k-1',
+    ]);
+  });
+
+  it('a stale {0, 0} when the branch has {1, 0} → 409, publish {1, 0}, no kill, removal or forget', async () => {
+    const { finish, published, removals, kills } = del();
+    const e = await refusal(finish.remove('k-1', { unpushed: 0, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([409, CHANGED]);
+    expect(published).toEqual(['k-1 {"unpushed":1,"uncommitted":0}']);
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([]);
+  });
+
+  it('F10: the counts change between the kill and the removal → 409, publish the fresh ones, nothing removed', async () => {
+    const { finish, published, removals, kills } = del({
+      fresh: [
+        { unpushed: 1, uncommitted: 0 },
+        { unpushed: 1, uncommitted: 1 },
+      ],
+    });
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([409, CHANGED]);
+    expect(kills()).toEqual(['kill @2 k-1']);
+    expect(published).toEqual(['k-1 {"unpushed":1,"uncommitted":1}']);
+    expect(removals()).toEqual([]);
+  });
+
+  it('an external session → 403 with no git call', async () => {
+    const { finish, log } = del({ t: { record: null, external: true } });
+    const e = await refusal(finish.remove('k-1', { unpushed: 0, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([403, 'Kage only deletes sessions it started.']);
+    expect(log).toEqual([]);
+  });
+
+  it('running or needs you → 409 "Stop the session before deleting it.", with no git call', async () => {
+    for (const status of ['running', 'needs-you'] as SessionStatus[]) {
+      const { finish, log } = del({ t: { status } });
+      const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+      expect([e.status, e.message]).toEqual([409, 'Stop the session before deleting it.']);
+      expect(log).toEqual([]);
+    }
+  });
+
+  it('a busy footer on the pane right before the kill → 409, nothing killed or removed', async () => {
+    const { finish, tmux, removals, kills } = del();
+    tmux.screen = 'x\n  ⏸ manual mode on · esc to interrupt\n';
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([409, 'Stop the session before deleting it.']);
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([]);
+  });
+
+  it('a branch "-x", a branch equal to the base, or a worktree outside <repo>/.worktrees/ → 409, nothing touched', async () => {
+    const cases: Partial<SessionRecord>[] = [
+      { branch: '-x' },
+      { branch: 'main', base: 'main' },
+      { worktree: `${repo}${sep}.worktrees${sep}..${sep}..${sep}home${sep}x` },
+      { worktree: `${repo}/../../home/x` },
+      { worktree: repo },
+      { worktree: join(repo, '.worktrees') },
+      { worktree: join(tmp, 'elsewhere') },
+    ];
+    for (const r of cases) {
+      const { finish, log } = del({ r });
+      const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+      const shown = r.worktree ?? wt;
+      expect([e.status, e.message], JSON.stringify(r)).toEqual([409, NOT_OURS(shown)]);
+      expect(log, JSON.stringify(r)).toEqual([]);
+    }
+  });
+
+  it('a worktree folder that is a link to somewhere outside → 409, nothing touched', async () => {
+    const outside = join(tmp, 'outside');
+    await mkdir(outside);
+    const link = join(repo, '.worktrees', 'y');
+    await symlink(outside, link, 'junction');
+    const { finish, log } = del({ r: { worktree: link } });
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([409, NOT_OURS(link)]);
+    expect(log).toEqual([]);
+  });
+
+  it('a folder git does not list → 409 before the kill, nothing removed', async () => {
+    const { finish, g, removals, kills } = del();
+    g.list = porcelain([{ path: repo, branch: 'refs/heads/main' }]);
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([409, NOT_OURS(wt)]);
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([]);
+  });
+
+  it('the path listed as the main worktree, on another branch, or detached → refused', async () => {
+    for (const list of [
+      porcelain([
+        { path: wt, branch: 'refs/heads/kage/x' },
+        { path: repo, branch: 'refs/heads/main' },
+      ]),
+      porcelain([
+        { path: repo, branch: 'refs/heads/main' },
+        { path: wt, branch: 'refs/heads/feature/keep' },
+      ]),
+      porcelain([
+        { path: repo, branch: 'refs/heads/main' },
+        { path: wt, branch: null },
+      ]),
+    ]) {
+      const { finish, g, removals, kills } = del();
+      g.list = list;
+      const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+      expect([e.status, e.message]).toEqual([409, NOT_OURS(wt)]);
+      expect(kills()).toEqual([]);
+      expect(removals()).toEqual([]);
+    }
+  });
+
+  it('killOwnedWindow false while the window holds another kage id → 403, nothing removed', async () => {
+    const { finish, tmux, removals } = del();
+    tmux.held.set('@2', 'k-other');
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([403, "That window isn't Kage's any more."]);
+    expect(removals()).toEqual([]);
+  });
+
+  it("a failed worktree remove → 422 with git's first line; the branch and the record stay", async () => {
+    const { finish, g, removals } = del();
+    g.removeError = execError(
+      "fatal: '.worktrees/x' contains modified or untracked files, use --force to delete it\nx",
+    );
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([
+      422,
+      "git couldn't remove the worktree: fatal: '.worktrees/x' contains modified or untracked files, use --force to delete it",
+    ]);
+    expect(removals()).toEqual([`git worktree remove -- ${wt}`]);
+  });
+
+  it("a failed branch -D → 422 with git's first line; the record stays (its worktree is gone)", async () => {
+    const { finish, g, removals, source } = del();
+    g.branchError = execError("error: cannot delete branch 'kage/x' used by worktree at '/x'");
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([
+      422,
+      "git couldn't delete the branch: error: cannot delete branch 'kage/x' used by worktree at '/x'",
+    ]);
+    expect(removals()).toEqual([`git worktree remove -- ${wt}`, 'git branch -D -- kage/x']);
+    expect(source.targets.has('k-1')).toBe(true);
+  });
+
+  it('a failed count → 422, nothing killed or removed', async () => {
+    const { finish, removals, kills } = del({ countError: execError('fatal: bad object HEAD') });
+    const e = await refusal(finish.remove('k-1', { unpushed: 1, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([
+      422,
+      "git couldn't count the work on the branch: fatal: bad object HEAD",
+    ]);
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([]);
+  });
+
+  it('the project folder is gone: the window is killed and the record forgotten, with no git call', async () => {
+    const { finish, log } = del({ project: false });
+    await finish.remove('k-1', { unpushed: 0, uncommitted: 0 });
+    expect(log).toEqual(['kill @2 k-1', 'stopped k-1', 'forget k-1']);
+  });
+
+  it('a listed worktree whose folder is gone: unpushed counted in the repo, worktree remove (no --force)', async () => {
+    const { finish, g, log, removals } = del();
+    await rm(wt, { recursive: true });
+    g.revList = '2\n';
+    await finish.remove('k-1', { unpushed: 2, uncommitted: 0 });
+    expect(log.filter((l) => l.startsWith('git rev-list'))[0]).toBe(
+      'git rev-list --count refs/heads/kage/x --not --exclude=kage/x --branches --remotes --tags',
+    );
+    expect(log.some((l) => l.startsWith('counts'))).toBe(false);
+    expect(removals()).toEqual([
+      `git worktree remove -- ${wt}`,
+      'git branch -D -- kage/x',
+      'forget k-1',
+    ]);
+  });
+
+  it('an unlisted worktree whose folder is gone: worktree prune, then the branch', async () => {
+    const { finish, g, removals } = del();
+    await rm(wt, { recursive: true });
+    g.list = porcelain([{ path: repo, branch: 'refs/heads/main' }]);
+    g.revList = '0\n';
+    await finish.remove('k-1', { unpushed: 0, uncommitted: 0 });
+    expect(removals()).toEqual(['git worktree prune', 'git branch -D -- kage/x', 'forget k-1']);
+  });
+
+  it('a branch that is gone: uncommitted counted in the folder, no branch -D', async () => {
+    const { finish, g, removals, log } = del();
+    g.branchExists = false;
+    g.status = ' M a.txt\0?? b.txt\0';
+    await finish.remove('k-1', { unpushed: 0, uncommitted: 2 });
+    expect(log.some((l) => l.startsWith('git status'))).toBe(true);
+    expect(removals()).toEqual([`git worktree remove --force -- ${wt}`, 'forget k-1']);
+  });
+
+  it('no window (ended): no kill, the rest as confirmed', async () => {
+    const { finish, removals, kills } = del({
+      t: { status: 'ended', windowId: null, paneId: null },
+    });
+    await finish.remove('k-1', { unpushed: 1, uncommitted: 0 });
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([
+      `git worktree remove -- ${wt}`,
+      'git branch -D -- kage/x',
+      'forget k-1',
+    ]);
+  });
+
+  it('shares the action lock: held elsewhere → 409, nothing done; unknown id → 404', async () => {
+    const lock = new ActionLock();
+    const { finish } = setup(target(), lock);
+    const release = lock.tryAcquire('k-1');
+    expect((await refusal(finish.remove('k-1', { unpushed: 0, uncommitted: 0 }))).status).toBe(409);
+    release?.();
+    const e = await refusal(finish.remove('nope', { unpushed: 0, uncommitted: 0 }));
+    expect([e.status, e.message]).toEqual([404, 'No session with id nope']);
   });
 });

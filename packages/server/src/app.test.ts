@@ -74,6 +74,8 @@ const req = (path: string, init: RequestInit & { headers?: Record<string, string
     ...init,
     headers: { Host: HOST, ...init.headers },
   });
+/** A delete's body: the counts the confirmation showed. */
+const SEEN = { unpushed: 0, uncommitted: 0 };
 const mutate = (method: string, path: string, body?: unknown) =>
   req(path, {
     method,
@@ -204,11 +206,11 @@ describe('API', () => {
   });
 
   it('deletes a session, and answers 404 for an unknown one', async () => {
-    const ok = await app().fetch(mutate('DELETE', '/api/sessions/docs'));
+    const ok = await app().fetch(mutate('DELETE', '/api/sessions/docs', SEEN));
     expect(ok.status).toBe(204);
     expect(source.get('docs')).toBeUndefined();
 
-    const missing = await app().fetch(mutate('DELETE', '/api/sessions/nope'));
+    const missing = await app().fetch(mutate('DELETE', '/api/sessions/nope', SEEN));
     expect(missing.status).toBe(404);
     expect(missing.headers.get('content-type')).toContain('application/json');
     expect(await missing.json()).toEqual({ error: 'No session with id nope' });
@@ -218,7 +220,7 @@ describe('API', () => {
     const live = new LiveSource({} as LiveSourceDeps);
     const liveHub = new EventHub(live, 'my-pc', '/p');
     const liveApp = createApp({ source: live, hub: liveHub, assets, allowed, token: '' });
-    const res = await liveApp.fetch(mutate('DELETE', '/api/sessions/k-1'));
+    const res = await liveApp.fetch(mutate('DELETE', '/api/sessions/k-1', SEEN));
     expect(res.status).toBe(501);
     expect(res.headers.get('content-type')).toContain('application/json');
     expect(await res.json()).toEqual({ error: 'Deleting sessions arrives in a later version' });
@@ -351,7 +353,7 @@ describe('token login (B13)', () => {
     const cases = [
       req('/api/events'),
       mutate('POST', '/api/view', { streamId: 's', id: null }),
-      mutate('DELETE', '/api/sessions/docs'),
+      mutate('DELETE', '/api/sessions/docs', SEEN),
       req('/api/nope'),
     ];
     for (const r of cases) {
@@ -380,7 +382,9 @@ describe('token login (B13)', () => {
       withCookie(mutate('POST', '/api/view', { streamId: snap.streamId, id: 'web' })),
     );
     expect(view.status).toBe(204);
-    expect((await a.fetch(withCookie(mutate('DELETE', '/api/sessions/docs')))).status).toBe(204);
+    expect((await a.fetch(withCookie(mutate('DELETE', '/api/sessions/docs', SEEN)))).status).toBe(
+      204,
+    );
     expect(source.get('docs')).toBeUndefined();
     expect((await a.fetch(withCookie(req('/api/nope')))).status).toBe(404);
     await reader.cancel();
@@ -534,7 +538,7 @@ describe('token login (B13)', () => {
     const res = await a.fetch(req('/api/events'));
     expect(res.status).toBe(200);
     await res.body?.cancel();
-    expect((await a.fetch(mutate('DELETE', '/api/sessions/docs'))).status).toBe(204);
+    expect((await a.fetch(mutate('DELETE', '/api/sessions/docs', SEEN))).status).toBe(204);
     const l = await a.fetch(login({ token: 'anything' }));
     expect(l.status).toBe(204);
     expect(l.headers.get('set-cookie')).toBeNull();
@@ -838,7 +842,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
 });
 
 describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Task 4)', () => {
-  type Call = [string, string, boolean];
+  type Call = [string, string, unknown];
   const ARCHIVED = [
     { id: 'k-2', project: 'shop', task: 'Newer', branch: 'kage/newer', archivedAt: 20 },
     { id: 'k-1', project: 'shop', task: 'Older', branch: 'kage/older', archivedAt: 10 },
@@ -858,6 +862,7 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
       finish: {
         pin: (id, pinned) => act(['pin', id, pinned]),
         archive: (id, archived) => act(['archive', id, archived]),
+        remove: (id, seen) => act(['remove', id, seen]),
       },
       archivedList: () => ARCHIVED.map((s) => ({ ...s })),
     });
@@ -1012,7 +1017,7 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
       assets,
       allowed,
       token: '',
-      finish: { pin: async () => {}, archive: async () => {} },
+      finish: { pin: async () => {}, archive: async () => {}, remove: async () => {} },
       archivedList: () => live.archivedList(),
     });
     const res = await a.fetch(req('/api/events'));
@@ -1028,5 +1033,105 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
     expect(snap.sessions.map((s: { id: string }) => s.id)).toEqual(['k-2']);
     liveHub.close();
     await live.stop();
+  });
+});
+
+describe('DELETE /api/sessions/:id {unpushed, uncommitted} (phase 4 Task 6)', () => {
+  const EXPECTED_DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+  const withRemove = (fail: Error | null = null, token = '') => {
+    const calls: [string, unknown][] = [];
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      finish: {
+        pin: async () => {},
+        archive: async () => {},
+        remove: async (id, seen) => {
+          calls.push([id, seen]);
+          if (fail) throw fail;
+        },
+      },
+    });
+    return { a, calls };
+  };
+
+  it('live: 204 and the confirmed counts reach FinishActions.remove; the demo source is not touched', async () => {
+    const { a, calls } = withRemove();
+    const res = await a.fetch(
+      mutate('DELETE', '/api/sessions/k-1', { unpushed: 1, uncommitted: 2 }),
+    );
+    expect(res.status).toBe(204);
+    expect(calls).toEqual([['k-1', { unpushed: 1, uncommitted: 2 }]]);
+  });
+
+  it('validates the body (400, the exact sentence) in live and demo modes, before any action', async () => {
+    const bad: [unknown, string][] = [
+      [undefined, EXPECTED_DELETE],
+      [{}, EXPECTED_DELETE],
+      [{ unpushed: -1, uncommitted: 0 }, EXPECTED_DELETE],
+      [{ unpushed: 1.5, uncommitted: 0 }, EXPECTED_DELETE],
+      [{ unpushed: 0, uncommitted: 0, force: true }, 'Unexpected field "force"'],
+    ];
+    const { a, calls } = withRemove();
+    for (const [body, error] of bad) {
+      for (const target of [a, app(true)]) {
+        const res = await target.fetch(mutate('DELETE', '/api/sessions/docs', body));
+        expect(res.status, JSON.stringify(body)).toBe(400);
+        expect(await res.json()).toEqual({ error });
+      }
+    }
+    const notJson = await app(true).fetch(
+      req('/api/sessions/docs', {
+        method: 'DELETE',
+        headers: { 'X-Kage': '1', Origin: ORIGIN, 'Content-Type': 'application/json' },
+        body: '{',
+      }),
+    );
+    expect(notJson.status).toBe(400);
+    expect(calls).toEqual([]);
+    expect(source.get('docs')).toBeDefined();
+  });
+
+  it('demo mode still removes the session (DemoSource.remove), with any valid counts', async () => {
+    const res = await app(true).fetch(
+      mutate('DELETE', '/api/sessions/docs', { unpushed: 3, uncommitted: 1 }),
+    );
+    expect(res.status).toBe(204);
+    expect(source.get('docs')).toBeUndefined();
+  });
+
+  it('maps ActionError statuses (403, 404, 409, 422) and messages; anything else is a one-sentence 500', async () => {
+    for (const status of [403, 404, 409, 422] as const) {
+      const { a } = withRemove(new ActionError(status, `Problem ${status}.`));
+      const res = await a.fetch(mutate('DELETE', '/api/sessions/k-1', SEEN));
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+    }
+    const { a } = withRemove(new Error('disk full\nstack'));
+    const res = await a.fetch(mutate('DELETE', '/api/sessions/k-1', SEEN));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Kage couldn't delete the session: disk full" });
+  });
+
+  it('needs X-Kage and a matching Origin, and the token when one is set', async () => {
+    const { a, calls } = withRemove();
+    for (const headers of [
+      { 'Content-Type': 'application/json' } as Record<string, string>,
+      { 'Content-Type': 'application/json', 'X-Kage': '1' },
+      { 'Content-Type': 'application/json', Origin: ORIGIN },
+      { 'Content-Type': 'application/json', 'X-Kage': '1', Origin: 'http://evil.example' },
+    ]) {
+      const res = await a.fetch(
+        req('/api/sessions/k-1', { method: 'DELETE', headers, body: JSON.stringify(SEEN) }),
+      );
+      expect(res.status).toBe(403);
+    }
+    const t = withRemove(null, 'x'.repeat(20));
+    expect((await t.a.fetch(mutate('DELETE', '/api/sessions/k-1', SEEN))).status).toBe(401);
+    expect(calls).toEqual([]);
+    expect(t.calls).toEqual([]);
   });
 });

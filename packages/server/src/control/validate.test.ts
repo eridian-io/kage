@@ -3,6 +3,7 @@ import {
   hasControlChars,
   parseAnswer,
   parseArchive,
+  parseDelete,
   parseNewTask,
   parsePin,
   parseReply,
@@ -290,6 +291,43 @@ describe('parsePin and parseArchive (phase 4 Task 4)', () => {
     expect(parseArchive({ archived: true, pinned: true })).toEqual({
       ok: false,
       error: 'Unexpected field "pinned"',
+    });
+  });
+});
+
+describe('parseDelete (phase 4 Task 6)', () => {
+  const DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+  it('takes exactly the two counts, integers 0–1,000,000', () => {
+    for (const body of [
+      { unpushed: 0, uncommitted: 0 },
+      { unpushed: 1, uncommitted: 2 },
+      { unpushed: 1_000_000, uncommitted: 1_000_000 },
+    ]) {
+      expect(parseDelete(body)).toEqual({ ok: true, value: body });
+    }
+  });
+  it('refuses a missing count, a negative, a fraction, a string, too big, an array, null and no body', () => {
+    for (const body of [
+      {},
+      { unpushed: 0 },
+      { uncommitted: 0 },
+      { unpushed: -1, uncommitted: 0 },
+      { unpushed: 1.5, uncommitted: 0 },
+      { unpushed: 0, uncommitted: Number.NaN },
+      { unpushed: '1', uncommitted: 0 },
+      { unpushed: 0, uncommitted: 1_000_001 },
+      { unpushed: null, uncommitted: 0 },
+      [],
+      null,
+      undefined,
+    ]) {
+      expect(parseDelete(body), JSON.stringify(body)).toEqual({ ok: false, error: DELETE });
+    }
+  });
+  it('refuses an extra key', () => {
+    expect(parseDelete({ unpushed: 0, uncommitted: 0, force: true })).toEqual({
+      ok: false,
+      error: 'Unexpected field "force"',
     });
   });
 });

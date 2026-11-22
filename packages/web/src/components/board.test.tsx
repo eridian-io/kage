@@ -316,7 +316,10 @@ describe('session panel', () => {
     fireEvent.click(row(container, 'docs'));
     fireEvent.click(button(container, 'Delete…'));
     fireEvent.click(button(container, 'Delete session'));
-    expect(apiDelete).toHaveBeenCalledWith('/api/sessions/docs');
+    expect(apiDelete).toHaveBeenCalledWith('/api/sessions/docs', {
+      unpushed: 1,
+      uncommitted: 0,
+    });
     await Promise.resolve();
     applyEvent({ type: 'session.removed', id: 'docs' });
     await Promise.resolve();

@@ -18,6 +18,7 @@ import {
   type Parsed,
   parseAnswer,
   parseArchive,
+  parseDelete,
   parsePin,
   parseReply,
 } from './control/validate.ts';
@@ -44,8 +45,11 @@ export interface AppDeps {
   invalidateProjects?: () => void;
   /** Live mode: answer, reply and stop. Without it (demo mode) those routes answer 501. */
   controls?: Pick<SessionControls, 'answer' | 'reply' | 'stop'>;
-  /** Live mode: pin, archive and restore. Without it (demo mode) those routes answer 501. */
-  finish?: Pick<FinishActions, 'pin' | 'archive'>;
+  /**
+   * Live mode: pin, archive, restore and delete. Without it pin and archive answer 501, and
+   * delete goes to the source (demo mode removes the session).
+   */
+  finish?: Pick<FinishActions, 'pin' | 'archive' | 'remove'>;
   /** Live mode: the archived sessions for GET /api/archive (501 without it). */
   archivedList?: () => ArchivedSession[];
 }
@@ -301,6 +305,18 @@ export function createApp(deps: AppDeps): Hono {
 
   app.delete('/api/sessions/:id', async (c) => {
     const id = c.req.param('id');
+    // The counts the confirmation showed, in live and demo modes alike.
+    const parsed = parseDelete(json(await c.req.text()));
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    if (finish) {
+      try {
+        await finish.remove(id, parsed.value);
+      } catch (err) {
+        if (err instanceof ActionError) return c.json({ error: err.message }, err.status);
+        return c.json({ error: `Kage couldn't delete the session: ${firstLine(err)}` }, 500);
+      }
+      return c.body(null, 204);
+    }
     try {
       await source.remove(id);
     } catch (err) {

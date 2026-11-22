@@ -27,8 +27,13 @@ export function apiGet(path: string): Promise<Response> {
   return send(path, { method: 'GET' });
 }
 
-export function apiDelete(path: string): Promise<Response> {
-  return send(path, { method: 'DELETE', headers: HEADERS });
+/** A DELETE with a JSON body: a session delete carries the counts its confirmation showed. */
+export function apiDelete(path: string, body: unknown): Promise<Response> {
+  return send(path, {
+    method: 'DELETE',
+    headers: { ...HEADERS, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
 }
 
 /** A POST with a JSON body; without a body (Stop) it sends none. */

@@ -442,13 +442,25 @@ export class LiveSource implements SessionSource {
   }
 
   /** The launch failed: the record and its session go (session.removed), and that is saved. */
-  async abandon(kageId: string): Promise<void> {
-    for (const [w, k] of this.#claims) if (k === kageId) this.#claims.delete(w);
-    const st = this.#sessions.get(kageId);
+  abandon(kageId: string): Promise<void> {
+    return this.forget(kageId);
+  }
+
+  /**
+   * Delete (and a failed launch): the record and its session go (session.removed), the records
+   * are saved at once (a failed save retries in the background), and auto-archive forgets it.
+   * An archived record also sends archive {count}. An unknown id does nothing.
+   */
+  async forget(id: string): Promise<void> {
+    for (const [w, k] of this.#claims) if (k === id) this.#claims.delete(w);
+    const st = this.#sessions.get(id);
     if (st) this.#removeSession(st);
-    if (!this.#records.delete(kageId)) return;
+    const r = this.#records.get(id);
+    if (!r) return;
+    this.#records.delete(id);
     this.#auto?.sync();
     await this.#saveNow();
+    if (r.archived && this.#running) this.#emit({ type: 'archive', count: this.archivedCount() });
   }
 
   /** True when a record of `project` (archived ones too) uses `branch`. */

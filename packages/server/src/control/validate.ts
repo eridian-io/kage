@@ -1,6 +1,7 @@
 import {
   type AnswerBody,
   type ArchiveBody,
+  type DeleteBody,
   LIMITS,
   type NewTaskBody,
   type PinBody,
@@ -152,4 +153,22 @@ export function parseArchive(body: unknown): Parsed<ArchiveBody> {
   if (!o.ok) return o;
   const { archived } = o.value;
   return typeof archived === 'boolean' ? { ok: true, value: { archived } } : fail(EXPECTED_ARCHIVE);
+}
+
+const EXPECTED_DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+/** A count the delete confirmation can show. */
+const MAX_COUNT = 1_000_000;
+const isCount = (n: unknown): n is number =>
+  typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_COUNT;
+
+/**
+ * A `DELETE /api/sessions/:id` body: exactly `{unpushed, uncommitted}`, the counts the
+ * confirmation showed, each an integer 0–1,000,000. The server deletes only while they match.
+ */
+export function parseDelete(body: unknown): Parsed<DeleteBody> {
+  const o = exactKeys(body, ['unpushed', 'uncommitted'], EXPECTED_DELETE);
+  if (!o.ok) return o;
+  const { unpushed, uncommitted } = o.value;
+  if (!isCount(unpushed) || !isCount(uncommitted)) return fail(EXPECTED_DELETE);
+  return { ok: true, value: { unpushed, uncommitted } };
 }

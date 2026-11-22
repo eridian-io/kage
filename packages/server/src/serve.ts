@@ -216,7 +216,17 @@ async function startLive(
   });
   // Built before source.start(), which starts the auto-archiver that archives through it.
   const lock = new ActionLock();
-  const finish = new FinishActions({ tmux, source, lock });
+  const finish = new FinishActions({
+    tmux,
+    source,
+    lock,
+    git: gitExec,
+    projectsRoot: cfg.projectsRoot,
+    worktreeDir: cfg.worktreeDir,
+    // Delete recounts what the confirmation showed; a mismatch reaches the board (B10).
+    counts: (worktree, branch) => branchCounts(worktree, branch, gitExec),
+    publish: (id, counts) => source.setPreview(id, counts),
+  });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());
   try {

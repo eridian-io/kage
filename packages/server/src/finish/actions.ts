@@ -1,32 +1,131 @@
+import { lstat, realpath } from 'node:fs/promises';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import type { DeleteBody } from '@kage/shared';
 import { ActionError, ActionLock, GONE_RE, isExecError } from '../control/actions.ts';
-import { firstLine } from '../git/exec.ts';
+import { SAFE_REF, uncommittedCount } from '../git/branch.ts';
+import { firstLine, type GitExec } from '../git/exec.ts';
+import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
+import type { SessionRecord } from '../state/store.ts';
 import type { TmuxClient } from '../tmux/client.ts';
 
 export type FinishTmux = Pick<TmuxClient, 'killOwnedWindow' | 'windowKageId' | 'capturePane'>;
-export type FinishSource = Pick<LiveSource, 'finishTarget' | 'setFlags' | 'markStopped'>;
+export type FinishSource = Pick<LiveSource, 'finishTarget' | 'setFlags' | 'markStopped' | 'forget'>;
+
+type Counts = { unpushed: number; uncommitted: number };
+
+export interface FinishDeps {
+  tmux: FinishTmux;
+  source: FinishSource;
+  lock?: ActionLock;
+  /** Delete's git (gitExec: fsmonitor off, no prompts, no optional locks). */
+  git: GitExec;
+  projectsRoot: string;
+  worktreeDir: string;
+  /** A record's unpushed commits and uncommitted entries (branchCounts), run in its worktree. */
+  counts: (worktree: string, branch: string) => Promise<Counts>;
+  /** Fresh counts after a mismatch, so the board shows them (LiveSource.setPreview). */
+  publish: (id: string, patch: Counts) => void;
+  /** The project folder of a record; null when it is gone (default findProject). */
+  findProject?: (name: string) => Promise<{ path: string } | null>;
+}
 
 const BUSY = 'Kage is still finishing the last action on this session.';
 const NOT_KAGES = "That window isn't Kage's any more.";
 const ACTIVE = 'Stop the session before archiving it.';
+const ACTIVE_DELETE = 'Stop the session before deleting it.';
+const CHANGED = 'The branch changed since you looked. Look again before deleting.';
+const notKageWorktree = (worktree: string) =>
+  `Kage won't delete ${worktree}: it isn't one of Kage's worktrees.`;
 /** Claude's footer while a turn runs (integration §7). */
 const BUSY_FOOTER = /esc to interrupt/i;
+/** `git worktree remove` may delete a large tree: 60 s, like `worktree add`. */
+const WORKTREE_REMOVE_TIMEOUT_MS = 60_000;
+
+/** True when `child` is strictly below `parent` (both absolute). */
+function below(parent: string, child: string): boolean {
+  const rel = relative(parent, child);
+  return rel !== '' && rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel);
+}
+
+async function exists(path: string): Promise<boolean> {
+  try {
+    await lstat(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /**
- * Pin, archive and restore (spec §5.8). They need a record (external sessions are 403). Archive
- * closes a finished session's window through killOwnedWindow, which re-reads `@kage_id` right
- * before the kill; it never archives a running or needs-you session. One action at a time per
- * session, on the lock shared with SessionControls, delete and resume (F5).
+ * The path with every link resolved: realpath of the nearest folder that exists, plus the rest,
+ * so a folder that is gone still compares with git's listing and with the repo.
+ */
+async function canonical(path: string): Promise<string> {
+  let probe = resolve(path);
+  const rest: string[] = [];
+  for (;;) {
+    try {
+      return join(await realpath(probe), ...rest);
+    } catch {
+      const up = dirname(probe);
+      if (up === probe) return resolve(path);
+      rest.unshift(basename(probe));
+      probe = up;
+    }
+  }
+}
+
+/** On Windows paths compare without case (git prints `C:/…` with forward slashes). */
+const samePath = (a: string, b: string): boolean =>
+  process.platform === 'win32' ? a.toLowerCase() === b.toLowerCase() : a === b;
+
+interface WorktreeEntry {
+  path: string;
+  /** `refs/heads/<b>`, or null when detached. */
+  branch: string | null;
+}
+
+/** `git worktree list --porcelain`: the entries in order, the main worktree first. */
+function parseWorktrees(out: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = [];
+  let cur: WorktreeEntry | null = null;
+  for (const line of out.split(/\r?\n/)) {
+    if (line.startsWith('worktree ')) {
+      cur = { path: line.slice('worktree '.length), branch: null };
+      entries.push(cur);
+    } else if (cur && line.startsWith('branch ')) cur.branch = line.slice('branch '.length);
+  }
+  return entries;
+}
+
+/** What delete found on disk and in git, read before the kill and again after it. */
+interface DeletePlan {
+  /** The project folder (git's cwd). */
+  repo: string;
+  /** git lists the record's worktree, on its branch, not as the main worktree. */
+  listed: boolean;
+  folder: boolean;
+  branch: boolean;
+}
+
+/**
+ * Pin, archive, restore and delete (spec §5.8). They need a record (external sessions are 403).
+ * Archive and delete close a finished session's window through killOwnedWindow, which re-reads
+ * `@kage_id` right before the kill; neither acts on a running or needs-you session. One action at
+ * a time per session, on the lock shared with SessionControls and resume (F5, R68).
  */
 export class FinishActions {
   readonly #tmux: FinishTmux;
   readonly #source: FinishSource;
   readonly #lock: ActionLock;
+  readonly #d: FinishDeps;
 
-  constructor(d: { tmux: FinishTmux; source: FinishSource; lock?: ActionLock }) {
+  constructor(d: FinishDeps) {
     this.#tmux = d.tmux;
     this.#source = d.source;
     this.#lock = d.lock ?? new ActionLock();
+    this.#d = d;
   }
 
   /** Any record session, in any status. */
@@ -59,11 +158,156 @@ export class FinishActions {
   }
 
   /**
+   * Deletes a Kage session's window, worktree, branch and record (spec §5.8, B10), only as
+   * `seen` (the counts the confirmation showed) still describes the branch:
+   * 1. 403 for an external session, 409 while it runs or needs you;
+   * 2. the record's branch passes SAFE_REF and isn't its base, and its worktree resolves (links
+   *    too) strictly inside `<repo>/<worktreeDir>/` and, when git lists it, is listed on
+   *    `refs/heads/<branch>` and not as the main worktree; else 409 with nothing touched;
+   * 3. a recount differing from `seen` publishes the fresh counts and answers 409;
+   * 4. the window is killed (only while it holds the record's kage id), then 2 and 3 run again
+   *    (F10: an idle claude could take a follow-up before the kill);
+   * 5. `git worktree remove [--force]` (--force only for confirmed uncommitted entries), or
+   *    `worktree prune` when git no longer lists it and the folder is gone;
+   * 6. `git branch -D` (the counts were confirmed);
+   * 7. the record is forgotten.
+   * A git failure is a 422 naming what stays. When the project folder is gone, only the window
+   * is killed and the record forgotten.
+   */
+  remove(id: string, seen: DeleteBody): Promise<void> {
+    return this.#locked(id, async () => {
+      const t = this.#source.finishTarget(id);
+      const record = t?.record;
+      if (!t || !record) throw new ActionError(403, 'Kage only deletes sessions it started.');
+      if (t.status === 'running' || t.status === 'needs-you') {
+        throw new ActionError(409, ACTIVE_DELETE);
+      }
+      const find =
+        this.#d.findProject ?? ((name) => findProject(this.#d.projectsRoot, name, this.#d.git));
+      const project = await find(record.project);
+      if (project) await this.#check(id, record, project.path, seen);
+      if (t.windowId !== null) {
+        await this.#stillIdle(id, t.paneId, ACTIVE_DELETE);
+        if (await this.#close(t.windowId, record.kageId)) this.#source.markStopped(id);
+      }
+      if (project) {
+        const plan = await this.#check(id, record, project.path, seen);
+        await this.#removeWorktree(record, plan, seen);
+        if (plan.branch) {
+          try {
+            await this.#d.git(['branch', '-D', '--', record.branch], { cwd: plan.repo });
+          } catch (e) {
+            throw new ActionError(422, `git couldn't delete the branch: ${firstLine(e)}`);
+          }
+        }
+      }
+      await this.#source.forget(id);
+    });
+  }
+
+  /** Steps 2 and 3 of remove: the record's worktree and branch are Kage's, and `seen` matches. */
+  async #check(id: string, r: SessionRecord, repo: string, seen: Counts): Promise<DeletePlan> {
+    const plan = await this.#plan(r, repo);
+    let fresh: Counts;
+    try {
+      if (plan.folder && plan.branch) fresh = await this.#d.counts(r.worktree, r.branch);
+      else {
+        fresh = {
+          unpushed: plan.branch ? await this.#unpushedInRepo(repo, r.branch) : 0,
+          uncommitted: plan.folder ? await uncommittedCount(r.worktree, this.#d.git) : 0,
+        };
+      }
+    } catch (e) {
+      throw new ActionError(422, `git couldn't count the work on the branch: ${firstLine(e)}`);
+    }
+    if (fresh.unpushed !== seen.unpushed || fresh.uncommitted !== seen.uncommitted) {
+      this.#d.publish(id, { unpushed: fresh.unpushed, uncommitted: fresh.uncommitted });
+      throw new ActionError(409, CHANGED);
+    }
+    return plan;
+  }
+
+  /** Step 2 of remove (read-only): refuses with 409 unless the worktree and branch are Kage's. */
+  async #plan(r: SessionRecord, projectPath: string): Promise<DeletePlan> {
+    const refuse = () => new ActionError(409, notKageWorktree(r.worktree));
+    if (!SAFE_REF.test(r.branch) || r.branch === r.base) throw refuse();
+    const repo = await canonical(projectPath);
+    const root = await canonical(resolve(projectPath, this.#d.worktreeDir));
+    const wt = await canonical(r.worktree);
+    if (!below(repo, root) || !below(root, wt)) throw refuse();
+    const git = (args: string[]) => this.#d.git(args, { cwd: projectPath });
+    let entries: WorktreeEntry[];
+    try {
+      entries = parseWorktrees((await git(['worktree', 'list', '--porcelain'])).stdout);
+    } catch (e) {
+      throw new ActionError(422, `git couldn't list the worktrees: ${firstLine(e)}`);
+    }
+    let listed = false;
+    for (const [i, e] of entries.entries()) {
+      if (!samePath(await canonical(e.path), wt)) continue;
+      if (i === 0 || e.branch !== `refs/heads/${r.branch}`) throw refuse();
+      listed = true;
+    }
+    const folder = await exists(r.worktree);
+    if (!listed && folder) throw refuse();
+    let branch: boolean;
+    try {
+      await git(['show-ref', '--verify', '--quiet', `refs/heads/${r.branch}`]);
+      branch = true;
+    } catch (e) {
+      if ((e as { code?: unknown }).code !== 1) {
+        throw new ActionError(422, `git couldn't read the branch: ${firstLine(e)}`);
+      }
+      branch = false;
+    }
+    return { repo: projectPath, listed, folder, branch };
+  }
+
+  /**
+   * Unpushed commits when the worktree folder is gone: host-integration §5.3 run in the repo,
+   * without the worktree's HEAD (the repo's own HEAD isn't this session's).
+   */
+  async #unpushedInRepo(repo: string, branch: string): Promise<number> {
+    const { stdout } = await this.#d.git(
+      [
+        'rev-list',
+        '--count',
+        `refs/heads/${branch}`,
+        '--not',
+        `--exclude=${branch}`,
+        '--branches',
+        '--remotes',
+        '--tags',
+      ],
+      { cwd: repo },
+    );
+    const n = Number(stdout.trim());
+    if (!Number.isInteger(n) || n < 0) throw new Error(`git gave no count: ${stdout.trim()}`);
+    return n;
+  }
+
+  /** Step 5 of remove. */
+  async #removeWorktree(r: SessionRecord, plan: DeletePlan, seen: Counts): Promise<void> {
+    let args: string[] | null = null;
+    if (plan.listed) {
+      // --force only for uncommitted entries the user confirmed; else git refuses dirty trees.
+      args = ['worktree', 'remove', ...(seen.uncommitted > 0 ? ['--force'] : []), '--', r.worktree];
+    } else if (!plan.folder) args = ['worktree', 'prune'];
+    if (!args) return;
+    try {
+      await this.#d.git(args, { cwd: plan.repo, timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
+    } catch (e) {
+      throw new ActionError(422, `git couldn't remove the worktree: ${firstLine(e)}`);
+    }
+  }
+
+  /**
    * Right before the kill (Task 4 review, auto-archive): the pane's visible screen shows no busy
    * footer, and the session is still neither running nor needs you, read again after that
-   * capture. Otherwise 409. A pane already gone passes (the kill then finds the window gone).
+   * capture. Otherwise 409 with `active`. A pane already gone passes (the kill then finds the
+   * window gone).
    */
-  async #stillIdle(id: string, paneId: string | null): Promise<void> {
+  async #stillIdle(id: string, paneId: string | null, active = ACTIVE): Promise<void> {
     if (paneId !== null) {
       let screen = '';
       try {
@@ -74,14 +318,14 @@ export class FinishActions {
           throw new ActionError(422, `tmux couldn't read the window: ${firstLine(e)}`);
         }
       }
-      if (BUSY_FOOTER.test(screen)) throw new ActionError(409, ACTIVE);
+      if (BUSY_FOOTER.test(screen)) throw new ActionError(409, active);
     }
     // TODO(Task 12): F11 — once the terminal bridge exists, re-check isTerminalOpen(id) here,
     // inside the lock after the capture await, and refuse (409) an automatic archive while a
     // terminal is open on the session; auto-archive's candidate re-read happens before this await.
     const now = this.#source.finishTarget(id);
     if (!now) throw new ActionError(404, `No session with id ${id}`);
-    if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, ACTIVE);
+    if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, active);
   }
 
   /**

@@ -162,7 +162,7 @@ describe('api', () => {
   it('a 401 from any call returns the board to the login screen (F18)', async () => {
     authRequired.value = false;
     replies = [401];
-    expect((await apiDelete('/api/sessions/x')).status).toBe(401);
+    expect((await apiDelete('/api/sessions/x', { unpushed: 0, uncommitted: 0 })).status).toBe(401);
     expect(authRequired.value).toBe(true);
   });
 });
