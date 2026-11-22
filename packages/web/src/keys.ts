@@ -11,6 +11,7 @@ import {
   mainView,
   newTaskOpen,
   openTerminal,
+  paletteOpen,
   releaseDigits,
   replyOpen,
   selected,
@@ -21,6 +22,16 @@ import {
 
 /** R26: a first X arms Stop for this long; a second X within it stops the session. */
 export const STOP_ARM_MS = 2000;
+
+/**
+ * ⌘K or Ctrl+K, without Alt or Shift: the command palette. K is matched by its physical key only on a
+ * layout whose K key types no Latin letter, so Dvorak's Ctrl+T is never taken for it.
+ */
+export function isPaletteKey(e: KeyboardEvent): boolean {
+  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.isComposing) return false;
+  const k = e.key.toLowerCase();
+  return k === 'k' || (!/^[a-z]$/.test(k) && e.code === 'KeyK');
+}
 
 function typing(target: EventTarget | null): boolean {
   if (!(target instanceof Element)) return false;
@@ -35,7 +46,8 @@ function typing(target: EventTarget | null): boolean {
  * stops, S pins, E archives, U resumes, T opens the terminal, and Esc closes the diff, cancels the
  * delete confirmation or closes the reply field. While the form is open it owns the keyboard (Esc,
  * Enter), so these are off. While the terminal is open every key is its own (F9), except
- * Shift+Esc and Ctrl+Shift+X, which leave it (T2, R64). Returns the uninstaller.
+ * Shift+Esc and Ctrl+Shift+X, which leave it (T2, R64). Elsewhere ⌘K / Ctrl+K toggles the command
+ * palette, which owns the keyboard while open (Task 8). Returns the uninstaller.
  */
 export function installKeys(target: Document = document): () => void {
   let disarm: ReturnType<typeof setTimeout> | undefined;
@@ -50,8 +62,19 @@ export function installKeys(target: Document = document): () => void {
       }
       return;
     }
+    // The login screen: the browser keeps every key, Ctrl+K included.
+    if (authRequired.value) return;
+    // The palette's key works anywhere else, typing and the New task form included (F14). A held
+    // key toggles once, but its repeats still don't reach the browser.
+    if (isPaletteKey(e)) {
+      e.preventDefault();
+      if (!e.repeat) paletteOpen.value = !paletteOpen.value;
+      return;
+    }
+    // While it is open the palette owns the keyboard.
+    if (paletteOpen.value) return;
     if (e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
-    if (newTaskOpen.value || authRequired.value) return;
+    if (newTaskOpen.value) return;
     const k = e.key.toLowerCase();
     // A held key repeats: J/K may move on, but nothing else acts twice (a held X must not stop).
     if (e.repeat && k !== 'j' && k !== 'k') return;

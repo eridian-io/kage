@@ -61,6 +61,11 @@ export function SessionList() {
     if (focus === 0 || elsewhere || a?.matches('input, textarea')) return;
     side.current?.querySelector<HTMLElement>('.k-it.on')?.focus();
   }, [focus]);
+  // The selected row comes into view however it was chosen: a #s= link (R95), the palette, J/K.
+  const sel = selectedId.value;
+  useEffect(() => {
+    side.current?.querySelector('.k-it.on')?.scrollIntoView?.({ block: 'nearest' });
+  }, [sel]);
   const items: JSX.Element[] = [];
   let group: string | null = null;
   for (const s of sorted.value) {

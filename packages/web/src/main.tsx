@@ -8,6 +8,7 @@ import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
 import { installNotify } from './notify.ts';
+import { PaletteHost } from './palette-loader.tsx';
 import { connect } from './sse.ts';
 import {
   authRequired,
@@ -106,6 +107,7 @@ export function Board() {
           )}
         </div>
       </div>
+      <PaletteHost />
     </div>
   );
 }

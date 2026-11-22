@@ -73,8 +73,8 @@ describe('web build', () => {
     expect(Object.keys(outputs[term]?.inputs ?? {}).some((p) => p.endsWith('leave.ts'))).toBe(true);
   });
 
-  it('keeps the first-load cap where phase 4 left it until Task 8 measures (ruling PF5, F7)', () => {
-    expect(BUDGET).toBe(26_112);
+  it('caps the first load at Task 8’s measurement + 1 KB, up to the next 0.25 KB (ruling PF5, F7)', () => {
+    expect(BUDGET).toBe(27_648);
   });
 
   it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {
@@ -120,6 +120,28 @@ describe('web build', () => {
     for (const f of result.firstLoad.filter((n) => n.endsWith('.js'))) {
       expect(await textOf(f), f).not.toContain('k-diff-file');
     }
+  });
+
+  it('the command palette is its own lazy file, outside the first load (R95)', async () => {
+    const palette = await built(/^palette-.*\.js$/);
+    expect(result.firstLoad).not.toContain(palette);
+    console.log(`palette chunk gzipped: ${await gzFile(palette)} bytes`);
+    // Its markup, fuzzy match and commands are in it; the first load keeps only the key and the
+    // hint button (and notify.ts, which the palette is handed instead of importing).
+    const text = await textOf(palette);
+    expect(text).toContain('Keep typing to see more.');
+    expect(text).toContain('Turn on browser notifications');
+    for (const f of result.firstLoad.filter((n) => n.endsWith('.js'))) {
+      const code = await textOf(f);
+      expect(code, f).not.toContain('Keep typing to see more.');
+      expect(code, f).not.toContain('Turn on browser notifications');
+    }
+    // It adds no first-load chunk of its own: everything it imports, app imports anyway.
+    const key = Object.keys(result.metafile.outputs).find((k) => k.endsWith(palette)) as string;
+    const imports = (result.metafile.outputs[key]?.imports ?? [])
+      .filter((i) => i.kind === 'import-statement')
+      .map((i) => i.path.split(/[\\/]/).pop());
+    for (const i of imports) expect(result.firstLoad).toContain(i);
   });
 
   it('the demo data stays out of the first load (the server serves it)', async () => {

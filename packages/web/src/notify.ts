@@ -26,7 +26,8 @@ const api = (): typeof Notification | undefined =>
     ? (win as Window & { Notification?: typeof Notification }).Notification
     : undefined;
 
-function refresh(): void {
+/** Reads the permission again (the palette, on each open: it may have changed in the browser). */
+export function readPermission(): void {
   const N = api();
   notifyState.value = !win?.isSecureContext ? 'insecure' : N ? N.permission : 'unsupported';
 }
@@ -41,8 +42,23 @@ export async function enableNotifications(): Promise<void> {
       // A browser that refuses outright leaves the state as it is.
     }
   }
-  refresh();
+  readPermission();
 }
+
+/**
+ * What the palette needs from here, handed to it by palette-loader.tsx: the palette chunk importing
+ * this module would split it out of app into a first-load chunk of its own.
+ */
+export interface NotifyApi {
+  state: Signal<NotifyState>;
+  enable: () => Promise<void>;
+  read: () => void;
+}
+export const notifyApi: NotifyApi = {
+  state: notifyState,
+  enable: enableNotifications,
+  read: readPermission,
+};
 
 /** The sessions that need you, as one key: effects on it run only when the set changes. */
 const waiting = computed(() =>
@@ -132,7 +148,7 @@ export function installNotify(w: Window | undefined = win): () => void {
     for (const id of [...open.keys()]) if (!ids.includes(id)) shut(id);
   });
 
-  refresh();
+  readPermission();
   follow();
   w.addEventListener('hashchange', follow);
   return () => {

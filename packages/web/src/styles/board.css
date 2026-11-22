@@ -205,6 +205,13 @@ button {
   border-color: var(--line-strong);
 }
 .k-k {
+  /* A button with the target's span look: nothing of the button's own box shows. */
+  appearance: none;
+  background: none;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
   font: 12px var(--mono);
   color: var(--fg-3);
 }
@@ -1092,4 +1099,102 @@ a.k-port {
 .k-diff-msg {
   font-size: 13px;
   color: var(--fg-2);
+}
+
+/* The command palette (Task 8): the toast's surface, no scrim; rows as the session list's. */
+.k-pal {
+  position: fixed;
+  top: 12vh;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 20;
+  width: 560px;
+  max-width: calc(100vw - 32px);
+  max-height: 60vh;
+  display: flex;
+  flex-direction: column;
+  background: #20242a;
+  border: 1px solid #2f343c;
+  border-radius: 9px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+}
+/* As tall as its results: not the board's full height (.k-app > div). */
+.k-app > .k-pal {
+  height: auto;
+}
+.k-pal-in {
+  flex: none;
+  height: 44px;
+  padding: 0 16px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: none;
+  color: var(--fg-strong);
+  font: 14px var(--sans);
+}
+/* The input always has focus while open; the caret marks it, and a ring would be clipped. */
+.k-pal-in:focus-visible {
+  outline: none;
+}
+.k-pal-in::placeholder {
+  color: var(--fg-3);
+}
+.k-pal-list {
+  flex: 0 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 6px;
+}
+.k-pal .k-g {
+  padding: 12px 10px 4px;
+}
+.k-pal-o {
+  color: var(--fg-2);
+  font-size: 13.5px;
+}
+.k-pal-o[aria-disabled="true"] {
+  cursor: default;
+  color: var(--fg-3);
+}
+.k-pal-o b {
+  font-weight: inherit;
+  color: var(--fg-strong);
+}
+.k-pal .k-pal-o kbd {
+  align-self: center;
+  color: var(--fg-3);
+  font-size: 11px;
+}
+.k-pal-st {
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.k-pal-st.k-pal-wait {
+  color: var(--amber);
+}
+.k-pal-st.k-pal-run {
+  color: var(--lime);
+}
+.k-pal-none,
+.k-pal-more {
+  padding: 10px 16px;
+  font-size: 13px;
+  color: var(--fg-3);
+}
+.k-pal-foot {
+  flex: none;
+  margin-top: 6px;
+  padding: 8px 16px;
+  border-top: 1px solid var(--line);
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.k-pal-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }

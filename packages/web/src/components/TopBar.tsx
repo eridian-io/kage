@@ -1,4 +1,11 @@
-import { authRequired, hadSnapshot, host, sorted } from '../store.ts';
+import { loadPalette } from '../palette-loader.tsx';
+import { authRequired, hadSnapshot, host, paletteOpen, sorted } from '../store.ts';
+
+const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+/** Fetches the palette's chunk ahead of a click (ruling B1: on the hint's hover, never at load). */
+const prefetch = () => {
+  loadPalette().catch(() => {});
+};
 
 export function TopBar() {
   // Signed out: the logo and wordmark only.
@@ -41,7 +48,20 @@ export function TopBar() {
         </>
       )}
       <span class="sp" />
-      <span class="k-k">⌘K</span>
+      {/* The target's hint, as a button: the same text and pixels (board.css resets it). */}
+      <button
+        type="button"
+        class="k-k"
+        aria-label="Command palette"
+        title={MAC ? undefined : 'Ctrl+K'}
+        onPointerEnter={prefetch}
+        onFocus={prefetch}
+        onClick={() => {
+          paletteOpen.value = !paletteOpen.value;
+        }}
+      >
+        ⌘K
+      </button>
     </div>
   );
 }

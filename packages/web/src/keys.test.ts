@@ -4,11 +4,13 @@ import { installKeys } from './keys.ts';
 import {
   answered,
   applyEvent,
+  authRequired,
   busy,
   confirmingDelete,
   connection,
   mainView,
   newTaskOpen,
+  paletteOpen,
   releaseDigits,
   replyOpen,
   select,
@@ -34,6 +36,9 @@ beforeEach(() => {
   selectedId.value = null;
   confirmingDelete.value = false;
   newTaskOpen.value = false;
+  paletteOpen.value = false;
+  authRequired.value = false;
+  mainView.value = 'output';
   replyOpen.value = false;
   stopArmed.value = null;
   stopSent.value = null;
@@ -614,5 +619,84 @@ describe('installKeys: the terminal (Task 13)', () => {
     expect(termNote.value).toBeNull();
     press('j');
     expect(selectedId.value).not.toBe('web');
+  });
+});
+
+describe('installKeys: the command palette (⌘K / Ctrl+K)', () => {
+  /** Dispatches a keydown and returns it, to read defaultPrevented. */
+  const key = (init: KeyboardEventInit, target: EventTarget = document) => {
+    const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  it('⌘K (metaKey) and Ctrl+K both toggle it, and the browser does not get them', () => {
+    expect(key({ key: 'k', metaKey: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(true);
+    key({ key: 'k', metaKey: true });
+    expect(paletteOpen.value).toBe(false);
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(true);
+    key({ key: 'K', ctrlKey: true });
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('Ctrl+Shift+K and Ctrl+Alt+K do nothing', () => {
+    expect(key({ key: 'K', ctrlKey: true, shiftKey: true }).defaultPrevented).toBe(false);
+    expect(key({ key: 'k', ctrlKey: true, altKey: true }).defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('a held Ctrl+K toggles once (the repeats are still kept from the browser)', () => {
+    key({ key: 'k', ctrlKey: true });
+    expect(key({ key: 'k', ctrlKey: true, repeat: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(true);
+  });
+
+  it('works while typing, and on a non-Latin layout by its physical key', () => {
+    const input = document.body.appendChild(document.createElement('input'));
+    key({ key: 'k', ctrlKey: true }, input);
+    expect(paletteOpen.value).toBe(true);
+    key({ key: 'л', code: 'KeyK', ctrlKey: true });
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('does nothing during IME composition', () => {
+    key({ key: 'k', ctrlKey: true, isComposing: true });
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('in the open terminal Ctrl+K is Claude’s: not toggled, not prevented (F14)', () => {
+    select('shop');
+    mainView.value = 'terminal';
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('on the login screen the browser keeps Ctrl+K', () => {
+    authRequired.value = true;
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBe(false);
+  });
+
+  it('opens over the New task form', () => {
+    newTaskOpen.value = true;
+    key({ key: 'k', ctrlKey: true });
+    expect(paletteOpen.value).toBe(true);
+  });
+
+  it('board shortcuts are off while it is open', async () => {
+    paletteOpen.value = true;
+    select('web');
+    press('j');
+    press('n');
+    press('Escape');
+    expect(selectedId.value).toBe('web');
+    expect(newTaskOpen.value).toBe(false);
+    select('shop');
+    press('x');
+    press('x');
+    await flush();
+    expect(posted()).toEqual([]);
   });
 });

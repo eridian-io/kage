@@ -77,6 +77,8 @@ export const newTaskOpen: Signal<boolean> = signal(false);
  * keepSelection must not drop it first; the user's own selection meanwhile cancels it.
  */
 export const selectWhenSeen: Signal<string | null> = signal(null);
+/** The command palette (⌘K / Ctrl+K) is open; its code loads on the first open (R95). */
+export const paletteOpen: Signal<boolean> = signal(false);
 /** The reply field under the selected session's question is open. */
 export const replyOpen: Signal<boolean> = signal(false);
 /** Session ids with an answer, reply or stop in flight; their controls are disabled. */
@@ -95,9 +97,13 @@ export const ANSWER_HOLD_MS = 5000;
 export const stopSent: Signal<{ id: string; status: string } | null> = signal(null);
 /** The session a first X armed for Stop (R26): a second X within 2 s stops it. */
 export const stopArmed: Signal<string | null> = signal(null);
-// The login screen replaces the board; a form left open behind it would reappear after sign-in.
+// The login screen replaces the board; a form or palette left open behind it would reappear after
+// sign-in.
 effect(() => {
-  if (authRequired.value) newTaskOpen.value = false;
+  if (authRequired.value) {
+    newTaskOpen.value = false;
+    paletteOpen.value = false;
+  }
 });
 /** Epoch ms, ticked once a minute by the board so ages re-render. */
 export const now: Signal<number> = signal(Date.now());

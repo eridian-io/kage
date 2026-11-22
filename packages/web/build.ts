@@ -20,9 +20,12 @@ const LICENCES = { 'OFL-geist.txt': 'geist', 'OFL-geist-mono.txt': 'geist-mono' 
 const LOGO = 'kage-logo-96.png';
 /**
  * The entries the board loads only on demand, by a dynamic import of their source: never in the
- * first load. A lazy palette (ruling PF5, F7) is one more line here; its name is in HASHED already.
+ * first load: the diff view (R78) and the command palette (R95).
  */
-export const LAZY = { diff: 'src/components/DiffView.tsx' } as const;
+export const LAZY = {
+  diff: 'src/components/DiffView.tsx',
+  palette: 'src/components/Palette.tsx',
+} as const;
 /** Every name the build writes; assets.ts caches the same names immutable. */
 export const HASHED = /^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 
@@ -204,16 +207,27 @@ export async function watch(opts: { outDir?: string } = {}): Promise<void> {
   await copyStatic(outDir);
   // Each run keeps its last good result; index.html is written once both have one.
   const last: Partial<Runs> = {};
+  // One write at a time: two overlapping writes would each delete the other's fresh files as
+  // stale. A queued write reads `last` when its turn comes, so it writes the newest pair.
+  let writes: Promise<void> = Promise.resolve();
   const keep = (which: keyof Runs): esbuild.Plugin => ({
     name: `kage-dist-${which}`,
     setup(b) {
-      b.onEnd(async (r) => {
+      b.onEnd((r) => {
         if (r.errors.length > 0) return;
         last[which] = r;
-        if (last.board && last.term) {
-          await writeBundle(outDir, { board: last.board, term: last.term });
-          console.log(`Built the board into ${outDir}`);
-        }
+        writes = writes.then(async () => {
+          const { board, term } = last;
+          if (!board || !term) return;
+          try {
+            await writeBundle(outDir, { board, term });
+            console.log(`Built the board into ${outDir}`);
+          } catch (e) {
+            // A bad write is reported; the chain goes on, so the next change still writes.
+            console.error(e instanceof Error ? e.message : e);
+          }
+        });
+        return writes;
       });
     },
   });
