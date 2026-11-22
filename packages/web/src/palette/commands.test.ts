@@ -56,6 +56,8 @@ beforeEach(() => {
   selectedId.value = null;
   fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
   vi.stubGlobal('fetch', fetchMock);
+  // An empty snapshot first: a snapshot keeps a held session's files, and a test may change them.
+  load([]);
   load(demoSessions(NOW));
 });
 afterEach(() => {
@@ -132,6 +134,18 @@ describe('commands: this session', () => {
     mainView.value = 'diff';
     expect(titles('this session')).not.toContain('View diff');
     load([]);
+    expect(titles('this session')).toEqual([]);
+  });
+
+  it('no View diff for a session with no files (R99), as the preview shows none', () => {
+    // Files come in their own event; a snapshot keeps what that brought.
+    const noFiles = (id: string) =>
+      applyEvent({ type: 'session.files', id, files: [], filesTotal: 0 });
+    withSelected('shop');
+    noFiles('shop');
+    expect(titles('this session')).toEqual(['Open the terminal', 'Pin', 'Stop']);
+    withSelected('docs', { external: true, status: 'ended' });
+    noFiles('docs');
     expect(titles('this session')).toEqual([]);
   });
 

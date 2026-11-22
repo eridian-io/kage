@@ -58,7 +58,8 @@ function sessionCommands(s: Session): Command[] {
   const out: Command[] = [];
   const add = (c: Omit<Command, 'group' | 'session'>) =>
     out.push({ ...c, group: 'this session', session: s });
-  if (mainView.value !== 'diff') {
+  // As the preview: no files, no View diff (R99).
+  if (mainView.value !== 'diff' && s.filesTotal > 0) {
     add({
       id: 'diff',
       title: 'View diff',
