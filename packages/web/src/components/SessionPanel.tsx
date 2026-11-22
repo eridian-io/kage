@@ -1,15 +1,10 @@
 import { formatAge, groupOf, type Session, shortWorktree } from '@kage/shared';
 import type { ComponentChildren } from 'preact';
-import { apiDelete, stop } from '../api.ts';
+import { archive, canAct, remove, resume, stop } from '../api.ts';
 import {
   actionError,
-  beginDelete,
-  busy,
   confirmingDelete,
-  connection,
-  endDelete,
   now,
-  pendingDeletes,
   projectsRoot,
   stopArmed,
   stopPending,
@@ -83,31 +78,35 @@ function ago(ms: number): string {
   return age === 'now' ? 'just now' : `${age} ago`;
 }
 
-function unpushedWarning(n: number): string {
-  return n === 1
-    ? '1 commit isn’t pushed and will be lost.'
-    : `${n} commits aren’t pushed and will be lost.`;
-}
-
-/** Delete needs a live connection (its result arrives as an event) and no request in flight. */
-const canDelete = (s: Session) => connection.value === 'live' && !pendingDeletes.value.has(s.id);
-
-async function deleteSession(s: Session): Promise<void> {
-  if (!canDelete(s)) return;
-  beginDelete(s);
-  confirmingDelete.value = false;
-  let ok = false;
-  try {
-    // The server deletes only while the branch still has the counts the confirmation showed.
-    const seen = { unpushed: s.unpushed, uncommitted: s.uncommitted, ignored: s.ignored };
-    ok = (await apiDelete(`/api/sessions/${encodeURIComponent(s.id)}`, seen)).ok;
-  } catch {
-    // ok stays false
+/** What the delete would lose, one sentence per count above 0 (R75: ignored files too). */
+function lossWarning(s: Session): string {
+  const parts: string[] = [];
+  if (s.unpushed > 0) {
+    parts.push(
+      s.unpushed === 1
+        ? '1 commit isn’t pushed and will be lost.'
+        : `${s.unpushed} commits aren’t pushed and will be lost.`,
+    );
   }
-  endDelete(s.id, ok);
+  if (s.uncommitted > 0) {
+    parts.push(
+      s.uncommitted === 1
+        ? '1 file has uncommitted changes and will be lost.'
+        : `${s.uncommitted} files have uncommitted changes and will be lost.`,
+    );
+  }
+  if (s.ignored > 0) {
+    parts.push(
+      s.ignored === 1
+        ? '1 ignored file (like .env) will be deleted too.'
+        : `${s.ignored} ignored files (like .env) will be deleted too.`,
+    );
+  }
+  return parts.join(' ');
 }
 
 function Confirm({ s }: { s: Session }) {
+  const loss = lossWarning(s);
   return (
     <div class="k-confirm">
       <div>
@@ -116,10 +115,10 @@ function Confirm({ s }: { s: Session }) {
         <code>{s.worktree}</code>
         {' and the branch '}
         <code>{s.branch}</code>.
-        {s.unpushed > 0 ? (
+        {loss !== '' ? (
           <>
             {' '}
-            <span class="warn">{unpushedWarning(s.unpushed)}</span>
+            <span class="warn">{loss}</span>
           </>
         ) : (
           ' Everything on the branch is pushed, so nothing is lost.'
@@ -129,8 +128,8 @@ function Confirm({ s }: { s: Session }) {
         <button
           type="button"
           class="k-act danger-solid"
-          disabled={!canDelete(s)}
-          onClick={() => deleteSession(s)}
+          disabled={!canAct(s.id)}
+          onClick={() => remove(s)}
         >
           Delete session
         </button>
@@ -158,6 +157,8 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const chip = ended ? 'ended' : group;
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
   const error = actionError.value?.id === s.id ? actionError.value.text : null;
+  // Every action waits for a live stream (its result arrives as an event) and for the last one.
+  const off = !canAct(s.id);
   return (
     <main class="k-main">
       <div class="k-head">
@@ -205,7 +206,13 @@ export function SessionPanel({ session: s }: { session: Session }) {
         <div class="l">
           {/* Kage resumes only sessions it launched; an external window keeps its Terminal. */}
           {ended && own ? (
-            <Act label="Resume" hotkey="U" icon={ICON.resume} />
+            <Act
+              label="Resume"
+              hotkey="U"
+              icon={ICON.resume}
+              disabled={off}
+              onClick={() => resume(s)}
+            />
           ) : (
             <Act label="Terminal" hotkey="T" icon={ICON.term} />
           )}
@@ -213,12 +220,18 @@ export function SessionPanel({ session: s }: { session: Session }) {
         <div class="r">
           {!own ? null : done ? (
             <>
-              <Act label="Archive" hotkey="E" icon={ICON.arch} />
+              <Act
+                label="Archive"
+                hotkey="E"
+                icon={ICON.arch}
+                disabled={off}
+                onClick={() => archive(s, true)}
+              />
               <Act
                 label="Delete…"
                 cls="stop"
                 icon={ICON.del}
-                disabled={!canDelete(s)}
+                disabled={off}
                 onClick={() => {
                   confirmingDelete.value = true;
                 }}
@@ -236,7 +249,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
                 hotkey="X"
                 cls="stop"
                 icon={ICON.stop}
-                disabled={busy.value.has(s.id) || connection.value !== 'live' || stopPending(s)}
+                disabled={off || stopPending(s)}
                 onClick={() => stop(s)}
               />
             </>

@@ -1,11 +1,15 @@
-import type { Session } from '@kage/shared';
+import type { DeleteBody, Session } from '@kage/shared';
 import {
   actionError,
   authRequired,
+  beginRemoval,
   busy,
+  confirmingDelete,
   connection,
+  endRemoval,
   isAnswered,
   markAnswered,
+  selectStarted,
   stopPending,
   stopSent,
 } from './store.ts';
@@ -23,8 +27,8 @@ async function send(path: string, init: RequestInit): Promise<Response> {
 }
 
 /** A read, such as GET /api/projects (fetched only when the New task form opens). */
-export function apiGet(path: string): Promise<Response> {
-  return send(path, { method: 'GET' });
+export function apiGet(path: string, init: { signal?: AbortSignal } = {}): Promise<Response> {
+  return send(path, { method: 'GET', ...(init.signal ? { signal: init.signal } : {}) });
 }
 
 /** A DELETE with a JSON body: a session delete carries the counts its confirmation showed. */
@@ -85,17 +89,34 @@ export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' |
  * live: the result arrives as an event. True on success; otherwise the server's sentence goes to
  * actionError (a 401 has sent the board to the login screen instead).
  */
-export async function act(
+export function act(
   id: string,
   path: 'answer' | 'reply' | 'stop',
   body?: unknown,
 ): Promise<boolean> {
-  if (busy.value.has(id) || connection.value !== 'live') return false;
+  return request(id, 'send', path, body);
+}
+
+/** The session can take an action now: the stream is live and none of its actions is in flight. */
+export const canAct = (id: string): boolean => !busy.value.has(id) && connection.value === 'live';
+
+/**
+ * One action on a session, as act describes; `verb` names it in the error line ("Couldn't
+ * archive: …"). The path `''` is the session itself: its DELETE.
+ */
+async function request(
+  id: string,
+  verb: string,
+  path: 'answer' | 'reply' | 'stop' | 'pin' | 'archive' | 'resume' | '',
+  body?: unknown,
+): Promise<boolean> {
+  if (!canAct(id)) return false;
   busy.value = new Set(busy.value).add(id);
   actionError.value = null;
   let error: string | null = null;
   try {
-    const res = await apiPost(`/api/sessions/${encodeURIComponent(id)}/${path}`, body);
+    const url = `/api/sessions/${encodeURIComponent(id)}${path === '' ? '' : `/${path}`}`;
+    const res = await (path === '' ? apiDelete(url, body) : apiPost(url, body));
     if (res.ok) return true;
     if (res.status !== 401) error = await errorOf(res);
   } catch {
@@ -105,8 +126,54 @@ export async function act(
     left.delete(id);
     busy.value = left;
   }
-  if (error !== null) actionError.value = { id, text: `Couldn't send: ${error}` };
+  if (error !== null) actionError.value = { id, text: `Couldn't ${verb}: ${error}` };
   return false;
+}
+
+/** Pins or unpins one of Kage's own sessions (S); the new flag arrives as a session.updated. */
+export function pin(s: Session): Promise<boolean> {
+  if (s.external) return Promise.resolve(false);
+  return request(s.id, s.pinned ? 'unpin' : 'pin', 'pin', { pinned: !s.pinned });
+}
+
+/** What archive needs: a listed session, or a row of the archived list (which Kage started). */
+type ArchiveTarget = Pick<Session, 'id' | 'project' | 'task'> & { external?: boolean };
+
+/**
+ * Archives (E) a session, whose session.removed then shows the archived toast, or restores one
+ * from the archived list, selecting it once its session.updated arrives.
+ */
+export async function archive(s: ArchiveTarget, archived: boolean): Promise<boolean> {
+  if (s.external || !canAct(s.id)) return false;
+  if (!archived) {
+    const ok = await request(s.id, 'restore', 'archive', { archived });
+    if (ok) selectStarted(s.id);
+    return ok;
+  }
+  beginRemoval(s, 'archived');
+  const ok = await request(s.id, 'archive', 'archive', { archived });
+  endRemoval(s.id, ok);
+  return ok;
+}
+
+/** Resumes (U) an ended session Kage started; it goes running through the events. */
+export function resume(s: Session): Promise<boolean> {
+  if (s.external || s.status !== 'ended') return Promise.resolve(false);
+  return request(s.id, 'resume', 'resume');
+}
+
+/**
+ * Deletes a session with the counts its confirmation shows (R73, R75): the server removes
+ * nothing when they no longer match (409). On failure the confirmation stays open.
+ */
+export async function remove(s: Session): Promise<boolean> {
+  if (s.external || !canAct(s.id)) return false;
+  beginRemoval(s, 'deleted');
+  const seen: DeleteBody = { unpushed: s.unpushed, uncommitted: s.uncommitted, ignored: s.ignored };
+  const ok = await request(s.id, 'delete', '', seen);
+  endRemoval(s.id, ok);
+  if (ok) confirmingDelete.value = false;
+  return ok;
 }
 
 /**

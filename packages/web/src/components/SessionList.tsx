@@ -2,6 +2,7 @@ import { formatAge, groupOf, type Session } from '@kage/shared';
 import type { JSX } from 'preact';
 import { useEffect, useRef } from 'preact/hooks';
 import { newTaskOpen, now, select, selectedId, sorted } from '../store.ts';
+import { Archived } from './Archived.tsx';
 import { NewTask } from './NewTask.tsx';
 
 function Row({ s }: { s: Session }) {
@@ -81,6 +82,7 @@ export function SessionList() {
         </button>
       )}
       {items}
+      <Archived />
     </aside>
   );
 }

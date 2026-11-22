@@ -7,7 +7,8 @@ import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, FONTS } from './build.ts';
 
-const BUDGET = 30 * 1024;
+// Spec §7 allows 30 KB; phase 4 must end at 25.5 KB to leave room for phase 5 (F14).
+const BUDGET = 25.5 * 1024;
 
 let out: string;
 let result: Awaited<ReturnType<typeof build>>;

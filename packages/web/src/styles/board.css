@@ -691,6 +691,8 @@ button {
 /* Controls reset with the all shorthand lose the global focus ring; restore it (after their rules, so it wins). */
 .k-new:focus-visible,
 .k-act:focus-visible,
+.k-arch > .k-g:focus-visible,
+.k-restore:focus-visible,
 .k-opts button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--lime) 45%, transparent);
   outline-offset: 2px;
@@ -892,4 +894,45 @@ a.k-port {
   padding: 3px 0;
   font: 12px var(--mono);
   color: var(--fg-3);
+}
+
+/* Not in the target. The archived list: "archived N" at the bottom of the left column, a group
+   label that opens rows like done rows, each with a quiet Restore link (lime on hover). */
+.k-arch {
+  margin-top: auto;
+}
+.k-arch > .k-g {
+  all: unset;
+  display: block;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-3);
+  padding: 14px 10px 4px;
+}
+.k-arch > .k-g:hover {
+  color: var(--fg-2);
+}
+.k-arc {
+  cursor: default;
+}
+.k-arc:hover {
+  background: transparent;
+}
+.k-restore {
+  all: unset;
+  grid-column: 1 / 3;
+  justify-self: start;
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--fg-3);
+}
+.k-restore:hover:not(:disabled) {
+  color: var(--lime);
+}
+.k-restore:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.k-arch .k-err.k-arc-err {
+  margin: 6px 10px 0;
 }

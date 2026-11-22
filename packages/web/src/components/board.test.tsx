@@ -10,11 +10,11 @@ import {
   answered,
   applyEvent,
   authRequired,
-  beginDelete,
+  beginRemoval,
   busy,
   confirmingDelete,
   connection,
-  endDelete,
+  endRemoval,
   hadSnapshot,
   host,
   linesById,
@@ -279,7 +279,7 @@ describe('session panel', () => {
     expect(rest).toEqual([]);
     expect(term?.textContent).toBe('TerminalT');
     expect(archive?.textContent).toBe('ArchiveE');
-    expectInert(archive as Element);
+    expect(archive?.hasAttribute('aria-disabled')).toBe(false);
     expect(del?.textContent).toBe('Delete…');
     expect(del?.classList.contains('stop')).toBe(true);
     expect(del?.hasAttribute('aria-disabled')).toBe(false);
@@ -316,15 +316,14 @@ describe('session panel', () => {
     fireEvent.click(row(container, 'docs'));
     fireEvent.click(button(container, 'Delete…'));
     fireEvent.click(button(container, 'Delete session'));
-    expect(apiDelete).toHaveBeenCalledWith('/api/sessions/docs', {
-      unpushed: 1,
-      uncommitted: 0,
-      ignored: 0,
-    });
-    await Promise.resolve();
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(posts()).toEqual([
+      ['/api/sessions/docs', '1', { unpushed: 1, uncommitted: 0, ignored: 0 }],
+    ]);
+    expect((fetchMock.mock.calls[0] as [string, RequestInit])[1].method).toBe('DELETE');
     applyEvent({ type: 'session.removed', id: 'docs' });
     await Promise.resolve();
-    expect(toast.value).toBe('docs · update README');
+    expect(toast.value).toEqual({ kind: 'deleted', name: 'docs · update README' });
     const t = q(container, '.k-toast');
     expect(t.getAttribute('role')).toBe('status');
     expect(t.textContent).toBe('Deleted docs · update README · worktree and branch removed');
@@ -344,7 +343,7 @@ describe('session panel', () => {
 
   it('clears the toast when another session is selected', () => {
     const { container } = render(<Board />);
-    toast.value = 'docs · update README';
+    toast.value = { kind: 'deleted', name: 'docs · update README' };
     fireEvent.click(row(container, 'shop'));
     expect(container.querySelector('.k-toast')).toBeNull();
   });
@@ -352,7 +351,7 @@ describe('session panel', () => {
   it('clears the toast when the already-selected row is clicked', async () => {
     const { container } = render(<Board />);
     expect(selectedId.value).toBe('web');
-    toast.value = 'docs · update README';
+    toast.value = { kind: 'deleted', name: 'docs · update README' };
     await Promise.resolve();
     expect(container.querySelector('.k-toast')).not.toBeNull();
     fireEvent.click(row(container, 'web'));
@@ -467,7 +466,8 @@ describe('reconnect bar', () => {
     expect(bar.previousElementSibling?.classList.contains('k-top')).toBe(true);
     expect(button(container, 'Delete session').disabled).toBe(true);
     fireEvent.click(button(container, 'Delete session'));
-    expect(apiDelete).not.toHaveBeenCalled();
+    await Promise.resolve();
+    expect(fetchMock).not.toHaveBeenCalled();
 
     connection.value = 'live';
     await Promise.resolve();
@@ -558,54 +558,30 @@ describe('before the first snapshot', () => {
 });
 
 describe('pending delete', () => {
-  const deferred = () => {
-    let resolve!: (r: Response) => void;
-    const promise = new Promise<Response>((r) => {
-      resolve = r;
-    });
-    return { promise, resolve };
-  };
-
-  it('disables Delete… and Delete session while the request is pending', async () => {
-    const d = deferred();
-    vi.mocked(apiDelete).mockReturnValueOnce(d.promise);
+  it('disables Delete session while the request is pending, and keeps the confirmation', async () => {
+    let release: (r: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((r) => (release = r)));
     const { container } = render(<Board />);
     fireEvent.click(row(container, 'docs'));
     fireEvent.click(button(container, 'Delete…'));
     fireEvent.click(button(container, 'Delete session'));
     await Promise.resolve();
-    expect(apiDelete).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(button(container, 'Delete session').disabled).toBe(true);
     expect(button(container, 'Delete…').disabled).toBe(true);
-    // Escape and reopen is impossible while pending; the confirm can't be reached.
-    fireEvent.click(button(container, 'Delete…'));
-    expect(container.querySelector('.k-confirm')).toBeNull();
+    // A second click while pending sends nothing.
+    fireEvent.click(button(container, 'Delete session'));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
 
-    d.resolve(new Response(null, { status: 500 }));
-    await d.promise;
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(button(container, 'Delete…').disabled).toBe(false);
-  });
-
-  it('a failed second attempt keeps the first attempt’s toast', async () => {
-    const first = deferred();
-    const second = deferred();
-    vi.mocked(apiDelete).mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
-    const { container } = render(<Board />);
-    fireEvent.click(row(container, 'docs'));
-    const s = sessions.value.find((x) => x.id === 'docs') as Session;
-    beginDelete(s);
-    beginDelete(s);
-    endDelete('docs', false);
-    applyEvent({ type: 'session.removed', id: 'docs' });
-    expect(toast.value).toBe('docs · update README');
-    endDelete('docs', true);
+    release(new Response(JSON.stringify({ error: 'Kage is busy.' }), { status: 500 }));
+    await waitFor(() => expect(button(container, 'Delete session').disabled).toBe(false));
+    expect(container.querySelector('.k-confirm')).not.toBeNull();
   });
 
   it('forgets a delete whose session is gone from the next snapshot', async () => {
     const s = sessions.value.find((x) => x.id === 'docs') as Session;
-    beginDelete(s);
-    endDelete('docs', true);
+    beginRemoval(s, 'deleted');
+    endRemoval('docs', true);
     // The removal happened while disconnected; the snapshot no longer has it.
     applyEvent({
       type: 'snapshot',
@@ -727,7 +703,7 @@ describe('board v2', () => {
     expect(resume?.textContent).toBe('ResumeU');
     expect(resume?.querySelector('kbd')?.textContent).toBe('U');
     expect(resume?.closest('.l')).not.toBeNull();
-    expectInert(resume as Element);
+    expect(resume?.hasAttribute('aria-disabled')).toBe(false);
     expect(archive?.textContent).toBe('ArchiveE');
     expect(archive?.closest('.r')).not.toBeNull();
     expect(del?.textContent).toBe('Delete…');
@@ -1414,6 +1390,313 @@ describe('controls', () => {
       fireEvent.click(optButtons(container)[0] as Element);
       await waitFor(() => expect(errLine(container)).toBeNull());
       release();
+    });
+  });
+});
+
+describe('finish controls (Task 9)', () => {
+  const withSession = (patch: Partial<Session>, id = 'docs') =>
+    reset(demoSessions(NOW).map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const errLine = (c: Element) => c.querySelector('.k-err');
+  /** The raw requests the board sent: URL, method and body text. */
+  const raw = () =>
+    (fetchMock.mock.calls as [string, RequestInit][]).map(([url, init]) => [
+      url,
+      init.method,
+      init.body,
+    ]);
+
+  describe('Archive', () => {
+    it('a click posts {archived: true}; the removal shows the archived toast', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Archive'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/docs/archive', '1', { archived: true }]]);
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      applyEvent({ type: 'archive', count: 1 });
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await Promise.resolve();
+      const t = q(container, '.k-toast');
+      expect(t.getAttribute('role')).toBe('status');
+      expect(t.textContent).toBe('Archived docs · update README · worktree and branch kept');
+      expect(q(t, 'b').textContent).toBe('docs · update README');
+      expect(container.querySelector('.k-it[data-id="docs"]')).toBeNull();
+    });
+
+    it('E archives the selected done session too', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'rate'));
+      fireEvent.keyDown(document, { key: 'e' });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/rate/archive', '1', { archived: true }]]);
+    });
+
+    it('a running session has no Archive, and E does nothing', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'shop'));
+      expect(container.textContent).not.toContain('Archive');
+      fireEvent.keyDown(document, { key: 'e' });
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a failure shows the error line and no toast', async () => {
+      replies = [[409, 'This session is still running.']];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Archive'));
+      await waitFor(() => expect(errLine(container)).not.toBeNull());
+      expect(errLine(container)?.textContent).toBe(
+        "Couldn't archive: This session is still running.",
+      );
+      expect(errLine(container)?.getAttribute('role')).toBe('alert');
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await Promise.resolve();
+      expect(container.querySelector('.k-toast')).toBeNull();
+    });
+  });
+
+  describe('the delete warning', () => {
+    const confirmFor = (patch: Partial<Session>) => {
+      withSession(patch);
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      return container;
+    };
+
+    it('adds the uncommitted sentence inside the same warning', () => {
+      const c = confirmFor({ unpushed: 1, uncommitted: 3 });
+      expect(texts(c, '.k-confirm .warn')).toEqual([
+        '1 commit isn’t pushed and will be lost. 3 files have uncommitted changes and will be lost.',
+      ]);
+      expect(q(c, '.k-confirm div').textContent).not.toContain('nothing is lost');
+    });
+
+    it('says 1 file in the singular, with no unpushed sentence when all is pushed', () => {
+      const c = confirmFor({ unpushed: 0, uncommitted: 1 });
+      expect(texts(c, '.k-confirm .warn')).toEqual([
+        '1 file has uncommitted changes and will be lost.',
+      ]);
+    });
+
+    it('warns about ignored files whenever there are any (R75)', () => {
+      const c = confirmFor({ unpushed: 2, uncommitted: 0, ignored: 4 });
+      expect(texts(c, '.k-confirm .warn')).toEqual([
+        '2 commits aren’t pushed and will be lost. 4 ignored files (like .env) will be deleted too.',
+      ]);
+      cleanup();
+      const one = confirmFor({ unpushed: 0, uncommitted: 0, ignored: 1 });
+      expect(texts(one, '.k-confirm .warn')).toEqual([
+        '1 ignored file (like .env) will be deleted too.',
+      ]);
+      expect(q(one, '.k-confirm div').textContent).not.toContain('nothing is lost');
+    });
+
+    it('keeps the pushed sentence when nothing would be lost', () => {
+      const c = confirmFor({ unpushed: 0, uncommitted: 0, ignored: 0 });
+      expect(c.querySelector('.k-confirm .warn')).toBeNull();
+      expect(q(c, '.k-confirm div').textContent).toBe(
+        'Delete this session? This removes the tmux window, the worktree ~/projects/docs/.worktrees/readme and the branch docs/readme. Everything on the branch is pushed, so nothing is lost.',
+      );
+    });
+
+    it('the counts shown follow the next session.updated', async () => {
+      const c = confirmFor({ unpushed: 1, uncommitted: 0 });
+      const docs = sessions.value.find((s) => s.id === 'docs') as Session;
+      applyEvent({ type: 'session.updated', session: { ...docs, uncommitted: 2 } });
+      await Promise.resolve();
+      expect(texts(c, '.k-confirm .warn')).toEqual([
+        '1 commit isn’t pushed and will be lost. 2 files have uncommitted changes and will be lost.',
+      ]);
+    });
+  });
+
+  describe('Delete session', () => {
+    it('sends exactly the counts the confirmation showed', async () => {
+      withSession({ unpushed: 1, uncommitted: 3 });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(raw()).toEqual([
+        ['/api/sessions/docs', 'DELETE', '{"unpushed":1,"uncommitted":3,"ignored":0}'],
+      ]);
+    });
+
+    it('a 409 keeps the confirmation open and shows the error line', async () => {
+      const CHANGED = 'The branch changed since you looked. Check the warning again.';
+      replies = [[409, CHANGED]];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(errLine(container)).not.toBeNull());
+      expect(errLine(container)?.textContent).toBe(`Couldn't delete: ${CHANGED}`);
+      expect(errLine(container)?.getAttribute('role')).toBe('alert');
+      expect(container.querySelector('.k-confirm')).not.toBeNull();
+      expect(button(container, 'Delete session').disabled).toBe(false);
+      // The failed delete shows no toast if the session goes away for another reason.
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await Promise.resolve();
+      expect(container.querySelector('.k-toast')).toBeNull();
+    });
+
+    it('the off-branch 409 sentence shows as given (R71)', async () => {
+      const OFF =
+        "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.";
+      replies = [[409, OFF]];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't delete: ${OFF}`));
+    });
+
+    it('a 204 and the removal show the delete toast', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      fireEvent.click(button(container, 'Delete session'));
+      await waitFor(() => expect(container.querySelector('.k-confirm')).toBeNull());
+      applyEvent({ type: 'session.removed', id: 'docs' });
+      await Promise.resolve();
+      expect(q(container, '.k-toast').textContent).toBe(
+        'Deleted docs · update README · worktree and branch removed',
+      );
+    });
+  });
+
+  describe('Resume', () => {
+    it('a click and U post resume for an ended session Kage started', async () => {
+      withSession({ status: 'ended' });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Resume'));
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      fireEvent.keyDown(document, { key: 'u' });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+      expect(posts()).toEqual([
+        ['/api/sessions/docs/resume', '1', undefined],
+        ['/api/sessions/docs/resume', '1', undefined],
+      ]);
+    });
+
+    it('U does nothing for a done session', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.keyDown(document, { key: 'u' });
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a failure shows the error line', async () => {
+      withSession({ status: 'ended' });
+      const GONE = 'The worktree is gone, so Kage can’t resume this session.';
+      replies = [[409, GONE]];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Resume'));
+      await waitFor(() => expect(errLine(container)?.textContent).toBe(`Couldn't resume: ${GONE}`));
+    });
+
+    it('a resume Claude could not find shows its line in the output (R63)', async () => {
+      withSession({ status: 'ended' });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      const line = "Claude couldn't find this conversation, so the session wasn't resumed.";
+      applyEvent({
+        type: 'session.lines',
+        id: 'docs',
+        lines: [{ kind: 'out', text: line }],
+        reset: false,
+      });
+      await Promise.resolve();
+      expect(texts(container, '.k-tr .ln').at(-1)).toContain(line);
+    });
+  });
+
+  describe('Pin', () => {
+    it('S pins the selected session; the row shows the star once pinned', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.keyDown(document, { key: 's' });
+      await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(posts()).toEqual([['/api/sessions/docs/pin', '1', { pinned: true }]]);
+      const docs = sessions.value.find((s) => s.id === 'docs') as Session;
+      applyEvent({ type: 'session.updated', session: { ...docs, pinned: true } });
+      await Promise.resolve();
+      expect(q(row(container, 'docs'), '.k-name').textContent).toBe('★ docs / update README');
+    });
+
+    it('a failure shows the error line', async () => {
+      replies = [[403, 'Kage only pins sessions it started.']];
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.keyDown(document, { key: 's' });
+      await waitFor(() =>
+        expect(errLine(container)?.textContent).toBe(
+          "Couldn't pin: Kage only pins sessions it started.",
+        ),
+      );
+    });
+  });
+
+  describe('gating', () => {
+    it('Archive, Delete… and Delete session are disabled while busy or disconnected', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      const downs = [
+        () => {
+          busy.value = new Set(['docs']);
+        },
+        () => {
+          connection.value = 'reconnecting';
+        },
+      ];
+      for (const down of downs) {
+        down();
+        await Promise.resolve();
+        expect(button(container, 'Archive').disabled).toBe(true);
+        expect(button(container, 'Delete…').disabled).toBe(true);
+        expect(button(container, 'Delete session').disabled).toBe(true);
+        fireEvent.click(button(container, 'Archive'));
+        fireEvent.click(button(container, 'Delete session'));
+        fireEvent.keyDown(document, { key: 'e' });
+        busy.value = new Set();
+        connection.value = 'live';
+        await Promise.resolve();
+      }
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('Resume is disabled while busy or disconnected', async () => {
+      withSession({ status: 'ended' });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      busy.value = new Set(['docs']);
+      await Promise.resolve();
+      expect(button(container, 'Resume').disabled).toBe(true);
+      busy.value = new Set();
+      connection.value = 'reconnecting';
+      await Promise.resolve();
+      expect(button(container, 'Resume').disabled).toBe(true);
+      fireEvent.click(button(container, 'Resume'));
+      await Promise.resolve();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('a double click on Archive sends one request', async () => {
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Archive'));
+      fireEvent.click(button(container, 'Archive'));
+      await waitFor(() => expect(busy.value.size).toBe(0));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
     });
   });
 });

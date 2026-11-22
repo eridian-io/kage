@@ -1,4 +1,4 @@
-import { demoSessions } from '@kage/shared';
+import { demoSessions, type Session } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installKeys } from './keys.ts';
 import {
@@ -347,5 +347,92 @@ describe('installKeys: answering and Stop', () => {
     await flush();
     expect(posted()).toEqual([]);
     expect(replyOpen.value).toBe(false);
+  });
+});
+
+describe('installKeys: pin, archive and resume (S, E, U)', () => {
+  /** Each request: URL, method and parsed body. */
+  const sent = () =>
+    (fetchMock.mock.calls as [string, RequestInit][]).map(([url, init]) => [
+      url,
+      init.method,
+      init.body === undefined ? undefined : JSON.parse(String(init.body)),
+    ]);
+  const patch = (id: string, p: Partial<Session>) => {
+    const s = sessions.value.find((x) => x.id === id) as Session;
+    applyEvent({ type: 'session.updated', session: { ...s, ...p } });
+  };
+
+  it('S pins an unpinned done session, then unpins it once pinned', async () => {
+    select('footer');
+    press('s');
+    await flush();
+    expect(sent()).toEqual([['/api/sessions/footer/pin', 'POST', { pinned: true }]]);
+    patch('footer', { pinned: true });
+    press('S');
+    await flush();
+    expect(sent()[1]).toEqual(['/api/sessions/footer/pin', 'POST', { pinned: false }]);
+  });
+
+  it('S does nothing for an external session', async () => {
+    patch('footer', { external: true });
+    select('footer');
+    press('s');
+    await flush();
+    expect(sent()).toEqual([]);
+  });
+
+  it('E archives a done or ended session it started; not a running or external one', async () => {
+    select('shop');
+    press('e');
+    await flush();
+    expect(sent()).toEqual([]);
+    select('docs');
+    press('e');
+    await flush();
+    expect(sent()).toEqual([['/api/sessions/docs/archive', 'POST', { archived: true }]]);
+    patch('footer', { status: 'ended' });
+    select('footer');
+    press('e');
+    await flush();
+    expect(sent()[1]).toEqual(['/api/sessions/footer/archive', 'POST', { archived: true }]);
+    patch('rate', { external: true });
+    select('rate');
+    press('e');
+    await flush();
+    expect(sent()).toHaveLength(2);
+  });
+
+  it('U resumes an ended session it started, and nothing else', async () => {
+    select('docs');
+    press('u');
+    await flush();
+    expect(sent()).toEqual([]);
+    patch('docs', { status: 'ended', external: true });
+    press('u');
+    await flush();
+    expect(sent()).toEqual([]);
+    patch('docs', { status: 'ended', external: false });
+    press('u');
+    await flush();
+    expect(sent()).toEqual([['/api/sessions/docs/resume', 'POST', undefined]]);
+  });
+
+  it('S, E and U do nothing while typing, repeated, busy or disconnected', async () => {
+    patch('docs', { status: 'ended' });
+    select('docs');
+    const field = document.createElement('input');
+    document.body.append(field);
+    for (const k of ['s', 'e', 'u']) press(k, field);
+    for (const k of ['s', 'e', 'u']) {
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: k, repeat: true }));
+    }
+    busy.value = new Set(['docs']);
+    for (const k of ['s', 'e', 'u']) press(k);
+    busy.value = new Set();
+    connection.value = 'reconnecting';
+    for (const k of ['s', 'e', 'u']) press(k);
+    await flush();
+    expect(sent()).toEqual([]);
   });
 });

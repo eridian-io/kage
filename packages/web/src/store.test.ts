@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applyEvent,
   archivedCount,
+  archiveOpen,
+  beginRemoval,
+  endRemoval,
   lineKeyBase,
   linesById,
   projectsRoot,
@@ -12,6 +15,7 @@ import {
   selectWhenSeen,
   sessions,
   streamId,
+  toast,
 } from './store.ts';
 
 const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
@@ -228,5 +232,64 @@ describe('the archive count', () => {
     expect(archivedCount.value).toBe(5);
     applyEvent({ type: 'archive', count: 6 });
     expect(archivedCount.value).toBe(6);
+  });
+});
+
+describe('the archived list and the removal toasts (Task 9, F12)', () => {
+  const withDemo = () =>
+    applyEvent({
+      type: 'snapshot',
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: demoSessions(0),
+      archived: 0,
+    });
+  const docs = () => sessions.value.find((s) => s.id === 'docs') as Session;
+
+  beforeEach(() => {
+    toast.value = null;
+    archiveOpen.value = false;
+    withDemo();
+  });
+
+  it('closes the archived list when the count drops to 0', () => {
+    applyEvent({ type: 'archive', count: 2 });
+    archiveOpen.value = true;
+    applyEvent({ type: 'archive', count: 1 });
+    expect(archiveOpen.value).toBe(true);
+    applyEvent({ type: 'archive', count: 0 });
+    expect(archiveOpen.value).toBe(false);
+  });
+
+  it('an archive this page asked for toasts as archived, a delete as deleted', () => {
+    beginRemoval(docs(), 'archived');
+    endRemoval('docs', true);
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toEqual({ kind: 'archived', name: 'docs · update README' });
+    const footer = sessions.value.find((s) => s.id === 'footer') as Session;
+    beginRemoval(footer, 'deleted');
+    applyEvent({ type: 'session.removed', id: 'footer' });
+    expect(toast.value).toEqual({ kind: 'deleted', name: 'web · fix footer links' });
+  });
+
+  it('a removal nobody here asked for (auto-archive, another tab) shows no toast', () => {
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toBeNull();
+  });
+
+  it('a failed request forgets its removal, unless an earlier one succeeded', () => {
+    beginRemoval(docs(), 'archived');
+    endRemoval('docs', false);
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toBeNull();
+    withDemo();
+    beginRemoval(docs(), 'deleted');
+    endRemoval('docs', true);
+    // A second attempt before the removal event arrives fails (the session is going away).
+    beginRemoval(docs(), 'deleted');
+    endRemoval('docs', false);
+    applyEvent({ type: 'session.removed', id: 'docs' });
+    expect(toast.value).toEqual({ kind: 'deleted', name: 'docs · update README' });
   });
 });

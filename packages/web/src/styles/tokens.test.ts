@@ -74,10 +74,10 @@ describe('board.css', () => {
     expect(board).not.toMatch(/\.v1/);
   });
   it('keeps a focus ring on every all:unset control', () => {
-    for (const sel of ['.k-new', '.k-act', '.k-opts button']) {
+    for (const sel of ['.k-new', '.k-act', '.k-opts button', '.k-arch > .k-g', '.k-restore']) {
       expect(board).toContain(`${sel}:focus-visible`);
     }
-    expect(board.match(/all: unset/g)?.length).toBe(3);
+    expect(board.match(/all: unset/g)?.length).toBe(5);
   });
   it('self-hosts Geist', () => {
     for (const f of [

@@ -16,6 +16,8 @@ export const streamId: Signal<string | null> = signal(null);
 export const projectsRoot: Signal<string> = signal('');
 /** How many sessions are archived. */
 export const archivedCount: Signal<number> = signal(0);
+/** The archived list at the bottom of the left column is open; it closes when the count is 0. */
+export const archiveOpen: Signal<boolean> = signal(false);
 export const MAX_LINES = 500;
 /**
  * How many lines each session has received, ever. The key of line i of n held is
@@ -31,8 +33,9 @@ export const authRequired: Signal<boolean> = signal(false);
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
-/** The deleted session's name (`project · task`) while the toast shows, else null. */
-export const toast: Signal<string | null> = signal(null);
+export type RemovalKind = 'deleted' | 'archived';
+/** The removed session's kind and name (`project · task`) while the toast shows, else null. */
+export const toast: Signal<{ kind: RemovalKind; name: string } | null> = signal(null);
 /** True while the New task form replaces the button at the top of the left column. */
 export const newTaskOpen: Signal<boolean> = signal(false);
 /**
@@ -73,14 +76,14 @@ export const selected: ReadonlySignal<Session | null> = computed(
   () => sorted.value.find((s) => s.id === selectedId.value) ?? null,
 );
 
-/** Deletes this page asked for, by id, with the name the toast will show. */
-const deleting = new Map<string, string>();
-/** DELETE requests in flight, by id, so a second attempt can't erase the first one's entry. */
-const inFlight = new Map<string, number>();
-/** The ids with a DELETE request in flight; Delete is disabled for them. */
-export const pendingDeletes: Signal<ReadonlySet<string>> = signal(new Set());
+/**
+ * Removals (archive or delete) this page asked for, by id (F12): the kind and name its toast will
+ * show when the session.removed arrives, and whether the server accepted the request. A removal
+ * nobody here asked for (auto-archive, another tab) shows no toast.
+ */
+const removing = new Map<string, { kind: RemovalKind; name: string; accepted: boolean }>();
 
-export const nameOf = (s: Session) => `${s.project} · ${s.task}`;
+export const nameOf = (s: Pick<Session, 'project' | 'task'>) => `${s.project} · ${s.task}`;
 
 /** Stop is offered for Kage's own sessions that are running or waiting (spec §6.1, F2). */
 export const canStop = (s: Session): boolean =>
@@ -213,9 +216,11 @@ export function applyEvent(e: ServerEvent): void {
       for (const id of [...lineCount.keys()]) {
         if (!e.sessions.some((s) => s.id === id)) lineCount.delete(id);
       }
-      // A removal missed while disconnected is never announced, so its toast entry goes.
-      for (const id of [...deleting.keys()]) {
-        if (!e.sessions.some((s) => s.id === id)) deleting.delete(id);
+      if (e.archived === 0) archiveOpen.value = false;
+      // A removal missed while disconnected is never announced, so its toast entry goes; so does
+      // an accepted one whose session is still here (the snapshot is newer than the request).
+      for (const [id, r] of [...removing]) {
+        if (r.accepted || !e.sessions.some((s) => s.id === id)) removing.delete(id);
       }
     } else if (e.type === 'session.updated') {
       const list = sessions.value;
@@ -239,6 +244,7 @@ export function applyEvent(e: ServerEvent): void {
       }
     } else if (e.type === 'archive') {
       archivedCount.value = e.count;
+      if (e.count === 0) archiveOpen.value = false;
     } else if (e.type === 'session.removed') {
       sessions.value = sessions.value.filter((s) => s.id !== e.id);
       lineCount.delete(e.id);
@@ -247,10 +253,10 @@ export function applyEvent(e: ServerEvent): void {
         m.delete(e.id);
         linesById.value = m;
       }
-      const name = deleting.get(e.id);
-      if (name !== undefined) {
-        deleting.delete(e.id);
-        toast.value = name;
+      const asked = removing.get(e.id);
+      if (asked !== undefined) {
+        removing.delete(e.id);
+        toast.value = { kind: asked.kind, name: asked.name };
       }
     }
     const waiting = selectWhenSeen.value;
@@ -267,21 +273,17 @@ export function selectNext(delta: 1 | -1): void {
   select(list[next]?.id ?? null);
 }
 
-function setInFlight(id: string, n: number): void {
-  if (n > 0) inFlight.set(id, n);
-  else inFlight.delete(id);
-  pendingDeletes.value = new Set(inFlight.keys());
+/** An archive or delete request starts: its removal will show the toast of that kind. */
+export function beginRemoval(s: Pick<Session, 'id' | 'project' | 'task'>, kind: RemovalKind): void {
+  // A request the server already accepted keeps its entry: that removal is on its way.
+  if (removing.get(s.id)?.accepted) return;
+  removing.set(s.id, { kind, name: nameOf(s), accepted: false });
 }
 
-/** A DELETE request starts: its removal will show the toast, and Delete is disabled meanwhile. */
-export function beginDelete(s: Session): void {
-  deleting.set(s.id, nameOf(s));
-  setInFlight(s.id, (inFlight.get(s.id) ?? 0) + 1);
-}
-
-/** A DELETE request ended. A failure forgets the toast only when no other request is in flight. */
-export function endDelete(id: string, ok: boolean): void {
-  const left = (inFlight.get(id) ?? 1) - 1;
-  setInFlight(id, left);
-  if (!ok && left === 0) deleting.delete(id);
+/** The request ended. A failure forgets the toast, unless an earlier request was accepted. */
+export function endRemoval(id: string, ok: boolean): void {
+  const entry = removing.get(id);
+  if (!entry || entry.accepted) return;
+  if (ok) entry.accepted = true;
+  else removing.delete(id);
 }

@@ -1,4 +1,5 @@
-import { answer, stop } from './api.ts';
+import { groupOf } from '@kage/shared';
+import { answer, archive, pin, resume, stop } from './api.ts';
 import {
   authRequired,
   canStop,
@@ -26,7 +27,7 @@ function typing(target: EventTarget | null): boolean {
 
 /**
  * N opens the New task form, J/K move the selection, 1–9 answer, R replies or follows up, X twice
- * stops, and Esc cancels the delete confirmation or closes the reply field. While the form is
+ * stops, S pins, E archives, U resumes, and Esc cancels the delete confirmation or closes the reply field. While the form is
  * open it owns the keyboard (Esc, Enter), so these are off. Returns the uninstaller.
  */
 export function installKeys(target: Document = document): () => void {
@@ -56,7 +57,10 @@ export function installKeys(target: Document = document): () => void {
       }
       // A new reply field focuses itself as it mounts; an open one, or the follow-up, is focused here.
       target.querySelector<HTMLInputElement>('.k-follow input')?.focus();
-    } else if (k === 'x' && s && canStop(s) && !stopPending(s)) {
+    } else if (k === 's' && s && !s.external) void pin(s);
+    else if (k === 'e' && s && !s.external && groupOf(s) === 'done') void archive(s, true);
+    else if (k === 'u' && s && !s.external && s.status === 'ended') void resume(s);
+    else if (k === 'x' && s && canStop(s) && !stopPending(s)) {
       clearTimeout(disarm);
       if (stopArmed.value === s.id) {
         stopArmed.value = null;
