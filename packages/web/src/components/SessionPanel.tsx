@@ -130,16 +130,18 @@ function Confirm({ s }: { s: Session }) {
   const key = `${s.unpushed},${s.uncommitted},${s.ignored}`;
   const seen = useRef({ key, at: 0 });
   if (seen.current.key !== key) seen.current = { key, at: Date.now() };
-  // While held, the button looks off (aria-disabled keeps its focus); one re-render ends it.
+  // While held, the button looks off (aria-disabled keeps its focus); a timed re-render ends it.
   const held = Date.now() - seen.current.at < FRESH_MS;
-  const [, wake] = useState(0);
+  const [tick, wake] = useState(0);
   useEffect(() => {
-    if (seen.current.at === 0) return;
-    // Effects can run late: a hold already over re-renders at once.
+    if (!held) return;
+    // Effects can run late: a hold already over re-renders at once. A timer can also fire a
+    // moment early by Date.now() (or the clock steps), so each wake that finds the hold still
+    // on arms the next one; the wait never exceeds the hold.
     const left = FRESH_MS - (Date.now() - seen.current.at);
-    const t = setTimeout(() => wake((n) => n + 1), Math.max(0, left));
+    const t = setTimeout(() => wake((n) => n + 1), Math.min(FRESH_MS, Math.max(1, left)));
     return () => clearTimeout(t);
-  }, [key]);
+  }, [key, tick, held]);
   return (
     <div class="k-confirm">
       <div>

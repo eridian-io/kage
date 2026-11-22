@@ -1822,6 +1822,28 @@ describe('carried from Task 9 (R77)', () => {
       expect(board).toMatch(/\.k-confirm \.k-act\[aria-disabled="true"\][^{]*\{[^}]*opacity/);
     });
 
+    it('the hold still ends when its timer fires a moment early by the clock', async () => {
+      // Seen in the e2e: Chrome's timers can fire a millisecond early by Date.now() (and the
+      // clock can step), so one timer that re-checks Date.now() could leave the button off.
+      withSession({ unpushed: 1 });
+      const { container } = render(<Board />);
+      fireEvent.click(row(container, 'docs'));
+      fireEvent.click(button(container, 'Delete…'));
+      const del = () => button(container, 'Delete session');
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_000);
+      applyEvent({ type: 'session.updated', session: { ...docs(), uncommitted: 2 } });
+      await Promise.resolve();
+      expect(del().getAttribute('aria-disabled')).toBe('true');
+      // The 400 ms timer fires while the clock still reads 399 ms later: still held.
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_399);
+      await new Promise((r) => setTimeout(r, 600));
+      expect(del().getAttribute('aria-disabled')).toBe('true');
+      vi.mocked(Date.now).mockReturnValue(NOW + 10_400);
+      await waitFor(() => expect(del().getAttribute('aria-disabled')).toBeNull(), {
+        timeout: 2000,
+      });
+    });
+
     it('a click right after opening the confirmation is not held back', async () => {
       const { container } = render(<Board />);
       fireEvent.click(row(container, 'docs'));
