@@ -1,13 +1,16 @@
 import { groupOf } from '@kage/shared';
 import { answer, archive, pin, resume, stop } from './api.ts';
+import { isLeave } from './leave.ts';
 import {
   authRequired,
   canStop,
   closeDiff,
+  closeTerminal,
   confirmingDelete,
   digitsHeld,
   mainView,
   newTaskOpen,
+  openTerminal,
   releaseDigits,
   replyOpen,
   selected,
@@ -29,13 +32,22 @@ function typing(target: EventTarget | null): boolean {
 
 /**
  * N opens the New task form, J/K move the selection, 1–9 answer, R replies or follows up, X twice
- * stops, S pins, E archives, U resumes, and Esc closes the diff, cancels the delete confirmation
- * or closes the reply field. While the form is
- * open it owns the keyboard (Esc, Enter), so these are off. Returns the uninstaller.
+ * stops, S pins, E archives, U resumes, T opens the terminal, and Esc closes the diff, cancels the
+ * delete confirmation or closes the reply field. While the form is open it owns the keyboard (Esc,
+ * Enter), so these are off. While the terminal is open every key is its own (F9), except
+ * Shift+Esc and Ctrl+Shift+X, which leave it (T2, R64). Returns the uninstaller.
  */
 export function installKeys(target: Document = document): () => void {
   let disarm: ReturnType<typeof setTimeout> | undefined;
   const onKey = (e: KeyboardEvent) => {
+    if (mainView.value === 'terminal') {
+      // From inside xterm too: its key handler lets these two through to here.
+      if (isLeave(e) && !e.repeat) {
+        e.preventDefault();
+        closeTerminal();
+      }
+      return;
+    }
     if (e.ctrlKey || e.metaKey || e.altKey || typing(e.target)) return;
     if (newTaskOpen.value || authRequired.value) return;
     const k = e.key.toLowerCase();
@@ -83,6 +95,7 @@ export function installKeys(target: Document = document): () => void {
     } else if (k === 's' && s && !s.external) void pin(s);
     else if (k === 'e' && s && !s.external && groupOf(s) === 'done') void archive(s, true);
     else if (k === 'u' && s && !s.external && s.status === 'ended') void resume(s);
+    else if (k === 't' && s && s.status !== 'ended') openTerminal(s);
     else if (k === 'x' && s && canStop(s) && !stopPending(s)) {
       clearTimeout(disarm);
       if (stopArmed.value === s.id) {

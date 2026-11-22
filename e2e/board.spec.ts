@@ -119,3 +119,100 @@ test.describe('reconnecting', () => {
     }
   });
 });
+
+test.describe('the terminal (Task 13)', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      const w = window as unknown as { cspViolations: string[] };
+      w.cspViolations = [];
+      document.addEventListener('securitypolicyviolation', (e) =>
+        w.cspViolations.push(`${e.violatedDirective} ${e.blockedURI}`),
+      );
+    });
+  });
+  const violations = (page: import('@playwright/test').Page) =>
+    page.evaluate(() => (window as unknown as { cspViolations: string[] }).cspViolations);
+
+  test('T loads the chunk only then; demo mode answers with its sentence', async ({ page }) => {
+    const requested: string[] = [];
+    const errors: string[] = [];
+    page.on('request', (r) => requested.push(new URL(r.url()).pathname));
+    page.on('pageerror', (e) => errors.push(e.message));
+    await page.goto('/');
+    await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
+    expect(requested.filter((p) => p.startsWith('/term-'))).toEqual([]);
+    await page.keyboard.press('t');
+    await expect(page.locator('.k-err')).toHaveText('Demo mode has no terminal.');
+    await expect(page.locator('[data-act="term"]')).toHaveText('TerminalT');
+    expect(requested.filter((p) => /^\/term-\w+\.js$/.test(p))).toHaveLength(1);
+    expect(requested.filter((p) => /^\/term-\w+\.css$/.test(p))).toHaveLength(1);
+    expect(await violations(page)).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  test('xterm renders the pane under the strict CSP, types, and leaves with Shift+Esc', async ({
+    page,
+  }) => {
+    const frames: string[] = [];
+    let url = '';
+    await page.routeWebSocket(/\/api\/sessions\/[^/]+\/terminal/, (ws) => {
+      url = ws.url();
+      ws.onMessage((m) => frames.push(String(m)));
+      ws.send(JSON.stringify({ t: 'reset', cols: 80, rows: 24, mode: 'rw' }));
+      ws.send(
+        Buffer.from(
+          'plain row\r\n\x1b[38;2;215;119;87mTRUECOLOR\x1b[0m \x1b[48;2;40;80;40mTRUEBG\x1b[0m',
+        ),
+      );
+    });
+    await page.goto('/');
+    await page.keyboard.press('t');
+    const rows = page.locator('.k-term .xterm-rows');
+    await expect(rows).toContainText('TRUECOLOR');
+    expect(url).toMatch(/\/api\/sessions\/web\/terminal\?cols=\d+&rows=\d+$/);
+    await expect(page.locator('.k-foot .l')).toContainText('Back to session⇧Esc');
+    await expect(page.locator('.k-foot .l .k-hint')).toHaveText(
+      'Shift+Esc (or Ctrl+Shift+X) to leave',
+    );
+    const color = await rows
+      .locator('span', { hasText: 'TRUECOLOR' })
+      .evaluate((e) => getComputedStyle(e).color);
+    expect(color).toBe('rgb(215, 119, 87)');
+    const bg = await rows
+      .locator('span', { hasText: 'TRUEBG' })
+      .evaluate((e) => getComputedStyle(e).backgroundColor);
+    expect(bg).toBe('rgb(40, 80, 40)');
+    // Keys go to the pane, Esc included; board keys don't act (F9).
+    await page.keyboard.type('j1');
+    await page.keyboard.press('Escape');
+    const keys = () => frames.filter((f) => f.startsWith('{"t":"in"'));
+    await expect.poll(() => keys().length).toBe(3);
+    expect(keys().map((f) => JSON.parse(f).d)).toEqual(['j', '1', '\x1b']);
+    await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
+    await page.keyboard.press('Shift+Escape');
+    await expect(page.locator('.k-term')).toHaveCount(0);
+    await expect(page.locator('[data-act="term"]')).toBeFocused();
+    expect(await violations(page)).toEqual([]);
+  });
+
+  test('a view-only pane shows the line and sends nothing', async ({ page }) => {
+    const frames: string[] = [];
+    await page.routeWebSocket(/\/terminal/, (ws) => {
+      ws.onMessage((m) => frames.push(String(m)));
+      ws.send(JSON.stringify({ t: 'reset', cols: 60, rows: 10, mode: 'ro' }));
+      ws.send(Buffer.from('external window'));
+    });
+    await page.goto('/');
+    await page.keyboard.press('t');
+    await expect(page.locator('.k-term .xterm-rows')).toContainText('external window');
+    await expect(page.locator('.k-term-ro')).toHaveText(
+      "View only: Kage didn't start this window, so it doesn't type into it.",
+    );
+    await page.keyboard.type('abc');
+    await page.setViewportSize({ width: 1200, height: 800 });
+    await page.waitForTimeout(300);
+    expect(frames).toEqual([]);
+    await page.keyboard.press('Control+Shift+X');
+    await expect(page.locator('.k-term')).toHaveCount(0);
+  });
+});

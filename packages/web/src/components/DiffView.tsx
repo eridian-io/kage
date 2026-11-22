@@ -150,7 +150,12 @@ export function DiffView({ session: s }: { session: Session }) {
   const shown = st.loading ? null : p;
   const paged = p !== null && (p.from > 0 || p.next !== null);
   const stale = shown !== null && st.error === null && s.files !== asked.current;
-  const again = () => setReq({ ...req });
+  // Try again and the reload link go away while the page loads: focus moves to the diff first,
+  // so it never falls to the page.
+  const again = () => {
+    body.current?.focus();
+    setReq({ ...req });
+  };
   // aria-disabled, not disabled: a focused button that turns off keeps focus (keyboard paging).
   const prevOff = st.loading || st.back.length === 0;
   const nextOff = st.loading || p === null || p.next === null;

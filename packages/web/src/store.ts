@@ -38,6 +38,8 @@ export const confirmingDelete: Signal<boolean> = signal(false);
  * or the terminal (Task 13). Every selection, explicit or automatic, returns it to 'output'.
  */
 export const mainView: Signal<'output' | 'diff' | 'terminal'> = signal('output');
+/** The terminal's last close reason or load error, shown in the error line; cleared on select and open. */
+export const termNote: Signal<string | null> = signal(null);
 /**
  * Bumped when a removal this page asked for (archive, delete) arrives: the list then focuses the
  * newly selected row, since the button that had focus went away with the session (R77).
@@ -161,6 +163,7 @@ export function select(id: string | null): void {
     selectedId.value = id;
     confirmingDelete.value = false;
     mainView.value = 'output';
+    termNote.value = null;
     selectWhenSeen.value = null;
     replyOpen.value = false;
     actionError.value = null;
@@ -305,4 +308,32 @@ export function endRemoval(id: string, ok: boolean): void {
 export function closeDiff(): void {
   mainView.value = 'output';
   document.querySelector<HTMLElement>('.k-diff')?.focus();
+}
+
+/** T or Terminal: the terminal replaces the output, for a session that still has a window. */
+export function openTerminal(s: Session): void {
+  if (s.status === 'ended') return;
+  batch(() => {
+    termNote.value = null;
+    confirmingDelete.value = false;
+    replyOpen.value = false;
+    mainView.value = 'terminal';
+  });
+}
+
+/**
+ * Back, Shift+Esc, Ctrl+Shift+X or the terminal's end: the output comes back (unmounting the
+ * terminal disposes it), and focus returns to Terminal, so it never falls to the page.
+ */
+export function closeTerminal(): void {
+  if (mainView.value !== 'terminal') return;
+  mainView.value = 'output';
+  // After the re-render that brings Terminal back in place of Back to session.
+  // Only when focus fell to the page (it was inside xterm); a focused Back is the same button.
+  setTimeout(() => {
+    const a = document.activeElement;
+    if (a === null || a === document.body) {
+      document.querySelector<HTMLElement>('[data-act="term"]')?.focus();
+    }
+  });
 }

@@ -354,6 +354,23 @@ describe('the diff view', () => {
     expect(document.activeElement).toBe(q(c, '.k-diff-body'));
   });
 
+  it('Try again moves focus to the diff before it asks, so focus never falls to the page', async () => {
+    pages.set(0, [422, "git couldn't show the diff: the folder is gone."]);
+    const c = await openDiff();
+    pages.set(0, PAGE);
+    const again = button(c, 'Try again');
+    again.focus();
+    let focusAtRequest: Element | null = null;
+    const inner = fetchMock.getMockImplementation() as (url: string) => Promise<Response>;
+    fetchMock.mockImplementation((url: string) => {
+      focusAtRequest = document.activeElement;
+      return inner(url);
+    });
+    fireEvent.click(again);
+    await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+    expect(focusAtRequest).toBe(q(c, '.k-diff-body'));
+  });
+
   it('an empty page past the first (the files shrank) goes back to page 0', async () => {
     pages.set(0, { ...PAGE, next: 5 });
     pages.set(5, { ...PAGE, from: 5, filesTotal: 2, next: null, files: [] });

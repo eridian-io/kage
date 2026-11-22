@@ -1,0 +1,7 @@
+/* The terminal chunk's own rules, next to xterm.css: xterm fills the board's terminal area. */
+.k-term-x .xterm {
+  height: 100%;
+}
+.k-term-x .xterm-viewport {
+  scrollbar-color: var(--line-strong) transparent;
+}

@@ -495,3 +495,83 @@ describe('installKeys: the diff view (Task 10)', () => {
     expect(mainView.value).toBe('output');
   });
 });
+
+describe('installKeys: the terminal (Task 13)', () => {
+  const key = (init: KeyboardEventInit, target: EventTarget = document) =>
+    target.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, ...init }));
+  const ended = () => {
+    const list = demoSessions(NOW).map((s) =>
+      s.id === 'docs' ? { ...s, status: 'ended' as const } : s,
+    );
+    applyEvent({
+      type: 'snapshot',
+      host: 'my-pc',
+      streamId: 's',
+      projectsRoot: '/p',
+      archived: 0,
+      sessions: list,
+    });
+  };
+
+  it('T opens the terminal for a session with a window', () => {
+    select('shop');
+    press('t');
+    expect(mainView.value).toBe('terminal');
+  });
+
+  it('T does nothing while typing, with a modifier, or for an ended session', () => {
+    select('shop');
+    const field = document.createElement('input');
+    document.body.append(field);
+    press('t', field);
+    key({ key: 't', ctrlKey: true });
+    expect(mainView.value).toBe('output');
+    ended();
+    select('docs');
+    press('t');
+    expect(mainView.value).toBe('output');
+  });
+
+  it('Shift+Esc and Ctrl+Shift+X leave it; plain Esc does not (it is Claude’s)', () => {
+    select('shop');
+    for (const leave of [
+      { key: 'Escape', shiftKey: true },
+      { key: 'X', ctrlKey: true, shiftKey: true },
+    ]) {
+      press('t');
+      press('Escape');
+      expect(mainView.value).toBe('terminal');
+      key(leave);
+      expect(mainView.value).toBe('output');
+    }
+  });
+
+  it('they leave from inside the terminal’s own textarea too', () => {
+    select('shop');
+    press('t');
+    const ta = document.createElement('textarea');
+    document.body.append(ta);
+    key({ key: 'Escape', shiftKey: true }, ta);
+    expect(mainView.value).toBe('output');
+  });
+
+  it('a held Shift+Esc acts once only on the first press', () => {
+    select('shop');
+    press('t');
+    key({ key: 'Escape', shiftKey: true, repeat: true });
+    expect(mainView.value).toBe('terminal');
+  });
+
+  it('every board key is ignored while it is open (F9)', async () => {
+    select('web');
+    press('t');
+    for (const k of ['j', 'k', '1', 'x', 'x', 's', 'e', 'u', 'n', 'r', 't']) press(k);
+    await flush();
+    expect(selectedId.value).toBe('web');
+    expect(stopArmed.value).toBeNull();
+    expect(newTaskOpen.value).toBe(false);
+    expect(replyOpen.value).toBe(false);
+    expect(posted()).toEqual([]);
+    expect(mainView.value).toBe('terminal');
+  });
+});

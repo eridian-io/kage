@@ -5,18 +5,22 @@ import { archive, canAct, pin, remove, resume, stop } from '../api.ts';
 import {
   actionError,
   closeDiff,
+  closeTerminal,
   confirmingDelete,
   mainView,
   now,
+  openTerminal,
   projectsRoot,
   stopArmed,
   stopPending,
+  termNote,
 } from '../store.ts';
 import { Ask } from './Ask.tsx';
 import { DiffView } from './DiffView.tsx';
 import { FollowUp } from './FollowUp.tsx';
 import { INERT } from './inert.ts';
 import { Output } from './Output.tsx';
+import { TerminalView } from './TerminalView.tsx';
 import { Toast } from './Toast.tsx';
 
 /** The target's status classes: wait, run, done; ended is grey like done. */
@@ -188,10 +192,12 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const own = !s.external;
   // The diff replaces the output, the question, the follow-up and the confirmation.
   const diff = mainView.value === 'diff';
-  const confirming = done && own && confirmingDelete.value && !diff;
+  // So does the terminal, for a session that has a window (an ended one shows Resume).
+  const term = mainView.value === 'terminal' && !ended;
+  const confirming = done && own && confirmingDelete.value && !diff && !term;
   const chip = ended ? 'ended' : group;
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
-  const error = actionError.value?.id === s.id ? actionError.value.text : null;
+  const error = actionError.value?.id === s.id ? actionError.value.text : termNote.value;
   // Every action waits for a live stream (its result arrives as an event) and for the last one.
   const off = !canAct(s.id);
   return (
@@ -241,6 +247,8 @@ export function SessionPanel({ session: s }: { session: Session }) {
       <Toast />
       {diff ? (
         <DiffView key={s.id} session={s} />
+      ) : term ? (
+        <TerminalView key={s.id} session={s} />
       ) : (
         <>
           <Output session={s} />
@@ -262,6 +270,12 @@ export function SessionPanel({ session: s }: { session: Session }) {
           {/* Kage resumes only sessions it launched; an external window keeps its Terminal. */}
           {diff ? (
             <Act label="Back to session" hotkey="Esc" onClick={closeDiff} />
+          ) : term ? (
+            <>
+              <Act label="Back to session" hotkey="⇧Esc" act="term" onClick={closeTerminal} />
+              {/* R56, R64: Esc is Claude's in here; the way out stays in sight. */}
+              <span class="k-hint">Shift+Esc (or Ctrl+Shift+X) to leave</span>
+            </>
           ) : ended && own ? (
             <Act
               label="Resume"
@@ -271,7 +285,13 @@ export function SessionPanel({ session: s }: { session: Session }) {
               onClick={() => resume(s)}
             />
           ) : (
-            <Act label="Terminal" hotkey="T" icon={ICON.term} />
+            <Act
+              label="Terminal"
+              hotkey="T"
+              icon={ICON.term}
+              act="term"
+              {...(ended ? {} : { onClick: () => openTerminal(s) })}
+            />
           )}
         </div>
         <div class="r">

@@ -29,6 +29,8 @@ beforeAll(async () => {
   await mkdir(join(dist, 'fonts'));
   await writeFile(join(dist, 'index.html'), HTML);
   await writeFile(join(dist, 'app-ABC123.js'), JS);
+  await writeFile(join(dist, 'term-GHI789.js'), 'export const t = 1;');
+  await writeFile(join(dist, 'term-JKL012.css'), '.xterm{}');
   await writeFile(join(dist, 'app-DEF456.css'), `.k-app{color:red}${'.a{b:c}'.repeat(100)}`);
   await writeFile(join(dist, 'fonts', 'geist-latin-400-normal.woff2'), new Uint8Array([1, 2, 3]));
   // Compressible bytes under already-compressed extensions: must still be served raw.
@@ -95,6 +97,9 @@ describe('loadAssets', () => {
     expect(assets.get('/app-DEF456.css')?.type).toBe('text/css; charset=utf-8');
     expect(assets.get('/fonts/geist-latin-400-normal.woff2')?.type).toBe('font/woff2');
     expect(assets.get('/app-ABC123.js')?.immutable).toBe(true);
+    // The terminal chunk is hashed the same way (Task 13).
+    expect(assets.get('/term-GHI789.js')?.immutable).toBe(true);
+    expect(assets.get('/term-JKL012.css')?.immutable).toBe(true);
     expect(index?.immutable).toBe(false);
     expect(assets.get('/fonts/geist-latin-400-normal.woff2')?.immutable).toBe(false);
   });
@@ -176,6 +181,15 @@ describe('static assets', () => {
     expect(res.headers.get('referrer-policy')).toBe('no-referrer');
     expect(res.headers.get('content-security-policy')).toContain("default-src 'self'");
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
+  it("keeps the strict CSP for the terminal too: no 'unsafe-inline', no nonce (R55, R60)", async () => {
+    for (const path of ['/', '/term-GHI789.js', '/term-JKL012.css', '/api/nope']) {
+      const csp = (await app().fetch(req(path))).headers.get('content-security-policy') ?? '';
+      expect(csp, path).toContain("style-src 'self'");
+      expect(csp, path).toContain("script-src 'self'");
+      expect(csp, path).not.toMatch(/unsafe-|nonce-/);
+    }
   });
 });
 

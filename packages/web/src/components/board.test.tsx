@@ -18,6 +18,7 @@ import {
   hadSnapshot,
   host,
   linesById,
+  mainView,
   now,
   releaseDigits,
   replyOpen,
@@ -25,6 +26,7 @@ import {
   sessions,
   stopArmed,
   stopSent,
+  termNote,
   toast,
 } from '../store.ts';
 
@@ -47,7 +49,6 @@ const posts = () =>
   ]);
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
-const LATER = 'Available in a later version';
 const board = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'utf8');
 
 function reset(list: Session[] = demoSessions(NOW)) {
@@ -68,6 +69,8 @@ function reset(list: Session[] = demoSessions(NOW)) {
   connection.value = 'live';
   now.value = NOW;
   linesById.value = new Map();
+  mainView.value = 'output';
+  termNote.value = null;
   applyEvent({
     type: 'snapshot',
     host: 'my-pc',
@@ -97,11 +100,6 @@ const button = (c: Element, label: string) => {
   if (!b) throw new Error(`no button ${label}`);
   return b;
 };
-const expectInert = (el: Element) => {
-  expect(el.getAttribute('aria-disabled')).toBe('true');
-  expect(el.getAttribute('title')).toBe(LATER);
-};
-
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW);
   vi.mocked(apiDelete).mockClear();
@@ -198,7 +196,7 @@ describe('session panel', () => {
     expect(q(ask, '.k-or').textContent).toBe('or press R to reply');
   });
 
-  it('shows Terminal (inert) and Stop in the footer, and no Archive', () => {
+  it('shows Terminal (live since Task 13) and Stop in the footer, and no Archive', () => {
     const { container } = render(<Board />);
     const [term, stop, ...rest] = footButtons(container);
     expect(rest).toEqual([]);
@@ -208,10 +206,12 @@ describe('session panel', () => {
     expect(stop?.closest('.r')).not.toBeNull();
     expect(stop?.textContent).toBe('StopX');
     expect(stop?.classList.contains('stop')).toBe(true);
-    expectInert(term as Element);
+    expect(term?.hasAttribute('aria-disabled')).toBe(false);
     expect(stop?.hasAttribute('aria-disabled')).toBe(false);
     expect(container.textContent).not.toContain('Archive');
+    // Opening the terminal sends no request (the WebSocket comes from the chunk; terminal.test.tsx).
     fireEvent.click(term as Element);
+    expect(mainView.value).toBe('terminal');
     expect(fetchMock).not.toHaveBeenCalled();
     expect(apiDelete).not.toHaveBeenCalled();
   });

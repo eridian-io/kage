@@ -1,5 +1,7 @@
 /**
- * Builds the board into dist/: index.html, app-[hash].js, app-[hash].css, fonts/*, the logo.
+ * Builds the board into dist/: index.html, app-[hash].js, app-[hash].css, fonts/*, the logo, and
+ * the terminal chunk term-[hash].js and term-[hash].css, which only index.html's kage-term meta
+ * names (term-loader.ts loads them on the first open; spec §5.6).
  * `node packages/web/build.ts` builds once; `--watch` rebuilds on every change.
  */
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -18,7 +20,7 @@ export const FONTS = [
   'geist-mono-latin-500-normal.woff2',
 ];
 const LOGO = 'kage-logo-96.png';
-const HASHED = /^app-[A-Za-z0-9]+\.(js|css)$/;
+const HASHED = /^(app|term)-[A-Za-z0-9]+\.(js|css)$/;
 
 const fontSource = (name: string) =>
   join(
@@ -40,14 +42,30 @@ async function copyStatic(outDir: string): Promise<void> {
 /** Writes the new bundle and index.html, then removes bundles from earlier builds. */
 async function writeBundle(outDir: string, files: esbuild.OutputFile[]): Promise<void> {
   const names = files.map((f) => basename(f.path));
-  const js = names.find((n) => n.endsWith('.js'));
-  const css = names.find((n) => n.endsWith('.css'));
-  if (!js || !css || names.length !== 2) throw new Error(`Unexpected build output: ${names}`);
+  const named = (prefix: string, ext: string) =>
+    names.find((n) => n.startsWith(prefix) && n.endsWith(ext));
+  const js = named('app-', '.js');
+  const css = named('app-', '.css');
+  const termJs = named('term-', '.js');
+  const termCss = named('term-', '.css');
+  if (
+    !js ||
+    !css ||
+    !termJs ||
+    !termCss ||
+    names.length !== 4 ||
+    !names.every((n) => HASHED.test(n))
+  ) {
+    throw new Error(`Unexpected build output: ${names}`);
+  }
   await Promise.all(files.map((f) => writeFile(f.path, f.contents)));
   const template = await readFile(join(here, 'index.html'), 'utf8');
   await writeFile(
     join(outDir, 'index.html'),
-    template.replace('%APP_JS%', js).replace('%APP_CSS%', css),
+    template
+      .replace('%APP_JS%', js)
+      .replace('%APP_CSS%', css)
+      .replace('%TERM%', `/${termJs} /${termCss}`),
   );
   for (const old of await readdir(outDir)) {
     if (HASHED.test(old) && !names.includes(old)) await rm(join(outDir, old));
@@ -56,7 +74,12 @@ async function writeBundle(outDir: string, files: esbuild.OutputFile[]): Promise
 
 function options(outDir: string, onBuilt: (r: esbuild.BuildResult) => Promise<void>) {
   return {
-    entryPoints: [join(here, 'src/main.tsx'), join(here, 'src/styles/index.css')],
+    entryPoints: [
+      { in: join(here, 'src/main.tsx'), out: 'app' },
+      { in: join(here, 'src/styles/index.css'), out: 'app' },
+      // Its own entry, never imported by the board: xterm stays out of the first load.
+      { in: join(here, 'src/terminal/index.ts'), out: 'term' },
+    ],
     outdir: outDir,
     bundle: true,
     minify: true,
@@ -64,7 +87,7 @@ function options(outDir: string, onBuilt: (r: esbuild.BuildResult) => Promise<vo
     target: 'es2022',
     jsx: 'automatic',
     jsxImportSource: 'preact',
-    entryNames: 'app-[hash]',
+    entryNames: '[name]-[hash]',
     // board.css points at files copied next to the bundle, not at modules.
     external: ['/fonts/*', `/${LOGO}`],
     metafile: true,
