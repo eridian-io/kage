@@ -261,21 +261,31 @@ test('Delete warns about unpushed, uncommitted and ignored work, refuses changed
     { timeout: STATUS_MS },
   );
 
-  // A file appears after the confirmation was drawn: the server refuses the old counts.
+  // A file appears after the confirmation was drawn. Viewing the session again recounts, so the
+  // board shows the new counts before anything is sent.
   writeFileSync(join(worktree, 'extra.txt'), 'One more invented line.\n');
-  const confirm = page.getByRole('button', { name: 'Delete session' });
-  // Counts that changed just now hold the click for 400 ms (FRESH_MS); it would be ignored.
-  await expect(confirm).not.toHaveAttribute('aria-disabled', 'true', { timeout: STATUS_MS });
-  await confirm.click();
-  await expect(page.locator('.k-main .k-err')).toHaveText(
-    "Couldn't delete: The branch changed since you looked. Look again before deleting.",
-  );
-  await expect(page.locator('.k-confirm')).toBeVisible();
-  await expect(warn).toContainText('3 files have uncommitted changes and will be lost.');
+  await page.reload();
+  await row(page, task).click({ timeout: STATUS_MS });
+  await page.getByRole('button', { name: 'Delete…' }).click();
+  await expect(warn).toContainText('3 files have uncommitted changes and will be lost.', {
+    timeout: STATUS_MS,
+  });
+
+  // The counts the first confirmation showed are refused (B10), and nothing is removed.
+  const stale = await page.request.delete(`${LIVE_BASE}/api/sessions/${encodeURIComponent(id)}`, {
+    headers: { 'X-Kage': '1', Origin: LIVE_BASE, 'Content-Type': 'application/json' },
+    data: { unpushed: 1, uncommitted: 2, ignored: 1 },
+  });
+  expect(stale.status()).toBe(409);
+  expect(await stale.json()).toEqual({
+    error: 'The branch changed since you looked. Look again before deleting.',
+  });
   expect(existsSync(worktree)).toBe(true);
   expect(await kageWindow(id)).not.toBeNull();
 
-  // A click right after the counts changed is held (FRESH_MS); then it deletes.
+  // The board's confirmation, with the fresh counts, deletes. A click right after the counts
+  // changed is held for 400 ms (FRESH_MS), so wait for it to be enabled.
+  const confirm = page.getByRole('button', { name: 'Delete session' });
   await expect(confirm).not.toHaveAttribute('aria-disabled', 'true', { timeout: STATUS_MS });
   await confirm.click();
   await expect(page.locator('.k-toast')).toHaveText(
