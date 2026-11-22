@@ -154,6 +154,8 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
         return;
       }
       if (m.t === 'reset') {
+        // Attached again: a later 1011 starts the back-off from the first wait.
+        tries = 0;
         const { cols, rows } = m;
         // Behind any output still queued in xterm: resize, clear, then the snapshot (the next
         // binary frame) writes onto the pane's size.

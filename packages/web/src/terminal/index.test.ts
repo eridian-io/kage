@@ -315,9 +315,8 @@ describe('mountTerminal', () => {
     expect(FakeSocket.all).toHaveLength(1);
     vi.advanceTimersByTime(1);
     expect(FakeSocket.all).toHaveLength(2);
-    last().open();
-    last().text({ t: 'reset', cols: 120, rows: 40, mode: 'rw' });
-    last().end(1011, 'tmux stopped.');
+    // The reconnect fails before any reset: the next wait is longer.
+    last().end(1011, "Kage couldn't open the terminal.");
     vi.advanceTimersByTime(2999);
     expect(FakeSocket.all).toHaveLength(2);
     vi.advanceTimersByTime(1);
@@ -326,6 +325,19 @@ describe('mountTerminal', () => {
     expect(ends).toEqual(["Kage couldn't open the terminal."]);
     vi.advanceTimersByTime(10_000);
     expect(FakeSocket.all).toHaveLength(3);
+  });
+
+  it('a reconnect that gets its reset starts the 1011 count over', () => {
+    vi.useFakeTimers();
+    attached('rw');
+    for (let i = 0; i < 4; i++) {
+      last().end(1011, 'tmux stopped.');
+      vi.advanceTimersByTime(1000);
+      expect(FakeSocket.all).toHaveLength(i + 2);
+      last().open();
+      last().text({ t: 'reset', cols: 120, rows: 40, mode: 'rw' });
+    }
+    expect(ends).toEqual([]);
   });
 
   it('dispose closes the socket (1000) and xterm, stops every timer and never calls onEnd', () => {
