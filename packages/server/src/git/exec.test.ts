@@ -72,10 +72,10 @@ describe('gitStream', () => {
   });
 
   it('kills a child that never stops writing and resolves only once it has exited', async () => {
-    const child = spawn(process.execPath, [
-      '-e',
-      'for(;;) process.stdout.write("x".repeat(65536))',
-    ]);
+    // Writes forever, waiting for drain (a synchronous loop would never flush a full pipe on Linux).
+    const forever =
+      'const b = "x".repeat(65536); const w = () => { while (process.stdout.write(b)); process.stdout.once("drain", w); }; w();';
+    const child = spawn(process.execPath, ['-e', forever]);
     const r = await collectStream(child, 256 * 1024, 10_000);
     expect(r).toEqual({ stdout: 'x'.repeat(256 * 1024), clipped: true });
     expect(child.exitCode !== null || child.signalCode !== null).toBe(true);
