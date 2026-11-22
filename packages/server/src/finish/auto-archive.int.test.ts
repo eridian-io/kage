@@ -64,9 +64,10 @@ async function repo(): Promise<AutoCandidate> {
   };
 }
 
+/** Waits on the monotonic clock: WSL's wall clock can jump seconds under load. */
 async function until(cond: () => boolean, ms: number): Promise<boolean> {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
+  const end = performance.now() + ms;
+  while (performance.now() < end) {
     if (cond()) return true;
     await new Promise((r) => setTimeout(r, 50));
   }
@@ -126,10 +127,10 @@ describe.runIf(hasGit)('AutoArchiver (temp repo, real git)', () => {
     expect(await until(() => checks === 1, 10_000)).toBe(true);
     await new Promise((r) => setTimeout(r, 300));
     expect(archived).toEqual([]);
-    const mergedAt = Date.now();
+    const mergedAt = performance.now();
     git(c.repo, 'merge', '-q', '--no-ff', '-m', 'merge x', 'kage/x');
     expect(await until(() => archived.length > 0, 10_000)).toBe(true);
-    expect(Date.now() - mergedAt).toBeLessThan(10_000);
+    expect(performance.now() - mergedAt).toBeLessThan(10_000);
     expect(archived).toEqual([c.id]);
     expect(logs).toEqual([]);
   }, 30_000);
