@@ -4,6 +4,7 @@ import { DEFAULT_CONFIG } from './config.ts';
 import {
   displayHost,
   ListenError,
+  linkHost,
   resolveListenAddress,
   shortHostname,
   tailscaleDnsName,
@@ -258,5 +259,38 @@ describe('cfg.name as a Host (B12)', () => {
     app.get('/', (c) => c.text('ok'));
     const res = await app.request('/', { headers: { Host: 'example.com:8080' } });
     expect(res.status).toBe(403);
+  });
+});
+
+describe('linkHost (ntfy click links)', () => {
+  const listen = (dnsName: string | null) => ({ address: '100.64.0.9', dnsName });
+  it('an explicitly configured host wins over the MagicDNS name', () => {
+    const cfg = { ...DEFAULT_CONFIG, name: 'my-pc' };
+    expect(
+      linkHost({ ...cfg, host: 'kage.example.ts.net' }, listen('box.tail1.ts.net'), 'my-pc'),
+    ).toBe('kage.example.ts.net');
+    expect(linkHost({ ...cfg, host: '100.64.0.9' }, listen('box.tail1.ts.net'), 'my-pc')).toBe(
+      '100.64.0.9',
+    );
+  });
+  it('without a configured host: the MagicDNS name, else displayHost', () => {
+    const cfg = { ...DEFAULT_CONFIG, name: 'my-pc', host: null };
+    expect(linkHost(cfg, listen('box.tail1.ts.net'), 'my-pc')).toBe('box.tail1.ts.net');
+    expect(linkHost(cfg, listen(null), 'my-pc')).toBe('my-pc');
+    expect(linkHost({ ...cfg, host: '  ' }, listen('box.tail1.ts.net'), 'my-pc')).toBe(
+      'box.tail1.ts.net',
+    );
+  });
+});
+
+describe('linkHost: literals', () => {
+  const listen = { address: '100.64.0.9', dnsName: 'box.tail1.ts.net' };
+  it('brackets a configured IPv6 literal; an all-interfaces host falls back to the MagicDNS name', () => {
+    expect(linkHost({ ...DEFAULT_CONFIG, host: 'fd7a:115c:a1e0::5' }, listen, 'my-pc')).toBe(
+      '[fd7a:115c:a1e0::5]',
+    );
+    expect(linkHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, listen, 'my-pc')).toBe(
+      'box.tail1.ts.net',
+    );
   });
 });

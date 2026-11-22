@@ -161,6 +161,56 @@ describe('Notifier: needs you', () => {
     expect(sent).toHaveLength(2);
   });
 
+  it('R94: re-asked 5 s after an answer and still waiting → exactly one more ping at the quiet period’s end', () => {
+    start();
+    source.set('s1', 'needs-you');
+    at(3000); // ping at 3 s
+    source.set('s1', 'running'); // answered at the board
+    at(5000);
+    source.set('s1', 'needs-you'); // re-asked 5 s later
+    at(3000);
+    expect(sent).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(1); // the deferred check, one per session
+    at(123_000 - 11_000 - 1);
+    expect(sent).toHaveLength(1);
+    at(1); // 120 s after the first ping
+    expect(sent).toHaveLength(2);
+    expect(sent[1]?.ping.title).toBe('demo needs you');
+    expect(sent[1]?.stillWanted()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    at(600_000);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('R94: a deferred episode answered before the quiet period ends sends nothing', () => {
+    start();
+    source.set('s1', 'needs-you');
+    at(3000);
+    source.set('s1', 'running');
+    source.set('s1', 'needs-you');
+    at(60_000);
+    source.set('s1', 'running');
+    expect(vi.getTimerCount()).toBe(0);
+    at(200_000);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('R94: a deferred ping still counts against the global window', () => {
+    start();
+    source.set('a', 'needs-you');
+    at(3000); // a pinged at 3 s
+    source.set('a', 'running');
+    source.set('a', 'needs-you'); // deferred to 123 s
+    at(10_000);
+    for (let i = 0; i < 9; i++) source.set(`s${i}`, 'needs-you');
+    at(3000); // 9 more pings at 16 s: the window is full
+    expect(sent).toHaveLength(10);
+    at(110_000); // past 123 s
+    expect(sent).toHaveLength(10);
+    at(600_000);
+    expect(logs).toEqual(['ntfy: too many pings; skipped 1.']);
+  });
+
   it('the quiet period is per session', () => {
     start();
     source.set('s1', 'needs-you');
@@ -376,6 +426,60 @@ describe('Notifier: done (ntfyOnDone)', () => {
     source.set('s1', 'done');
     at(3000);
     expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
+    // A done ping is dropped, not deferred (R94 defers needs-you only).
+    at(300_000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('Notifier: seeding before the source starts (startup gap)', () => {
+  function listen(options: Partial<NotifierOptions> = {}): Notifier {
+    source.sessions = [];
+    notifier = new Notifier({
+      source,
+      send: async (ping, stillWanted) => {
+        sent.push({ ping, stillWanted });
+        return true;
+      },
+      link: (id) => boardLink(LINK_HOST, 8080, id),
+      hostName: 'box',
+      options: { ...NOTIFY_DEFAULTS, ...options },
+      log: (line) => logs.push(line),
+    });
+    notifier.listen();
+    return notifier;
+  }
+
+  it('the source’s first emits are seeds; changes replayed after seeded() are pinged', () => {
+    listen({ onDone: true });
+    // source.start(): the loaded state, one session already waiting and one running.
+    source.set('waiting', 'needs-you');
+    source.set('busy', 'running');
+    expect(vi.getTimerCount()).toBe(0);
+    notifier.seeded();
+    // The early hooks replayed: busy now asks for permission; a new session appears waiting.
+    source.set('busy', 'needs-you');
+    source.set('new', 'needs-you');
+    at(3000);
+    expect(sent.map((s) => s.ping.click)).toEqual([
+      'http://box.tail1.ts.net:8080/#s=busy',
+      'http://box.tail1.ts.net:8080/#s=new',
+    ]);
+    // The one already waiting stays unpinged for that episode.
+    source.set('waiting', 'needs-you', { now: 'x' });
+    at(10_000);
+    expect(sent).toHaveLength(2);
+  });
+
+  it('a seeded running session counts its active time from the seed (done)', () => {
+    listen({ onDone: true });
+    source.set('s1', 'running');
+    notifier.seeded();
+    at(61_000);
+    source.set('s1', 'done');
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo is done']);
   });
 });
 

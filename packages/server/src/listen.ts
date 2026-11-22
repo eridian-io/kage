@@ -93,6 +93,25 @@ export function displayHost(cfg: KageConfig, address: string, hostname: string):
   return p.v === 6 ? `[${address.replace(/^\[|\]$/g, '')}]` : address;
 }
 
+/**
+ * The host in a ping's board link: an explicitly configured `host` wins, as written (an IPv6
+ * literal bracketed), unless it is an all-interfaces address; else the MagicDNS name when
+ * Tailscale gave one; else displayHost.
+ */
+export function linkHost(
+  cfg: KageConfig,
+  listen: { address: string; dnsName: string | null },
+  hostname: string,
+): string {
+  const configured = cfg.host?.trim() ?? '';
+  if (configured !== '') {
+    const p = parseIp(configured);
+    if (p === null) return configured;
+    if (p.n !== 0n) return p.v === 6 ? `[${configured.replace(/^\[|\]$/g, '')}]` : configured;
+  }
+  return listen.dnsName ?? displayHost(cfg, listen.address, hostname);
+}
+
 /** True for a DNS name made of valid labels ("box", "box.tail1234.ts.net"). */
 function isHostName(name: string): boolean {
   return name.length <= 253 && name.split('.').every((l) => l.length <= 63 && LABEL.test(l));

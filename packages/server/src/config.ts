@@ -158,7 +158,8 @@ function ntfyServer(v: unknown, key: string): string {
 
 function hostOf(url: string): string {
   try {
-    return new URL(url).hostname.toLowerCase();
+    // "ntfy.sh." is the same host as "ntfy.sh".
+    return new URL(url).hostname.toLowerCase().replace(/\.$/, '');
   } catch {
     return '';
   }

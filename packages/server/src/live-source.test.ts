@@ -330,6 +330,7 @@ function setup(
     tail?: (path: string) => TailLike;
     /** A real auto-archiver instead of FakeAuto. */
     auto?: (host: AutoArchiveHost) => AutoArchiverLike;
+    onLoaded?: () => void;
   } = {},
 ) {
   const preview = new FakePreview();
@@ -364,6 +365,7 @@ function setup(
       return opts.auto ? opts.auto(host) : auto;
     },
     isTerminalOpen: (id) => terminals.has(id),
+    ...(opts.onLoaded ? { onLoaded: opts.onLoaded } : {}),
   });
   const events: SourceEvent[] = [];
   source.subscribe((e) => events.push(e));
@@ -3265,6 +3267,29 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     expect((auto.host?.autoCandidates() ?? []).map((c) => c.id)).toEqual(['k-1']);
     terminals.add('k-1');
     expect(auto.host?.autoCandidates()).toEqual([]);
+  });
+
+  it('onLoaded runs once, after the loaded sessions are emitted and before early hooks replay', async () => {
+    let atLoaded: Session[] | null = null;
+    let calls = 0;
+    const ctx = setup({
+      windows: [kageWin()],
+      records: [rec()],
+      onLoaded: () => {
+        calls += 1;
+        atLoaded = ctx.updates('k-1');
+      },
+    });
+    const started = ctx.source.start();
+    // Hooks that arrive while start() loads are kept and replayed once it is ready.
+    ctx.hooks.fire(hook('SessionStart', '%2'));
+    ctx.hooks.fire(hook('PreToolUse', '%2'));
+    await started;
+    expect(calls).toBe(1);
+    const seen = atLoaded as Session[] | null;
+    expect(seen?.length).toBeGreaterThan(0);
+    expect(seen?.some((x) => x.status === 'running')).toBe(false);
+    expect(ctx.updates('k-1').at(-1)?.status).toBe('running');
   });
 
   it('no touch or sync while start() reconciles (only start, once it is ready)', async () => {

@@ -23,6 +23,7 @@ import {
   defaultTailscaleIp,
   displayHost,
   ListenError,
+  linkHost,
   resolveListenAddress,
   tailscaleDnsName,
 } from './listen.ts';
@@ -149,6 +150,8 @@ async function startLive(
   io: Io,
   cli: CliParts,
   cleanups: Cleanup[],
+  /** The ping links' host, when pings are on (an ntfyTopic is set); else null. */
+  pingHost: string | null,
 ): Promise<LiveParts> {
   const target = {
     session: cfg.tmuxSession,
@@ -204,6 +207,8 @@ async function startLive(
   };
   // B37: untracked files' line counts, re-read only when their size or mtime changed.
   const untracked = new UntrackedCache();
+  // Built after the source and listening before source.start(); late-bound for onLoaded.
+  let notifier: Notifier | null = null;
   const source = new LiveSource({
     tmux,
     watcher,
@@ -235,6 +240,8 @@ async function startLive(
     isTerminalOpen,
     // A failed resume (R63) is reported on the card and here.
     log: (line) => io.err(line),
+    // The loaded sessions were emitted: the notifier's seeds end before early hooks replay.
+    onLoaded: () => notifier?.seeded(),
   });
   // A control-mode client on the same tmux server and session, only while a terminal is open.
   const termBridge = new TerminalBridge({
@@ -262,6 +269,7 @@ async function startLive(
   });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());
+  if (pingHost !== null) notifier = startNotifier(cfg, pingHost, source, io, cleanups);
   try {
     await source.start();
   } catch (err) {
@@ -276,25 +284,24 @@ async function startLive(
 }
 
 /**
- * Phone pings (spec §5.9): live mode with an `ntfyTopic` only. The notifier reads the live
- * source's events; the link uses the MagicDNS name when Tailscale gave one. One startup line
- * names the server's host, never the topic or the server's path; nothing about ntfy reaches
- * the browser or the snapshot. `KAGE_NOTIFY_DONE_AFTER_MS` (whole ms) is a test-only override
+ * Phone pings (spec §5.9): live mode with an `ntfyTopic` only. The notifier subscribes before
+ * `source.start()` in seeding mode, so hook events replayed at startup are pinged and sessions
+ * already waiting are not; links use `linkHost`. Nothing about ntfy reaches the browser or
+ * the snapshot; the startup line (printed by startServer) names the server's host only. `KAGE_NOTIFY_DONE_AFTER_MS` (whole ms) is a test-only override
  * of the done threshold for the e2e, not documented in USAGE.
  */
 function startNotifier(
   cfg: KageConfig,
-  listen: { address: string; dnsName: string | null },
+  host: string,
   source: LiveSource,
   io: Io,
   cleanups: Cleanup[],
-): void {
+): Notifier {
   const client = new NtfyClient({
     config: { server: cfg.ntfyServer, topic: cfg.ntfyTopic, token: cfg.ntfyToken },
     log: (line) => io.err(line),
   });
   const doneAfter = io.env.KAGE_NOTIFY_DONE_AFTER_MS ?? '';
-  const host = listen.dnsName ?? displayHost(cfg, listen.address, hostname());
   const notifier = new Notifier({
     source,
     send: (p, stillWanted) => client.send(p, stillWanted),
@@ -307,12 +314,12 @@ function startNotifier(
     },
     log: (line) => io.err(line),
   });
-  notifier.start();
+  notifier.listen();
   cleanups.push(() => {
     notifier.stop();
     client.close();
   });
-  io.out(`Pings go to ntfy at ${new URL(cfg.ntfyServer).host}.`);
+  return notifier;
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
@@ -447,7 +454,8 @@ async function startServer(
     source = d;
     demoReset = () => d.reset();
   } else {
-    const live = await startLive(cfg, io, cli, cleanups);
+    const pingHost = cfg.ntfyTopic !== '' ? linkHost(cfg, listen, hostname()) : null;
+    const live = await startLive(cfg, io, cli, cleanups, pingHost);
     liveParts = live;
     source = live.source;
     const cache = new ProjectsCache(async () => ({
@@ -557,7 +565,9 @@ async function startServer(
   // R53: without a token, anyone who can reach the address can start and approve tasks.
   if (!demo && cfg.token === '') io.err(NO_TOKEN);
   io.out(`Kage is running at http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`);
-  if (liveParts && cfg.ntfyTopic !== '') startNotifier(cfg, listen, liveParts.source, io, cleanups);
+  if (liveParts && cfg.ntfyTopic !== '') {
+    io.out(`Pings go to ntfy at ${new URL(cfg.ntfyServer).host}.`);
+  }
 
   return { stop: () => unwind(cleanups) };
 }

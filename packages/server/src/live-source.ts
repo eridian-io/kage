@@ -120,6 +120,11 @@ export interface LiveSourceDeps {
   isTerminalOpen?: (id: string) => boolean;
   /** One line for Kage's log (serve passes stderr): a failed resume (R63). */
   log?: (line: string) => void;
+  /**
+   * Called once in start(), after the loaded sessions are emitted and before the hook events
+   * that came in meanwhile replay: the notifier's seeds end here (Task 6 fix round).
+   */
+  onLoaded?: () => void;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -816,6 +821,11 @@ export class LiveSource implements SessionSource {
     );
     if (!this.#running) return;
     for (const st of this.#sessions.values()) this.#emitNow(st);
+    try {
+      this.#d.onLoaded?.();
+    } catch {
+      // a broken listener must not stop the source
+    }
     this.#ready = true;
     if (this.#viewed.size > 0) this.#preview?.setViewed(this.#viewed);
     const early = this.#early;

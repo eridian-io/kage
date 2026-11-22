@@ -244,6 +244,9 @@ describe('ntfy keys (N4)', () => {
       (await load({ ntfyTopic: 'short', ntfyServer: 'https://ntfy.example.invalid' })).ntfyTopic,
     ).toBe('short');
     await refused({ ntfyTopic: 'short', ntfyServer: 'https://NTFY.SH/' });
+    // The same host with a trailing dot (a fully qualified name) gets the rule too.
+    await refused({ ntfyTopic: 'short', ntfyServer: 'https://ntfy.sh.' });
+    await refused({ ntfyTopic: 'short', ntfyServer: 'https://ntfy.sh./' });
   });
 
   it('ntfyServer: https anywhere; http only on loopback or the tailnet', async () => {

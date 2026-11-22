@@ -5,8 +5,9 @@
  * and stopped is pinged too (never for ended: a stop is the user's own act, R84). At most
  * `maxPerWindow` pings go in any `windowMs`.
  *
- * Event driven: no polling. Its only timers are the per-session holds and, while the window is
- * full, one timer for the "skipped" line; idle, it owns none (spec §5.5, PF5 F16).
+ * Event driven: no polling. Its only timers are one per session (the hold, or the wait for the
+ * quiet period's end of a deferred needs-you, R94) and, while the window is full, one for the
+ * "skipped" line; idle, it owns none (spec §5.5, PF5 F16).
  */
 import type { Session, SessionStatus } from '@kage/shared';
 import type { SessionSource, SourceEvent } from '../source.ts';
@@ -99,6 +100,8 @@ export class Notifier {
   #skipped = 0;
   #skipTimer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribe: (() => void) | null = null;
+  /** Between listen() and seeded(): updates are recorded, never pinged. */
+  #seeding = false;
 
   constructor(d: {
     source: Pick<SessionSource, 'list' | 'subscribe'>;
@@ -125,6 +128,22 @@ export class Notifier {
     const now = this.#clock();
     for (const s of this.#source.list()) this.#sessions.set(s.id, this.#track(s, now));
     this.#unsubscribe = this.#source.subscribe((e) => this.#onEvent(e));
+  }
+
+  /**
+   * Subscribes before the source has started, in seeding mode: updates only record each
+   * session's status, so the source's first emits (sessions already waiting) ping nothing.
+   * `seeded()` ends it, before the source replays hook events that came in while it loaded:
+   * those are real changes and are pinged (the startup gap).
+   */
+  listen(): void {
+    if (this.#unsubscribe) return;
+    this.#seeding = true;
+    this.#unsubscribe = this.#source.subscribe((e) => this.#onEvent(e));
+  }
+
+  seeded(): void {
+    this.#seeding = false;
   }
 
   /** Clears holds; with nothing pending it owns no timer. */
@@ -160,6 +179,12 @@ export class Notifier {
     const s = e.session;
     const now = this.#clock();
     let t = this.#sessions.get(s.id);
+    if (this.#seeding) {
+      // Seeding: the state as the source loaded it, with no hold.
+      if (t?.hold) clearTimeout(t.hold);
+      this.#sessions.set(s.id, this.#track(s, now));
+      return;
+    }
     if (t === undefined) {
       // A first sighting after start: needs-you is an episode of its own.
       t = this.#track(s, now);
@@ -197,18 +222,26 @@ export class Notifier {
     }
   }
 
-  /** Waits holdMs, then pings if the session is still in this episode (F3a for done). */
+  /**
+   * Waits holdMs, then pings if the session is still in this episode (F3a for done). A
+   * needs-you episode that ends its hold inside the quiet period is deferred, not dropped
+   * (R94): the same timer slot waits for the quiet period's end and checks again. A done
+   * ping inside the quiet period is dropped.
+   */
   #hold(id: string, t: Tracked, kind: Kind): void {
     const episode = t.episode;
-    t.hold = setTimeout(() => {
+    const wanted = () => {
+      const cur = this.#sessions.get(id);
+      return cur === t && cur.episode === episode && cur.status === kind;
+    };
+    const fire = () => {
       t.hold = null;
-      const wanted = () => {
-        const cur = this.#sessions.get(id);
-        return cur === t && cur.episode === episode && cur.status === kind;
-      };
       if (!wanted()) return;
       const now = this.#clock();
-      if (t.lastPingAt !== null && now - t.lastPingAt < this.#o.quietMs) return;
+      if (t.lastPingAt !== null && now - t.lastPingAt < this.#o.quietMs) {
+        if (kind === 'needs-you') t.hold = setTimeout(fire, t.lastPingAt + this.#o.quietMs - now);
+        return;
+      }
       if (!this.#windowAllows(now)) return;
       t.lastPingAt = now;
       this.#sentAt.push(now);
@@ -217,7 +250,8 @@ export class Notifier {
         ? externalPing(this.#host, link)
         : pingFor(kind, { id, project: t.project, task: t.task }, link);
       this.#send(ping, wanted).catch(() => {});
-    }, this.#o.holdMs);
+    };
+    t.hold = setTimeout(fire, this.#o.holdMs);
   }
 
   /** Drops send times older than the window; counts a skip and arms the line's timer if full. */
