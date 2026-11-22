@@ -148,7 +148,8 @@ describe('top bar', () => {
     const { container } = render(<Board />);
     expect(q(container, '.k-host').textContent).toBe('my-pc · 6 sessions');
     expect(texts(container, '.k-counts > span')).toEqual(['1 needs you', '2 running']);
-    expect(q(container, '.k-top .k-k').textContent).toBe('⌘K');
+    // Off a Mac the hint names Ctrl+K (R97); palette.test.tsx covers the Mac's ⌘K.
+    expect(q(container, '.k-top .k-k').textContent).toBe('Ctrl+K');
     expect(q(container, '.k-logo').textContent).toBe('kage');
   });
   it('does not count archived sessions', () => {

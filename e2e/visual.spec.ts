@@ -91,6 +91,10 @@ async function settle(page: Page, label: string): Promise<Buffer> {
 test.beforeEach(async ({ page }) => {
   await resetDemo();
   await page.clock.setFixedTime(DEMO_NOW);
+  // The target draws the Mac's ⌘K hint; elsewhere the board shows Ctrl+K (R97). Compare as a Mac.
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'platform', { get: () => 'MacIntel' });
+  });
 });
 
 for (const state of STATES) {

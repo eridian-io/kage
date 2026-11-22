@@ -9,6 +9,13 @@ const COPY = {
 export function Toast() {
   const t = toast.value;
   if (t === null) return null;
+  if (t.kind === 'note') {
+    return (
+      <div class="k-toast" role="status">
+        {t.text}
+      </div>
+    );
+  }
   const [before, after] = COPY[t.kind];
   return (
     <div class="k-toast" role="status">

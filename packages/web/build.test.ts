@@ -73,8 +73,8 @@ describe('web build', () => {
     expect(Object.keys(outputs[term]?.inputs ?? {}).some((p) => p.endsWith('leave.ts'))).toBe(true);
   });
 
-  it('caps the first load at Task 8’s measurement + 1 KB, up to the next 0.25 KB (ruling PF5, F7)', () => {
-    expect(BUDGET).toBe(27_648);
+  it('caps the first load at Task 8’s measurement + 1 KB (rulings PF5 F7, R96)', () => {
+    expect(BUDGET).toBe(27_456);
   });
 
   it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {

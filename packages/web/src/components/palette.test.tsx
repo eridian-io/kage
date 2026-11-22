@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -14,6 +16,7 @@ import {
   newTaskOpen,
   paletteOpen,
   releaseDigits,
+  select,
   selectedId,
   sessions,
   stopSent,
@@ -269,13 +272,11 @@ describe('the command palette', () => {
     expect(paletteOpen.value).toBe(false);
   });
 
-  it('a click on the top bar’s ⌘K opens it; the button keeps the hint’s text', async () => {
+  it('a click on the top bar’s hint opens it', async () => {
     render(<Board />);
     const hint = document.querySelector('.k-k') as HTMLButtonElement;
     expect(hint.tagName).toBe('BUTTON');
-    expect(hint.textContent).toBe('⌘K');
     expect(hint.getAttribute('aria-label')).toBe('Command palette');
-    expect(hint.getAttribute('title')).toBe('Ctrl+K');
     fireEvent.click(hint);
     await waitFor(() => expect(combo()).not.toBeNull());
     expect(document.activeElement).toBe(combo());
@@ -421,4 +422,134 @@ describe('the selected row comes into view (R95)', () => {
       proto.scrollIntoView = had;
     }
   });
+});
+
+describe('the command palette: fix round 1', () => {
+  const mac = () => vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+
+  it('the panel carries the focus ring (WCAG 2.4.7); the input does not', () => {
+    const css = readFileSync(join(import.meta.dirname, '../styles/board.css'), 'utf8');
+    expect(css).toMatch(
+      /\.k-pal:focus-within \{\s*outline: 2px solid color-mix\(in srgb, var\(--lime\) 45%, transparent\);\s*outline-offset: 2px;\s*\}/,
+    );
+    expect(css).toMatch(/\.k-pal-in:focus-visible \{\s*outline: none;\s*\}/);
+  });
+
+  it('the notifications item says what a notification shows, quietly on the right', async () => {
+    notifyState.value = 'default';
+    vi.stubGlobal('isSecureContext', true);
+    vi.stubGlobal('Notification', { permission: 'default' });
+    render(<Board />);
+    const input = await open();
+    type(input, 'browser');
+    const o = options()[0] as HTMLElement;
+    expect(o.querySelector('.k-name')?.textContent).toBe('Turn on browser notifications');
+    expect(o.querySelector('.k-pal-st')?.textContent).toBe('shows project and task');
+  });
+
+  it('the live region reads 50+ results when capped; group labels are presentational', async () => {
+    const base = demoSessions(NOW)[0] as Session;
+    load(Array.from({ length: 60 }, (_, i) => ({ ...base, id: `s${i}`, task: `task ${i}` })));
+    render(<Board />);
+    await open();
+    expect(live()).toBe('50+ results');
+    for (const label of document.querySelectorAll('.k-pal .k-g')) {
+      expect(label.getAttribute('role')).toBe('presentation');
+    }
+  });
+
+  it('the hint shows Ctrl+K off a Mac, with its title and aria-keyshortcuts', () => {
+    render(<Board />);
+    const hint = document.querySelector('.k-k') as HTMLButtonElement;
+    expect(hint.textContent).toBe('Ctrl+K');
+    expect(hint.getAttribute('title')).toBe('Command palette (Ctrl+K)');
+    expect(hint.getAttribute('aria-keyshortcuts')).toBe('Control+K');
+  });
+
+  it('on a Mac the hint is ⌘K (Meta+K), and only ⌘K opens it: Ctrl+K stays kill-line (R97)', async () => {
+    mac();
+    render(<Board />);
+    const hint = document.querySelector('.k-k') as HTMLButtonElement;
+    expect(hint.textContent).toBe('⌘K');
+    expect(hint.getAttribute('title')).toBe('Command palette (⌘K)');
+    expect(hint.getAttribute('aria-keyshortcuts')).toBe('Meta+K');
+    const field = document.body.appendChild(document.createElement('input'));
+    field.focus();
+    expect(ctrlK().defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBe(false);
+    expect(ctrlK({ ctrlKey: false, metaKey: true }).defaultPrevented).toBe(true);
+    await waitFor(() => expect(combo()).not.toBeNull());
+  });
+
+  it('a command gone stale while open runs nothing (Stop after the session finished)', async () => {
+    render(<Board />);
+    fireEvent.click(document.querySelector('.k-it[data-id="shop"]') as HTMLElement);
+    const input = await open();
+    type(input, 'stop');
+    expect(optionTexts()[0]).toBe('Stop');
+    const shop = sessions.value.find((s) => s.id === 'shop') as Session;
+    applyEvent({ type: 'session.updated', session: { ...shop, status: 'done' } });
+    fetchMock.mockClear();
+    key(input, 'Enter');
+    await Promise.resolve();
+    expect((fetchMock.mock.calls as [string][]).map(([u]) => u)).not.toContain(
+      '/api/sessions/shop/stop',
+    );
+    // The list on screen stays the snapshot.
+    expect(optionTexts()[0]).toBe('Stop');
+  });
+
+  it('Delete… does nothing once the selection has moved to another session', async () => {
+    render(<Board />);
+    fireEvent.click(document.querySelector('.k-it[data-id="docs"]') as HTMLElement);
+    const input = await open();
+    type(input, 'delete');
+    expect(optionTexts()[0]).toBe('Delete…');
+    select('rate');
+    key(input, 'Enter');
+    expect(confirmingDelete.value).toBe(false);
+    expect(selectedId.value).toBe('rate');
+  });
+
+  it('Delete… still opens the confirmation for the session selected when it was chosen', async () => {
+    render(<Board />);
+    fireEvent.click(document.querySelector('.k-it[data-id="docs"]') as HTMLElement);
+    const input = await open();
+    type(input, 'delete');
+    key(input, 'Enter');
+    expect(confirmingDelete.value).toBe(true);
+    expect(selectedId.value).toBe('docs');
+  });
+
+  for (const [platform, hint] of [
+    [undefined, 'Ctrl+K'],
+    ['MacIntel', '⌘K'],
+  ] as const) {
+    it(`a chunk that fails to load says so in the toast (${hint})`, async () => {
+      if (platform) mac();
+      vi.resetModules();
+      const loader = await import('../palette-loader.tsx');
+      const store = await import('../store.ts');
+      const { Toast } = await import('./Toast.tsx');
+      vi.spyOn(loader.paletteImport, 'load').mockRejectedValueOnce(new Error('offline'));
+      render(
+        <>
+          <loader.PaletteHost />
+          <Toast />
+        </>,
+      );
+      store.paletteOpen.value = true;
+      await waitFor(() => expect(store.paletteOpen.value).toBe(false));
+      await waitFor(() =>
+        expect(document.querySelector('.k-toast')?.textContent).toBe(
+          `Couldn't open the palette. Press ${hint} to try again.`,
+        ),
+      );
+      expect(document.querySelector('.k-toast')?.getAttribute('role')).toBe('status');
+      // The next open loads it, and the note goes.
+      store.paletteOpen.value = true;
+      await waitFor(() => expect(document.querySelector('[role="combobox"]')).not.toBeNull());
+      expect(store.toast.value).toBeNull();
+    });
+  }
 });

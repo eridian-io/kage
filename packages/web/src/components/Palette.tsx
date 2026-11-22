@@ -54,11 +54,7 @@ function Label({ c, hits }: Row) {
  */
 export function Palette({ notify }: { notify: NotifyApi }) {
   const [back] = useState(() => document.activeElement);
-  const [all] = useState(() => {
-    // The permission may have changed in the browser's settings since the page loaded (R95).
-    notify.read();
-    return commands(notify);
-  });
+  const [all, setAll] = useState(() => commands(notify));
   const [query, setQuery] = useState('');
   const [active, setActive] = useState(0);
   const input = useRef<HTMLInputElement>(null);
@@ -85,7 +81,16 @@ export function Palette({ notify }: { notify: NotifyApi }) {
   const close = () => {
     paletteOpen.value = false;
   };
-  const run = (c: Command | undefined) => {
+  /**
+   * The list on screen is a snapshot from the open; the command runs as it is now. The same id for
+   * the same session must still be offered and enabled (this session's items exist only for the
+   * session selected now), else nothing runs.
+   */
+  const run = (shown: Command | undefined) => {
+    if (!shown || shown.disabled) return;
+    const c = commands(notify).find(
+      (x) => x.id === shown.id && x.session?.id === shown.session?.id,
+    );
     if (!c || c.disabled) return;
     moved.current = c.moves === true;
     close();
@@ -94,6 +99,10 @@ export function Palette({ notify }: { notify: NotifyApi }) {
 
   // Before paint: the first key typed after ⌘K lands in the input.
   useLayoutEffect(() => {
+    // The permission may have changed in the browser's settings since the page loaded (R95).
+    const was = notify.state.value;
+    notify.read();
+    if (notify.state.value !== was) setAll(commands(notify));
     input.current?.focus();
     // A press outside closes it; focus goes where the press puts it. The ⌘K button toggles itself.
     const outside = (e: PointerEvent) => {
@@ -160,7 +169,13 @@ export function Palette({ notify }: { notify: NotifyApi }) {
         <span class="k-name">
           <Label c={c} hits={hits} />
         </span>
-        {st ? <span class={`k-pal-st${st[1]}`}>{st[0]}</span> : c.key && <kbd>{c.key}</kbd>}
+        {st ? (
+          <span class={`k-pal-st${st[1]}`}>{st[0]}</span>
+        ) : c.note ? (
+          <span class="k-pal-st">{c.note}</span>
+        ) : (
+          c.key && <kbd>{c.key}</kbd>
+        )}
       </div>
     );
   };
@@ -190,7 +205,7 @@ export function Palette({ notify }: { notify: NotifyApi }) {
         {groups.map(({ g, rows }) => (
           // biome-ignore lint/a11y/useSemanticElements: a listbox's groups are role=group, not fieldsets
           <div role="group" aria-labelledby={groupId(g)} key={g}>
-            <div class="k-g" id={groupId(g)}>
+            <div class="k-g" id={groupId(g)} role="presentation">
               {g}
             </div>
             {rows.map(option)}
@@ -206,7 +221,11 @@ export function Palette({ notify }: { notify: NotifyApi }) {
       {more && <div class="k-pal-more">Keep typing to see more.</div>}
       <div class="k-pal-foot">↑↓ to move · Enter to open · Esc to close</div>
       <div class="k-pal-live" role="status" aria-live="polite">
-        {n === 0 ? 'No matches.' : `${n} ${n === 1 ? 'result' : 'results'}`}
+        {n === 0
+          ? 'No matches.'
+          : more
+            ? `${LIMIT}+ results`
+            : `${n} ${n === 1 ? 'result' : 'results'}`}
       </div>
     </div>
   );

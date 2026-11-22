@@ -1,6 +1,7 @@
 import { groupOf } from '@kage/shared';
 import { answer, archive, pin, resume, stop } from './api.ts';
 import { isLeave } from './leave.ts';
+import { isMac } from './platform.ts';
 import {
   authRequired,
   canStop,
@@ -24,11 +25,13 @@ import {
 export const STOP_ARM_MS = 2000;
 
 /**
- * ⌘K or Ctrl+K, without Alt or Shift: the command palette. K is matched by its physical key only on a
- * layout whose K key types no Latin letter, so Dvorak's Ctrl+T is never taken for it.
+ * The command palette's key, without Alt or Shift: ⌘K on a Mac, where Ctrl+K stays a text field's
+ * kill-line (R97); Ctrl+K (or Meta+K) elsewhere. K is matched by its physical key only on a layout
+ * whose K key types no Latin letter, so Dvorak's Ctrl+T is never taken for it.
  */
 export function isPaletteKey(e: KeyboardEvent): boolean {
-  if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.isComposing) return false;
+  const mod = isMac() ? e.metaKey && !e.ctrlKey : e.ctrlKey || e.metaKey;
+  if (!mod || e.altKey || e.shiftKey || e.isComposing) return false;
   const k = e.key.toLowerCase();
   return k === 'k' || (!/^[a-z]$/.test(k) && e.code === 'KeyK');
 }
@@ -46,7 +49,7 @@ function typing(target: EventTarget | null): boolean {
  * stops, S pins, E archives, U resumes, T opens the terminal, and Esc closes the diff, cancels the
  * delete confirmation or closes the reply field. While the form is open it owns the keyboard (Esc,
  * Enter), so these are off. While the terminal is open every key is its own (F9), except
- * Shift+Esc and Ctrl+Shift+X, which leave it (T2, R64). Elsewhere ⌘K / Ctrl+K toggles the command
+ * Shift+Esc and Ctrl+Shift+X, which leave it (T2, R64). Elsewhere the palette key toggles the command
  * palette, which owns the keyboard while open (Task 8). Returns the uninstaller.
  */
 export function installKeys(target: Document = document): () => void {
@@ -59,6 +62,10 @@ export function installKeys(target: Document = document): () => void {
       if (isLeave(e) && !e.repeat) {
         e.preventDefault();
         closeTerminal();
+      } else if (paletteOpen.value && isPaletteKey(e)) {
+        // A palette left open over the terminal: its key closes it here, and never opens one.
+        e.preventDefault();
+        if (!e.repeat) paletteOpen.value = false;
       }
       return;
     }

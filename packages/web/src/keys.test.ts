@@ -700,3 +700,43 @@ describe('installKeys: the command palette (⌘K / Ctrl+K)', () => {
     expect(posted()).toEqual([]);
   });
 });
+
+describe('installKeys: the palette key per platform (R97) and over the terminal', () => {
+  const key = (init: KeyboardEventInit, target: EventTarget = document) => {
+    const e = new KeyboardEvent('keydown', { bubbles: true, cancelable: true, ...init });
+    target.dispatchEvent(e);
+    return e;
+  };
+
+  it('on a Mac only ⌘K toggles: Ctrl+K passes through, so a field keeps kill-line', () => {
+    vi.spyOn(navigator, 'platform', 'get').mockReturnValue('MacIntel');
+    try {
+      const input = document.body.appendChild(document.createElement('input'));
+      expect(key({ key: 'k', ctrlKey: true }, input).defaultPrevented).toBe(false);
+      expect(paletteOpen.value).toBe(false);
+      expect(key({ key: 'k', ctrlKey: true, metaKey: true }).defaultPrevented).toBe(false);
+      expect(key({ key: 'k', metaKey: true }, input).defaultPrevented).toBe(true);
+      expect(paletteOpen.value).toBe(true);
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('off a Mac Ctrl+K stays', () => {
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(true);
+  });
+
+  it('a palette open over the terminal: its key closes it (prevented), a held one does nothing', () => {
+    select('shop');
+    mainView.value = 'terminal';
+    paletteOpen.value = true;
+    expect(key({ key: 'k', ctrlKey: true, repeat: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(true);
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(true);
+    expect(paletteOpen.value).toBe(false);
+    // Closed, the key is Claude's again: it never opens one over the terminal.
+    expect(key({ key: 'k', ctrlKey: true }).defaultPrevented).toBe(false);
+    expect(paletteOpen.value).toBe(false);
+  });
+});

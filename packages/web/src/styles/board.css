@@ -1133,7 +1133,12 @@ a.k-port {
   color: var(--fg-strong);
   font: 14px var(--sans);
 }
-/* The input always has focus while open; the caret marks it, and a ring would be clipped. */
+/* The input always has focus while open: the ring is the panel's (WCAG 2.4.7), not the input's,
+   which the rounded panel would clip. */
+.k-pal:focus-within {
+  outline: 2px solid color-mix(in srgb, var(--lime) 45%, transparent);
+  outline-offset: 2px;
+}
 .k-pal-in:focus-visible {
   outline: none;
 }

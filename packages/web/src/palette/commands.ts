@@ -33,6 +33,8 @@ export interface Command {
   run: () => void;
   /** Shown, but Enter and a click do nothing. */
   disabled?: boolean;
+  /** A quiet line on the right, in place of a key hint. */
+  note?: string;
   /** The command puts focus where it belongs itself; otherwise the palette returns it on close. */
   moves?: boolean;
 }
@@ -161,6 +163,8 @@ export function commands(notify: NotifyApi): Command[] {
       id: 'notify',
       group: 'general',
       title: 'Turn on browser notifications',
+      // What a notification shows (Task 7's N2): said before the browser asks.
+      note: 'shows project and task',
       // Run inside the key or click, so the browser sees a user action.
       run: () => void notify.enable(),
     });

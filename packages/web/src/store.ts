@@ -68,8 +68,13 @@ export const termNote: Signal<string | null> = signal(null);
  */
 export const focusList: Signal<number> = signal(0);
 export type RemovalKind = 'deleted' | 'archived';
-/** The removed session's kind and name (`project · task`) while the toast shows, else null. */
-export const toast: Signal<{ kind: RemovalKind; name: string } | null> = signal(null);
+/**
+ * What the toast shows, else null: a removed session's kind and name (`project · task`), or a one-line
+ * note (the palette's chunk didn't load).
+ */
+export const toast: Signal<
+  { kind: RemovalKind; name: string } | { kind: 'note'; text: string } | null
+> = signal(null);
 /** True while the New task form replaces the button at the top of the left column. */
 export const newTaskOpen: Signal<boolean> = signal(false);
 /**

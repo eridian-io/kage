@@ -1,7 +1,7 @@
 import { loadPalette } from '../palette-loader.tsx';
+import { isMac, paletteHint } from '../platform.ts';
 import { authRequired, hadSnapshot, host, paletteOpen, sorted } from '../store.ts';
 
-const MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
 /** Fetches the palette's chunk ahead of a click (ruling B1: on the hint's hover, never at load). */
 const prefetch = () => {
   loadPalette().catch(() => {});
@@ -20,6 +20,7 @@ export function TopBar() {
     );
   }
   const list = sorted.value;
+  const hint = paletteHint();
   const waiting = list.filter((s) => s.status === 'needs-you').length;
   const running = list.filter((s) => s.status === 'running').length;
   return (
@@ -48,19 +49,20 @@ export function TopBar() {
         </>
       )}
       <span class="sp" />
-      {/* The target's hint, as a button: the same text and pixels (board.css resets it). */}
+      {/* The target's hint, as a button with its look (board.css resets it); the key per platform (R97). */}
       <button
         type="button"
         class="k-k"
         aria-label="Command palette"
-        title={MAC ? undefined : 'Ctrl+K'}
+        aria-keyshortcuts={isMac() ? 'Meta+K' : 'Control+K'}
+        title={`Command palette (${hint})`}
         onPointerEnter={prefetch}
         onFocus={prefetch}
         onClick={() => {
           paletteOpen.value = !paletteOpen.value;
         }}
       >
-        ⌘K
+        {hint}
       </button>
     </div>
   );
