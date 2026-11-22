@@ -1,0 +1,359 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Kage: one calm screen for your Claude Code sessions</title>
+<meta name="description" content="Kage is a small, open-source web dashboard that runs on your server or home PC. See every Claude Code session in one place, and start, watch, answer and stop them from your laptop or phone, over Tailscale.">
+<link rel="canonical" href="https://eridian-io.github.io/kage/">
+<meta name="theme-color" content="#0c0e11">
+<meta name="color-scheme" content="dark">
+<link rel="icon" href="img/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="icon" href="img/logo-64.png" sizes="64x64" type="image/png">
+<link rel="apple-touch-icon" href="img/apple-touch-icon.png">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Kage">
+<meta property="og:title" content="Kage: your Claude Code agents, working in the shadows">
+<meta property="og:description" content="A small web dashboard for your server or home PC. Start, watch, answer and stop Claude Code sessions from your laptop or phone, over Tailscale.">
+<meta property="og:url" content="https://eridian-io.github.io/kage/">
+<meta property="og:image" content="https://eridian-io.github.io/kage/img/social-preview.jpg">
+<meta property="og:image:width" content="1280">
+<meta property="og:image:height" content="640">
+<meta property="og:image:alt" content="Kage: a ninja directing several AI coding agents from the shadows">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Kage: your Claude Code agents, working in the shadows">
+<meta name="twitter:description" content="A small web dashboard for your server or home PC. Start, watch, answer and stop Claude Code sessions from your laptop or phone, over Tailscale.">
+<meta name="twitter:image" content="https://eridian-io.github.io/kage/img/social-preview.jpg">
+<meta name="twitter:image:alt" content="Kage: a ninja directing several AI coding agents from the shadows">
+<link rel="preload" href="fonts/geist-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/geist-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" as="image" type="image/webp" imagesrcset="img/board.webp 1280w, img/board-2x.webp 2560w" imagesizes="(min-width: 1176px) 1118px, (min-width: 640px) calc(100vw - 58px), calc(100vw - 34px)" fetchpriority="high">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <symbol id="gh" viewBox="0 0 16 16"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></symbol>
+</svg>
+<a class="skip" href="#main">Skip to content</a>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="./" aria-label="Kage home"><img src="img/logo-64.png" width="26" height="26" alt="">kage</a>
+    <nav class="nav" aria-label="Main">
+      <a href="#features">Features</a>
+      <a href="#how-it-works">How it works</a>
+      <a href="#security">Security</a>
+      <a href="#roadmap">Roadmap</a>
+      <a class="gh" href="https://github.com/eridian-io/kage"><svg aria-hidden="true"><use href="#gh"/></svg>GitHub</a>
+    </nav>
+  </div>
+</header>
+
+<main id="main">
+  <section class="hero" aria-labelledby="hero-title">
+    <div class="wrap">
+      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development · phases 1–3 built</span>
+      <h1 id="hero-title">Your Claude Code agents, <span>working in the shadows.</span></h1>
+      <p class="lede">Kage is a small web dashboard that runs on your server or home PC. It shows every Claude Code session in one place, so you can start, watch, answer and stop them from your laptop or phone.</p>
+      <div class="actions">
+        <a class="btn primary" href="#get-started">Get started</a>
+        <a class="btn" href="https://github.com/eridian-io/kage"><svg aria-hidden="true"><use href="#gh"/></svg>View on GitHub</a>
+      </div>
+      <ul class="facts" aria-label="At a glance">
+        <li>Open source, AGPL-3.0</li>
+        <li>Linux and macOS</li>
+        <li>Private over Tailscale</li>
+      </ul>
+      <figure class="shot">
+        <div class="win">
+          <div class="chrome" aria-hidden="true"><i></i><i></i><i></i><span>my-pc:8080</span></div>
+          <picture>
+            <source type="image/webp" srcset="img/board.webp 1280w, img/board-2x.webp 2560w" sizes="(min-width: 1176px) 1118px, (min-width: 640px) calc(100vw - 58px), calc(100vw - 34px)">
+            <img src="img/board.png" width="1280" height="760" fetchpriority="high" alt="The Kage board. On the left, six sessions grouped as needs you, running and done. In the middle, the session web / dark mode waits for an answer: Claude asks which approach to use, with the buttons CSS variables and Tailwind. On the right, a preview link to port 5173 and one changed file.">
+          </picture>
+        </div>
+        <figcaption>
+          <span><i class="dot d-wait" aria-hidden="true"></i>1 needs you</span>
+          <span><i class="dot d-run" aria-hidden="true"></i>2 running</span>
+          <span><i class="dot d-done" aria-hidden="true"></i>3 done</span>
+          <span>Demo mode, with sample sessions</span>
+        </figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <div class="layer">
+      <p><b>A thin layer over tools you already trust.</b> tmux keeps the sessions alive, git tracks what changed, and Tailscale keeps everything private. Kage adds no database and no open router ports.</p>
+      <ul class="tools" aria-label="Built on">
+        <li class="chip">tmux</li>
+        <li class="chip">git worktrees</li>
+        <li class="chip">Tailscale</li>
+        <li class="chip">Claude Code</li>
+      </ul>
+    </div>
+  </div>
+
+  <section class="section" id="features" aria-labelledby="features-title">
+    <div class="wrap">
+      <span class="eyebrow">features</span>
+      <h2 id="features-title">You leave your desk. Your agents keep working.</h2>
+      <p class="intro">Kage gives you one calm screen that shows what every session is doing, and which ones are waiting for you.</p>
+      <div class="grid">
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="6" r="1.4"/><circle cx="5" cy="12" r="1.4"/><circle cx="5" cy="18" r="1.4"/><path d="M10 6h10M10 12h10M10 18h7"/></svg></div>
+          <h3>Every session at a glance</h3>
+          <p>Each Claude Code session is a tmux window with a live status. Status comes from Claude Code's own hooks, so a question shows the moment Claude asks it.</p>
+          <div class="legend">
+            <span><i class="dot d-run" aria-hidden="true"></i>running</span>
+            <span class="w"><i class="dot d-wait" aria-hidden="true"></i>needs you</span>
+            <span><i class="dot d-done" aria-hidden="true"></i>done</span>
+          </div>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h16M4 11h12M4 16h6"/><path d="M13 14h3v4h-3z"/></svg></div>
+          <h3>Live output</h3>
+          <p>Follow what Claude says, the tools it runs and the edits it makes, as it works. Kage reads the session's transcript, so prose, commands and diffs each look right.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10"/><path d="M18 9v1a5 5 0 0 1-5 5H8"/></svg></div>
+          <h3>Start tasks from anywhere</h3>
+          <p>Type a task, pick a project and a branch. Kage makes a git worktree on a new branch, opens a tmux window there and starts <code>claude</code> on it.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v11H9l-5 4z"/><path d="m9 10.5 2 2 4-4"/></svg></div>
+          <h3>Answer from the board</h3>
+          <p>Permission prompts and questions become buttons. Click one or press its number. Reply in your own words, send a follow-up, or stop a session.</p>
+          <div class="keys"><span class="sr-only">Keyboard shortcuts: </span><kbd>N</kbd><kbd>J</kbd><kbd>K</kbd><kbd>1</kbd><kbd>R</kbd><kbd>X</kbd></div>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5"/></svg></div>
+          <h3>Preview links</h3>
+          <p>Kage finds the ports your agents serve and links you straight to them. A port that only listens on the PC gets the <code>ssh -L</code> command instead.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H6a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8z"/><path d="M14 3v5h5M9 14h6M12 11v6"/></svg></div>
+          <h3>Files changed</h3>
+          <p>See every file a task touched, uncommitted ones too, with line counts. A diff view is on the way.</p>
+          <div class="keys"><span class="chip soon">diff view: phase 4</span></div>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="how-it-works" aria-labelledby="how-title">
+    <div class="wrap">
+      <span class="eyebrow">how it works</span>
+      <h2 id="how-title">tmux, git and Claude Code stay the source of truth.</h2>
+      <p class="intro">Kage never hides them. It listens on your Tailscale address only, so the board can't be reached from the public internet or your local Wi-Fi.</p>
+      <figure class="art">
+        <picture>
+          <source type="image/webp" srcset="img/how-it-works-800.webp 800w, img/how-it-works.webp 1600w" sizes="(min-width: 1176px) 1118px, (min-width: 640px) calc(100vw - 58px), calc(100vw - 34px)">
+          <img src="img/how-it-works.jpg" width="1600" height="600" loading="lazy" decoding="async" alt="A ninja on the couch checks a phone. A private, encrypted link runs through a tunnel to the home PC, where the agents are working.">
+        </picture>
+      </figure>
+      <ol class="steps">
+        <li>
+          <h3>tmux keeps sessions alive</h3>
+          <p>Each session is a window in the tmux session <code>kage</code>, in its own git worktree. Agents don't trip over each other, or over your own work.</p>
+        </li>
+        <li>
+          <h3>Hooks report status</h3>
+          <p>Claude Code's hooks call <code>kage hook</code>, which tells the server over a Unix socket. A permission prompt turns the session amber at once.</p>
+        </li>
+        <li>
+          <h3>The transcript gives the output</h3>
+          <p>Kage tails Claude's transcript file and turns new records into lines: what Claude says, the tools it runs, the edits it makes.</p>
+        </li>
+        <li>
+          <h3>The board shows it</h3>
+          <p>One event stream per browser tab pushes small updates. Nothing is polled while nobody is watching.</p>
+        </li>
+      </ol>
+      <p class="aside">Kage only adds to your setup. The real terminal is always one command away: <code>tmux attach -t kage</code></p>
+    </div>
+  </section>
+
+  <section class="section" id="security" aria-labelledby="security-title">
+    <div class="wrap">
+      <span class="eyebrow">security</span>
+      <h2 id="security-title">Strict by default, because it can run commands.</h2>
+      <p class="intro">Kage starts programs and sends keys on your machine. So it stays private, checks every request, and never acts on a screen it hasn't just read.</p>
+      <div class="sec">
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>Tailscale only</h3>
+          <p>Kage listens on your Tailscale address or on loopback. It refuses <code>0.0.0.0</code> and any other address unless you pass <code>--unsafe-listen-all</code>.</p>
+        </div>
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="8" cy="15" r="4"/><path d="m11 12 8-8M16 7l2 2"/></svg>Token login</h3>
+          <p>Set a token and each device signs in once. The cookie is <code>HttpOnly</code> and <code>SameSite=Strict</code>. Five wrong tries lock an address out for a minute.</p>
+        </div>
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 5 6v5c0 4.5 3 8 7 10 4-2 7-5.5 7-10V6z"/><path d="m9 12 2 2 4-4"/></svg>Host and CSRF guards</h3>
+          <p>Requests with an unexpected <code>Host</code> header are rejected, which stops DNS rebinding. Every action needs Kage's own header and a matching origin.</p>
+        </div>
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>A screen check before every key</h3>
+          <p>Before Kage sends an answer, it reads the pane again. If the question changed, nothing is sent. A click meant for one prompt never approves another.</p>
+        </div>
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M13 15h4"/></svg>No shell in between</h3>
+          <p>tmux and git run with argument lists, never a shell string. Your task text reaches <code>claude</code> as one argument, so it can't inject commands.</p>
+        </div>
+        <div>
+          <h3><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12V4a1 1 0 0 1 1-1h8l9 9-9 9z"/><circle cx="8" cy="8" r="1.5"/></svg>Only its own windows</h3>
+          <p>Kage never stops or deletes windows, worktrees or branches it didn't create. It never offers to skip Claude's permission prompts.</p>
+        </div>
+      </div>
+      <div class="note">
+        <p>Anyone who can reach Kage can run Claude Code on your machine. Only add devices you trust to your tailnet, and set a token if others share it.</p>
+        <p>Found a problem? <a href="https://github.com/eridian-io/kage/blob/main/SECURITY.md">Report it privately</a>.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="get-started" aria-labelledby="start-title">
+    <div class="wrap">
+      <span class="eyebrow">get started</span>
+      <h2 id="start-title">Try it in a minute.</h2>
+      <p class="intro">Kage is in early development. For now, you run it from a checkout. Demo mode shows sample sessions and needs no tmux.</p>
+      <div class="start">
+        <div class="card">
+          <h3>Run from source</h3>
+          <p>You need Node 24.2 or newer, and Tailscale up.</p>
+          <div class="code"><div class="code-bar"><span>shell</span></div>
+            <pre><code><span>git clone https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
+          </div>
+          <p>Then open the address it prints. No Tailscale on this machine? Stay on loopback instead:</p>
+          <div class="code"><div class="code-bar"><span>shell</span></div>
+            <pre><code><span>KAGE_HOST=127.0.0.1 pnpm dev</span></code></pre>
+          </div>
+          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
+        </div>
+        <div class="stack">
+          <div class="card">
+            <h3>Requirements</h3>
+            <ul class="reqs">
+              <li><span><b>A server or home PC</b> that stays on: Linux or macOS, or WSL on Windows</span></li>
+              <li><span><b>Node.js</b> 24.2 or newer</span></li>
+              <li><span><b>tmux</b> 3.2 or newer and <b>git</b></span></li>
+              <li><span><b>Claude Code</b>, signed in on the PC</span></li>
+              <li><span><b>Tailscale</b> on the PC and on every device you connect from</span></li>
+            </ul>
+          </div>
+          <div class="card later">
+            <h3>One-line installer <span class="chip soon">coming</span></h3>
+            <p>One command will install Kage, check the requirements, set it up and start it on boot. It lands in phase 6, with single-file releases.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="section" id="roadmap" aria-labelledby="roadmap-title">
+    <div class="wrap">
+      <span class="eyebrow">roadmap</span>
+      <h2 id="roadmap-title">Built in the open, one phase at a time.</h2>
+      <p class="intro">Each phase ends with a check that proves it works.</p>
+      <ol class="road">
+        <li class="done">
+          <span class="n">01</span>
+          <h3>Skeleton</h3>
+          <p>The server, config, Tailscale bind and security checks, and the board in demo mode.</p>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+        </li>
+        <li class="done">
+          <span class="n">02</span>
+          <h3>Sessions</h3>
+          <p>Live tmux sessions, with status from hooks and output from transcripts.</p>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+        </li>
+        <li class="done">
+          <span class="n">03</span>
+          <h3>Control</h3>
+          <p>Start, answer, reply to and stop tasks; preview links, changed files and token login.</p>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built</span>
+        </li>
+        <li>
+          <span class="n">04</span>
+          <h3>Finish and terminal</h3>
+          <p>Pin, archive and delete sessions, a diff view, and a full terminal in the browser, loaded only when you open it.</p>
+          <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>in progress</span>
+        </li>
+        <li class="later">
+          <span class="n">05</span>
+          <h3>Polish</h3>
+          <p>Notifications in the browser and through ntfy, a command palette, and performance budgets.</p>
+          <span class="chip soon">next</span>
+        </li>
+        <li class="later">
+          <span class="n">06</span>
+          <h3>Install and release</h3>
+          <p>A one-line installer, <code>kage setup</code>, services that start on boot, and single-file releases.</p>
+          <span class="chip soon">next</span>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <div class="wrap">
+    <section class="closing" aria-labelledby="closing-title">
+      <img src="img/logo-64.png" width="56" height="56" alt="" loading="lazy">
+      <h2 id="closing-title">Kage (影) is Japanese for “shadow”.</h2>
+      <p>It works quietly in the background, and steps forward only when an agent needs you.</p>
+      <div class="actions">
+        <a class="btn" href="https://github.com/eridian-io/kage"><svg aria-hidden="true"><use href="#gh"/></svg>Star on GitHub</a>
+      </div>
+    </section>
+  </div>
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="row">
+      <a class="brand" href="./" aria-label="Kage home"><img src="img/logo-64.png" width="22" height="22" alt="" loading="lazy">kage</a>
+      <nav aria-label="Footer">
+        <a href="https://github.com/eridian-io/kage">GitHub</a>
+        <a href="https://github.com/eridian-io/kage/blob/main/LICENSE">License: AGPL-3.0</a>
+        <a href="https://github.com/eridian-io/kage/blob/main/SECURITY.md">Security</a>
+        <a href="https://github.com/eridian-io">eridian-io</a>
+      </nav>
+    </div>
+    <small>Kage is free software under the GNU Affero General Public License v3.0, made by eridian-io. It is an independent project and is not affiliated with or endorsed by Anthropic. Claude and Claude Code are trademarks of Anthropic.</small>
+  </div>
+</footer>
+
+<p class="sr-only" id="copy-status" role="status" aria-live="polite"></p>
+<script>
+(() => {
+  if (!navigator.clipboard || !window.isSecureContext) return;
+  var status = document.getElementById('copy-status');
+  var icon = '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V5a1 1 0 0 0-1-1H5a1 1 0 0 0-1 1v10a1 1 0 0 0 1 1h3"/></svg>';
+  document.querySelectorAll('.code').forEach((block) => {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'copy';
+    btn.innerHTML = `${icon}<span>Copy</span>`;
+    btn.setAttribute('aria-label', 'Copy commands');
+    var label = btn.querySelector('span');
+    var timer;
+    btn.addEventListener('click', () => {
+      var text = Array.prototype.map.call(block.querySelectorAll('pre span'), (s) => s.textContent).join('\n');
+      navigator.clipboard.writeText(text).then(() => {
+        btn.classList.add('done');
+        label.textContent = 'Copied';
+        status.textContent = 'Commands copied to the clipboard.';
+        clearTimeout(timer);
+        timer = setTimeout(() => {
+          btn.classList.remove('done');
+          label.textContent = 'Copy';
+          status.textContent = '';
+        }, 1800);
+      });
+    });
+    block.querySelector('.code-bar').appendChild(btn);
+  });
+})();
+</script>
+</body>
+</html>
