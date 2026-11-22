@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { SERVER_ENV } from './env.ts';
+import { closeCode, rawUpgrade } from './harness.ts';
 
 /**
  * Token login (B13, spec §5.10) end to end: a demo `kage serve` of its own whose config sets an
@@ -103,4 +104,24 @@ test('a fresh browser context gets 401 from the event stream', async ({ browser 
   } finally {
     await context.close();
   }
+});
+
+test('a terminal upgrade needs the token cookie: 401 without it, 101 (then demo mode’s close) with it', async () => {
+  const path = '/api/sessions/k-demo-term/terminal';
+  const good = { Origin: BASE, 'Sec-WebSocket-Protocol': 'kage.term.v1' };
+  expect((await rawUpgrade(PORT, path, good)).status).toBe(401);
+
+  const res = await fetch(`${BASE}/api/login`, {
+    method: 'POST',
+    headers: { 'X-Kage': '1', Origin: BASE, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ token: TOKEN }),
+  });
+  expect(res.status).toBe(204);
+  const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0] as string;
+  expect(cookie).toMatch(/^kage_auth=./);
+
+  const signedIn = await rawUpgrade(PORT, path, { ...good, Cookie: cookie });
+  expect(signedIn.status).toBe(101);
+  // Demo mode has no terminal: it closes right after the upgrade with 4501.
+  expect(closeCode(signedIn.frame)).toBe(4501);
 });

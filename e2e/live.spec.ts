@@ -1,220 +1,37 @@
-import { type ChildProcess, execFile, execFileSync, spawn } from 'node:child_process';
-import {
-  accessSync,
-  constants,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { expect, type Page, test } from '@playwright/test';
-import { LIVE_BASE, LIVE_PORT } from './env.ts';
+import { LIVE_BASE } from './env.ts';
+import {
+  blur,
+  chip,
+  hasTmux,
+  LiveHarness,
+  lines,
+  lineTexts,
+  ownChips,
+  recordChips,
+  row,
+  STATUS_MS,
+  startTask,
+} from './harness.ts';
 
 /**
  * The live board end to end: `kage serve` in live mode against a private tmux server, with
- * e2e/fake-claude.mjs standing in for Claude (real `kage hook` calls, a real transcript file and
- * a drawn permission prompt). Nothing touches the user's tmux, config, git config or state:
- * HOME and XDG_* are temp dirs, tmux runs on its own socket (KAGE_TMUX_SOCKET), git reads no
- * system or global config, and the projects are temp repos this spec creates. Phase 3's tests
+ * e2e/fake-claude.mjs standing in for Claude (e2e/harness.ts has the setup). Phase 3's tests
  * start tasks from the board, so Kage launches the fake itself (KAGE_CLAUDE_BIN).
  */
 
-const ROOT = join(import.meta.dirname, '..');
-const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
-const run = promisify(execFile);
-/** Status changes can take a few hook and re-list rounds; never wait on fixed sleeps. */
-const STATUS_MS = 15_000;
 const SEEDED_ID = 'k-e2e-seeded';
-
-function hasTmux(): boolean {
-  if (process.platform === 'win32') return false;
-  try {
-    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 test.skip(!hasTmux(), 'Live sessions need tmux (Linux or macOS)');
 test.describe.configure({ mode: 'serial', timeout: 60_000 });
 
-let root = '';
-let socket = '';
-let env: NodeJS.ProcessEnv = {};
-let serve: ChildProcess | null = null;
-let serveOut = '';
-
-const dirOf = (...parts: string[]) => join(root, ...parts);
-
-function tmux(...args: string[]): Promise<{ stdout: string }> {
-  return run('tmux', ['-L', socket, ...args], { env });
-}
-
-async function git(cwd: string, ...args: string[]): Promise<string> {
-  return (await run('git', args, { cwd, env })).stdout;
-}
-
-/** A temp repo on `main` with an invented README in one commit and a local identity. */
-async function initRepo(path: string, name: string): Promise<void> {
-  await git(path, 'init', '-q', '-b', 'main');
-  await git(path, 'config', 'user.name', 'Kage Test');
-  await git(path, 'config', 'user.email', 'kage-test@example.invalid');
-  writeFileSync(join(path, 'README.md'), `# ${name}\n\nA sample project for the live e2e.\n`);
-  await git(path, 'add', 'README.md');
-  await git(path, 'commit', '-q', '-m', 'Add a README');
-}
-
-/** Kage's window for session `id` (its live @kage_id), or null once it is gone. */
-async function kageWindow(id: string): Promise<{ windowId: string; paneId: string } | null> {
-  const { stdout } = await tmux(
-    'list-windows',
-    '-a',
-    '-F',
-    '#{@kage_id}\t#{window_id}\t#{pane_id}',
-  ).catch(() => ({ stdout: '' }));
-  for (const line of stdout.trim().split('\n')) {
-    const [kageId, windowId, paneId] = line.split('\t');
-    if (kageId === id && windowId && paneId) return { windowId, paneId };
-  }
-  return null;
-}
-
-/** The fake's session id for the run started with `task` (its argv file names the task last). */
-function fakeSessionFor(task: string): string | null {
-  for (const f of readdirSync(dirOf('claude'))) {
-    const m = /^argv-(.+)\.json$/.exec(f);
-    if (!m) continue;
-    const argv = JSON.parse(readFileSync(dirOf('claude', f), 'utf8')) as string[];
-    if (argv.at(-1) === task) return m[1] as string;
-  }
-  return null;
-}
-
-/** The argv Kage started the fake with for `task`, once the fake has written it. */
-async function fakeArgv(task: string): Promise<string[]> {
-  await expect.poll(() => fakeSessionFor(task), { timeout: STATUS_MS }).not.toBeNull();
-  const sid = fakeSessionFor(task) as string;
-  return JSON.parse(readFileSync(dirOf('claude', `argv-${sid}.json`), 'utf8')) as string[];
-}
-
-/** The keys the fake started with `task` has received, typed runs joined ("text:…"). */
-function fakeKeys(task: string): string[] {
-  const sid = fakeSessionFor(task);
-  const file = sid ? dirOf('claude', `keys-${sid}.json`) : '';
-  return sid && existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as string[]) : [];
-}
-
-/** Opens a window in the `kage` session running `command`; returns its pane id. */
-async function newWindow(name: string, cwd: string, command: string): Promise<string> {
-  const { stdout } = await tmux(
-    'new-window',
-    '-d',
-    '-P',
-    '-F',
-    '#{pane_id}',
-    '-t',
-    'kage:',
-    '-n',
-    name,
-    '-c',
-    cwd,
-    command,
-  );
-  return stdout.trim();
-}
-
-const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
-
-/**
- * Starts the fake in a new window the way a person starts claude: typed into an interactive
- * shell. The shell's job control gives it its own process group, so tmux reports it (node) as
- * the pane's command. Under `sh -c 'node …; exec sh'` tmux would report the sh, the process
- * group's leader, and Kage would read claude as gone (R17). When the fake exits, the pane is
- * back at its shell.
- */
-async function startFake(name: string, cwd: string, scenario: string): Promise<string> {
-  const pane = await newWindow(name, cwd, 'sh');
-  await tmux('send-keys', '-t', pane, '-l', `${q(process.execPath)} ${q(FAKE)} ${scenario}`);
-  await tmux('send-keys', '-t', pane, 'Enter');
-  return pane;
-}
-
-function startServe(): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const c = spawn(
-      process.execPath,
-      ['packages/server/src/main.ts', 'serve', '--port', String(LIVE_PORT)],
-      { cwd: ROOT, env, stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-    serve = c;
-    const onData = (d: Buffer) => {
-      serveOut += d.toString();
-      if (serveOut.includes('Kage is running at')) resolve();
-    };
-    c.stdout?.on('data', onData);
-    c.stderr?.on('data', onData);
-    c.once('error', reject);
-    c.once('exit', (code) => reject(new Error(`kage serve exited (${code}):\n${serveOut}`)));
-  });
-}
-
-async function stopServe(): Promise<void> {
-  const c = serve;
-  serve = null;
-  if (!c || c.exitCode !== null || c.signalCode !== null) return;
-  const exited = new Promise<void>((resolve) => c.once('exit', () => resolve()));
-  c.kill('SIGTERM');
-  const timer = setTimeout(() => c.kill('SIGKILL'), 8000);
-  await exited;
-  clearTimeout(timer);
-}
+const h = new LiveHarness();
+const { dirOf, tmux, git, kageWindow, fakeArgv, fakeKeys, newWindow, startFake } = h;
 
 test.beforeAll(async () => {
-  root = mkdtempSync(join(tmpdir(), 'kage-live-'));
-  socket = `kage-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
-  for (const d of [
-    'home',
-    'config',
-    'state/kage',
-    'run',
-    'config/kage',
-    'claude',
-    'projects/demo',
-    'projects/shop',
-  ]) {
-    mkdirSync(dirOf(d), { recursive: true, mode: 0o700 });
-  }
-  // tmux starts the fake directly, as it starts claude: it must be executable (git tracks +x).
-  accessSync(FAKE, constants.X_OK);
-  const { TMUX: _t, TMUX_PANE: _p, ...rest } = process.env;
-  env = {
-    ...rest,
-    HOME: dirOf('home'),
-    XDG_CONFIG_HOME: dirOf('config'),
-    XDG_STATE_HOME: dirOf('state'),
-    XDG_RUNTIME_DIR: dirOf('run'),
-    KAGE_SOCKET: dirOf('run', 'kage.sock'),
-    KAGE_TMUX_SOCKET: socket,
-    KAGE_HOST: '127.0.0.1',
-    KAGE_NAME: 'my-pc',
-    KAGE_CLAUDE_BIN: FAKE,
-    SHELL: '/bin/sh',
-    FAKE_CLAUDE_DIR: dirOf('claude'),
-    GIT_CONFIG_NOSYSTEM: '1',
-    GIT_CONFIG_GLOBAL: '/dev/null',
-  };
-  writeFileSync(
-    dirOf('config', 'kage', 'config.json'),
-    JSON.stringify({ projectsRoot: dirOf('projects') }),
-  );
-  for (const name of ['demo', 'shop']) await initRepo(dirOf('projects', name), name);
+  await h.setUp();
   // A session Kage created before this run (phase 3 will create them): its record, and its
   // window carrying @kage_id. Kage reconciles both at start (spec §5.8a).
   writeFileSync(
@@ -238,73 +55,19 @@ test.beforeAll(async () => {
       ],
     }),
   );
-  await run(
-    'tmux',
-    ['-f', '/dev/null', '-L', socket, 'new-session', '-d', '-s', 'kage', '-n', 'seeded'],
-    { env, cwd: dirOf('projects/demo') },
-  );
+  await h.startTmux('seeded');
   await tmux('set-option', '-w', '-t', 'kage:seeded', '@kage_id', SEEDED_ID);
-  await startServe();
+  await h.startServe();
 });
 
 test.afterAll(async () => {
-  // Kage first: its watcher would start the tmux server again.
-  await stopServe().catch(() => {});
-  await tmux('kill-server').catch(() => {});
-  if (root) rmSync(root, { recursive: true, force: true });
+  await h.tearDown();
 });
 
 /** On failure: every pane's text and Kage's output, attached to the report. */
 test.afterEach(async ({ page: _page }, info) => {
-  if (info.status === info.expectedStatus) return;
-  let text = '';
-  try {
-    const format = '#{window_id} #{pane_id} #{window_name} #{pane_current_command}';
-    const { stdout } = await tmux('list-windows', '-a', '-F', format);
-    text += stdout;
-    for (const line of stdout.trim().split('\n')) {
-      const paneId = line.split(' ')[1];
-      if (!paneId) continue;
-      const pane = await tmux('capture-pane', '-p', '-t', paneId);
-      text += `\n--- ${line}\n${pane.stdout}`;
-    }
-  } catch (err) {
-    text += `tmux: ${(err as Error).message}\n`;
-  }
-  await info.attach('panes.txt', { body: text, contentType: 'text/plain' });
-  await info.attach('kage-serve.txt', { body: serveOut, contentType: 'text/plain' });
-  // The list reporter shows attachments by name only; the container run needs the text.
-  console.log(`${text}
---- kage serve
-${serveOut}`);
+  await h.attachOnFailure(info);
 });
-
-const row = (page: Page, task: string) => page.locator('.k-it', { hasText: task });
-const chip = (page: Page) => page.locator('.k-head .k-chip');
-
-/** Records every `task: chip` the panel shows from now on, so short states can't be missed. */
-async function recordChips(page: Page): Promise<() => Promise<string[]>> {
-  await page.evaluate(() => {
-    const w = window as unknown as { kageChips: string[] };
-    w.kageChips = [];
-    const read = () => {
-      const task = document.querySelector('.k-head .k-task')?.textContent ?? '';
-      const c = document.querySelector('.k-head .k-chip')?.textContent ?? '';
-      const v = `${task}: ${c}`;
-      if (w.kageChips.at(-1) !== v) w.kageChips.push(v);
-    };
-    read();
-    new MutationObserver(read).observe(document.body, {
-      subtree: true,
-      childList: true,
-      characterData: true,
-    });
-  });
-  return () => page.evaluate(() => (window as unknown as { kageChips: string[] }).kageChips);
-}
-
-/** The recorded chips of one task (the head shows other sessions before it is selected). */
-const ownChips = (seen: string[], task: string) => seen.filter((c) => c.startsWith(`${task}: `));
 
 test('a fake Claude session runs with its transcript lines, then is done', async ({ page }) => {
   await page.goto('/');
@@ -416,7 +179,7 @@ test('killing the tmux server ends Kage sessions, drops external ones, and the b
   await expect(row(page, 'clear-cache')).toHaveCount(0);
   await expect(page.locator('.k-host')).toContainText('my-pc');
   await expect(page.getByRole('status').filter({ hasText: 'Reconnecting' })).toHaveCount(0);
-  expect(serve?.exitCode ?? null).toBeNull();
+  expect(h.serve?.exitCode ?? null).toBeNull();
 
   // The watcher brings the session back. Its first window is Kage's placeholder (R22): tagged,
   // and kept off the board while it sits at its shell.
@@ -446,40 +209,7 @@ const DEMO_TASK = 'edit-and-test Make greet() lowercase';
 const DEMO_SLUG = 'edit-and-test-make-greet-lowercase';
 const ANSWER_TASK = 'needs-permission Clear the build cache';
 
-const lines = (page: Page) => page.locator('.k-main .ln');
-const lineTexts = (page: Page) => lines(page).allTextContents();
 const options = (page: Page) => page.locator('.k-ask .k-opts button:not(.k-or)');
-
-/** Fills the New task form and starts the task with Enter; returns the new session's id. */
-async function startTask(
-  page: Page,
-  task: string,
-  project: 'demo' | 'shop',
-  acceptEdits = false,
-): Promise<string> {
-  await page.locator('.k-new').click();
-  const form = page.getByRole('form', { name: 'New task' });
-  await form.getByLabel('Task').fill(task);
-  await form.getByLabel('Project').selectOption(project);
-  await form.getByLabel('Branch off').selectOption('main');
-  if (acceptEdits) await form.getByLabel('Accept edits automatically').check();
-  const started = page.waitForResponse(
-    (r) => r.url() === `${LIVE_BASE}/api/sessions` && r.request().method() === 'POST',
-  );
-  await form.getByLabel('Task').press('Enter');
-  const res = await started;
-  expect(res.status(), await res.text()).toBe(201);
-  const { id } = (await res.json()) as { id: string };
-  await expect(form).toHaveCount(0);
-  // The new session is selected.
-  await expect(page.locator('.k-it.on')).toHaveAttribute('data-id', id, { timeout: STATUS_MS });
-  await expect(page.locator('.k-head .k-task')).toHaveText(task);
-  return id;
-}
-
-/** Board keys act only while focus is outside a field. */
-const blur = (page: Page) =>
-  page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
 
 /** Waits for the permission prompt card of the needs-permission fake. */
 async function expectPrompt(page: Page): Promise<void> {

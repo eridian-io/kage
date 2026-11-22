@@ -3,12 +3,23 @@
  * A stand-in for `claude` in a tmux pane, for the live e2e (no real Claude needed).
  *
  *   fake-claude.mjs --settings <file> --permission-mode <mode> [--] <task>   as Kage starts claude
+ *   fake-claude.mjs --settings <file> --permission-mode <mode> --resume <id>  as Kage resumes
+ *   fake-claude.mjs --settings <file> --permission-mode <mode> --continue
  *   fake-claude.mjs <scenario>                                              the phase 2 form
  *
- * Scenarios: edit-and-test, needs-permission and trust-first. In Claude's form the scenario is
- * the task's first word when it names one, else edit-and-test, and the task is the first prompt.
- * The argv is written as JSON to $FAKE_CLAUDE_DIR/argv-<sessionId>.json, and every key received
- * to keys-<sessionId>.json (typed runs joined as "text:…"), so a test can check both.
+ * Scenarios: edit-and-test, needs-permission, trust-first, commit-and-edit and commit-only. In
+ * Claude's form the scenario is the task's first word when it names one, else edit-and-test, and
+ * the task is the first prompt. The argv is written as JSON to $FAKE_CLAUDE_DIR/argv-<sessionId>.json,
+ * and every key received to keys-<sessionId>.json (typed runs joined as "text:…"), so a test can
+ * check both.
+ * - commit-and-edit: in its cwd (the worktree) it writes notes.md and commits it, then changes a
+ *   line of README.md and writes scratch.txt (untracked), then fires Stop: one unpushed commit and
+ *   two uncommitted files. commit-only commits notes.md the same way and leaves the tree clean.
+ * - `--resume <id>` reuses <id> as its session id and appends to that transcript, fires
+ *   SessionStart with `source: "resume"` and draws the idle box with no turn (integration §8).
+ *   An id with no transcript in $FAKE_CLAUDE_DIR is Claude's unknown id (R63): a SessionEnd
+ *   (reason `other`) with a new random session id, no SessionStart, exit 1. `--continue` resumes
+ *   the newest transcript of this cwd the same way, and fails the same way without one.
  *
  * It behaves the way docs/specs/claude-code-integration.md records Claude Code 2.1.330:
  * - Hooks run the commands of the `--settings` file through `sh -c` with Claude's JSON on stdin,
@@ -33,19 +44,36 @@
  * keys files go; default a new temp dir) and FAKE_CLAUDE_STEP_MS (the pause between steps;
  * default 600).
  */
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const KAGE = join(dirname(fileURLToPath(import.meta.url)), '../packages/server/src/main.ts');
 const STEP_MS = Number(process.env.FAKE_CLAUDE_STEP_MS) || 600;
-const SCENARIOS = new Set(['edit-and-test', 'needs-permission', 'trust-first']);
+const SCENARIOS = new Set([
+  'edit-and-test',
+  'needs-permission',
+  'trust-first',
+  'commit-and-edit',
+  'commit-only',
+]);
 const DEFAULT_PROMPT = {
   'edit-and-test': 'Make greet() say hello in lowercase, then run the tests',
   'needs-permission': 'Clear the build cache',
+  'commit-and-edit': 'Write the notes',
+  'commit-only': 'Commit the notes',
 };
 
 // ------------------------------------------------------------------ arguments
@@ -54,10 +82,12 @@ const argv = process.argv.slice(2);
 let settingsPath = null;
 let task = null;
 let scenario;
+/** `--resume <id>`: the id; `--continue`: true. */
+let resume = null;
 if (argv.length === 1 && !argv[0].startsWith('-')) {
   scenario = argv[0];
   if (!SCENARIOS.has(scenario)) {
-    process.stderr.write('Usage: fake-claude.mjs edit-and-test|needs-permission|trust-first\n');
+    process.stderr.write(`Usage: fake-claude.mjs ${[...SCENARIOS].join('|')}\n`);
     process.exit(2);
   }
 } else {
@@ -65,6 +95,8 @@ if (argv.length === 1 && !argv[0].startsWith('-')) {
     const a = argv[i];
     if (a === '--settings') settingsPath = argv[++i] ?? null;
     else if (a === '--permission-mode') i++;
+    else if (a === '--resume') resume = argv[++i] ?? '';
+    else if (a === '--continue') resume = true;
     else if (a === '--') {
       task = argv.slice(i + 1).join(' ');
       break;
@@ -76,22 +108,49 @@ if (argv.length === 1 && !argv[0].startsWith('-')) {
       break;
     }
   }
-  if (!task) {
+  if (!task && resume === null) {
     process.stderr.write('Usage: fake-claude.mjs --settings <f> --permission-mode <m> -- <task>\n');
     process.exit(2);
   }
-  const first = task.trim().split(/\s+/)[0];
+  const first = (task ?? '').trim().split(/\s+/)[0];
   scenario = SCENARIOS.has(first) ? first : 'edit-and-test';
 }
 const turnScenario = scenario === 'trust-first' ? 'edit-and-test' : scenario;
 const firstPrompt = task ?? DEFAULT_PROMPT[turnScenario];
 
 const cwd = process.cwd();
-const sessionId = randomUUID();
 const dir = process.env.FAKE_CLAUDE_DIR || mkdtempSync(join(tmpdir(), 'fake-claude-'));
 mkdirSync(dir, { recursive: true });
+
+/** The newest transcript in `dir` whose first record ran in this cwd (`--continue`); else null. */
+function newestHere() {
+  let best = null;
+  for (const f of readdirSync(dir)) {
+    if (!f.endsWith('.jsonl')) continue;
+    const path = join(dir, f);
+    const first = readFileSync(path, 'utf8').split('\n', 1)[0];
+    let here = false;
+    try {
+      here = JSON.parse(first).cwd === cwd;
+    } catch {}
+    const at = statSync(path).mtimeMs;
+    if (here && (!best || at > best.at)) best = { id: f.slice(0, -'.jsonl'.length), at };
+  }
+  return best?.id ?? null;
+}
+
+/** The session resumed, or null for a new one; '' when Claude would find no conversation. */
+const resumed =
+  resume === null
+    ? null
+    : resume === true
+      ? (newestHere() ?? '')
+      : existsSync(join(dir, `${resume}.jsonl`))
+        ? resume
+        : '';
+const sessionId = resumed || randomUUID();
 const transcript = join(dir, `${sessionId}.jsonl`);
-writeFileSync(transcript, '');
+if (resumed === null) writeFileSync(transcript, '');
 writeFileSync(join(dir, `argv-${sessionId}.json`), JSON.stringify(argv));
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -139,7 +198,18 @@ async function hook(event, extra = {}) {
 
 // ------------------------------------------------------------------ transcript
 
-let parent = null;
+/** The last record's uuid; a resumed transcript goes on from its last line. */
+function lastUuid() {
+  if (!resumed) return null;
+  const last = readFileSync(transcript, 'utf8').trimEnd().split('\n').at(-1) ?? '';
+  try {
+    return JSON.parse(last).uuid ?? null;
+  } catch {
+    return null;
+  }
+}
+
+let parent = lastUuid();
 let msg = 0;
 
 function append(record) {
@@ -575,11 +645,60 @@ async function trust() {
   }
 }
 
+/** git in the worktree, with the fake's own identity for commits; throws when git fails. */
+function git(...args) {
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+  if (r.status !== 0) throw new Error(`git ${args.join(' ')}: ${r.stderr || r.error}`);
+}
+
+const IDENTITY = ['-c', 'user.name=Fake', '-c', 'user.email=fake@example.invalid'];
+
+/** commit-and-edit (`edit`) and commit-only: notes.md committed; then, with `edit`, two loose files. */
+async function commitWork(prompt, edit) {
+  await begin(prompt);
+  say("I'll write the notes and commit them.");
+  await step();
+  writeFileSync(join(cwd, 'notes.md'), '# Notes\n\nInvented notes for the live e2e.\n');
+  git('add', '--', 'notes.md');
+  git(...IDENTITY, 'commit', '-q', '-m', 'Add notes');
+  out('  ⎿  Committed notes.md');
+  if (edit) {
+    const readme = join(cwd, 'README.md');
+    const text = readFileSync(readme, 'utf8');
+    writeFileSync(
+      readme,
+      text.replace('A sample project for the live e2e.', 'A sample project with notes.'),
+    );
+    writeFileSync(join(cwd, 'scratch.txt'), 'A scratch line.\n');
+    out('  ⎿  Updated README.md and wrote scratch.txt');
+  }
+  await step();
+  await finish(
+    edit
+      ? 'The notes are committed; README.md and scratch.txt are not.'
+      : 'The notes are committed.',
+  );
+}
+
+if (resumed === '') {
+  // R63: Claude found no conversation; it leaves nothing readable and exits 1. Like the real
+  // one, it first takes a moment to start.
+  await step();
+  await hook('SessionEnd', { reason: 'other' });
+  process.exit(1);
+}
+if (resumed !== null) {
+  draw(box('', false), banner());
+  await hook('SessionStart', { source: 'resume', model: 'claude-opus-5-5' });
+  await idle();
+}
 if (scenario === 'trust-first') await trust();
 draw(box('', false), banner());
 await hook('SessionStart', { source: 'startup', model: 'claude-opus-5-5' });
 // Real Claude takes about a second from SessionStart to the argv prompt's UserPromptSubmit (P3F1).
 await step();
 if (turnScenario === 'needs-permission') await needsPermission(firstPrompt);
+else if (turnScenario === 'commit-and-edit') await commitWork(firstPrompt, true);
+else if (turnScenario === 'commit-only') await commitWork(firstPrompt, false);
 else await editAndTest(firstPrompt);
 await idle();

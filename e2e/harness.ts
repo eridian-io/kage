@@ -1,0 +1,404 @@
+import { type ChildProcess, execFile, execFileSync, spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { request as httpRequest } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { promisify } from 'node:util';
+import { expect, type Page, type TestInfo } from '@playwright/test';
+import { LIVE_BASE, LIVE_PORT } from './env.ts';
+
+/**
+ * The live specs' setup and helpers: `kage serve` in live mode against a private tmux server,
+ * with e2e/fake-claude.mjs standing in for Claude (real `kage hook` calls, a real transcript file
+ * and a drawn permission prompt). Nothing touches the user's tmux, config, git config or state:
+ * HOME and XDG_* are temp dirs, tmux runs on its own socket (KAGE_TMUX_SOCKET), git reads no
+ * system or global config, and the projects are temp repos the harness creates. Tasks started
+ * from the board launch the fake through KAGE_CLAUDE_BIN.
+ */
+
+export const ROOT = join(import.meta.dirname, '..');
+export const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
+const run = promisify(execFile);
+/** Status changes can take a few hook and re-list rounds; never wait on fixed sleeps. */
+export const STATUS_MS = 15_000;
+
+export function hasTmux(): boolean {
+  if (process.platform === 'win32') return false;
+  try {
+    execFileSync('tmux', ['-V'], { stdio: 'ignore' });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const q = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
+
+/**
+ * One live run: a temp root, a private tmux socket, the repos `demo` and `shop`, and `kage serve`.
+ * The methods are arrow fields, so a spec may destructure them.
+ */
+export class LiveHarness {
+  root = '';
+  socket = '';
+  env: NodeJS.ProcessEnv = {};
+  serve: ChildProcess | null = null;
+  serveOut = '';
+
+  dirOf = (...parts: string[]): string => join(this.root, ...parts);
+
+  tmux = (...args: string[]): Promise<{ stdout: string }> =>
+    run('tmux', ['-L', this.socket, ...args], { env: this.env });
+
+  git = async (cwd: string, ...args: string[]): Promise<string> =>
+    (await run('git', args, { cwd, env: this.env })).stdout;
+
+  /**
+   * The temp root, its HOME and XDG_* dirs, the environment, Kage's config (projectsRoot plus
+   * `config`) and the two repos. tmux and Kage start with startTmux and startServe.
+   */
+  setUp = async (config: Record<string, unknown> = {}): Promise<void> => {
+    this.root = mkdtempSync(join(tmpdir(), 'kage-live-'));
+    this.socket = `kage-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
+    for (const d of [
+      'home',
+      'config',
+      'state/kage',
+      'run',
+      'config/kage',
+      'claude',
+      'projects/demo',
+      'projects/shop',
+    ]) {
+      mkdirSync(this.dirOf(d), { recursive: true, mode: 0o700 });
+    }
+    // tmux starts the fake directly, as it starts claude: it must be executable (git tracks +x).
+    accessSync(FAKE, constants.X_OK);
+    const { TMUX: _t, TMUX_PANE: _p, ...rest } = process.env;
+    this.env = {
+      ...rest,
+      HOME: this.dirOf('home'),
+      XDG_CONFIG_HOME: this.dirOf('config'),
+      XDG_STATE_HOME: this.dirOf('state'),
+      XDG_RUNTIME_DIR: this.dirOf('run'),
+      KAGE_SOCKET: this.dirOf('run', 'kage.sock'),
+      KAGE_TMUX_SOCKET: this.socket,
+      KAGE_HOST: '127.0.0.1',
+      KAGE_NAME: 'my-pc',
+      KAGE_CLAUDE_BIN: FAKE,
+      SHELL: '/bin/sh',
+      FAKE_CLAUDE_DIR: this.dirOf('claude'),
+      GIT_CONFIG_NOSYSTEM: '1',
+      GIT_CONFIG_GLOBAL: '/dev/null',
+    };
+    writeFileSync(
+      this.dirOf('config', 'kage', 'config.json'),
+      JSON.stringify({ projectsRoot: this.dirOf('projects'), ...config }),
+    );
+    for (const name of ['demo', 'shop']) await this.initRepo(this.dirOf('projects', name), name);
+  };
+
+  /** A temp repo on `main` with an invented README in one commit and a local identity. */
+  initRepo = async (path: string, name: string): Promise<void> => {
+    await this.git(path, 'init', '-q', '-b', 'main');
+    await this.git(path, 'config', 'user.name', 'Kage Test');
+    await this.git(path, 'config', 'user.email', 'kage-test@example.invalid');
+    writeFileSync(join(path, 'README.md'), `# ${name}\n\nA sample project for the live e2e.\n`);
+    await this.git(path, 'add', 'README.md');
+    await this.git(path, 'commit', '-q', '-m', 'Add a README');
+  };
+
+  /** The private tmux server, with no config, and the `kage` session whose first window is `name`. */
+  startTmux = async (name: string): Promise<void> => {
+    await run(
+      'tmux',
+      ['-f', '/dev/null', '-L', this.socket, 'new-session', '-d', '-s', 'kage', '-n', name],
+      { env: this.env, cwd: this.dirOf('projects/demo') },
+    );
+  };
+
+  /** Kage's window for session `id` (its live @kage_id), or null once it is gone. */
+  kageWindow = async (id: string): Promise<{ windowId: string; paneId: string } | null> => {
+    const { stdout } = await this.tmux(
+      'list-windows',
+      '-a',
+      '-F',
+      '#{@kage_id}\t#{window_id}\t#{pane_id}',
+    ).catch(() => ({ stdout: '' }));
+    for (const line of stdout.trim().split('\n')) {
+      const [kageId, windowId, paneId] = line.split('\t');
+      if (kageId === id && windowId && paneId) return { windowId, paneId };
+    }
+    return null;
+  };
+
+  /** The fake's session id for the run started with `task` (its argv file names the task last). */
+  fakeSessionFor = (task: string): string | null => {
+    for (const f of readdirSync(this.dirOf('claude'))) {
+      const m = /^argv-(.+)\.json$/.exec(f);
+      if (!m) continue;
+      const argv = JSON.parse(readFileSync(this.dirOf('claude', f), 'utf8')) as string[];
+      if (argv.at(-1) === task) return m[1] as string;
+    }
+    return null;
+  };
+
+  /** The argv Kage started the fake with for `task`, once the fake has written it. */
+  fakeArgv = async (task: string): Promise<string[]> => {
+    await expect.poll(() => this.fakeSessionFor(task), { timeout: STATUS_MS }).not.toBeNull();
+    const sid = this.fakeSessionFor(task) as string;
+    return JSON.parse(readFileSync(this.dirOf('claude', `argv-${sid}.json`), 'utf8')) as string[];
+  };
+
+  /** The keys the fake started with `task` has received, typed runs joined ("text:…"). */
+  fakeKeys = (task: string): string[] => {
+    const sid = this.fakeSessionFor(task);
+    const file = sid ? this.dirOf('claude', `keys-${sid}.json`) : '';
+    return sid && existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')) as string[]) : [];
+  };
+
+  /** Opens a window in the `kage` session running `command`; returns its pane id. */
+  newWindow = async (name: string, cwd: string, command: string): Promise<string> => {
+    const { stdout } = await this.tmux(
+      'new-window',
+      '-d',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      '-t',
+      'kage:',
+      '-n',
+      name,
+      '-c',
+      cwd,
+      command,
+    );
+    return stdout.trim();
+  };
+
+  /**
+   * Starts the fake in a new window the way a person starts claude: typed into an interactive
+   * shell. The shell's job control gives it its own process group, so tmux reports it (node) as
+   * the pane's command. Under `sh -c 'node …; exec sh'` tmux would report the sh, the process
+   * group's leader, and Kage would read claude as gone (R17). When the fake exits, the pane is
+   * back at its shell.
+   */
+  startFake = async (name: string, cwd: string, scenario: string): Promise<string> => {
+    const pane = await this.newWindow(name, cwd, 'sh');
+    await this.tmux('send-keys', '-t', pane, '-l', `${q(process.execPath)} ${q(FAKE)} ${scenario}`);
+    await this.tmux('send-keys', '-t', pane, 'Enter');
+    return pane;
+  };
+
+  startServe = (): Promise<void> =>
+    new Promise((resolve, reject) => {
+      const c = spawn(
+        process.execPath,
+        ['packages/server/src/main.ts', 'serve', '--port', String(LIVE_PORT)],
+        { cwd: ROOT, env: this.env, stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+      this.serve = c;
+      const onData = (d: Buffer) => {
+        this.serveOut += d.toString();
+        if (this.serveOut.includes('Kage is running at')) resolve();
+      };
+      c.stdout?.on('data', onData);
+      c.stderr?.on('data', onData);
+      c.once('error', reject);
+      c.once('exit', (code) => reject(new Error(`kage serve exited (${code}):\n${this.serveOut}`)));
+    });
+
+  stopServe = async (): Promise<void> => {
+    const c = this.serve;
+    this.serve = null;
+    if (!c || c.exitCode !== null || c.signalCode !== null) return;
+    const exited = new Promise<void>((resolve) => c.once('exit', () => resolve()));
+    c.kill('SIGTERM');
+    const timer = setTimeout(() => c.kill('SIGKILL'), 8000);
+    await exited;
+    clearTimeout(timer);
+  };
+
+  /** Kage, then the tmux server, then the temp root; each step runs even if one before failed. */
+  tearDown = async (): Promise<void> => {
+    // Kage first: its watcher would start the tmux server again.
+    await this.stopServe().catch(() => {});
+    if (this.socket) await this.tmux('kill-server').catch(() => {});
+    if (this.root) rmSync(this.root, { recursive: true, force: true });
+  };
+
+  /** On failure: every pane's text and Kage's output, attached to the report. */
+  attachOnFailure = async (info: TestInfo): Promise<void> => {
+    if (info.status === info.expectedStatus) return;
+    let text = '';
+    try {
+      const format = '#{window_id} #{pane_id} #{window_name} #{pane_current_command}';
+      const { stdout } = await this.tmux('list-windows', '-a', '-F', format);
+      text += stdout;
+      for (const line of stdout.trim().split('\n')) {
+        const paneId = line.split(' ')[1];
+        if (!paneId) continue;
+        const pane = await this.tmux('capture-pane', '-p', '-t', paneId);
+        text += `\n--- ${line}\n${pane.stdout}`;
+      }
+    } catch (err) {
+      text += `tmux: ${(err as Error).message}\n`;
+    }
+    await info.attach('panes.txt', { body: text, contentType: 'text/plain' });
+    await info.attach('kage-serve.txt', { body: this.serveOut, contentType: 'text/plain' });
+    // The list reporter shows attachments by name only; the container run needs the text.
+    console.log(`${text}
+--- kage serve
+${this.serveOut}`);
+  };
+}
+
+// ------------------------------------------------------------------ board helpers
+
+export const row = (page: Page, task: string) => page.locator('.k-it', { hasText: task });
+export const chip = (page: Page) => page.locator('.k-head .k-chip');
+export const lines = (page: Page) => page.locator('.k-main .ln');
+export const lineTexts = (page: Page) => lines(page).allTextContents();
+
+/** Board keys act only while focus is outside a field. */
+export const blur = (page: Page) =>
+  page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+
+/** Records every `task: chip` the panel shows from now on, so short states can't be missed. */
+export async function recordChips(page: Page): Promise<() => Promise<string[]>> {
+  await page.evaluate(() => {
+    const w = window as unknown as { kageChips: string[] };
+    w.kageChips = [];
+    const read = () => {
+      const task = document.querySelector('.k-head .k-task')?.textContent ?? '';
+      const c = document.querySelector('.k-head .k-chip')?.textContent ?? '';
+      const v = `${task}: ${c}`;
+      if (w.kageChips.at(-1) !== v) w.kageChips.push(v);
+    };
+    read();
+    new MutationObserver(read).observe(document.body, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+    });
+  });
+  return () => page.evaluate(() => (window as unknown as { kageChips: string[] }).kageChips);
+}
+
+/** The recorded chips of one task (the head shows other sessions before it is selected). */
+export const ownChips = (seen: string[], task: string) =>
+  seen.filter((c) => c.startsWith(`${task}: `));
+
+/** Fills the New task form and starts the task with Enter; returns the new session's id. */
+export async function startTask(
+  page: Page,
+  task: string,
+  project: 'demo' | 'shop',
+  acceptEdits = false,
+): Promise<string> {
+  await page.locator('.k-side .k-new').click();
+  const form = page.getByRole('form', { name: 'New task' });
+  await form.getByLabel('Task').fill(task);
+  await form.getByLabel('Project').selectOption(project);
+  await form.getByLabel('Branch off').selectOption('main');
+  if (acceptEdits) await form.getByLabel('Accept edits automatically').check();
+  const started = page.waitForResponse(
+    (r) => r.url() === `${LIVE_BASE}/api/sessions` && r.request().method() === 'POST',
+  );
+  await form.getByLabel('Task').press('Enter');
+  const res = await started;
+  expect(res.status(), await res.text()).toBe(201);
+  const { id } = (await res.json()) as { id: string };
+  await expect(form).toHaveCount(0);
+  // The new session is selected.
+  await expect(page.locator('.k-it.on')).toHaveAttribute('data-id', id, { timeout: STATUS_MS });
+  await expect(page.locator('.k-head .k-task')).toHaveText(task);
+  return id;
+}
+
+// ------------------------------------------------------------------ raw WebSocket upgrades
+
+/** What a raw terminal upgrade got: the HTTP status, and after a 101 the server's first frame. */
+export interface UpgradeResult {
+  status: number;
+  /** The first frame after a 101 (opcode 1 text, 2 binary, 8 close), when one was awaited. */
+  frame?: { opcode: number; data: Buffer };
+}
+
+/** The close code of a close frame (RFC 6455 §5.5.1), or null without one. */
+export const closeCode = (f: UpgradeResult['frame']): number | null =>
+  f && f.opcode === 8 && f.data.length >= 2 ? f.data.readUInt16BE(0) : null;
+
+/**
+ * A WebSocket upgrade request sent by hand with `headers` (Connection, Upgrade, version and key
+ * are added), so a test can leave out what a browser always sends. After a 101 it waits for the
+ * server's first (unmasked) frame, then closes the socket.
+ */
+export function rawUpgrade(
+  port: number,
+  path: string,
+  headers: Record<string, string>,
+): Promise<UpgradeResult> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      host: '127.0.0.1',
+      port,
+      path,
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': randomBytes(16).toString('base64'),
+        ...headers,
+      },
+    });
+    req.once('error', reject);
+    req.once('response', (res) => {
+      res.resume();
+      res.once('end', () => resolve({ status: res.statusCode ?? 0 }));
+    });
+    req.once('upgrade', (res, socket, head) => {
+      let buf = Buffer.from(head);
+      const done = (frame?: UpgradeResult['frame']) => {
+        socket.destroy();
+        resolve({ status: res.statusCode ?? 0, ...(frame ? { frame } : {}) });
+      };
+      const parse = () => {
+        if (buf.length < 2) return;
+        const opcode = (buf[0] as number) & 0x0f;
+        let len = (buf[1] as number) & 0x7f;
+        let at = 2;
+        if (len === 126) {
+          if (buf.length < 4) return;
+          len = buf.readUInt16BE(2);
+          at = 4;
+        } else if (len === 127) {
+          if (buf.length < 10) return;
+          len = Number(buf.readBigUInt64BE(2));
+          at = 10;
+        }
+        if (buf.length < at + len) return;
+        done({ opcode, data: buf.subarray(at, at + len) });
+      };
+      socket.on('data', (d: Buffer) => {
+        buf = Buffer.concat([buf, d]);
+        parse();
+      });
+      socket.once('close', () => done());
+      socket.on('error', () => {});
+      parse();
+    });
+    req.end();
+  });
+}

@@ -16,12 +16,16 @@ export default defineConfig({
     bypassCSP: true,
   },
   projects: [
-    { name: 'chromium', use: { browserName: 'chromium' }, testIgnore: 'live.spec.ts' },
-    // Real tmux and `kage serve` in live mode; the spec skips itself where tmux is missing.
+    {
+      name: 'chromium',
+      use: { browserName: 'chromium' },
+      testIgnore: ['live.spec.ts', 'finish.spec.ts'],
+    },
+    // Real tmux and `kage serve` in live mode; the specs skip themselves where tmux is missing.
     {
       name: 'live',
       use: { browserName: 'chromium', baseURL: LIVE_BASE },
-      testMatch: 'live.spec.ts',
+      testMatch: ['live.spec.ts', 'finish.spec.ts'],
     },
   ],
   webServer: {
