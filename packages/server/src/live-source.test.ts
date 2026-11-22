@@ -6,6 +6,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinishActions } from './finish/actions.ts';
 import type { HookEvent, HookEventName } from './hooks/event.ts';
 import {
+  type AutoArchiveHost,
+  type AutoArchiverLike,
   type HookServerLike,
   LiveSource,
   NotImplementedError,
@@ -233,6 +235,24 @@ class FakePreview implements PreviewLike {
   }
 }
 
+/** Records what LiveSource tells the auto-archiver. */
+class FakeAuto implements AutoArchiverLike {
+  host: AutoArchiveHost | null = null;
+  calls: string[] = [];
+  start(): void {
+    this.calls.push('start');
+  }
+  touch(id: string): void {
+    this.calls.push(`touch ${id}`);
+  }
+  sync(): void {
+    this.calls.push('sync');
+  }
+  stop(): void {
+    this.calls.push('stop');
+  }
+}
+
 // ---------------------------------------------------------------- builders
 
 const win = (over: Partial<TmuxWindow> = {}): TmuxWindow => ({
@@ -309,6 +329,9 @@ function setup(
   } = {},
 ) {
   const preview = new FakePreview();
+  const auto = new FakeAuto();
+  /** Sessions with an open terminal (F11). */
+  const terminals = new Set<string>();
   const tmux = new FakeTmux();
   tmux.windows = opts.windows ?? [];
   const watcher = new FakeWatcher();
@@ -332,6 +355,11 @@ function setup(
       preview.host = host;
       return preview;
     },
+    autoArchive: (host) => {
+      auto.host = host;
+      return auto;
+    },
+    isTerminalOpen: (id) => terminals.has(id),
   });
   const events: SourceEvent[] = [];
   source.subscribe((e) => events.push(e));
@@ -341,7 +369,20 @@ function setup(
     );
   const lineEvents = (id: string) =>
     events.flatMap((e) => (e.type === 'session.lines' && e.id === id ? [e] : []));
-  return { tmux, watcher, hooks, store, tails, source, events, updates, lineEvents, preview };
+  return {
+    tmux,
+    watcher,
+    hooks,
+    store,
+    tails,
+    source,
+    events,
+    updates,
+    lineEvents,
+    preview,
+    auto,
+    terminals,
+  };
 }
 
 const kageWin = (over: Partial<TmuxWindow> = {}) =>
@@ -2787,7 +2828,8 @@ describe('LiveSource: branch state (phase 4 Task 3)', () => {
 
 describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
   /** killOwnedWindow over the live-source FakeTmux's windows (re-checks the tag, as tmux does). */
-  const killer = (tmux: { windows: TmuxWindow[] }, calls: string[]) => ({
+  const killer = (tmux: FakeTmux, calls: string[]) => ({
+    capturePane: (paneId: string) => tmux.capturePane(paneId),
     async killOwnedWindow(windowId: string, kageId: string): Promise<boolean> {
       calls.push(`kill ${windowId} ${kageId}`);
       const w = tmux.windows.find((x) => x.windowId === windowId);
@@ -2924,5 +2966,157 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
       external: true,
     });
     expect(source.finishTarget('nope')).toBeNull();
+  });
+});
+
+describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
+  const cand = (over: Record<string, unknown> = {}) => ({
+    id: 'k-1',
+    repo: join(ROOT, 'shop'),
+    worktree: `${ROOT}/shop/.worktrees/fix-the-cart-total`,
+    branch: 'kage/fix-the-cart-total',
+    base: 'main',
+    baseCommit: 'b'.repeat(40),
+    doneAt: T0 - 5000,
+    ...over,
+  });
+
+  it('start() starts the auto-archiver after the records are loaded and reconciled; stop() stops it', async () => {
+    const { source, auto } = setup({
+      records: [rec({ doneAt: T0 - 5000, base: 'main', baseCommit: 'b'.repeat(40) })],
+    });
+    await source.start();
+    expect(auto.calls).toEqual(['start']);
+    expect(auto.host?.autoCandidates()).toEqual([cand()]);
+    await source.stop();
+    expect(auto.calls).toEqual(['start', 'stop']);
+  });
+
+  it("a record session's Stop → touch(id), also when it was already done", async () => {
+    const { source, hooks, auto } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    auto.calls = [];
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    expect(auto.calls).toContain('touch k-1');
+    auto.calls = [];
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(auto.calls).toEqual(['touch k-1']);
+  });
+
+  it('a move into ended touches; a move back to running syncs (the candidate left)', async () => {
+    const { source, hooks, auto } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    auto.calls = [];
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    expect(auto.calls).toEqual(['sync']);
+    auto.calls = [];
+    hooks.fire(hook('SessionEnd', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(auto.calls).toContain('touch k-1');
+  });
+
+  it('pin, unpin, archive and restore each → sync()', async () => {
+    const { source, auto } = setup({ records: [rec({ doneAt: T0 - 1000 })] });
+    await source.start();
+    for (const f of [
+      { pinned: true },
+      { pinned: false },
+      { archived: true },
+      { archived: false },
+    ]) {
+      auto.calls = [];
+      await source.setFlags('k-1', f);
+      expect(auto.calls, JSON.stringify(f)).toEqual(['sync']);
+    }
+    // No change: no save, no sync.
+    auto.calls = [];
+    await source.setFlags('k-1', { pinned: false });
+    expect(auto.calls).toEqual([]);
+  });
+
+  it('a new record (adopt) and an abandoned launch → sync()', async () => {
+    const { source, auto } = setup();
+    await source.start();
+    auto.calls = [];
+    await source.adopt(rec({ kageId: 'k-9', windowId: null }));
+    expect(auto.calls).toEqual(['sync']);
+    auto.calls = [];
+    await source.abandon('k-9');
+    expect(auto.calls).toContain('sync');
+  });
+
+  it('candidates: done or ended record sessions; never external, running, needs-you, pinned or archived', async () => {
+    const { source, hooks, auto } = setup({
+      windows: [
+        kageWin(),
+        kageWin({ windowId: '@3', kageId: 'k-run', paneId: '%3' }),
+        win({ windowId: '@7', paneId: '%7', command: 'claude' }),
+      ],
+      records: [
+        rec({ base: 'main', baseCommit: 'b'.repeat(40) }),
+        rec({ kageId: 'k-run', windowId: '@3', branch: 'kage/run' }),
+        rec({ kageId: 'k-pin', windowId: null, pinned: true, doneAt: T0 - 1 }),
+        rec({ kageId: 'k-arch', windowId: null, archived: true, archivedAt: T0, doneAt: T0 - 1 }),
+        rec({ kageId: 'k-end', windowId: null, project: 'blog', doneAt: T0 - 99 }),
+      ],
+    });
+    await source.start();
+    hooks.fire(hook('Stop', '%2'));
+    hooks.fire(hook('UserPromptSubmit', '%3', { sessionId: 's-3' }));
+    hooks.fire(hook('Stop', '%7', { sessionId: 's-7' }));
+    await flush();
+    expect(source.get('k-run')?.status).toBe('running');
+    expect(source.get('ext-@7')?.status).toBe('done');
+    const ids = (auto.host?.autoCandidates() ?? []).map((c) => c.id).sort();
+    expect(ids).toEqual(['k-1', 'k-end']);
+    const end = auto.host?.autoCandidates().find((c) => c.id === 'k-end');
+    expect(end).toMatchObject({ repo: join(ROOT, 'blog'), doneAt: T0 - 99 });
+    // needs-you is never a candidate either.
+    hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    expect((auto.host?.autoCandidates() ?? []).map((c) => c.id)).toEqual(['k-end']);
+  });
+
+  it('F2: a restored session is no candidate until its next done', async () => {
+    const { source, hooks, auto } = setup({
+      windows: [kageWin()],
+      records: [rec({ archived: true, archivedAt: T0 - 1000, doneAt: T0 - 30 * 86_400_000 })],
+    });
+    await source.start();
+    await source.setFlags('k-1', { archived: false });
+    expect(auto.host?.autoCandidates()).toEqual([]);
+    vi.advanceTimersByTime(1000);
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    vi.advanceTimersByTime(1000);
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect((auto.host?.autoCandidates() ?? []).map((c) => [c.id, c.doneAt])).toEqual([
+      ['k-1', Date.now()],
+    ]);
+  });
+
+  it('F11: a session with an open terminal is no candidate', async () => {
+    const { source, auto, terminals } = setup({ records: [rec({ doneAt: T0 - 1 })] });
+    await source.start();
+    expect((auto.host?.autoCandidates() ?? []).map((c) => c.id)).toEqual(['k-1']);
+    terminals.add('k-1');
+    expect(auto.host?.autoCandidates()).toEqual([]);
+  });
+
+  it('no touch or sync while start() reconciles (only start, once it is ready)', async () => {
+    const { source, auto } = setup({
+      windows: [kageWin({ command: 'bash' })],
+      records: [rec(), rec({ kageId: 'k-2', windowId: null })],
+    });
+    await source.start();
+    expect(auto.calls).toEqual(['start']);
   });
 });

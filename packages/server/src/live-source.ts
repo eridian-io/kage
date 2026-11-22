@@ -1,3 +1,4 @@
+import { join } from 'node:path';
 import {
   type ArchivedSession,
   type DisplayLine,
@@ -7,6 +8,7 @@ import {
 } from '@kage/shared';
 import type { ControlTarget } from './control/actions.ts';
 import type { PromptKind } from './control/keys.ts';
+import type { AutoArchiver, AutoCandidate } from './finish/auto-archive.ts';
 import type { HookEvent } from './hooks/event.ts';
 import type { HookServer } from './hooks/server.ts';
 import { nextStatus } from './hooks/status.ts';
@@ -64,6 +66,13 @@ export interface PreviewHost {
   setPreview(id: string, patch: PreviewPatch, always?: boolean): void;
 }
 
+/** What LiveSource tells the auto-archiver. */
+export type AutoArchiverLike = Pick<AutoArchiver, 'start' | 'touch' | 'sync' | 'stop'>;
+/** What the auto-archiver reads from LiveSource. */
+export interface AutoArchiveHost {
+  autoCandidates(): AutoCandidate[];
+}
+
 /** What FinishActions reads before pin, archive or restore. */
 export interface FinishTarget {
   id: string;
@@ -71,6 +80,8 @@ export interface FinishTarget {
   record: SessionRecord | null;
   /** Null once the window is gone. */
   windowId: string | null;
+  /** The window's pane, for the busy-footer check right before a kill; null once gone. */
+  paneId: string | null;
   status: SessionStatus;
   external: boolean;
 }
@@ -93,6 +104,10 @@ export interface LiveSourceDeps {
   clock?: () => number;
   /** Makes the preview tracker (ports and changed files of viewed sessions); none without it. */
   preview?: (host: PreviewHost) => PreviewLike;
+  /** Makes the auto-archiver (spec §5.8); none without it. */
+  autoArchive?: (host: AutoArchiveHost) => AutoArchiverLike;
+  /** F11: a session with an open terminal is never archived automatically (Task 12 wires it). */
+  isTerminalOpen?: (id: string) => boolean;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -275,12 +290,14 @@ export class LiveSource implements SessionSource {
   #recheckTimer: ReturnType<typeof setTimeout> | null = null;
   #lastRecheckAt = Number.NEGATIVE_INFINITY;
   readonly #preview: PreviewLike | null;
+  readonly #auto: AutoArchiverLike | null;
 
   constructor(deps: LiveSourceDeps) {
     this.#d = deps;
     this.#now = deps.now ?? Date.now;
     this.#clock = deps.clock ?? (() => performance.now());
     this.#preview = deps.preview?.(this) ?? null;
+    this.#auto = deps.autoArchive?.(this) ?? null;
   }
 
   // ------------------------------------------------------------ SessionSource
@@ -405,6 +422,7 @@ export class LiveSource implements SessionSource {
     st.lastActivity = this.#clock();
     this.#sessions.set(r.kageId, st);
     this.#emitNow(st);
+    this.#auto?.sync();
   }
 
   /**
@@ -429,6 +447,7 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(kageId);
     if (st) this.#removeSession(st);
     if (!this.#records.delete(kageId)) return;
+    this.#auto?.sync();
     await this.#saveNow();
   }
 
@@ -536,6 +555,7 @@ export class LiveSource implements SessionSource {
       id: st.id,
       record: st.record ? { ...st.record } : null,
       windowId: st.window?.windowId ?? null,
+      paneId: st.window?.paneId ?? null,
       status: st.status,
       external: st.record === null,
     };
@@ -570,6 +590,7 @@ export class LiveSource implements SessionSource {
       Object.assign(r, before);
       throw e;
     }
+    this.#auto?.sync();
     if (!this.#running || this.#sessions.get(id) !== st) return;
     if (archiving) {
       // Hidden from the board: the preview stops looking, and a restore sends it afresh.
@@ -581,6 +602,32 @@ export class LiveSource implements SessionSource {
       this.#emitNow(st);
     }
     if (archiving || restoring) this.#emit({ type: 'archive', count: this.archivedCount() });
+  }
+
+  /**
+   * Auto-archive candidates (spec §5.8): record sessions that are done or ended, with a doneAt,
+   * not pinned, not archived, not restored since their last done (F2) and with no open terminal
+   * (F11). External and active sessions never are.
+   */
+  autoCandidates(): AutoCandidate[] {
+    const out: AutoCandidate[] = [];
+    for (const st of this.#sessions.values()) {
+      const r = st.record;
+      if (!r || r.pinned || r.archived || r.doneAt === null) continue;
+      if (st.status !== 'done' && st.status !== 'ended') continue;
+      if (r.restoredAt !== null && r.doneAt <= r.restoredAt) continue;
+      if (this.#d.isTerminalOpen?.(st.id)) continue;
+      out.push({
+        id: st.id,
+        repo: join(this.#d.projectsRoot, r.project),
+        worktree: r.worktree,
+        branch: r.branch,
+        base: r.base,
+        baseCommit: r.baseCommit,
+        doneAt: r.doneAt,
+      });
+    }
+    return out;
   }
 
   /** Archived sessions, newest first, at most LIMITS.archived. */
@@ -654,6 +701,7 @@ export class LiveSource implements SessionSource {
     this.#early = [];
     for (const e of early) this.#onHook(e);
     this.#d.watcher.start();
+    this.#auto?.start();
   }
 
   async stop(): Promise<void> {
@@ -663,6 +711,7 @@ export class LiveSource implements SessionSource {
     for (const off of this.#off) off();
     this.#off = [];
     this.#d.watcher.stop();
+    this.#auto?.stop();
     if (this.#unknownTimer) clearTimeout(this.#unknownTimer);
     this.#unknownTimer = null;
     if (this.#recheckTimer) clearTimeout(this.#recheckTimer);
@@ -940,6 +989,7 @@ export class LiveSource implements SessionSource {
     this.#sessions.delete(st.id);
     this.#preview?.forget(st.id);
     this.#emit({ type: 'session.removed', id: st.id });
+    if (st.record) this.#auto?.sync();
   }
 
   #byPane(paneId: string): Live | undefined {
@@ -1114,6 +1164,8 @@ export class LiveSource implements SessionSource {
     if (e.event === 'PostToolUse' && e.toolName !== null && EDIT_TOOLS.has(e.toolName)) {
       this.#preview?.touch(st.id, 'edit');
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
+    // A turn end checks the session for auto-archive, also when it was done already.
+    if (e.event === 'Stop' && st.record) this.#auto?.touch(st.id);
   }
 
   /** The wait ends (its fallback and retry timers too); "Starting Claude…" goes with it. */
@@ -1491,6 +1543,7 @@ export class LiveSource implements SessionSource {
 
   #setStatus(st: Live, status: SessionStatus): void {
     if (status === st.status) return;
+    const wasFinished = st.status === 'done' || st.status === 'ended';
     st.status = status;
     st.shellEnded = false;
     st.statusSince = this.#now();
@@ -1504,6 +1557,11 @@ export class LiveSource implements SessionSource {
       this.#clearTimers(st, ['retry']);
     }
     if (this.#ready) this.#preview?.statusChanged(st.id);
+    // Auto-archive: a move into done or ended checks the session; leaving them re-syncs.
+    if (this.#ready && st.record) {
+      if (status === 'done' || status === 'ended') this.#auto?.touch(st.id);
+      else if (wasFinished) this.#auto?.sync();
+    }
   }
 
   /**

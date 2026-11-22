@@ -12,7 +12,8 @@ import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { FinishActions } from './finish/actions.ts';
-import { branchCounts } from './git/branch.ts';
+import { AutoArchiver, gitCommonDir } from './finish/auto-archive.ts';
+import { branchCounts, branchState } from './git/branch.ts';
 import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
@@ -124,6 +125,10 @@ interface LiveParts {
   newWindow: TmuxClient['newWindow'];
   settingsPath: string;
   hookSocket: string;
+  /** One action at a time per session, across the controls, the finish actions and resume (F5, R68). */
+  lock: ActionLock;
+  /** Pin, archive and restore; auto-archive archives through it too. */
+  finish: FinishActions;
 }
 
 /**
@@ -198,7 +203,20 @@ async function startLive(
         // A record's unpushed and uncommitted counts, refreshed with its files (spec §5.8).
         branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec),
       }),
+    // Auto-archive on merge and after afterDays (spec §5.8), through the same archive action.
+    autoArchive: (host) =>
+      new AutoArchiver({
+        config: cfg.autoArchive,
+        candidates: () => host.autoCandidates(),
+        state: (c) => branchState(c.worktree, c, gitExec),
+        archive: (id) => finish.archive(id, true),
+        gitDir: (repo) => gitCommonDir(repo, gitExec),
+        log: (line) => io.err(line),
+      }),
   });
+  // Built before source.start(), which starts the auto-archiver that archives through it.
+  const lock = new ActionLock();
+  const finish = new FinishActions({ tmux, source, lock });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());
   try {
@@ -211,7 +229,7 @@ async function startLive(
     await ensureSession();
     return tmux.newWindow(o);
   };
-  return { source, tmux, newWindow, settingsPath, hookSocket };
+  return { source, tmux, newWindow, settingsPath, hookSocket, lock, finish };
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */
@@ -373,15 +391,13 @@ async function startServer(
       // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.
       windowPath: io.env.PATH ?? null,
     });
-    // One action at a time per session, across the controls, the finish actions and resume (F5).
-    const lock = new ActionLock();
     controls = new SessionControls({
       tmux: live.tmux,
       source: live.source,
       attach: attachCommand(cfg.tmuxSession, cfg.tmuxSocket),
-      lock,
+      lock: live.lock,
     });
-    finish = new FinishActions({ tmux: live.tmux, source: live.source, lock });
+    finish = live.finish;
     const liveSource = live.source;
     archivedList = () => liveSource.archivedList();
   }

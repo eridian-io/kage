@@ -3,11 +3,14 @@ import { firstLine } from '../git/exec.ts';
 import type { LiveSource } from '../live-source.ts';
 import type { TmuxClient } from '../tmux/client.ts';
 
-export type FinishTmux = Pick<TmuxClient, 'killOwnedWindow' | 'windowKageId'>;
+export type FinishTmux = Pick<TmuxClient, 'killOwnedWindow' | 'windowKageId' | 'capturePane'>;
 export type FinishSource = Pick<LiveSource, 'finishTarget' | 'setFlags' | 'markStopped'>;
 
 const BUSY = 'Kage is still finishing the last action on this session.';
 const NOT_KAGES = "That window isn't Kage's any more.";
+const ACTIVE = 'Stop the session before archiving it.';
+/** Claude's footer while a turn runs (integration §7). */
+const BUSY_FOOTER = /esc to interrupt/i;
 
 /**
  * Pin, archive and restore (spec §5.8). They need a record (external sessions are 403). Archive
@@ -46,14 +49,36 @@ export class FinishActions {
         await this.#source.setFlags(id, { archived: false });
         return;
       }
-      if (t.status === 'running' || t.status === 'needs-you') {
-        throw new ActionError(409, 'Stop the session before archiving it.');
-      }
-      if (t.windowId !== null && (await this.#close(t.windowId, record.kageId))) {
-        this.#source.markStopped(id);
+      if (t.status === 'running' || t.status === 'needs-you') throw new ActionError(409, ACTIVE);
+      if (t.windowId !== null) {
+        await this.#stillIdle(id, t.paneId);
+        if (await this.#close(t.windowId, record.kageId)) this.#source.markStopped(id);
       }
       await this.#source.setFlags(id, { archived: true });
     });
+  }
+
+  /**
+   * Right before the kill (Task 4 review, auto-archive): the pane's visible screen shows no busy
+   * footer, and the session is still neither running nor needs you, read again after that
+   * capture. Otherwise 409. A pane already gone passes (the kill then finds the window gone).
+   */
+  async #stillIdle(id: string, paneId: string | null): Promise<void> {
+    if (paneId !== null) {
+      let screen = '';
+      try {
+        screen = await this.#tmux.capturePane(paneId, 0);
+      } catch (e) {
+        if (!isExecError(e)) throw e;
+        if (!GONE_RE.test(firstLine(e))) {
+          throw new ActionError(422, `tmux couldn't read the window: ${firstLine(e)}`);
+        }
+      }
+      if (BUSY_FOOTER.test(screen)) throw new ActionError(409, ACTIVE);
+    }
+    const now = this.#source.finishTarget(id);
+    if (!now) throw new ActionError(404, `No session with id ${id}`);
+    if (now.status === 'running' || now.status === 'needs-you') throw new ActionError(409, ACTIVE);
   }
 
   /**

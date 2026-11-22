@@ -30,6 +30,7 @@ const target = (over: Partial<FinishTarget> = {}): FinishTarget => ({
   id: 'k-1',
   record: rec(),
   windowId: '@2',
+  paneId: '%2',
   status: 'done',
   external: false,
   ...over,
@@ -45,6 +46,19 @@ class FakeTmux {
   killError: Error | null = null;
   /** Runs inside killOwnedWindow (to interleave a second action). */
   during: (() => Promise<void>) | null = null;
+  /** The pane's visible screen, as capturePane gives it. */
+  screen = ['Done.', '', '─'.repeat(40), '❯ ', '─'.repeat(40), '  ? for shortcuts', ''].join('\n');
+  /** Each capture as `<pane> <lines>`, in order (kept apart from `log`). */
+  captures: string[] = [];
+  captureError: Error | null = null;
+  /** Runs inside capturePane (to change the session's status meanwhile). */
+  onCapture: (() => void) | null = null;
+  async capturePane(paneId: string, lines: number): Promise<string> {
+    this.captures.push(`${paneId} ${lines}`);
+    this.onCapture?.();
+    if (this.captureError) throw this.captureError;
+    return this.screen;
+  }
   async killOwnedWindow(windowId: string, kageId: string): Promise<boolean> {
     this.log.push(`kill ${windowId} ${kageId}`);
     if (this.during) await this.during();
@@ -254,6 +268,79 @@ describe('FinishActions.archive', () => {
   it('an unknown id → 404', async () => {
     const { finish } = setup(null);
     expect((await refusal(finish.archive('nope', true))).status).toBe(404);
+  });
+});
+
+describe('FinishActions.archive: the live re-check right before the kill (Task 4 carry)', () => {
+  const BUSY = [
+    '● Bash(npm test)',
+    '',
+    '─'.repeat(40),
+    '❯ ',
+    '─'.repeat(40),
+    '  ⏸ manual mode on · esc to interrupt',
+    '',
+  ].join('\n');
+
+  it("captures the pane's visible screen, then kills", async () => {
+    const { finish, tmux, source } = setup();
+    const order: string[] = [];
+    tmux.onCapture = () => order.push(`capture (kills so far: ${tmux.log.length})`);
+    await finish.archive('k-1', true);
+    expect(tmux.captures).toEqual(['%2 0']);
+    expect(order).toEqual(['capture (kills so far: 0)']);
+    expect(tmux.log).toEqual(['kill @2 k-1']);
+    expect(source.log).toEqual(['stopped k-1', 'flags k-1 {"archived":true}']);
+  });
+
+  it('a busy footer ("esc to interrupt") on the pane → 409, no kill, nothing archived', async () => {
+    const { finish, tmux, source } = setup();
+    tmux.screen = BUSY;
+    const e = await refusal(finish.archive('k-1', true));
+    expect([e.status, e.message]).toEqual([409, 'Stop the session before archiving it.']);
+    expect(tmux.log).toEqual([]);
+    expect(source.log).toEqual([]);
+  });
+
+  it('the session turned running or needs you while the pane was captured → 409, no kill', async () => {
+    for (const status of ['running', 'needs-you'] as SessionStatus[]) {
+      const { finish, tmux, source } = setup();
+      tmux.onCapture = () => {
+        const t = source.targets.get('k-1');
+        if (t) t.status = status;
+      };
+      const e = await refusal(finish.archive('k-1', true));
+      expect([e.status, e.message]).toEqual([409, 'Stop the session before archiving it.']);
+      expect(tmux.log).toEqual([]);
+      expect(source.log).toEqual([]);
+    }
+  });
+
+  it('the pane is gone at the capture: the kill finds it gone, archived anyway', async () => {
+    const { finish, tmux, source } = setup();
+    tmux.captureError = execError("can't find pane: %2");
+    tmux.held.clear();
+    await finish.archive('k-1', true);
+    expect(tmux.log).toEqual(['kill @2 k-1', 'read @2']);
+    expect(source.log).toEqual(['flags k-1 {"archived":true}']);
+  });
+
+  it("another capture failure → 422 with tmux's first line, no kill", async () => {
+    const { finish, tmux, source } = setup();
+    tmux.captureError = execError('server exited unexpectedly');
+    const e = await refusal(finish.archive('k-1', true));
+    expect([e.status, e.message]).toEqual([
+      422,
+      "tmux couldn't read the window: server exited unexpectedly",
+    ]);
+    expect(tmux.log).toEqual([]);
+    expect(source.log).toEqual([]);
+  });
+
+  it('no window or no pane: no capture', async () => {
+    const a = setup(target({ status: 'ended', windowId: null, paneId: null }));
+    await a.finish.archive('k-1', true);
+    expect(a.tmux.captures).toEqual([]);
   });
 });
 
