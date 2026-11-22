@@ -1,9 +1,10 @@
 /**
  * Builds the board into dist/: index.html, app-[hash].js, app-[hash].css, the chunk-[hash].js files
- * app imports (each preloaded by index.html), fonts/*, the logo, and the lazy files: the terminal
- * term-[hash].js and term-[hash].css, which only index.html's kage-term meta names (term-loader.ts
- * loads them on the first open; spec §5.6), and one <name>-[hash].js per LAZY entry, loaded by its
- * dynamic import (diff-loader.tsx; R78).
+ * app imports (each preloaded by index.html), fonts/* with their OFL texts, the logo, and the lazy
+ * files: the terminal term-[hash].js and term-[hash].css, which only index.html's kage-term meta
+ * names (term-loader.ts loads them on the first open; spec §5.6), and one <name>-[hash].js per LAZY
+ * entry, loaded by its dynamic import and named by a kage-<name> meta for a retry (diff-loader.tsx;
+ * R78). The terminal is its own esbuild run, so it shares no chunk with the board.
  * `node packages/web/build.ts` builds once; `--watch` rebuilds on every change.
  */
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
@@ -14,6 +15,8 @@ const here = import.meta.dirname;
 
 /** The two variable Geist files (latin, wght axis; @fontsource-variable) board.css asks for at /fonts/<name>. */
 export const FONTS = ['geist-latin-wght-normal.woff2', 'geist-mono-latin-wght-normal.woff2'];
+/** Each font package's OFL licence, shipped next to the fonts (R90): dist/fonts/<name> ← package. */
+const LICENCES = { 'OFL-geist.txt': 'geist', 'OFL-geist-mono.txt': 'geist-mono' } as const;
 const LOGO = 'kage-logo-96.png';
 /**
  * The entries the board loads only on demand, by a dynamic import of their source: never in the
@@ -23,19 +26,17 @@ export const LAZY = { diff: 'src/components/DiffView.tsx' } as const;
 /** Every name the build writes; assets.ts caches the same names immutable. */
 export const HASHED = /^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 
+const fontPackage = (pkg: string) => join(here, 'node_modules/@fontsource-variable', pkg);
 const fontSource = (name: string) =>
-  join(
-    here,
-    'node_modules/@fontsource-variable',
-    name.startsWith('geist-mono-') ? 'geist-mono' : 'geist',
-    'files',
-    name,
-  );
+  join(fontPackage(name.startsWith('geist-mono-') ? 'geist-mono' : 'geist'), 'files', name);
 
 async function copyStatic(outDir: string): Promise<void> {
   await mkdir(join(outDir, 'fonts'), { recursive: true });
   await Promise.all([
     ...FONTS.map((f) => copyFile(fontSource(f), join(outDir, 'fonts', f))),
+    ...Object.entries(LICENCES).map(([to, pkg]) =>
+      copyFile(join(fontPackage(pkg), 'LICENSE'), join(outDir, 'fonts', to)),
+    ),
     copyFile(join(here, 'public', LOGO), join(outDir, LOGO)),
   ]);
 }
@@ -54,15 +55,30 @@ function staticClosure(metafile: esbuild.Metafile, entry: string): string[] {
   return [...seen].map((k) => basename(k));
 }
 
+/** The board's and the terminal's runs, as one result. */
+interface Runs {
+  board: esbuild.BuildResult;
+  term: esbuild.BuildResult;
+}
+
+const metafileOf = (r: esbuild.BuildResult): esbuild.Metafile => {
+  if (!r.metafile) throw new Error('esbuild returned no metafile');
+  return r.metafile;
+};
+
+/** Both runs' metafiles in one (their inputs and outputs, side by side). */
+function merged({ board, term }: Runs): esbuild.Metafile {
+  const a = metafileOf(board);
+  const b = metafileOf(term);
+  return { inputs: { ...a.inputs, ...b.inputs }, outputs: { ...a.outputs, ...b.outputs } };
+}
+
 /**
  * Checks the output by kind, writes it and index.html, then removes bundles from earlier builds.
  * Returns the first load: app's JS with its static import closure, and app's CSS.
  */
-async function writeBundle(
-  outDir: string,
-  files: esbuild.OutputFile[],
-  metafile: esbuild.Metafile,
-): Promise<string[]> {
+async function writeBundle(outDir: string, runs: Runs): Promise<string[]> {
+  const files = [...(runs.board.outputFiles ?? []), ...(runs.term.outputFiles ?? [])];
   const names = files.map((f) => basename(f.path));
   const all = (re: RegExp) => names.filter((n) => re.test(n));
   const one = (re: RegExp) => {
@@ -73,20 +89,20 @@ async function writeBundle(
   const css = one(/^app-.*\.css$/);
   const termJs = one(/^term-.*\.js$/);
   const termCss = one(/^term-.*\.css$/);
-  const lazy = Object.keys(LAZY).map((name) => one(new RegExp(`^${name}-.*\\.js$`)));
+  const lazy = Object.keys(LAZY).map((name) => [name, one(new RegExp(`^${name}-.*\\.js$`))]);
   const chunks = all(/^chunk-.*\.js$/);
   if (
     !js ||
     !css ||
     !termJs ||
     !termCss ||
-    lazy.some((n) => n === undefined) ||
+    lazy.some(([, n]) => n === undefined) ||
     names.length !== 4 + lazy.length + chunks.length ||
     !names.every((n) => HASHED.test(n))
   ) {
     throw new Error(`Unexpected build output: ${names}`);
   }
-  const appJs = staticClosure(metafile, js);
+  const appJs = staticClosure(metafileOf(runs.board), js);
   await Promise.all(files.map((f) => writeFile(f.path, f.contents)));
   const template = await readFile(join(here, 'index.html'), 'utf8');
   // Each chunk app imports is fetched alongside it, not once app has been parsed.
@@ -94,13 +110,17 @@ async function writeBundle(
     .slice(1)
     .map((c) => `    <link rel="modulepreload" href="/${c}" />\n`)
     .join('');
+  const metas = lazy
+    .map(([name, file]) => `    <meta name="kage-${name}" content="/${file}" />\n`)
+    .join('');
   await writeFile(
     join(outDir, 'index.html'),
     template
       .replace('%APP_JS%', js)
       .replace('%APP_CSS%', css)
       .replace('%PRELOAD%', preload)
-      .replace('%TERM%', `/${termJs} /${termCss}`),
+      .replace('%TERM%', `/${termJs} /${termCss}`)
+      .replace('%LAZY%', metas),
   );
   for (const old of await readdir(outDir)) {
     if (HASHED.test(old) && !names.includes(old)) await rm(join(outDir, old));
@@ -108,16 +128,8 @@ async function writeBundle(
   return [...appJs, css];
 }
 
-function options(outDir: string, onBuilt: (r: esbuild.BuildResult) => Promise<void>) {
+function common(outDir: string, plugins: esbuild.Plugin[]) {
   return {
-    entryPoints: [
-      { in: join(here, 'src/main.tsx'), out: 'app' },
-      { in: join(here, 'src/styles/index.css'), out: 'app' },
-      // Its own entry, never imported by the board: xterm stays out of the first load.
-      { in: join(here, 'src/terminal/index.ts'), out: 'term' },
-      // Imported by the board only through import(): a file of its own, outside the first load.
-      ...Object.entries(LAZY).map(([out, src]) => ({ in: join(here, src), out })),
-    ],
     outdir: outDir,
     bundle: true,
     minify: true,
@@ -126,51 +138,63 @@ function options(outDir: string, onBuilt: (r: esbuild.BuildResult) => Promise<vo
     jsx: 'automatic',
     jsxImportSource: 'preact',
     entryNames: '[name]-[hash]',
-    // What app shares with a lazy entry goes into chunk-[hash].js files, which app imports.
-    splitting: true,
-    chunkNames: 'chunk-[hash]',
     // board.css points at files copied next to the bundle, not at modules.
     external: ['/fonts/*', `/${LOGO}`],
     metafile: true,
     write: false,
     legalComments: 'none',
     logLevel: 'warning',
-    plugins: [
-      {
-        name: 'kage-dist',
-        setup(b) {
-          b.onEnd(async (r) => {
-            if (r.errors.length === 0) await onBuilt(r);
-          });
-        },
-      },
+    plugins,
+  } satisfies esbuild.BuildOptions;
+}
+
+/** The board: app, its CSS and the LAZY entries, with what they share split into chunks. */
+function boardOptions(outDir: string, plugins: esbuild.Plugin[] = []) {
+  return {
+    ...common(outDir, plugins),
+    entryPoints: [
+      { in: join(here, 'src/main.tsx'), out: 'app' },
+      { in: join(here, 'src/styles/index.css'), out: 'app' },
+      // Imported by the board only through import(): a file of its own, outside the first load.
+      ...Object.entries(LAZY).map(([out, src]) => ({ in: join(here, src), out })),
     ],
+    // What app shares with a lazy entry goes into chunk-[hash].js files, which app imports.
+    splitting: true,
+    chunkNames: 'chunk-[hash]',
+  } satisfies esbuild.BuildOptions;
+}
+
+/**
+ * The terminal, never imported by the board: xterm stays out of the first load, and its own copies
+ * of the few small modules it shares with the board (leave.ts, the shared types) keep it from
+ * splitting them into extra first-load chunks.
+ */
+function termOptions(outDir: string, plugins: esbuild.Plugin[] = []) {
+  return {
+    ...common(outDir, plugins),
+    entryPoints: [{ in: join(here, 'src/terminal/index.ts'), out: 'term' }],
   } satisfies esbuild.BuildOptions;
 }
 
 export interface BuildResult {
+  /** Both runs' metafiles, merged. */
   metafile: esbuild.Metafile;
   /** app's JS plus its static import closure, and app's CSS. */
   firstLoad: string[];
 }
-
-const metafileOf = (r: esbuild.BuildResult): esbuild.Metafile => {
-  if (!r.metafile) throw new Error('esbuild returned no metafile');
-  return r.metafile;
-};
 
 /** Builds once into outDir (default dist/), replacing what was there. */
 export async function build(opts: { outDir?: string } = {}): Promise<BuildResult> {
   const outDir = opts.outDir ?? join(here, 'dist');
   await rm(outDir, { recursive: true, force: true });
   await copyStatic(outDir);
-  let firstLoad: string[] = [];
-  const r = await esbuild.build(
-    options(outDir, async (res) => {
-      firstLoad = await writeBundle(outDir, res.outputFiles ?? [], metafileOf(res));
-    }),
-  );
-  return { metafile: metafileOf(r), firstLoad };
+  const [board, term] = await Promise.all([
+    esbuild.build(boardOptions(outDir)),
+    esbuild.build(termOptions(outDir)),
+  ]);
+  const runs = { board, term };
+  const firstLoad = await writeBundle(outDir, runs);
+  return { metafile: merged(runs), firstLoad };
 }
 
 /** Builds, then rebuilds dist/ on every source change until the process exits. */
@@ -178,13 +202,26 @@ export async function watch(opts: { outDir?: string } = {}): Promise<void> {
   const outDir = opts.outDir ?? join(here, 'dist');
   // No wipe here: a server started next to the watcher may be reading dist/ already.
   await copyStatic(outDir);
-  const ctx = await esbuild.context(
-    options(outDir, async (res) => {
-      await writeBundle(outDir, res.outputFiles ?? [], metafileOf(res));
-      console.log(`Built the board into ${outDir}`);
-    }),
-  );
-  await ctx.watch();
+  // Each run keeps its last good result; index.html is written once both have one.
+  const last: Partial<Runs> = {};
+  const keep = (which: keyof Runs): esbuild.Plugin => ({
+    name: `kage-dist-${which}`,
+    setup(b) {
+      b.onEnd(async (r) => {
+        if (r.errors.length > 0) return;
+        last[which] = r;
+        if (last.board && last.term) {
+          await writeBundle(outDir, { board: last.board, term: last.term });
+          console.log(`Built the board into ${outDir}`);
+        }
+      });
+    },
+  });
+  const contexts = await Promise.all([
+    esbuild.context(boardOptions(outDir, [keep('board')])),
+    esbuild.context(termOptions(outDir, [keep('term')])),
+  ]);
+  await Promise.all(contexts.map((c) => c.watch()));
 }
 
 if (import.meta.main) {

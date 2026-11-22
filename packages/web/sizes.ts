@@ -10,14 +10,14 @@ import * as esbuild from 'esbuild';
 export const SIZE_LIMITS = {
   /**
    * index.html + every JS and CSS file it names (app, its chunks, its CSS). Spec §7 allows 30 KB;
-   * 26.5 KB from Task 2 (B1); after Task 8, the measured value + 1 KB (ruling PF5, F7).
+   * phase 4's 25.5 KB stays until Task 8, then the measured value + 1 KB (ruling PF5, F7).
    */
-  firstLoad: 26.5 * 1024,
+  firstLoad: 25.5 * 1024,
   /** The terminal chunk, JS plus CSS (spec §7: about 90 KB; the plan: at most 100 KB). */
   termChunk: 100 * 1024,
   /** term-loader.ts, the only terminal code in the first load (F14). */
   termLoader: 600,
-  /** Every file in dist/fonts, as served (woff2 is compressed already). Spec §7: 60 KB. */
+  /** Every .woff2 in dist/fonts, as served (compressed already; the OFL texts are not counted). Spec §7: 60 KB. */
   fonts: 60 * 1024,
 } as const;
 
@@ -95,7 +95,8 @@ export async function measureSizes(dist: string): Promise<Sizes> {
   const termChunk = (await gz(await at(/^term-.*\.js$/))) + (await gz(await at(/^term-.*\.css$/)));
   const termLoader = gzipSync(await termLoaderCode(), { level: 9 }).length;
   let fonts = 0;
-  for (const f of await readdir(join(dist, 'fonts')))
-    fonts += (await stat(join(dist, 'fonts', f))).size;
+  for (const f of await readdir(join(dist, 'fonts'))) {
+    if (f.endsWith('.woff2')) fonts += (await stat(join(dist, 'fonts', f))).size;
+  }
   return { firstLoad, termChunk, termLoader, fonts };
 }

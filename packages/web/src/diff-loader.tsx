@@ -3,25 +3,50 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 
 type DiffModule = typeof import('./components/DiffView.tsx');
 
-/** The import of the diff chunk (build.ts LAZY), swappable in tests. */
+/**
+ * The diff chunk's URL with a cache-busting `?r=<retry>`, from `<meta name="kage-diff">` (build.ts
+ * writes it), or null outside a build. A browser keeps a failed module fetch for its URL, so a retry
+ * must ask under a new one.
+ */
+export function retryUrl(retry: number): string | null {
+  const url = document.querySelector<HTMLMetaElement>('meta[name="kage-diff"]')?.content;
+  return url ? `${url}?r=${retry}` : null;
+}
+
+/** The import of the diff chunk (build.ts LAZY) and the page reload, swappable in tests. */
 export const diffImport = {
-  load: (): Promise<DiffModule> => import('./components/DiffView.tsx'),
+  load: (retry = 0): Promise<DiffModule> => {
+    const url = retry > 0 ? retryUrl(retry) : null;
+    return url === null
+      ? import('./components/DiffView.tsx')
+      : (import(/* @vite-ignore */ url) as Promise<DiffModule>);
+  },
+  reload: (): void => location.reload(),
 };
 
-/** The chunk once it is in, with the load that brought it: a swapped load starts over. */
-let loaded: { load: typeof diffImport.load; mod: DiffModule } | null = null;
-const cached = (): DiffModule | null =>
-  loaded !== null && loaded.load === diffImport.load ? loaded.mod : null;
+/**
+ * What the loads so far came to, for the load function that made them (a swapped load in a test
+ * starts over): the module once it is in, and how many attempts failed before.
+ */
+let state: { load: typeof diffImport.load; mod: DiffModule | null; failures: number } | null = null;
+const current = () => {
+  if (state === null || state.load !== diffImport.load) {
+    state = { load: diffImport.load, mod: null, failures: 0 };
+  }
+  return state;
+};
 
 /**
  * The diff view, loaded the first time it opens (R78). Renders "Loading the diff…" until the chunk
- * is in, then DiffView; a failure shows "Couldn't load the diff." with Try again, which loads it
- * again (a failure is never kept). The footer's Back to session and Esc (SessionPanel, keys.ts) are
- * in the first load, so the way back never waits on the chunk (ruling PF5, F11).
+ * is in, then DiffView. A failure shows "Couldn't load the diff." with Try again, which loads it
+ * again under a new `?r=<n>` (a failure is never kept); from the second failure on, Reload the page
+ * is offered too. The footer's Back to session and Esc (SessionPanel, keys.ts) are in the first
+ * load, so the way back never waits on the chunk (ruling PF5, F11).
  */
 export function LazyDiff({ session }: { session: Session }) {
-  const [mod, setMod] = useState<DiffModule | null>(cached);
-  const [failed, setFailed] = useState(false);
+  const [mod, setMod] = useState<DiffModule | null>(() => current().mod);
+  /** Failed attempts so far while the error shows; null while loading. */
+  const [failures, setFailures] = useState<number | null>(null);
   // Each Try again is a new attempt.
   const [attempt, setAttempt] = useState(0);
   const body = useRef<HTMLDivElement>(null);
@@ -31,14 +56,15 @@ export function LazyDiff({ session }: { session: Session }) {
     // Focus in the diff from the start, as DiffView takes it, so J/K and Esc behave the same.
     body.current?.focus();
     let gone = false;
-    const load = diffImport.load;
-    load().then(
+    const s = current();
+    s.load(s.failures).then(
       (m) => {
-        loaded = { load, mod: m };
+        s.mod = m;
         if (!gone) setMod(m);
       },
       () => {
-        if (!gone) setFailed(true);
+        s.failures++;
+        if (!gone) setFailures(s.failures);
       },
     );
     return () => {
@@ -50,7 +76,7 @@ export function LazyDiff({ session }: { session: Session }) {
   // The same markup as DiffView's own first frame, so the swap doesn't move anything.
   return (
     <section class="k-dv" id="k-diff-view" aria-label="Diff">
-      {failed && (
+      {failures !== null && (
         <div class="k-diff-error">
           <span class="k-err" role="alert">
             Couldn't load the diff.
@@ -61,17 +87,22 @@ export function LazyDiff({ session }: { session: Session }) {
             onClick={() => {
               // Focus moves to the diff before Try again goes away, never to the page.
               body.current?.focus();
-              setFailed(false);
+              setFailures(null);
               setAttempt((n) => n + 1);
             }}
           >
             Try again
           </button>
+          {failures >= 2 && (
+            <button type="button" class="k-act" onClick={() => diffImport.reload()}>
+              Reload the page
+            </button>
+          )}
         </div>
       )}
       {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a scrolling region must take focus to scroll by keyboard */}
       <div class="k-diff-body" ref={body} tabIndex={0}>
-        {!failed && (
+        {failures === null && (
           <div class="k-diff-msg" role="status">
             Loading the diff…
           </div>

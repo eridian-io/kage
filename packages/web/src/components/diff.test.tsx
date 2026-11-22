@@ -3,7 +3,7 @@ import { join } from 'node:path';
 import { type DiffPage, demoSessions, LIMITS, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { diffImport } from '../diff-loader.tsx';
+import { diffImport, retryUrl } from '../diff-loader.tsx';
 import { Board } from '../main.tsx';
 import {
   actionError,
@@ -696,10 +696,14 @@ describe('the diff view', () => {
   describe('the lazy chunk (R78)', () => {
     /** diffImport.load answered by hand: each call waits for its own settle. */
     function heldLoads() {
-      const calls: { ok: () => void; fail: () => void }[] = [];
-      diffImport.load = () =>
+      const calls: { retry: number; ok: () => void; fail: () => void }[] = [];
+      diffImport.load = (retry = 0) =>
         new Promise((ok, fail) => {
-          calls.push({ ok: () => ok(realLoad()), fail: () => fail(new Error('chunk 404')) });
+          calls.push({
+            retry,
+            ok: () => ok(realLoad()),
+            fail: () => fail(new Error('chunk 404')),
+          });
         });
       return calls;
     }
@@ -754,6 +758,70 @@ describe('the diff view', () => {
       calls[1]?.ok();
       await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
       expect(c.querySelector('.k-dv .k-err')).toBeNull();
+    });
+
+    it('a loader that fails once: Try again asks again cache-busted (retry 1) and shows the page', async () => {
+      const tries: number[] = [];
+      diffImport.load = (retry = 0) => {
+        tries.push(retry);
+        return retry === 0 ? Promise.reject(new Error('chunk 404')) : realLoad();
+      };
+      const c = openHeld();
+      await failed(c);
+      expect(c.querySelector('.k-dv .k-act')?.textContent).toBe('Try again');
+      expect([...c.querySelectorAll('.k-dv button')].map((b) => b.textContent)).toEqual([
+        'Try again',
+      ]);
+      fireEvent.click(button(c, 'Try again'));
+      await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+      expect(tries).toEqual([0, 1]);
+    });
+
+    it('after a second failure it offers Reload the page too', async () => {
+      const calls = heldLoads();
+      let reloads = 0;
+      const realReload = diffImport.reload;
+      diffImport.reload = () => {
+        reloads++;
+      };
+      try {
+        const c = openHeld();
+        await waitFor(() => expect(calls).toHaveLength(1));
+        calls[0]?.fail();
+        await failed(c);
+        fireEvent.click(button(c, 'Try again'));
+        await waitFor(() => expect(calls).toHaveLength(2));
+        calls[1]?.fail();
+        await failed(c);
+        expect(calls.map((x) => x.retry)).toEqual([0, 1]);
+        expect(q(c, '.k-dv .k-err').textContent).toBe("Couldn't load the diff.");
+        expect([...c.querySelectorAll('.k-dv button')].map((b) => b.textContent)).toEqual([
+          'Try again',
+          'Reload the page',
+        ]);
+        fireEvent.click(button(c, 'Reload the page'));
+        expect(reloads).toBe(1);
+        // Try again keeps counting: ?r=2.
+        fireEvent.click(button(c, 'Try again'));
+        await waitFor(() => expect(calls).toHaveLength(3));
+        expect(calls[2]?.retry).toBe(2);
+      } finally {
+        diffImport.reload = realReload;
+      }
+    });
+
+    it('a retry asks for the chunk named by <meta name="kage-diff"> with ?r=<n>', () => {
+      expect(retryUrl(1)).toBeNull();
+      const meta = document.createElement('meta');
+      meta.name = 'kage-diff';
+      meta.content = '/diff-ABC123.js';
+      document.head.append(meta);
+      try {
+        expect(retryUrl(1)).toBe('/diff-ABC123.js?r=1');
+        expect(retryUrl(3)).toBe('/diff-ABC123.js?r=3');
+      } finally {
+        meta.remove();
+      }
     });
 
     it('a failure is forgotten: the next View diff loads the chunk again', async () => {

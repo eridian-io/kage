@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
@@ -56,6 +56,25 @@ describe('web build', () => {
         page,
       );
     expect(meta).not.toBeNull();
+    // Each lazy entry is named by its own meta only, for a cache-busting retry (diff-loader.tsx).
+    for (const name of Object.keys(LAZY)) {
+      const lazy = new RegExp(
+        `<meta name="kage-${name}" content="/(${name}-[A-Za-z0-9]+\\.js)" />`,
+      );
+      expect(lazy.exec(page)?.[1], name).toBe(await built(new RegExp(`^${name}-.*\\.js$`)));
+    }
+  });
+
+  it('builds the terminal on its own: it imports no chunk, so nothing in the first load is shared with it', async () => {
+    const outputs = result.metafile.outputs;
+    const term = Object.keys(outputs).find((p) => /term-[^/\\]*\.js$/.test(p)) as string;
+    expect(outputs[term]?.imports.filter((i) => !i.external)).toEqual([]);
+    // Its own copies of the small helpers it needs (leave.ts), not a shared chunk.
+    expect(Object.keys(outputs[term]?.inputs ?? {}).some((p) => p.endsWith('leave.ts'))).toBe(true);
+  });
+
+  it('keeps the first-load cap where phase 4 left it until Task 8 measures (ruling PF5, F7)', () => {
+    expect(BUDGET).toBe(26_112);
   });
 
   it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {
@@ -130,6 +149,25 @@ describe('web build', () => {
     console.log(`fonts: ${sizes.fonts} bytes`);
     expect(sizes.fonts).toBeLessThanOrEqual(SIZE_LIMITS.fonts);
     expect((await readdir(join(out, 'fonts'))).filter((f) => f.endsWith('.woff2'))).toHaveLength(2);
+  });
+
+  it('ships both fonts’ OFL licence next to them (R90), outside the fonts size', async () => {
+    for (const [file, pkg] of [
+      ['OFL-geist.txt', 'geist'],
+      ['OFL-geist-mono.txt', 'geist-mono'],
+    ] as const) {
+      const text = await readFile(join(out, 'fonts', file), 'utf8');
+      expect(text).toContain('SIL Open Font License');
+      expect(text).toBe(
+        await readFile(
+          join(import.meta.dirname, 'node_modules/@fontsource-variable', pkg, 'LICENSE'),
+          'utf8',
+        ),
+      );
+    }
+    let woff2 = 0;
+    for (const f of FONTS) woff2 += (await stat(join(out, 'fonts', f))).size;
+    expect(sizes.fonts).toBe(woff2);
   });
 
   it('bundles exactly one copy of preact', () => {
