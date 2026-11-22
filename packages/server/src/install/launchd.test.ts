@@ -201,6 +201,64 @@ describe('launchdManager', () => {
     expect(sleeps).toEqual([]);
   });
 
+  it('no retry starts once 90 s have passed since the first bootstrap', async () => {
+    let clock = 0;
+    const { run, calls } = fakeRun((_c, args) => {
+      if (args[0] !== 'bootstrap') return {};
+      clock += 60_000; // each attempt hangs until its 60 s timeout
+      return { code: 5, stderr: 'Bootstrap failed: 5: Input/output error' };
+    });
+    await expect(launchdManager(deps(run, { now: () => clock })).install(SPEC)).rejects.toThrow(
+      /Input\/output/,
+    );
+    // 60 s after the first: one retry; 120 s after the second: no more.
+    expect(calls.filter((c) => c.startsWith('launchctl bootstrap'))).toHaveLength(2);
+  });
+
+  describe('fix round 2: the marker line, and read errors', () => {
+    const agents = () => join(home(), 'Library', 'LaunchAgents');
+    const head =
+      '<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n';
+    const foreign: [string, string][] = [
+      [
+        'the marker on a later line',
+        `${head}<plist version="1.0">\n<!-- Written by kage setup -->\n</plist>\n`,
+      ],
+      [
+        'the marker text inside a string',
+        `${head}<plist version="1.0"><dict><key>X</key><string>&lt;!-- Written by kage setup --&gt;</string></dict></plist>\n`,
+      ],
+      [
+        'the marker comment with trailing text',
+        `${head}<!-- Written by kage setup --> extra\n<plist version="1.0"/>\n`,
+      ],
+      ['the marker as the first line', `<!-- Written by kage setup -->\n<plist version="1.0"/>\n`],
+    ];
+    for (const [label, text] of foreign) {
+      it(`a foreign plist with ${label} is refused by install and remove`, async () => {
+        mkdirSync(agents(), { recursive: true });
+        writeFileSync(plistPath(), text);
+        const { run, calls } = fakeRun();
+        const m = launchdManager(deps(run));
+        await expect(m.install(SPEC)).rejects.toThrow(
+          `${plistPath()} wasn't written by kage setup`,
+        );
+        await expect(m.remove()).rejects.toThrow(`${plistPath()} wasn't written by kage setup`);
+        expect(readFileSync(plistPath(), 'utf8')).toBe(text);
+        expect(calls).toEqual([]);
+      });
+    }
+
+    it('a directory at the plist path (EISDIR) is refused, naming it, and nothing runs', async () => {
+      mkdirSync(plistPath(), { recursive: true });
+      const { run, calls } = fakeRun();
+      const m = launchdManager(deps(run));
+      await expect(m.install(SPEC)).rejects.toThrow(`Kage can't read ${plistPath()}`);
+      await expect(m.remove()).rejects.toThrow(`Kage can't read ${plistPath()}`);
+      expect(calls).toEqual([]);
+    });
+  });
+
   it.runIf(!isWin)('the plist is 0644', async () => {
     await launchdManager(deps(fakeRun().run)).install(SPEC);
     expect(statSync(plistPath()).mode & 0o777).toBe(0o644);

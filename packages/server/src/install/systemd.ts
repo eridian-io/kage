@@ -6,21 +6,22 @@
 import { existsSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunResult } from './run.ts';
+import type { ServiceDeps, ServiceManager, ServiceSpec, ServiceState } from './service.ts';
 import {
   assertAbsoluteProgram,
   assertOurs,
   assertWritable,
   mustSucceed,
   SERVICE_MARKER,
-  type ServiceDeps,
-  type ServiceManager,
-  type ServiceSpec,
-  type ServiceState,
   START_TIMEOUT_MS,
   writeServiceFile,
-} from './service.ts';
+} from './service-files.ts';
 
 export const SYSTEMD_UNIT = 'kage.service';
+
+/** The unit's first line; a kage.service without it isn't Kage's. */
+export const UNIT_MARKER_LINE = `# ${SERVICE_MARKER}`;
+const isOurUnit = (lines: string[]): boolean => lines[0] === UNIT_MARKER_LINE;
 
 const WSL_SENTENCE =
   'systemd isn\'t running in this WSL distribution. Add "[boot]" and "systemd=true" to /etc/wsl.conf, then run "wsl --shutdown" in Windows and open WSL again.';
@@ -97,7 +98,7 @@ export function renderUnit(spec: ServiceSpec): string {
     .map(([k, v]) => systemdQuote(`${k}=${v}`, 'env'))
     .join(' ');
   return [
-    `# ${SERVICE_MARKER}`,
+    UNIT_MARKER_LINE,
     '[Unit]',
     'Description=Kage: a dashboard for your Claude Code sessions',
     "# User units can't wait for tailscaled.service; Kage exits while Tailscale has no address and systemd starts it again.",
@@ -158,7 +159,7 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
 
     async install(spec) {
       const text = renderUnit(spec);
-      assertOurs(file);
+      assertOurs(file, isOurUnit);
       const first = !existsSync(file);
       writeServiceFile(file, text);
       await must(['daemon-reload']);
@@ -175,9 +176,10 @@ export function systemdManager(d: ServiceDeps): ServiceManager & {
     },
 
     async remove() {
+      // Refuses a file that isn't ours or can't be read (only ENOENT passes).
+      assertOurs(file, isOurUnit);
       // No file of ours: nothing to remove. A kage.service elsewhere isn't Kage's to disable.
       if (!existsSync(file)) return;
-      assertOurs(file);
       // A unit that isn't loaded fails to disable; that's fine.
       await systemctl(['disable', '--now', SYSTEMD_UNIT], START_TIMEOUT_MS);
       rmSync(file, { force: true });

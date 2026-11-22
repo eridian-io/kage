@@ -467,6 +467,59 @@ describe('systemd fix round 1', () => {
   });
 });
 
+describe('systemd fix round 2: the marker line, and read errors', () => {
+  const userDir = () => join(dir, 'home', '.config', 'systemd', 'user');
+  const foreign: [string, string][] = [
+    ['the marker on a later line', '[Unit]\n# Written by kage setup\n[Service]\nExecStart=/x\n'],
+    ['the marker inside a comment', '# Not Written by kage setup, honest\n[Service]\n'],
+    ['the marker text in a Description', '[Unit]\nDescription=# Written by kage setup\n'],
+    ['the marker line with trailing text', '# Written by kage setup (not)\n[Service]\n'],
+    ['the marker line indented', ' # Written by kage setup\n[Service]\n'],
+  ];
+  for (const [label, text] of foreign) {
+    it(`a foreign unit with ${label} is refused by install and remove`, async () => {
+      mkdirSync(userDir(), { recursive: true });
+      writeFileSync(unitPath(), text);
+      const { run, calls } = fakeRun();
+      const m = systemdManager(deps(run));
+      await expect(m.install(BUNDLE)).rejects.toThrow(`${unitPath()} wasn't written by kage setup`);
+      await expect(m.remove()).rejects.toThrow(`${unitPath()} wasn't written by kage setup`);
+      expect(readFileSync(unitPath(), 'utf8')).toBe(text);
+      expect(calls).toEqual([]);
+    });
+  }
+
+  it('the marker as the first line passes, with CRLF too', async () => {
+    mkdirSync(userDir(), { recursive: true });
+    writeFileSync(unitPath(), '# Written by kage setup\r\n[Unit]\r\n');
+    const { run, calls } = fakeRun();
+    await systemdManager(deps(run)).remove();
+    expect(calls[0]).toBe('systemctl --user disable --now kage.service');
+  });
+
+  it('a directory at the unit path (EISDIR) is refused, naming it, and nothing runs', async () => {
+    mkdirSync(unitPath(), { recursive: true });
+    const { run, calls } = fakeRun();
+    const m = systemdManager(deps(run));
+    await expect(m.install(BUNDLE)).rejects.toThrow(`Kage can't read ${unitPath()}`);
+    await expect(m.remove()).rejects.toThrow(`Kage can't read ${unitPath()}`);
+    expect(calls).toEqual([]);
+  });
+
+  it.runIf(!isWin && process.getuid?.() !== 0)(
+    'an unreadable unit (EACCES) is refused, naming it',
+    async () => {
+      mkdirSync(userDir(), { recursive: true });
+      writeFileSync(unitPath(), '# Written by kage setup\n', { mode: 0o000 });
+      const { run, calls } = fakeRun();
+      await expect(systemdManager(deps(run)).remove()).rejects.toThrow(
+        `Kage can't read ${unitPath()} (EACCES)`,
+      );
+      expect(calls).toEqual([]);
+    },
+  );
+});
+
 describe('serviceManager', () => {
   it('linux is systemd, darwin is launchd, anything else none', () => {
     const d = deps(fakeRun().run);

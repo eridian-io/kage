@@ -6,21 +6,22 @@
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { RunResult } from './run.ts';
+import type { ServiceDeps, ServiceManager, ServiceSpec, ServiceState } from './service.ts';
 import {
   assertAbsoluteProgram,
   assertOurs,
   assertWritable,
   mustSucceed,
   SERVICE_MARKER,
-  type ServiceDeps,
-  type ServiceManager,
-  type ServiceSpec,
-  type ServiceState,
   START_TIMEOUT_MS,
   writeServiceFile,
-} from './service.ts';
+} from './service-files.ts';
 
 export const LAUNCHD_LABEL = 'io.eridian.kage';
+
+/** The plist's third line (after the XML declaration and the doctype); without it the file isn't Kage's. */
+export const PLIST_MARKER_LINE = `<!-- ${SERVICE_MARKER} -->`;
+const isOurPlist = (lines: string[]): boolean => lines[2] === PLIST_MARKER_LINE;
 
 const NO_LAUNCHCTL_SENTENCE =
   'launchctl isn\'t on PATH, so Kage can\'t install its service. Run "kage serve" yourself.';
@@ -56,7 +57,7 @@ export function renderPlist(spec: ServiceSpec, logPath: string): string {
   return [
     '<?xml version="1.0" encoding="UTF-8"?>',
     '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">',
-    `<!-- ${SERVICE_MARKER} -->`,
+    PLIST_MARKER_LINE,
     '<plist version="1.0">',
     '<dict>',
     '  <key>Label</key>',
@@ -103,6 +104,8 @@ export function plistEnvValue(xml: string, key: string): string | null {
 
 const BOOTSTRAP_RETRIES = 3;
 const BOOTSTRAP_RETRY_MS = 500;
+/** No retry starts once this long has passed since the first bootstrap began. */
+const BOOTSTRAP_TOTAL_MS = 90_000;
 
 /** bootstrap's "5: Input/output error", which a job still being booted out gives. */
 function isBusy(r: RunResult): boolean {
@@ -115,6 +118,7 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
   const domain = `gui/${d.uid}`;
   const target = `${domain}/${LAUNCHD_LABEL}`;
   const sleep = d.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)));
+  const now = d.now ?? Date.now;
   const launchctl = (args: string[], timeoutMs?: number): Promise<RunResult> =>
     d.run('launchctl', args, {
       env: d.env,
@@ -133,7 +137,7 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
 
     async install(spec) {
       const text = renderPlist(spec, logPath);
-      assertOurs(file);
+      assertOurs(file, isOurPlist);
       // launchd creates the log file, not its folder.
       mkdirSync(join(d.home, 'Library', 'Logs'), { recursive: true });
       writeServiceFile(file, text);
@@ -143,9 +147,14 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
       const enable = ['enable', target];
       mustSucceed(await launchctl(enable), ['launchctl', ...enable]);
       const args = ['bootstrap', domain, file];
+      const started = now();
       let r = await launchctl(args, START_TIMEOUT_MS);
       // Right after a bootout launchd may still be tearing the job down: "5: Input/output error".
-      for (let retry = 0; retry < BOOTSTRAP_RETRIES && isBusy(r); retry++) {
+      for (
+        let retry = 0;
+        retry < BOOTSTRAP_RETRIES && isBusy(r) && now() - started < BOOTSTRAP_TOTAL_MS;
+        retry++
+      ) {
         await sleep(BOOTSTRAP_RETRY_MS);
         r = await launchctl(args, START_TIMEOUT_MS);
       }
@@ -159,7 +168,7 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
 
     async remove() {
       // The label is Kage's own; a plist of that name kage setup didn't write is left alone.
-      assertOurs(file);
+      assertOurs(file, isOurPlist);
       await launchctl(['bootout', target]);
       rmSync(file, { force: true });
     },
