@@ -348,15 +348,28 @@ describe('Notifier: done (ntfyOnDone)', () => {
     expect(sent).toHaveLength(0);
   });
 
-  it('running through a prompt counts as active (needs-you → done)', () => {
+  it('running through a prompt counts as active (needs-you → running → done)', () => {
     start({ onDone: true, quietMs: 0 });
     source.set('s1', 'running');
     at(30_000);
     source.set('s1', 'needs-you');
-    at(31_000);
+    at(25_000);
+    source.set('s1', 'running');
+    at(6_000);
     source.set('s1', 'done');
     at(3000);
     expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you', 'demo is done']);
+  });
+
+  it('needs-you → done (No or Esc at the board) → no done ping: the user’s own act', () => {
+    start({ onDone: true, quietMs: 0 });
+    source.set('s1', 'running');
+    at(61_000);
+    source.set('s1', 'needs-you');
+    at(3000);
+    source.set('s1', 'done');
+    at(10_000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
   });
 
   it('a session seen running at start() counts from start', () => {
@@ -423,6 +436,7 @@ describe('Notifier: done (ntfyOnDone)', () => {
     at(58_000);
     source.set('s1', 'needs-you');
     at(3000); // needs-you ping at 61 s
+    source.set('s1', 'running');
     source.set('s1', 'done');
     at(3000);
     expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);

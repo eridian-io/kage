@@ -2,7 +2,9 @@
  * The notifier (N3): when to ping the owner's phone. A session that moves into needs-you is
  * pinged after a short hold (a prompt answered at the board sends nothing), once per episode and
  * then not again for `quietMs`; with `onDone`, a session that worked for `doneAfterMs` or more
- * and stopped is pinged too (never for ended: a stop is the user's own act, R84). At most
+ * and stopped is pinged too, only from running (never for ended, nor for needs-you → done,
+ * which is No or Esc at the board: both are the user's own act, R84). The active time counts
+ * from the start of the active stretch, so a prompt inside it counts. At most
  * `maxPerWindow` pings go in any `windowMs`.
  *
  * Event driven: no polling. Its only timers are one per session (the hold, or the wait for the
@@ -214,7 +216,7 @@ export class Notifier {
     } else if (
       s.status === 'done' &&
       this.#o.onDone &&
-      isActive(from) &&
+      from === 'running' &&
       activeFor >= this.#o.doneAfterMs &&
       !t.external
     ) {
