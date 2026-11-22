@@ -1,11 +1,20 @@
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LIMITS } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import type { GitExec } from '../git/exec.ts';
-import { changedFiles, listChanges, mergeBase, parseNumstat } from './files.ts';
+import {
+  type Change,
+  changedFiles,
+  listChanges,
+  mergeBase,
+  parseNumstat,
+  readUntracked,
+  UNTRACKED_CACHE_MAX,
+  UntrackedCache,
+} from './files.ts';
 
 let root: string;
 let home: string;
@@ -237,5 +246,77 @@ describe('mergeBase and listChanges (shared by the list and the diff)', () => {
       changes.slice(0, LIMITS.files).map(({ path, added, removed }) => ({ path, added, removed })),
     );
     expect(list.total).toBe(changes.length);
+  });
+});
+
+describe('the untracked line-count cache (B37)', () => {
+  /** A counting reader around the real one (ruling F12). */
+  const counting = () => {
+    const reads: string[] = [];
+    const read: typeof readUntracked = (r, rel) => {
+      reads.push(rel);
+      return readUntracked(r, rel);
+    };
+    return { reads, read };
+  };
+  const counts = (changes: Change[]) =>
+    Object.fromEntries(changes.filter((c) => c.untracked).map((c) => [c.path, c.added]));
+
+  it('a second listChanges with unchanged untracked files reads none of them', async () => {
+    const dir = await repo('cache-same');
+    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await writeFile(join(dir, n), 'a\nb\n');
+    const cache = new UntrackedCache();
+    const { reads, read } = counting();
+    const first = await listChanges(dir, 'main', undefined, { cache, read });
+    expect(reads.sort()).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
+    reads.length = 0;
+    const second = await listChanges(dir, 'main', undefined, { cache, read });
+    expect(reads).toEqual([]);
+    expect(counts(second.changes)).toEqual(counts(first.changes));
+    expect(counts(second.changes)).toEqual({ 'u1.txt': 2, 'u2.txt': 2, 'u3.txt': 2 });
+  });
+
+  it('a changed mtimeMs re-reads that file only', async () => {
+    const dir = await repo('cache-mtime');
+    for (const n of ['u1.txt', 'u2.txt']) await writeFile(join(dir, n), 'a\nb\n');
+    const cache = new UntrackedCache();
+    const { reads, read } = counting();
+    await listChanges(dir, 'main', undefined, { cache, read });
+    reads.length = 0;
+    // Same size, new content and a new mtime: only the mtime tells it changed.
+    await writeFile(join(dir, 'u2.txt'), 'abc\n');
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(dir, 'u2.txt'), later, later);
+    const { changes } = await listChanges(dir, 'main', undefined, { cache, read });
+    expect(reads).toEqual(['u2.txt']);
+    expect(counts(changes)).toEqual({ 'u1.txt': 2, 'u2.txt': 1 });
+  });
+
+  it('holds at most its bound, and forget(worktree) drops that worktree only', async () => {
+    const a = await repo('cache-a');
+    const b = await repo('cache-b');
+    for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await writeFile(join(a, n), 'a\n');
+    await writeFile(join(b, 'v.txt'), 'v\n');
+    const cache = new UntrackedCache(2);
+    const { reads, read } = counting();
+    await listChanges(a, 'main', undefined, { cache, read });
+    expect(cache.size).toBe(2);
+    reads.length = 0;
+    await listChanges(a, 'main', undefined, { cache, read });
+    expect(reads.length).toBeGreaterThan(0);
+
+    const big = new UntrackedCache();
+    await listChanges(a, 'main', undefined, { cache: big, read });
+    await listChanges(b, 'main', undefined, { cache: big, read });
+    expect(big.size).toBe(4);
+    big.forget(a);
+    expect(big.size).toBe(1);
+    reads.length = 0;
+    await listChanges(b, 'main', undefined, { cache: big, read });
+    expect(reads).toEqual([]);
+  });
+
+  it('the default bound is 2,000 entries', () => {
+    expect(UNTRACKED_CACHE_MAX).toBe(2000);
   });
 });

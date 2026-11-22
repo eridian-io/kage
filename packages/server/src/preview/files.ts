@@ -99,13 +99,88 @@ export const looksBinary = (data: Buffer): boolean => data.subarray(0, BINARY_SN
  * The line count of an untracked file, or 0 when it is not a plain file inside the worktree
  * (a symlink is never followed), is over 1 MiB, or has a NUL in its first 8 KiB.
  */
-async function untrackedLines(root: string, rel: string): Promise<number> {
-  const r = await readUntracked(root, rel);
+async function untrackedLines(
+  root: string,
+  rel: string,
+  read: typeof readUntracked,
+): Promise<number> {
+  const r = await read(root, rel);
   if (!('data' in r) || looksBinary(r.data)) return 0;
   const data = r.data;
   let lines = 0;
   for (const b of data) if (b === 0x0a) lines++;
   if (data.length > 0 && data[data.length - 1] !== 0x0a) lines++;
+  return lines;
+}
+
+/** The untracked line-count cache holds at most this many files in all (B37). */
+export const UNTRACKED_CACHE_MAX = 2000;
+
+/**
+ * Untracked files' line counts by worktree and path, valid while the file's size and mtimeMs are
+ * the ones seen (B37): a refresh re-reads only what changed. Bounded; the least recently used
+ * entry goes first. The session's removal forgets its worktree.
+ */
+export class UntrackedCache {
+  readonly #max: number;
+  readonly #entries = new Map<string, { size: number; mtimeMs: number; lines: number }>();
+  constructor(max = UNTRACKED_CACHE_MAX) {
+    this.#max = max;
+  }
+  get size(): number {
+    return this.#entries.size;
+  }
+  get(worktree: string, path: string, size: number, mtimeMs: number): number | undefined {
+    const key = `${worktree}\0${path}`;
+    const e = this.#entries.get(key);
+    if (!e || e.size !== size || e.mtimeMs !== mtimeMs) return undefined;
+    this.#entries.delete(key);
+    this.#entries.set(key, e);
+    return e.lines;
+  }
+  set(worktree: string, path: string, size: number, mtimeMs: number, lines: number): void {
+    const key = `${worktree}\0${path}`;
+    this.#entries.delete(key);
+    this.#entries.set(key, { size, mtimeMs, lines });
+    while (this.#entries.size > this.#max) {
+      const oldest = this.#entries.keys().next().value as string;
+      this.#entries.delete(oldest);
+    }
+  }
+  forget(worktree: string): void {
+    const prefix = `${worktree}\0`;
+    for (const key of [...this.#entries.keys()]) {
+      if (key.startsWith(prefix)) this.#entries.delete(key);
+    }
+  }
+}
+
+/** How listChanges reads untracked files: the cache (B37) and the reader (tests count reads). */
+export interface ListOptions {
+  cache?: UntrackedCache;
+  read?: typeof readUntracked;
+}
+
+/** An untracked file's line count, from the cache while its size and mtime are unchanged. */
+async function cachedLines(
+  worktree: string,
+  root: string,
+  rel: string,
+  o: ListOptions,
+): Promise<number> {
+  const read = o.read ?? readUntracked;
+  const cache = o.cache;
+  if (!cache) return untrackedLines(root, rel, read);
+  const full = resolve(root, rel);
+  if (!inside(root, full)) return 0;
+  const st = await lstat(full).catch(() => null);
+  if (!st) return 0;
+  const hit = cache.get(worktree, rel, st.size, st.mtimeMs);
+  if (hit !== undefined) return hit;
+  const lines = await untrackedLines(root, rel, read);
+  // Keyed by the stat taken before the read: a write in between changes the mtime, so the next
+  // refresh reads the file again.
+  cache.set(worktree, rel, st.size, st.mtimeMs, lines);
   return lines;
 }
 
@@ -141,6 +216,7 @@ export async function listChanges(
   worktree: string,
   base: string | null,
   exec: GitExec = gitExec,
+  o: ListOptions = {},
 ): Promise<{ mb: string; changes: Change[] }> {
   const opts = { cwd: worktree };
   const mb = await mergeBase(worktree, base, exec);
@@ -168,7 +244,7 @@ export async function listChanges(
   if (untracked.length > 0) {
     const root = await realpath(worktree).catch(() => resolve(worktree));
     const counts = await Promise.all(
-      untracked.map((p, i) => (i < MAX_UNTRACKED_READ ? untrackedLines(root, p) : 0)),
+      untracked.map((p, i) => (i < MAX_UNTRACKED_READ ? cachedLines(worktree, root, p, o) : 0)),
     );
     untracked.forEach((path, i) => {
       changes.push({ path, added: counts[i] ?? 0, removed: 0, untracked: true });
@@ -186,8 +262,9 @@ export async function changedFiles(
   worktree: string,
   base: string | null,
   exec: GitExec = gitExec,
+  o: ListOptions = {},
 ): Promise<{ files: FileChange[]; total: number }> {
-  const { changes } = await listChanges(worktree, base, exec);
+  const { changes } = await listChanges(worktree, base, exec, o);
   return {
     files: changes
       .slice(0, LIMITS.files)

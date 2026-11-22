@@ -46,6 +46,8 @@ export interface PreviewTrackerDeps {
   /** One scan of every listener and process; null where Kage can't scan (not Linux or macOS). */
   scan: (() => Promise<{ listeners: Listener[]; procs: Proc[] }>) | null;
   files: (worktree: string, base: string | null) => Promise<{ files: FileChange[]; total: number }>;
+  /** The session is gone and no other refreshed this worktree: drop its untracked cache (B37). */
+  forgetFiles?: (worktree: string) => void;
   /** A record's unpushed commits and uncommitted entries; rejects when git fails. */
   branch: (
     worktree: string,
@@ -97,6 +99,8 @@ export class PreviewTracker {
   readonly #lastPorts = new Map<string, string>();
   readonly #lastFiles = new Map<string, string>();
   readonly #lastCounts = new Map<string, string>();
+  /** The worktree each session's files were last read from (B37: forget drops its cache). */
+  readonly #worktrees = new Map<string, string>();
   /** Sessions whose next ports or files value is published even when unchanged (R32). */
   readonly #forcePorts = new Set<string>();
   readonly #forceFiles = new Set<string>();
@@ -161,6 +165,11 @@ export class PreviewTracker {
     this.#lastPorts.delete(id);
     this.#lastFiles.delete(id);
     this.#lastCounts.delete(id);
+    const worktree = this.#worktrees.get(id);
+    this.#worktrees.delete(id);
+    if (worktree !== undefined && ![...this.#worktrees.values()].includes(worktree)) {
+      this.#d.forgetFiles?.(worktree);
+    }
     this.#arm();
   }
 
@@ -305,6 +314,7 @@ export class PreviewTracker {
     const t = this.#d.target(id);
     if (!t) return;
     st.running = true;
+    this.#worktrees.set(id, t.worktree);
     // A record's branch counts run beside the files; a failed count keeps the last value.
     const branch = t.branch;
     const counts =

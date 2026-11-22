@@ -46,6 +46,8 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
   }[] = [];
   let counts = { unpushed: 0, uncommitted: 0, ignored: 0 };
   let countsError: Error | null = null;
+  /** Worktrees whose untracked cache the tracker dropped (B37). */
+  const forgotten: string[] = [];
   const tracker = new PreviewTracker({
     target: (id) => all.get(id) ?? null,
     publish: (id, patch, always) => published.push({ id, patch, always }),
@@ -67,9 +69,11 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
       if (countsError) throw countsError;
       return counts;
     },
+    forgetFiles: (worktree) => forgotten.push(worktree),
   });
   return {
     tracker,
+    forgotten,
     all,
     published,
     scans: () => scans,
@@ -339,6 +343,20 @@ describe('PreviewTracker: publishing (R32)', () => {
     t.tracker.refresh('a');
     await vi.advanceTimersByTimeAsync(0);
     expect(t.published).toHaveLength(7);
+  });
+
+  it('forget drops the untracked cache of a worktree no other session refreshes (B37)', async () => {
+    const t = setup({ a: {}, b: { worktree: '/w/shared' }, c: { worktree: '/w/shared' } });
+    t.tracker.setViewed(new Set(['a', 'b', 'c']));
+    await vi.advanceTimersByTimeAsync(0);
+    t.tracker.forget('b');
+    expect(t.forgotten).toEqual([]);
+    t.tracker.forget('a');
+    t.tracker.forget('c');
+    expect(t.forgotten).toEqual(['/w/a', '/w/shared']);
+    // Unviewed is not removed: the cache stays for the next view.
+    t.tracker.setViewed(new Set());
+    expect(t.forgotten).toHaveLength(2);
   });
 
   it('forget drops a session and its timers', async () => {

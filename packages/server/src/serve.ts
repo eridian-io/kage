@@ -29,7 +29,7 @@ import {
 import { LiveSource } from './live-source.ts';
 import type { Io, Running } from './main.ts';
 import { DiffService } from './preview/diff.ts';
-import { changedFiles } from './preview/files.ts';
+import { changedFiles, UntrackedCache } from './preview/files.ts';
 import { makeScanner } from './preview/ports.ts';
 import { PreviewTracker } from './preview/tracker.ts';
 import type { SessionSource } from './source.ts';
@@ -200,6 +200,8 @@ async function startLive(
     const w = source.terminalTarget(id)?.windowId ?? null;
     return w !== null && bridge?.isWindowOpen(w) === true;
   };
+  // B37: untracked files' line counts, re-read only when their size or mtime changed.
+  const untracked = new UntrackedCache();
   const source = new LiveSource({
     tmux,
     watcher,
@@ -213,7 +215,8 @@ async function startLive(
         target: (id) => host.previewTarget(id),
         publish: (id, patch, always) => host.setPreview(id, patch, always),
         scan: makeScanner(io.platform ?? process.platform),
-        files: (worktree, base) => changedFiles(worktree, base, gitExec),
+        files: (worktree, base) => changedFiles(worktree, base, gitExec, { cache: untracked }),
+        forgetFiles: (worktree) => untracked.forget(worktree),
         // A record's unpushed and uncommitted counts, refreshed with its files (spec §5.8).
         branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec),
       }),
