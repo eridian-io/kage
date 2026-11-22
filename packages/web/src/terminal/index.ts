@@ -78,6 +78,34 @@ export function inFrames(d: string): string[] {
 
 const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, Math.floor(n)));
 
+/**
+ * tmux is the pane's real terminal and already answers the program's queries; the copies that
+ * reach xterm in forwarded output must get no second reply, or xterm's answer would be sent as
+ * input and land in the pane as typed text. Each query is taken here (returning true skips
+ * xterm's own handler, which only replies): DA1/DA2/DA3, DSR and CPR, DECRQM, XTVERSION,
+ * DECRQSS, and the OSC 4/10/11/12 colour queries (an OSC that sets a colour still applies).
+ */
+function muteQueries(term: Terminal): void {
+  const p = term.parser;
+  const take = () => true;
+  for (const id of [
+    { final: 'c' },
+    { prefix: '>', final: 'c' },
+    { prefix: '=', final: 'c' },
+    { final: 'n' },
+    { prefix: '?', final: 'n' },
+    { intermediates: '$', final: 'p' },
+    { prefix: '?', intermediates: '$', final: 'p' },
+    { prefix: '>', final: 'q' },
+  ]) {
+    p.registerCsiHandler(id, take);
+  }
+  p.registerDcsHandler({ intermediates: '$', final: 'q' }, take);
+  for (const osc of [4, 10, 11, 12]) {
+    p.registerOscHandler(osc, (data) => data.split(';').includes('?'));
+  }
+}
+
 export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
   installStyleShim();
   const css = getComputedStyle(document.documentElement);
@@ -100,6 +128,7 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
   // T2: Shift+Esc and Ctrl+Shift+X are the board's (they bubble to its key handler); every other
   // key, Esc included, goes to the pane.
   term.attachCustomKeyEventHandler((e) => !isLeave(e));
+  muteQueries(term);
   term.open(el);
 
   let ws: WebSocket | null = null;

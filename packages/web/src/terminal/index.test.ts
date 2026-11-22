@@ -13,6 +13,12 @@ const fx = vi.hoisted(() => {
     data: ((d: string) => void) | null = null;
     el: HTMLElement | null = null;
     dataSub = { dispose: vi.fn() };
+    /** The query handlers the chunk registers (they keep xterm from replying). */
+    parser = {
+      registerCsiHandler: vi.fn(() => ({ dispose() {} })),
+      registerDcsHandler: vi.fn(() => ({ dispose() {} })),
+      registerOscHandler: vi.fn(() => ({ dispose() {} })),
+    };
     dispose = vi.fn();
     focus = vi.fn();
     constructor(o: Record<string, unknown>) {
