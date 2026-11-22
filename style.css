@@ -2,30 +2,16 @@
 @font-face {
   font-family: "Geist";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 100 900;
   font-display: swap;
-  src: url(fonts/geist-latin-400-normal.woff2) format("woff2");
-}
-@font-face {
-  font-family: "Geist";
-  font-style: normal;
-  font-weight: 500;
-  font-display: swap;
-  src: url(fonts/geist-latin-500-normal.woff2) format("woff2");
-}
-@font-face {
-  font-family: "Geist";
-  font-style: normal;
-  font-weight: 600;
-  font-display: swap;
-  src: url(fonts/geist-latin-600-normal.woff2) format("woff2");
+  src: url(fonts/geist-latin-wght-normal.woff2) format("woff2-variations");
 }
 @font-face {
   font-family: "Geist Mono";
   font-style: normal;
-  font-weight: 400;
+  font-weight: 100 900;
   font-display: swap;
-  src: url(fonts/geist-mono-latin-400-normal.woff2) format("woff2");
+  src: url(fonts/geist-mono-latin-wght-normal.woff2) format("woff2-variations");
 }
 
 :root {
@@ -859,7 +845,7 @@ kbd {
 .road .n {
   font: 13px / 1.9 var(--mono);
   color: var(--fg-3);
-  grid-row: 1 / span 3;
+  grid-row: 1 / span 4;
 }
 .road .chip {
   grid-column: 2;
@@ -878,6 +864,11 @@ kbd {
   color: var(--fg-2);
   font-size: 15px;
   max-width: 70ch;
+}
+.road .meas {
+  color: var(--fg-3);
+  font-size: 13.5px;
+  margin-top: 4px;
 }
 .road li.done .n {
   color: var(--fg-2);
@@ -900,9 +891,13 @@ kbd {
     grid-column: 2;
     grid-row: 2;
   }
+  .road .meas {
+    grid-column: 2;
+    grid-row: 3;
+  }
   .road .chip {
     grid-column: 3;
-    grid-row: 1 / span 2;
+    grid-row: 1 / span 3;
     align-self: center;
     margin-top: 0;
   }
@@ -1018,4 +1013,7 @@ kbd {
     transition: none !important;
     animation: none !important;
   }
+}
+.nw {
+  white-space: nowrap;
 }

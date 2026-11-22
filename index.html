@@ -25,8 +25,7 @@
 <meta name="twitter:description" content="A small web dashboard for your server or home PC. Start, watch, answer and stop Claude Code sessions from your laptop or phone, over Tailscale.">
 <meta name="twitter:image" content="https://eridian-io.github.io/kage/img/social-preview.jpg">
 <meta name="twitter:image:alt" content="Kage: a ninja directing several AI coding agents from the shadows">
-<link rel="preload" href="fonts/geist-latin-400-normal.woff2" as="font" type="font/woff2" crossorigin>
-<link rel="preload" href="fonts/geist-latin-600-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="fonts/geist-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
 <link rel="preload" as="image" type="image/webp" imagesrcset="img/board.webp 1280w, img/board-2x.webp 2560w" imagesizes="(min-width: 1176px) 1118px, (min-width: 640px) calc(100vw - 58px), calc(100vw - 34px)" fetchpriority="high">
 <link rel="stylesheet" href="style.css">
 </head>
@@ -52,7 +51,7 @@
 <main id="main">
   <section class="hero" aria-labelledby="hero-title">
     <div class="wrap">
-      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development</span>
+      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development · phases 1–5 built</span>
       <h1 id="hero-title">Your Claude Code agents, <span>working in the shadows.</span></h1>
       <p class="lede">Kage is a small web dashboard that runs on your server or home PC. It shows every Claude Code session in one place, so you can start, watch, answer and stop them from your laptop or phone.</p>
       <div class="actions">
@@ -153,6 +152,16 @@
           <p>Open the session's real tmux window in the browser and type to Claude as you would at the PC. It loads only when you open it. Windows Kage didn't start are view-only.</p>
           <div class="keys"><span class="sr-only">Keyboard shortcut: </span><kbd>T</kbd></div>
         </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z"/><path d="M10 21h4"/></svg></div>
+          <h3>Pings on your phone</h3>
+          <p>Get a ping through ntfy when a session needs you, or when a long turn is done. It carries only the project, the task and a link back to the session. The topic is a secret, so keep it like a password. It stays off until you set it.</p>
+        </article>
+        <article class="feature">
+          <div class="icon"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m16 16 4 4"/></svg></div>
+          <h3>Everything on ⌘K</h3>
+          <p>One search box for every session and action: jump to a session by name, start a task, open the diff or turn on browser notifications. Press <span class="nw"><kbd>Ctrl</kbd> <kbd>K</kbd></span> on Linux and Windows, <span class="nw"><kbd>⌘</kbd> <kbd>K</kbd></span> on a Mac.</p>
+        </article>
       </div>
     </div>
   </section>
@@ -223,6 +232,7 @@
       </div>
       <div class="note">
         <p>Anyone who can reach Kage can run Claude Code on your machine. Only add devices you trust to your tailnet, and set a token if others share it.</p>
+        <p>One outbound call, only if you set it: the ntfy ping.</p>
         <p>Found a problem? <a href="https://github.com/eridian-io/kage/blob/main/SECURITY.md">Report it privately</a>.</p>
       </div>
     </div>
@@ -236,15 +246,15 @@
       <div class="start">
         <div class="card">
           <h3>Run from source</h3>
-          <p>You need Node 24.2 or newer, and Tailscale up. The newest work lives on the <code>phase-4</code> branch until it's merged into main.</p>
+          <p>You need Node 24.2 or newer, and Tailscale up. The newest work lives on the <code>phase-5</code> branch until it's merged into main.</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
-            <pre><code><span>git clone --branch phase-4 https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
+            <pre><code><span>git clone --branch phase-5 https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
           </div>
           <p>Then open the address it prints. No Tailscale on this machine? Stay on loopback instead:</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
             <pre><code><span>KAGE_HOST=127.0.0.1 pnpm dev</span></code></pre>
           </div>
-          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage/tree/phase-4#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
+          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage/tree/phase-5#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
         </div>
         <div class="stack">
           <div class="card">
@@ -296,11 +306,12 @@
           <p>Pin, archive and delete sessions, a diff view, and a full terminal in the browser, loaded only when you open it.</p>
           <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
-        <li class="later">
+        <li class="done">
           <span class="n">05</span>
           <h3>Polish</h3>
-          <p>Notifications in the browser and through ntfy, a command palette, and performance budgets.</p>
-          <span class="chip soon">next</span>
+          <p>Notifications in the browser and through ntfy, a command palette, and performance budgets that the test suite checks.</p>
+          <p class="meas">Measured, against the budget: first load 26.7 KB gzipped of 30, a usable board in 75–80 ms of 300, hook to screen 5.7–7.1 ms of 150, idle CPU 0.13% of 1%, idle memory 75.8–76.6 MB of 80.</p>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
         <li class="later">
           <span class="n">06</span>
