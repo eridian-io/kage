@@ -7,7 +7,9 @@ export type WatchEvent =
   | { type: 'up' }
   | { type: 'down' };
 
-interface WatchedProcess {
+export interface WatchedProcess {
+  /** Present with the default spawn; the watcher never writes to it (the terminal client does). */
+  stdin?: NodeJS.WritableStream | null;
   stdout: NodeJS.ReadableStream | null;
   stderr?: NodeJS.ReadableStream | null;
   kill(): boolean;
@@ -16,7 +18,7 @@ interface WatchedProcess {
 
 export type SpawnFn = (cmd: string, args: string[]) => WatchedProcess;
 
-const defaultSpawn: SpawnFn = (cmd, args) =>
+export const defaultSpawn: SpawnFn = (cmd, args) =>
   nodeSpawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'] });
 
 /** A tmux pane id as `%output` prints it. */

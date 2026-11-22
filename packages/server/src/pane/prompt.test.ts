@@ -215,6 +215,17 @@ describe('real 2.1.330 captures at 80 columns (R23)', () => {
     });
     expect(parseStartupScreen(pane('real-edit-80'))).toBeNull();
   });
+  it.each(['real-edit-60', 'real-edit-160'])(
+    '%s (a terminal resized the window) gives the same prompt as 80 columns (R39)',
+    (name) => {
+      expect(parsePermissionPrompt(pane(name))).toEqual(
+        parsePermissionPrompt(pane('real-edit-80')),
+      );
+      expect(parsePermissionPrompt(pane(name))?.options).toHaveLength(3);
+      expect(parseStartupScreen(pane(name))).toBeNull();
+      expect(showsPrompt(pane(name))).toBe(true);
+    },
+  );
   it('the finished turn shows no prompt and no startup screen', () => {
     expect(parsePermissionPrompt(pane('real-done-80'))).toBeNull();
     expect(parseStartupScreen(pane('real-done-80'))).toBeNull();
