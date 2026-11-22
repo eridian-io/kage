@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { LIVE_PORT } from './env.ts';
+import { assertLocalNtfy } from './fake-ntfy.ts';
 
 /**
  * The live specs' setup and helpers: `kage serve` in live mode against a private tmux server,
@@ -95,6 +96,8 @@ export class LiveHarness {
    * `config`) and the two repos. tmux and Kage start with startTmux and startServe.
    */
   setUp = async (config: Record<string, unknown> = {}): Promise<void> => {
+    // A topic only with the fake ntfy on 127.0.0.1: never a real ntfy server (R85, PF5 F2).
+    assertLocalNtfy(config);
     this.root = mkdtempSync(join(tmpdir(), 'kage-live-'));
     this.socket = `kage-test-${process.pid}-${Math.random().toString(36).slice(2, 8)}`;
     for (const d of [

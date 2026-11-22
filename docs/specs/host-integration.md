@@ -409,3 +409,47 @@ Top-level entries of `git rev-parse --git-common-dir` compared before and after 
 - Branch refs live under `refs/heads/…` and per-worktree state under `worktrees/<name>/`, so they change no top-level entry.
 - On **`/mnt/c`** (the same script, the repo on the Windows drive) `fs.watch` fired **no events at all** for any operation, although the same entries changed. Use the planned fallback there: rely on the other triggers, and the docs say so.
 - Kage's own reads (`status` with `GIT_OPTIONAL_LOCKS=0`, `rev-list`, `merge-tree`) change no top-level entry, so they can't set off the watch.
+
+## 6. ntfy (recorded 2026-11-22 for phase 5, from ntfy's documentation; no calls)
+
+Facts for `NtfyClient` (`packages/server/src/notify/ntfy.ts`), taken from ntfy's own documentation (the publishing, configuration and access-control pages, and the public server's pricing page). **No request was made to ntfy.sh or any other ntfy server** (ruling R85): every test runs against `e2e/fake-ntfy.ts` on `127.0.0.1`, and a vitest setup file (`packages/server/test/setup-fetch.ts`) rejects any non-loopback `fetch` with `Tests may not call <host>`. The real-phone check is the owner's optional step.
+
+### 6.1 JSON publish
+
+- `POST <server>/` (the server's root, or its base path behind a proxy) with a JSON object as the body. `Content-Type: application/json` is what Kage sends; ntfy detects a JSON publish from the root path and the body.
+- Fields: `topic` (required, string), `message`, `title`, `priority` (integer 1–5; 3 is the default, 4 is "high"), `tags` (array), `click` (a URL opened when the notification is tapped), and others Kage does not use (`actions`, `attach`, `filename`, `icon`, `markdown`, `delay`, `email`, `call`).
+- Kage sends exactly `topic`, `title`, `message`, `priority` and, when there is one, `click`. Putting the topic in the body rather than in the URL path (`POST /<topic>`) keeps it out of URLs, so neither a proxy log nor a fetch error (undici puts the URL in its error message) can carry it.
+- Authentication: `Authorization: Bearer <access token>` (ntfy's tokens start with `tk_`); Basic auth also exists and Kage doesn't use it.
+- A successful publish answers 200 with the stored message as JSON. Kage discards the body unread.
+- Topic names are 1–64 characters of letters, digits, `_` and `-`.
+
+### 6.2 Size limits
+
+- The server's `message-size-limit` defaults to 4,096 bytes. A larger message is turned into an attachment when attachments are enabled, and refused otherwise.
+- A Kage message is at most 100 characters (`NTFY.messageChars`, at most 400 bytes of UTF-8), and a title is cut at the same length, so a ping never comes near the limit.
+
+### 6.3 Rate limits on the public server
+
+- ntfy's per-visitor request limit (by IP address, or by user when signed in) defaults to a burst of 60 requests, then one more every 5 seconds (`visitor-request-limit-burst: 60`, `visitor-request-limit-replenish: 5s`). Over it, ntfy answers **429**.
+- ntfy.sh also caps messages a day per visitor or account by plan (its pricing page lists the numbers; they change over time and were not checked here).
+- Kage stays far below both: the notifier allows at most 10 pings in any 10 minutes (Task 6), and `NtfyClient` makes at most 4 attempts per ping, honouring a 429's `Retry-After` (seconds) up to 60 s. ntfy's documentation does not promise a `Retry-After` header; without one Kage keeps its own backoff (2 s, 8 s, 30 s).
+
+### 6.4 Who can read a topic
+
+- **On ntfy.sh a topic is public: anyone who knows or guesses its name can subscribe and read every message sent to it**, past messages included while the server keeps them (12 hours by default). The topic name is the only secret unless the topic is reserved with access control (a paid feature on ntfy.sh) or the server is self-run with `auth-default-access: deny-all`.
+- Hence the config rule (Task 6): with no token on ntfy.sh, `ntfyTopic` must be at least 16 characters.
+- What the ntfy server itself sees for each ping: the topic, the title (`<project> needs you` or `<project> is done`), the task text (stripped and cut to 100 characters), the priority, and the `click` link, which carries the machine's MagicDNS name, Kage's port and the session id. It also sees the sender's IP address. It never sees a question, a command, a branch, a path, output or file names.
+- **Hand-off to Task 11 (PF5 F15):** the README states the previous bullet in plain words for users of ntfy.sh.
+
+### 6.5 What the client does with each answer
+
+| Answer | Kage |
+|---|---|
+| 2xx | done, nothing logged |
+| 3xx | not followed (`redirect: 'manual'`), so the token never reaches another host; `ntfy: the server refused the ping (HTTP <n>).` |
+| 401, 403 | final; `ntfy: the server refused the ping (HTTP <n>). Check ntfyToken.` |
+| other 4xx | final; `ntfy: the server refused the ping (HTTP <n>).` |
+| 429, 5xx, a network error, no answer within 5 s | retried after 2 s, 8 s, 30 s (a 429's `Retry-After` replaces the wait, at most 60 s); after the 4th attempt `ntfy: couldn't send a ping (<timeout, HTTP <n>, an error code such as ECONNREFUSED, or network error>).` |
+
+- `http:` is used only for a loopback or tailnet server (100.64.0.0/10, `fd7a:115c:a1e0::/48`, a `.ts.net` name); for any other `http:` server the client sends nothing and logs `ntfy: ntfyServer must be https: unless it is on this machine or your tailnet; no ping sent.` The config (Task 6) refuses such a value at start.
+- No log line, error or `redact` result contains the topic, the token or the server URL.
