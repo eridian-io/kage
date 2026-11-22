@@ -40,7 +40,7 @@ const ACTIVE = 'Stop the session before archiving it.';
 const ACTIVE_DELETE = 'Stop the session before deleting it.';
 const CHANGED = 'The branch changed since you looked. Look again before deleting.';
 export const notKageWorktree = (worktree: string) =>
-  `Kage won't delete ${worktree}: it isn't one of Kage's worktrees.`;
+  `Kage won't touch ${worktree}: it isn't one of Kage's worktrees.`;
 /** R71: git lists the record's worktree, but on another branch or a detached HEAD. */
 export const OFF_BRANCH =
   "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.";

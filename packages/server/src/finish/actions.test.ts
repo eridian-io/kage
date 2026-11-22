@@ -416,7 +416,7 @@ describe('ActionLock', () => {
 });
 
 describe('FinishActions.remove (delete with the warning, B10)', () => {
-  const NOT_OURS = (wt: string) => `Kage won't delete ${wt}: it isn't one of Kage's worktrees.`;
+  const NOT_OURS = (wt: string) => `Kage won't touch ${wt}: it isn't one of Kage's worktrees.`;
   const CHANGED = 'The branch changed since you looked. Look again before deleting.';
   const OFF_BRANCH =
     "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.";

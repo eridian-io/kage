@@ -1013,7 +1013,7 @@ describe('resume hardening (Task 7 review)', () => {
     }
   });
 
-  const notKages = (wt: string) => `Kage won't delete ${wt}: it isn't one of Kage's worktrees.`;
+  const notKages = (wt: string) => `Kage won't touch ${wt}: it isn't one of Kage's worktrees.`;
 
   it('a worktree outside the project’s worktree root is 409 (delete’s sentence), and nothing opens', async () => {
     const wt = join(root, 'elsewhere');
