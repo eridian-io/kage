@@ -1,4 +1,10 @@
-import type { DisplayLine, Session, SessionStatus } from '@kage/shared';
+import {
+  type ArchivedSession,
+  type DisplayLine,
+  LIMITS,
+  type Session,
+  type SessionStatus,
+} from '@kage/shared';
 import type { ControlTarget } from './control/actions.ts';
 import type { PromptKind } from './control/keys.ts';
 import type { HookEvent } from './hooks/event.ts';
@@ -56,6 +62,17 @@ export type PreviewLike = Pick<
 export interface PreviewHost {
   previewTarget(id: string): PreviewTarget | null;
   setPreview(id: string, patch: PreviewPatch, always?: boolean): void;
+}
+
+/** What FinishActions reads before pin, archive or restore. */
+export interface FinishTarget {
+  id: string;
+  /** A copy; null for an external session. */
+  record: SessionRecord | null;
+  /** Null once the window is gone. */
+  windowId: string | null;
+  status: SessionStatus;
+  external: boolean;
 }
 
 /** PostToolUse of these tools changed files (Task 8). */
@@ -507,6 +524,84 @@ export class LiveSource implements SessionSource {
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
+  }
+
+  // ------------------------------------------------------------ finishing (FinishActions)
+
+  /** What FinishActions checks before pin, archive or restore; null only for an unknown id. */
+  finishTarget(id: string): FinishTarget | null {
+    const st = this.#sessions.get(id);
+    if (!st) return null;
+    return {
+      id: st.id,
+      record: st.record ? { ...st.record } : null,
+      windowId: st.window?.windowId ?? null,
+      status: st.status,
+      external: st.record === null,
+    };
+  }
+
+  /**
+   * Sets a record's pinned and archived flags and saves at once (awaited; a failed save throws
+   * and leaves the flags as they were, with no event). Archiving stamps archivedAt and emits
+   * session.removed, then archive {count}; restoring clears archivedAt, stamps restoredAt (F2:
+   * auto-archive skips it until its next done) and emits session.updated, then archive {count}.
+   */
+  async setFlags(id: string, f: { pinned?: boolean; archived?: boolean }): Promise<void> {
+    const st = this.#sessions.get(id);
+    const r = st?.record;
+    if (!st || !r) return;
+    const before = { ...r };
+    const archiving = f.archived === true && !r.archived;
+    const restoring = f.archived === false && r.archived;
+    if (f.pinned !== undefined) r.pinned = f.pinned;
+    if (archiving) {
+      r.archived = true;
+      r.archivedAt = this.#now();
+    } else if (restoring) {
+      r.archived = false;
+      r.archivedAt = null;
+      r.restoredAt = this.#now();
+    }
+    if (r.pinned === before.pinned && !archiving && !restoring) return;
+    try {
+      await this.#d.store.save([...this.#records.values()].map((x) => ({ ...x })));
+    } catch (e) {
+      Object.assign(r, before);
+      throw e;
+    }
+    if (!this.#running || this.#sessions.get(id) !== st) return;
+    if (archiving) {
+      // Hidden from the board: the preview stops looking, and a restore sends it afresh.
+      st.last = null;
+      this.#preview?.forget(id);
+      this.#emit({ type: 'session.removed', id });
+    } else {
+      if (restoring) st.last = null;
+      this.#emitNow(st);
+    }
+    if (archiving || restoring) this.#emit({ type: 'archive', count: this.archivedCount() });
+  }
+
+  /** Archived sessions, newest first, at most LIMITS.archived. */
+  archivedList(): ArchivedSession[] {
+    return [...this.#records.values()]
+      .filter((r) => r.archived)
+      .map((r) => ({
+        id: r.kageId,
+        project: r.project,
+        task: r.task,
+        branch: r.branch,
+        archivedAt: r.archivedAt ?? r.createdAt,
+      }))
+      .sort((a, b) => b.archivedAt - a.archivedAt)
+      .slice(0, LIMITS.archived);
+  }
+
+  archivedCount(): number {
+    let n = 0;
+    for (const r of this.#records.values()) if (r.archived) n++;
+    return n;
   }
 
   /** Kage killed the window: ended now; the window-close listing confirms it. */

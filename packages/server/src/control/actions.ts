@@ -24,6 +24,25 @@ export class ActionError extends Error {
   }
 }
 
+/**
+ * One action at a time per session (F5): answer, reply and stop, the finish actions (pin,
+ * archive, restore, delete) and resume share one lock, built once in serve.ts and injected.
+ */
+export class ActionLock {
+  readonly #held = new Map<string, symbol>();
+
+  /** A release function when `id` was free (call it once, in a finally); null while held. */
+  tryAcquire(id: string): (() => void) | null {
+    if (this.#held.has(id)) return null;
+    const token = Symbol(id);
+    this.#held.set(id, token);
+    return () => {
+      // A stale release never frees a later holder.
+      if (this.#held.get(id) === token) this.#held.delete(id);
+    };
+  }
+}
+
 /** What SessionControls needs to know about a session, read fresh for every action. */
 export interface ControlTarget {
   id: string;
@@ -76,10 +95,10 @@ const WORKING = "Claude is working. Wait until it's done.";
 const NO_BOX = "Claude isn't at its input box.";
 const ENDED = 'This session has ended.';
 /** tmux's answer for a window, pane or session that no longer exists. */
-const GONE_RE =
+export const GONE_RE =
   /no such window|can't find window|can't find pane|can't find session|no server running/i;
 /** A failed tmux run (execFile attaches its stderr); anything else is a bug, not tmux's. */
-const isExecError = (e: unknown): boolean =>
+export const isExecError = (e: unknown): boolean =>
   e instanceof Error && typeof (e as { stderr?: unknown }).stderr === 'string';
 /** Whitespace collapsed, for comparing question texts. */
 const norm = (s: string): string => s.replace(/\s+/g, ' ').trim();
@@ -107,7 +126,7 @@ export class SessionControls {
   readonly #source: ControlSource;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #attach: string;
-  readonly #busy = new Set<string>();
+  readonly #lock: ActionLock;
 
   constructor(d: {
     tmux: ControlTmux;
@@ -115,9 +134,12 @@ export class SessionControls {
     sleep?: (ms: number) => Promise<void>;
     /** The command the login refusal names (default `tmux attach -t kage`). */
     attach?: string;
+    /** The per-session lock shared with the finish actions and resume (F5). */
+    lock?: ActionLock;
   }) {
     this.#tmux = d.tmux;
     this.#source = d.source;
+    this.#lock = d.lock ?? new ActionLock();
     this.#sleep = d.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.#attach = d.attach ?? DEFAULT_ATTACH;
   }
@@ -270,10 +292,10 @@ export class SessionControls {
   async #locked(id: string, run: (t: ControlTarget) => Promise<void>): Promise<void> {
     const t = this.#source.target(id);
     if (!t) throw new ActionError(404, `No session with id ${id}`);
-    if (this.#busy.has(id)) {
+    const release = this.#lock.tryAcquire(id);
+    if (!release) {
       throw new ActionError(409, 'Kage is still sending the last action to this session.');
     }
-    this.#busy.add(id);
     try {
       await run(t);
     } catch (e) {
@@ -281,7 +303,7 @@ export class SessionControls {
       if (GONE_RE.test(firstLine(e))) throw new ActionError(409, ENDED);
       throw new ActionError(422, `tmux couldn't send the keys: ${firstLine(e)}`);
     } finally {
-      this.#busy.delete(id);
+      release();
     }
   }
 

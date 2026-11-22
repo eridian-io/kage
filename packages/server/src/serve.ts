@@ -3,14 +3,15 @@ import { hostname } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
-import type { ProjectsResponse } from '@kage/shared';
+import type { ArchivedSession, ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
-import { attachCommand, SessionControls } from './control/actions.ts';
+import { ActionLock, attachCommand, SessionControls } from './control/actions.ts';
 import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
+import { FinishActions } from './finish/actions.ts';
 import { branchCounts } from './git/branch.ts';
 import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
@@ -336,6 +337,8 @@ async function startServer(
   let launcher: TaskLauncher | undefined;
   let invalidateProjects: (() => void) | undefined;
   let controls: SessionControls | undefined;
+  let finish: FinishActions | undefined;
+  let archivedList: (() => ArchivedSession[]) | undefined;
   if (demo) {
     const d = new DemoSource();
     source = d;
@@ -370,11 +373,17 @@ async function startServer(
       // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.
       windowPath: io.env.PATH ?? null,
     });
+    // One action at a time per session, across the controls, the finish actions and resume (F5).
+    const lock = new ActionLock();
     controls = new SessionControls({
       tmux: live.tmux,
       source: live.source,
       attach: attachCommand(cfg.tmuxSession, cfg.tmuxSocket),
+      lock,
     });
+    finish = new FinishActions({ tmux: live.tmux, source: live.source, lock });
+    const liveSource = live.source;
+    archivedList = () => liveSource.archivedList();
   }
 
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
@@ -390,6 +399,8 @@ async function startServer(
     ...(launcher ? { launcher } : {}),
     ...(invalidateProjects ? { invalidateProjects } : {}),
     ...(controls ? { controls } : {}),
+    ...(finish ? { finish } : {}),
+    ...(archivedList ? { archivedList } : {}),
   });
 
   let server: ReturnType<typeof serve>;

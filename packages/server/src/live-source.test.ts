@@ -1,8 +1,9 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { DisplayLine, Question, Session } from '@kage/shared';
+import { type DisplayLine, LIMITS, type Question, type Session } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { FinishActions } from './finish/actions.ts';
 import type { HookEvent, HookEventName } from './hooks/event.ts';
 import {
   type HookServerLike,
@@ -2781,5 +2782,147 @@ describe('LiveSource: branch state (phase 4 Task 3)', () => {
     expect(saved?.find((r) => r.kageId === 'k-1')?.doneAt).toBe(loadedAt);
     // One that has a doneAt keeps it.
     expect(saved?.find((r) => r.kageId === 'k-2')?.doneAt).toBe(T0 - 5000);
+  });
+});
+
+describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
+  /** killOwnedWindow over the live-source FakeTmux's windows (re-checks the tag, as tmux does). */
+  const killer = (tmux: { windows: TmuxWindow[] }, calls: string[]) => ({
+    async killOwnedWindow(windowId: string, kageId: string): Promise<boolean> {
+      calls.push(`kill ${windowId} ${kageId}`);
+      const w = tmux.windows.find((x) => x.windowId === windowId);
+      if (!w || w.kageId !== kageId) return false;
+      tmux.windows = tmux.windows.filter((x) => x !== w);
+      return true;
+    },
+    async windowKageId(windowId: string): Promise<string | null> {
+      const w = tmux.windows.find((x) => x.windowId === windowId);
+      if (!w) throw Object.assign(new Error("can't find window"), { stderr: "can't find window" });
+      return w.kageId;
+    },
+  });
+
+  it('pin saves at once (awaited) and the next session.updated has pinned: true', async () => {
+    const { source, store, updates } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    const saves = store.saves.length;
+    await source.setFlags('k-1', { pinned: true });
+    expect(store.saves.length).toBe(saves + 1);
+    expect(store.saves.at(-1)?.[0]?.pinned).toBe(true);
+    expect(updates('k-1').at(-1)?.pinned).toBe(true);
+    expect(source.finishTarget('k-1')?.record?.pinned).toBe(true);
+  });
+
+  it('archive of a done session with a live window: kill with the record kage id, session.removed, then archive {count: 1}', async () => {
+    const { source, tmux, hooks, events, store } = setup({
+      windows: [kageWin()],
+      records: [rec()],
+    });
+    await source.start();
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    const calls: string[] = [];
+    const finish = new FinishActions({ tmux: killer(tmux, calls), source });
+    events.length = 0;
+    await finish.archive('k-1', true);
+    expect(calls).toEqual(['kill @2 k-1']);
+    const tail = events.filter((e) => e.type === 'session.removed' || e.type === 'archive');
+    expect(tail).toEqual([
+      { type: 'session.removed', id: 'k-1' },
+      { type: 'archive', count: 1 },
+    ]);
+    expect(source.list().map((s) => s.id)).not.toContain('k-1');
+    expect(source.archivedList()).toEqual([
+      {
+        id: 'k-1',
+        project: 'shop',
+        task: 'Fix the cart total',
+        branch: 'kage/fix-the-cart-total',
+        archivedAt: Date.now(),
+      },
+    ]);
+    expect(source.archivedCount()).toBe(1);
+    expect(store.saves.at(-1)?.[0]).toMatchObject({ archived: true, archivedAt: Date.now() });
+    // The window-close listing that follows sends nothing for the hidden session.
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(events.filter((e) => e.type === 'session.updated')).toEqual([]);
+  });
+
+  it('restore stamps restoredAt, emits session.updated (status ended), then archive {count: 0}', async () => {
+    const { source, events, store } = setup({
+      records: [rec({ archived: true, archivedAt: T0 - 1000, doneAt: T0 - 2000 })],
+    });
+    await source.start();
+    expect(source.list()).toEqual([]);
+    expect(source.archivedCount()).toBe(1);
+    events.length = 0;
+    await source.setFlags('k-1', { archived: false });
+    expect(events.map((e) => e.type)).toEqual(['session.updated', 'archive']);
+    expect(events[0]).toMatchObject({
+      type: 'session.updated',
+      session: { id: 'k-1', status: 'ended', archived: false },
+    });
+    expect(events[1]).toEqual({ type: 'archive', count: 0 });
+    expect(source.list().map((s) => s.id)).toEqual(['k-1']);
+    expect(store.saves.at(-1)?.[0]).toMatchObject({
+      archived: false,
+      archivedAt: null,
+      restoredAt: Date.now(),
+      doneAt: T0 - 2000,
+    });
+  });
+
+  it('archive then restore of the same session sends a fresh session.updated', async () => {
+    const { source, updates } = setup({ records: [rec()] });
+    await source.start();
+    await source.setFlags('k-1', { archived: true });
+    const n = updates('k-1').length;
+    await source.setFlags('k-1', { archived: false });
+    expect(updates('k-1').length).toBe(n + 1);
+  });
+
+  it('archivedList() is newest first and capped at LIMITS.archived', async () => {
+    const records = Array.from({ length: LIMITS.archived + 5 }, (_, i) =>
+      rec({ kageId: `k-${i}`, windowId: null, archived: true, archivedAt: T0 - 1_000_000 + i * 7 }),
+    );
+    const { source } = setup({ records: [...records.reverse(), rec({ kageId: 'live' })] });
+    await source.start();
+    const list = source.archivedList();
+    expect(list).toHaveLength(LIMITS.archived);
+    expect(list[0]?.id).toBe(`k-${LIMITS.archived + 4}`);
+    const times = list.map((s) => s.archivedAt);
+    expect(times).toEqual([...times].sort((a, b) => b - a));
+    expect(source.archivedCount()).toBe(LIMITS.archived + 5);
+  });
+
+  it('a failed save leaves the flags as they were and emits nothing', async () => {
+    const { source, store, events } = setup({ records: [rec()] });
+    await source.start();
+    store.fail = 1;
+    events.length = 0;
+    await expect(source.setFlags('k-1', { archived: true })).rejects.toThrow('disk full');
+    expect(events).toEqual([]);
+    expect(source.finishTarget('k-1')?.record).toMatchObject({ archived: false, archivedAt: null });
+    expect(source.list().map((s) => s.id)).toEqual(['k-1']);
+  });
+
+  it('finishTarget gives a copy of the record, the window and the status; external sessions have no record', async () => {
+    const { source } = setup({
+      windows: [kageWin(), win({ windowId: '@7', paneId: '%7' })],
+      records: [rec()],
+    });
+    await source.start();
+    const t = source.finishTarget('k-1');
+    expect(t).toMatchObject({ id: 'k-1', windowId: '@2', external: false });
+    if (t?.record) t.record.pinned = true;
+    expect(source.finishTarget('k-1')?.record?.pinned).toBe(false);
+    expect(source.finishTarget('ext-@7')).toMatchObject({
+      record: null,
+      windowId: '@7',
+      external: true,
+    });
+    expect(source.finishTarget('nope')).toBeNull();
   });
 });

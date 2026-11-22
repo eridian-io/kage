@@ -836,3 +836,196 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Task 4)', () => {
+  type Call = [string, string, boolean];
+  const ARCHIVED = [
+    { id: 'k-2', project: 'shop', task: 'Newer', branch: 'kage/newer', archivedAt: 20 },
+    { id: 'k-1', project: 'shop', task: 'Older', branch: 'kage/older', archivedAt: 10 },
+  ];
+  const withFinish = (fail: Error | null = null, token = '') => {
+    const calls: Call[] = [];
+    const act = async (call: Call) => {
+      calls.push(call);
+      if (fail) throw fail;
+    };
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      finish: {
+        pin: (id, pinned) => act(['pin', id, pinned]),
+        archive: (id, archived) => act(['archive', id, archived]),
+      },
+      archivedList: () => ARCHIVED.map((s) => ({ ...s })),
+    });
+    return { a, calls };
+  };
+
+  it('pin {pinned} and archive {archived} → 204 and reach the finish actions', async () => {
+    const { a, calls } = withFinish();
+    for (const [path, body] of [
+      ['pin', { pinned: true }],
+      ['pin', { pinned: false }],
+      ['archive', { archived: true }],
+      ['archive', { archived: false }],
+    ] as const) {
+      const res = await a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+      expect(res.status).toBe(204);
+    }
+    expect(calls).toEqual([
+      ['pin', 'k-1', true],
+      ['pin', 'k-1', false],
+      ['archive', 'k-1', true],
+      ['archive', 'k-1', false],
+    ]);
+  });
+
+  it('validates the bodies (400, the exact sentence) before any action', async () => {
+    const { a, calls } = withFinish();
+    for (const [path, body, error] of [
+      ['pin', { pinned: 'yes' }, 'Expected {"pinned": true|false}'],
+      ['pin', [], 'Expected {"pinned": true|false}'],
+      ['pin', undefined, 'Expected {"pinned": true|false}'],
+      ['pin', { pinned: true, x: 1 }, 'Unexpected field "x"'],
+      ['archive', { archived: 1 }, 'Expected {"archived": true|false}'],
+      ['archive', {}, 'Expected {"archived": true|false}'],
+    ] as const) {
+      const res = await a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+      expect(res.status, `${path} ${JSON.stringify(body)}`).toBe(400);
+      expect(await res.json()).toEqual({ error });
+    }
+    expect(calls).toEqual([]);
+  });
+
+  it('maps ActionError statuses (403, 404, 409, 422) and messages; anything else is a one-sentence 500', async () => {
+    for (const status of [403, 404, 409, 422] as const) {
+      const { a } = withFinish(new ActionError(status, `Problem ${status}.`));
+      for (const [path, body] of [
+        ['pin', { pinned: true }],
+        ['archive', { archived: true }],
+      ] as const) {
+        const res = await a.fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
+        expect(res.status).toBe(status);
+        expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+      }
+    }
+    const { a } = withFinish(new Error('disk full\nstack'));
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/archive', { archived: true }));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Kage couldn't change the session: disk full" });
+  });
+
+  it('GET /api/archive returns the archived list', async () => {
+    const { a } = withFinish();
+    const res = await a.fetch(req('/api/archive'));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sessions: ARCHIVED });
+  });
+
+  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+    for (const r of [
+      mutate('POST', '/api/sessions/k-1/pin', { pinned: true }),
+      mutate('POST', '/api/sessions/k-1/archive', { archived: true }),
+      req('/api/archive'),
+    ]) {
+      const res = await app(true).fetch(r);
+      expect(res.status).toBe(501);
+      expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+    }
+  });
+
+  it('needs X-Kage and Origin on the posts, and the token everywhere when one is set', async () => {
+    const { a, calls } = withFinish();
+    for (const headers of [
+      { 'Content-Type': 'application/json' } as Record<string, string>,
+      { 'Content-Type': 'application/json', 'X-Kage': '1' },
+      { 'Content-Type': 'application/json', Origin: ORIGIN },
+      { 'Content-Type': 'application/json', 'X-Kage': '1', Origin: 'http://evil.example' },
+    ]) {
+      for (const [path, body] of [
+        ['pin', { pinned: true }],
+        ['archive', { archived: true }],
+      ] as const) {
+        const res = await a.fetch(
+          req(`/api/sessions/k-1/${path}`, { method: 'POST', headers, body: JSON.stringify(body) }),
+        );
+        expect(res.status).toBe(403);
+      }
+    }
+    const t = withFinish(null, 'x'.repeat(20));
+    expect(
+      (await t.a.fetch(mutate('POST', '/api/sessions/k-1/pin', { pinned: true }))).status,
+    ).toBe(401);
+    expect(
+      (await t.a.fetch(mutate('POST', '/api/sessions/k-1/archive', { archived: true }))).status,
+    ).toBe(401);
+    expect((await t.a.fetch(req('/api/archive'))).status).toBe(401);
+    expect(calls).toEqual([]);
+    expect(t.calls).toEqual([]);
+  });
+
+  it("the snapshot's archived count matches GET /api/archive (live source)", async () => {
+    const rec = (kageId: string, archived: boolean, archivedAt: number | null) => ({
+      kageId,
+      windowId: null,
+      project: 'shop',
+      task: `Task ${kageId}`,
+      branch: `kage/${kageId}`,
+      worktree: `/p/shop/.worktrees/${kageId}`,
+      createdAt: 1,
+      pinned: false,
+      archived,
+      sessionId: null,
+      transcriptPath: null,
+      base: 'main',
+      permissionMode: 'default' as const,
+      baseCommit: null,
+      doneAt: null,
+      archivedAt,
+      restoredAt: null,
+    });
+    const records = [rec('k-1', true, 10), rec('k-2', false, null), rec('k-3', true, 30)];
+    const live = new LiveSource({
+      tmux: {
+        ensureSession: async () => {},
+        listWindows: async () => [],
+        capturePane: async () => '',
+        clearPlaceholder: async () => {},
+      },
+      watcher: { on: () => () => {}, start: () => {}, stop: () => {} },
+      hooks: { on: () => () => {} },
+      store: { load: async () => records.map((r) => ({ ...r })), save: async () => {} },
+      tail: () => {
+        throw new Error('no transcripts here');
+      },
+      projectsRoot: '/p',
+    });
+    await live.start();
+    const liveHub = new EventHub(live, 'my-pc', '/p');
+    const a = createApp({
+      source: live,
+      hub: liveHub,
+      assets,
+      allowed,
+      token: '',
+      finish: { pin: async () => {}, archive: async () => {} },
+      archivedList: () => live.archivedList(),
+    });
+    const res = await a.fetch(req('/api/events'));
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    const text = new TextDecoder().decode((await reader.read()).value);
+    const snap = JSON.parse(text.slice('event: snapshot\ndata: '.length));
+    await reader.cancel();
+    const list = (await (await a.fetch(req('/api/archive'))).json()) as {
+      sessions: { id: string }[];
+    };
+    expect(snap.archived).toBe(2);
+    expect(list.sessions.map((s) => s.id)).toEqual(['k-3', 'k-1']);
+    expect(snap.sessions.map((s: { id: string }) => s.id)).toEqual(['k-2']);
+    liveHub.close();
+    await live.stop();
+  });
+});

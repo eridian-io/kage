@@ -1,4 +1,11 @@
-import { type AnswerBody, LIMITS, type NewTaskBody, type ReplyBody } from '@kage/shared';
+import {
+  type AnswerBody,
+  type ArchiveBody,
+  LIMITS,
+  type NewTaskBody,
+  type PinBody,
+  type ReplyBody,
+} from '@kage/shared';
 
 export type Parsed<T> = { ok: true; value: T } | { ok: false; error: string };
 
@@ -126,4 +133,23 @@ export function parseReply(body: unknown): Parsed<ReplyBody> {
     return fail('The reply is too long (over 12,000 bytes).');
   }
   return { ok: true, value: { text } };
+}
+
+const EXPECTED_PIN = 'Expected {"pinned": true|false}';
+const EXPECTED_ARCHIVE = 'Expected {"archived": true|false}';
+
+/** A `POST …/pin` body: exactly `{pinned}`, a boolean. */
+export function parsePin(body: unknown): Parsed<PinBody> {
+  const o = exactKeys(body, ['pinned'], EXPECTED_PIN);
+  if (!o.ok) return o;
+  const { pinned } = o.value;
+  return typeof pinned === 'boolean' ? { ok: true, value: { pinned } } : fail(EXPECTED_PIN);
+}
+
+/** A `POST …/archive` body: exactly `{archived}`, a boolean (false restores). */
+export function parseArchive(body: unknown): Parsed<ArchiveBody> {
+  const o = exactKeys(body, ['archived'], EXPECTED_ARCHIVE);
+  if (!o.ok) return o;
+  const { archived } = o.value;
+  return typeof archived === 'boolean' ? { ok: true, value: { archived } } : fail(EXPECTED_ARCHIVE);
 }

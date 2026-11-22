@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { hasControlChars, parseAnswer, parseNewTask, parseReply } from './validate.ts';
+import {
+  hasControlChars,
+  parseAnswer,
+  parseArchive,
+  parseNewTask,
+  parsePin,
+  parseReply,
+} from './validate.ts';
 
 const ok = { project: 'shop', base: 'main', task: 'Fix the cart total', acceptEdits: false };
 const EXPECTED = 'Expected {"project", "base", "task", "acceptEdits"}';
@@ -252,5 +259,37 @@ describe('parseReply', () => {
     ]) {
       expect(parseReply({ text })).toEqual({ ok: true, value: { text } });
     }
+  });
+});
+
+describe('parsePin and parseArchive (phase 4 Task 4)', () => {
+  const PIN = 'Expected {"pinned": true|false}';
+  const ARCHIVE = 'Expected {"archived": true|false}';
+  it('takes exactly a boolean', () => {
+    expect(parsePin({ pinned: true })).toEqual({ ok: true, value: { pinned: true } });
+    expect(parsePin({ pinned: false })).toEqual({ ok: true, value: { pinned: false } });
+    expect(parseArchive({ archived: true })).toEqual({ ok: true, value: { archived: true } });
+    expect(parseArchive({ archived: false })).toEqual({ ok: true, value: { archived: false } });
+  });
+  it('refuses another type, an extra key, an array, null and a missing body', () => {
+    for (const body of [
+      { pinned: 'yes' },
+      { pinned: 1 },
+      { pinned: null },
+      {},
+      [],
+      null,
+      undefined,
+    ]) {
+      expect(parsePin(body), JSON.stringify(body)).toEqual({ ok: false, error: PIN });
+    }
+    expect(parsePin({ pinned: true, x: 1 })).toEqual({ ok: false, error: 'Unexpected field "x"' });
+    for (const body of [{ archived: 'yes' }, { archived: 0 }, {}, [], null, undefined]) {
+      expect(parseArchive(body), JSON.stringify(body)).toEqual({ ok: false, error: ARCHIVE });
+    }
+    expect(parseArchive({ archived: true, pinned: true })).toEqual({
+      ok: false,
+      error: 'Unexpected field "pinned"',
+    });
   });
 });

@@ -1,4 +1,4 @@
-import type { ProjectsResponse } from '@kage/shared';
+import type { ArchivedResponse, ArchivedSession, ProjectsResponse } from '@kage/shared';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
@@ -14,8 +14,15 @@ import {
 } from './auth.ts';
 import { ActionError, type SessionControls } from './control/actions.ts';
 import { LaunchError, type TaskLauncher } from './control/launcher.ts';
-import { type Parsed, parseAnswer, parseReply } from './control/validate.ts';
+import {
+  type Parsed,
+  parseAnswer,
+  parseArchive,
+  parsePin,
+  parseReply,
+} from './control/validate.ts';
 import type { EventHub } from './events.ts';
+import type { FinishActions } from './finish/actions.ts';
 import { firstLine } from './git/exec.ts';
 import { csrfGuard, hostGuard } from './security.ts';
 import { NotFoundError, NotImplementedError, type SessionSource } from './source.ts';
@@ -37,6 +44,10 @@ export interface AppDeps {
   invalidateProjects?: () => void;
   /** Live mode: answer, reply and stop. Without it (demo mode) those routes answer 501. */
   controls?: Pick<SessionControls, 'answer' | 'reply' | 'stop'>;
+  /** Live mode: pin, archive and restore. Without it (demo mode) those routes answer 501. */
+  finish?: Pick<FinishActions, 'pin' | 'archive'>;
+  /** Live mode: the archived sessions for GET /api/archive (501 without it). */
+  archivedList?: () => ArchivedSession[];
 }
 
 const DEMO_NO_TASKS = "Demo mode can't start tasks.";
@@ -210,28 +221,38 @@ export function createApp(deps: AppDeps): Hono {
     }
   });
 
-  const { controls } = deps;
+  const { controls, finish, archivedList } = deps;
   /**
-   * One route helper for answer, reply and stop (F19): 501 in demo mode, 400 for a bad body,
-   * the ActionError's status and message, else a one-sentence 500.
+   * One route helper for the session actions (F19): 501 in demo mode (no `actor`), 400 for a bad
+   * body, the ActionError's status and message, else a one-sentence 500 starting with `failed`.
    */
-  const control =
-    <T>(
+  const action =
+    <A, T>(
+      actor: A | undefined,
+      failed: string,
       parse: (raw: string) => Parsed<T>,
-      run: (ctl: NonNullable<typeof controls>, id: string, body: T) => Promise<void>,
+      run: (a: A, id: string, body: T) => Promise<void>,
     ) =>
     async (c: Context) => {
-      if (!controls) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+      if (!actor) return c.json({ error: DEMO_NO_CONTROLS }, 501);
       const parsed = parse(await c.req.text());
       if (!parsed.ok) return c.json({ error: parsed.error }, 400);
       try {
-        await run(controls, c.req.param('id') as string, parsed.value);
+        await run(actor, c.req.param('id') as string, parsed.value);
       } catch (err) {
         if (err instanceof ActionError) return c.json({ error: err.message }, err.status);
-        return c.json({ error: `Kage couldn't send that to the session: ${firstLine(err)}` }, 500);
+        return c.json({ error: `${failed}: ${firstLine(err)}` }, 500);
       }
       return c.body(null, 204);
     };
+  const control = <T>(
+    parse: (raw: string) => Parsed<T>,
+    run: (ctl: NonNullable<typeof controls>, id: string, body: T) => Promise<void>,
+  ) => action(controls, "Kage couldn't send that to the session", parse, run);
+  const finishing = <T>(
+    parse: (raw: string) => Parsed<T>,
+    run: (f: NonNullable<typeof finish>, id: string, body: T) => Promise<void>,
+  ) => action(finish, "Kage couldn't change the session", parse, run);
   /** A JSON body for the body parsers; `undefined` when it isn't JSON (they answer 400). */
   const json = (raw: string): unknown => {
     try {
@@ -258,6 +279,25 @@ export function createApp(deps: AppDeps): Hono {
     '/api/sessions/:id/stop',
     control(parseNoBody, (ctl, id) => ctl.stop(id)),
   );
+  app.post(
+    '/api/sessions/:id/pin',
+    finishing(
+      (raw) => parsePin(json(raw)),
+      (f, id, b) => f.pin(id, b.pinned),
+    ),
+  );
+  app.post(
+    '/api/sessions/:id/archive',
+    finishing(
+      (raw) => parseArchive(json(raw)),
+      (f, id, b) => f.archive(id, b.archived),
+    ),
+  );
+  app.get('/api/archive', (c) => {
+    if (!archivedList) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+    const body: ArchivedResponse = { sessions: archivedList() };
+    return c.json(body);
+  });
 
   app.delete('/api/sessions/:id', async (c) => {
     const id = c.req.param('id');
