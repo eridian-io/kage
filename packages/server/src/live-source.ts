@@ -108,6 +108,8 @@ export interface LiveSourceDeps {
   autoArchive?: (host: AutoArchiveHost) => AutoArchiverLike;
   /** F11: a session with an open terminal is never archived automatically (Task 12 wires it). */
   isTerminalOpen?: (id: string) => boolean;
+  /** One line for Kage's log (serve passes stderr): a failed resume (R63). */
+  log?: (line: string) => void;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -139,6 +141,9 @@ const ANSWER_CHECK_MS = 500;
 const REPLY_INTERRUPT_MS = 5000;
 /** The now line of a launched session until Claude says what it is doing. */
 const STARTING = 'Starting Claude…';
+/** R63: `--resume` found no conversation (a SessionEnd with another, random session id). */
+export const RESUME_FAILED =
+  "Claude couldn't find this conversation, so the session wasn't resumed.";
 /** P3F1: a launched session that had its SessionStart but no first prompt is looked at again this much later. */
 const FIRST_PROMPT_MS = 10_000;
 /** P3F1: a failed capture at that fallback (a tmux error) is tried once more this much later. */
@@ -215,6 +220,12 @@ interface Live extends SessionView {
    * SessionEnd, or by the FIRST_PROMPT_MS fallback after SessionStart.
    */
   firstPromptPending: boolean;
+  /**
+   * B7: Kage resumed this session and no hook has come from the new Claude yet; `sessionId` is
+   * the id passed to `--resume` (null for `--continue`). R63: a SessionEnd naming another id
+   * first means the resume failed.
+   */
+  resuming: { sessionId: string | null } | null;
   /** The last AskUserQuestion's multiSelect per question text (whitespace collapsed). */
   askMulti: Map<string, boolean>;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
@@ -444,6 +455,41 @@ export class LiveSource implements SessionSource {
     const ext = this.#sessions.get(`ext-${windowId}`);
     if (ext) this.#removeSession(ext);
     if (this.#running) void this.#relist();
+  }
+
+  /**
+   * B7: Kage opened a window that resumes this ended record (`claude --resume`): running,
+   * "Starting Claude…", statusSince now, until the P3F1 rule ends the wait (its first prompt,
+   * PreToolUse, SessionEnd or the fallback after SessionStart). The record's transcript is
+   * followed again (a resume appends to the same file). Leaving ended re-syncs auto-archive.
+   * Anything but an ended record is left alone.
+   */
+  resumed(kageId: string): void {
+    const st = this.#sessions.get(kageId);
+    if (!st?.record || st.record.kageId !== kageId || st.status !== 'ended' || !this.#running) {
+      return;
+    }
+    this.#clearTimers(st, ['retire', 'firstPrompt']);
+    st.resuming = { sessionId: st.sessionId };
+    st.firstPromptPending = true;
+    // A new claude in a new window: its startup screens are checked afresh (R9).
+    st.claudeExited = true;
+    st.hookSeen = false;
+    st.idleSeen = false;
+    st.pending = false;
+    st.lastActivity = this.#clock();
+    this.#setStatus(st, 'running');
+    st.now = STARTING;
+    if (st.transcriptPath) void this.#ensureTail(st);
+    this.#emitNow(st);
+  }
+
+  /** A listed window carries this kage id, or Kage just opened one for it (a claim). */
+  hasWindow(kageId: string): boolean {
+    const st = this.#sessions.get(kageId);
+    if (st?.record?.kageId === kageId && st.window) return true;
+    for (const k of this.#claims.values()) if (k === kageId) return true;
+    return false;
   }
 
   /** The launch failed: the record and its session go (session.removed), and that is saved. */
@@ -767,6 +813,7 @@ export class LiveSource implements SessionSource {
       promptKind: null,
       replying: false,
       firstPromptPending: false,
+      resuming: null,
       askMulti: new Map(),
       promptSeen: false,
       pending: false,
@@ -917,7 +964,8 @@ export class LiveSource implements SessionSource {
     if (st.transcriptPath) {
       await this.#ensureTail(st);
       if (!this.#running || st.window !== w) return;
-      this.#rebuildFromTail(st);
+      // A resumed session's transcript is its last run's: until the first prompt, P3F1 decides.
+      if (!st.firstPromptPending) this.#rebuildFromTail(st);
     }
     this.#scheduleIdle(st);
     const gen = st.gen;
@@ -1125,6 +1173,14 @@ export class LiveSource implements SessionSource {
   }
 
   #applyHook(st: Live, e: HookEvent): void {
+    if (st.resuming) {
+      const want = st.resuming.sessionId;
+      st.resuming = null;
+      if (e.event === 'SessionEnd' && want !== null && e.sessionId !== want) {
+        this.#resumeFailed(st, want);
+        return;
+      }
+    }
     // R12: a permission Notification counts only while a tool is pending.
     const counts = !(e.event === 'Notification' && e.notification === 'permission' && !st.pending);
     // Every hook names its session and transcript: link on any of them, so a pane whose
@@ -1187,6 +1243,29 @@ export class LiveSource implements SessionSource {
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
     // A turn end checks the session for auto-archive, also when it was done already.
     if (e.event === 'Stop' && st.record) this.#auto?.touch(st.id);
+  }
+
+  /**
+   * R63: `--resume <id>` found no conversation; Claude sent a SessionEnd with a new random id and
+   * exits. The session is ended again, keeping its old link (never the random id), and the
+   * error is reported: a line on the card and one in Kage's log.
+   */
+  #resumeFailed(st: Live, sessionId: string): void {
+    this.#endFirstPromptWait(st);
+    this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
+    st.mode = 'hooks';
+    st.pending = false;
+    this.#setStatus(st, 'ended');
+    const line: DisplayLine = { kind: 'out', text: RESUME_FAILED };
+    st.lines = [...(st.tail ? st.tail.lines() : st.lines), line].slice(-MAX_LINES);
+    this.#stopTail(st);
+    st.now = null;
+    this.#emitLines(st, [line], false);
+    this.#emitNow(st);
+    this.#d.log?.(
+      `kage: session ${st.id} wasn't resumed: Claude found no conversation ${sessionId}`,
+    );
+    this.#recheckSoon(STOP_RECHECK_MS);
   }
 
   /** The wait ends (its fallback and retry timers too); "Starting Claude…" goes with it. */

@@ -6,13 +6,16 @@ import { delimiter, join } from 'node:path';
 import type { NewTaskBody } from '@kage/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { type GitExec, gitExec } from '../git/exec.ts';
+import type { FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
+import { ActionLock } from './actions.ts';
 import {
   claudeArgv,
   LaunchError,
   type LauncherDeps,
   resolveClaude,
+  resumeArgv,
   TaskLauncher,
 } from './launcher.ts';
 
@@ -125,6 +128,7 @@ class FakeSource {
   }
   claim(kageId: string, windowId: string): void {
     this.log.push(`claim ${kageId} ${windowId}`);
+    this.live.add(kageId);
   }
   async abandon(kageId: string): Promise<void> {
     this.log.push(`abandon ${kageId}`);
@@ -132,6 +136,22 @@ class FakeSource {
   }
   branchTaken(project: string, branch: string): boolean {
     return this.records.some((r) => r.project === project && r.branch === branch);
+  }
+  /** Resume's view of the sessions (finishTarget), by id. */
+  targets = new Map<string, FinishTarget>();
+  /** Record ids with a live window (hasWindow); a claim adds one. */
+  live = new Set<string>();
+  finishTarget(id: string): FinishTarget | null {
+    const t = this.targets.get(id);
+    return t ? { ...t, record: t.record ? { ...t.record } : null } : null;
+  }
+  resumed(kageId: string): void {
+    this.log.push(`resumed ${kageId}`);
+    const t = this.targets.get(kageId);
+    if (t) t.status = 'running';
+  }
+  hasWindow(kageId: string): boolean {
+    return this.live.has(kageId);
   }
 }
 
@@ -676,4 +696,245 @@ describe('TaskLauncher: hardening (Task 6 review)', () => {
       expect(existsSync(join(outside, 'trees'))).toBe(false);
     },
   );
+});
+
+describe('resumeArgv (B7)', () => {
+  const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  it('resumes a UUID-shaped session id as its own element after --resume', () => {
+    expect(resumeArgv('/c', '/s', 'acceptEdits', ID)).toEqual([
+      '/c',
+      '--settings',
+      '/s',
+      '--permission-mode',
+      'acceptEdits',
+      '--resume',
+      ID,
+    ]);
+  });
+  it('falls back to --continue without an id, or with one that is not id-shaped', () => {
+    for (const id of [
+      null,
+      '--x',
+      '',
+      'abc',
+      '../../etc',
+      `${ID} --dangerously-skip-permissions`,
+    ]) {
+      expect(resumeArgv('/c', '/s', 'default', id), String(id)).toEqual([
+        '/c',
+        '--settings',
+        '/s',
+        '--permission-mode',
+        'default',
+        '--continue',
+      ]);
+    }
+  });
+});
+
+describe('TaskLauncher.resume (B7)', () => {
+  const SID = '0f8fad5b-d9cb-469f-a165-70867728950e';
+  let wt: string;
+  beforeEach(() => {
+    wt = join(repo, '.worktrees', 'fix-the-cart-total');
+    git(repo, 'worktree', 'add', '-q', '-b', 'kage/fix-the-cart-total', '--', wt, 'main');
+  });
+  const record = (over: Partial<SessionRecord> = {}): SessionRecord => ({
+    kageId: 'k-1',
+    windowId: null,
+    project: 'shop',
+    task: 'Fix the cart total',
+    branch: 'kage/fix-the-cart-total',
+    worktree: wt,
+    createdAt: 1_700_000_000_000,
+    pinned: false,
+    archived: false,
+    sessionId: SID,
+    transcriptPath: '/home/dev/.claude/projects/x/s.jsonl',
+    base: 'main',
+    permissionMode: 'acceptEdits',
+    baseCommit: null,
+    doneAt: 1_700_000_100_000,
+    archivedAt: null,
+    restoredAt: null,
+    unpinnedAt: null,
+    ...over,
+  });
+  function resumable(
+    over: Partial<SessionRecord> = {},
+    t: Partial<FinishTarget> = {},
+    deps: Partial<LauncherDeps> = {},
+  ) {
+    const s = setup(deps);
+    const r = record(over);
+    s.source.targets.set(r.kageId, {
+      id: r.kageId,
+      record: r,
+      windowId: null,
+      paneId: null,
+      status: 'ended',
+      external: false,
+      ...t,
+    });
+    return s;
+  }
+
+  it('opens one window in the worktree with the record’s kage id and exact argv, then resumed, then claim', async () => {
+    const { launcher, tmux, log } = resumable();
+    await launcher.resume('k-1');
+    expect(tmux.calls).toEqual([
+      {
+        name: 'fix-the-cart-total',
+        cwd: wt,
+        env: { KAGE_SOCKET: '/run/kage/hook.sock', PATH: '/usr/local/bin:/usr/bin' },
+        argv: [
+          '/opt/claude/bin/claude',
+          '--settings',
+          '/state/kage/claude-settings.json',
+          '--permission-mode',
+          'acceptEdits',
+          '--resume',
+          SID,
+        ],
+        kageId: 'k-1',
+      },
+    ]);
+    expect(log).toEqual(['newWindow', 'resumed k-1', 'claim k-1 @7']);
+  });
+
+  it('the mode comes from the record; no session id resumes with --continue', async () => {
+    const { launcher, tmux } = resumable({ permissionMode: 'default', sessionId: null });
+    await launcher.resume('k-1');
+    expect(tmux.calls[0]?.argv.slice(3)).toEqual(['--permission-mode', 'default', '--continue']);
+  });
+
+  it('an unknown id is 404; an external session 403', async () => {
+    const { launcher, tmux } = resumable();
+    let err = await launchError(launcher.resume('nope'));
+    expect([err.status, err.message]).toEqual([404, 'No session with id nope']);
+    const s = setup();
+    s.source.targets.set('ext-@3', {
+      id: 'ext-@3',
+      record: null,
+      windowId: '@3',
+      paneId: '%3',
+      status: 'ended',
+      external: true,
+    });
+    err = await launchError(s.launcher.resume('ext-@3'));
+    expect([err.status, err.message]).toEqual([403, 'Kage only resumes sessions it started.']);
+    expect(tmux.calls).toEqual([]);
+    expect(s.tmux.calls).toEqual([]);
+  });
+
+  it('a session that is not ended is 409, whatever its status', async () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const { launcher, tmux } = resumable({}, { status });
+      const err = await launchError(launcher.resume('k-1'));
+      expect([err.status, err.message]).toEqual([409, 'This session is still running.']);
+      expect(tmux.calls).toEqual([]);
+    }
+  });
+
+  it('a live window with the record’s kage id is 409', async () => {
+    const { launcher, tmux, source } = resumable();
+    source.live.add('k-1');
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([409, 'This session already has a window.']);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('an archived session is 409 "Restore the session before resuming it."', async () => {
+    const { launcher, tmux } = resumable({ archived: true, archivedAt: 1_700_000_200_000 });
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([409, 'Restore the session before resuming it.']);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('without claude it is a 503 with phase 3’s message, and no tmux call', async () => {
+    const { launcher, tmux } = resumable({}, {}, { claudeBin: null });
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      503,
+      "Claude Code isn't on Kage's PATH. Install it, or set KAGE_CLAUDE_BIN.",
+    ]);
+    expect(tmux.calls).toEqual([]);
+  });
+
+  it('a missing worktree folder is 409, and nothing opens', async () => {
+    const gone = join(repo, '.worktrees', 'gone');
+    const { launcher, tmux, log } = resumable({ worktree: gone });
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      409,
+      "The worktree is gone, so Kage can't resume this session.",
+    ]);
+    expect(tmux.calls).toEqual([]);
+    expect(log).toEqual([]);
+  });
+
+  it('a file where the worktree was, or a relative path, is 409 too', async () => {
+    const file = join(root, 'a-file');
+    await writeFile(file, 'x');
+    for (const worktree of [file, '.worktrees/fix-the-cart-total']) {
+      const { launcher, tmux } = resumable({ worktree });
+      const err = await launchError(launcher.resume('k-1'));
+      expect(err.status, worktree).toBe(409);
+      expect(tmux.calls).toEqual([]);
+    }
+  });
+
+  it('a worktree on another branch, or detached, is 409 (R71) and nothing opens', async () => {
+    git(wt, 'checkout', '-q', '-b', 'other');
+    let s = resumable();
+    let err = await launchError(s.launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      409,
+      "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.",
+    ]);
+    git(wt, 'checkout', '-q', '--detach');
+    s = resumable();
+    err = await launchError(s.launcher.resume('k-1'));
+    expect(err.status).toBe(409);
+    expect(s.tmux.calls).toEqual([]);
+  });
+
+  it('a tmux failure is 422 with its first line; the session stays ended, nothing resumed or claimed', async () => {
+    const { launcher, tmux, source, log } = resumable();
+    tmux.fail = new Error('no server running\nmore');
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      422,
+      "tmux couldn't open a window: no server running",
+    ]);
+    expect(log).toEqual(['newWindow']);
+    expect(source.finishTarget('k-1')?.status).toBe('ended');
+  });
+
+  it('two concurrent resumes open one window; the second gets 409', async () => {
+    const { launcher, tmux } = resumable();
+    const results = await Promise.allSettled([launcher.resume('k-1'), launcher.resume('k-1')]);
+    expect(results.map((r) => r.status).sort()).toEqual(['fulfilled', 'rejected']);
+    const rejected = results.find((r) => r.status === 'rejected') as PromiseRejectedResult;
+    expect(rejected.reason).toBeInstanceOf(LaunchError);
+    expect((rejected.reason as LaunchError).status).toBe(409);
+    expect(tmux.calls).toHaveLength(1);
+  });
+
+  it('shares the action lock (F5, R68): while another action holds it, resume is 409 and opens nothing', async () => {
+    const lock = new ActionLock();
+    const release = lock.tryAcquire('k-1');
+    const { launcher, tmux } = resumable({}, {}, { lock });
+    const err = await launchError(launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([
+      409,
+      'Kage is still finishing the last action on this session.',
+    ]);
+    expect(tmux.calls).toEqual([]);
+    release?.();
+    await launcher.resume('k-1');
+    expect(tmux.calls).toHaveLength(1);
+    // Released after the resume: another action can take the lock again.
+    expect(lock.tryAcquire('k-1')).not.toBeNull();
+  });
 });

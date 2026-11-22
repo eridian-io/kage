@@ -1,6 +1,14 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -83,6 +91,9 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
           },
           abandon: async () => {},
           branchTaken: () => false,
+          finishTarget: () => null,
+          resumed: () => {},
+          hasWindow: () => false,
         },
         claudeBin: bin,
         settingsPath: join(tmp, 'claude-settings.json'),
@@ -124,6 +135,98 @@ describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
       // The task never ran as a shell job (#(...) in a format would).
       expect(existsSync(join(path, 'pwned'))).toBe(false);
       expect(existsSync(join(home, 'pwned'))).toBe(false);
+    });
+
+    it('resumes an ended record in a new window tagged with its kage id, running --resume <id> (B7)', async () => {
+      const client = new TmuxClient({ session: 'kage', socket: sock, configFile: '/dev/null' });
+      await client.ensureSession();
+      const wt = join(repo, '.worktrees', 'resume-me');
+      git(repo, 'worktree', 'add', '-q', '-b', 'kage/resume-me', '--', wt, 'main');
+      // A stand-in for claude that writes its arguments, one per line, then sleeps.
+      const argvFile = join(tmp, 'resume-argv.txt');
+      const recorder = join(tmp, 'fake-claude-resume');
+      writeFileSync(
+        recorder,
+        `#!/bin/sh\nprintf '%s\\n' "$@" > '${argvFile}.tmp'\nmv '${argvFile}.tmp' '${argvFile}'\nexec sleep 30\n`,
+      );
+      chmodSync(recorder, 0o755);
+      const sid = '0f8fad5b-d9cb-469f-a165-70867728950e';
+      const record: SessionRecord = {
+        kageId: 'k-resume',
+        windowId: null,
+        project: 'shop',
+        task: 'Resume me',
+        branch: 'kage/resume-me',
+        worktree: wt,
+        createdAt: 1,
+        pinned: false,
+        archived: false,
+        sessionId: sid,
+        transcriptPath: null,
+        base: 'main',
+        permissionMode: 'default',
+        baseCommit: null,
+        doneAt: 2,
+        archivedAt: null,
+        restoredAt: null,
+        unpinnedAt: null,
+      };
+      const log: string[] = [];
+      let windowId = '';
+      const launcher = new TaskLauncher({
+        projectsRoot: root,
+        worktreeDir: '.worktrees',
+        branchPrefix: 'kage/',
+        git: gitExec,
+        tmux: client,
+        source: {
+          adopt: async () => {},
+          claim: (k, w) => {
+            log.push(`claim ${k}`);
+            windowId = w;
+          },
+          abandon: async () => {},
+          branchTaken: () => false,
+          finishTarget: (id) =>
+            id === record.kageId
+              ? {
+                  id,
+                  record: { ...record },
+                  windowId: null,
+                  paneId: null,
+                  status: 'ended',
+                  external: false,
+                }
+              : null,
+          resumed: (k) => {
+            log.push(`resumed ${k}`);
+          },
+          hasWindow: () => false,
+        },
+        claudeBin: recorder,
+        settingsPath: join(tmp, 'claude-settings.json'),
+        hookSocket: join(tmp, 'kage.sock'),
+        windowPath: process.env.PATH ?? null,
+      });
+
+      await launcher.resume('k-resume');
+      expect(log).toEqual(['resumed k-resume', 'claim k-resume']);
+      expect(await client.windowKageId(windowId)).toBe('k-resume');
+      const deadline = Date.now() + 5000;
+      while (!existsSync(argvFile) && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      const argv = readFileSync(argvFile, 'utf8').trimEnd().split('\n');
+      expect(argv).toEqual([
+        '--settings',
+        join(tmp, 'claude-settings.json'),
+        '--permission-mode',
+        'default',
+        '--resume',
+        sid,
+      ]);
+      const panes = tmux('list-panes', '-t', windowId, '-F', '#{pane_current_path}').trim();
+      expect(panes).toBe(wt);
     });
   },
 );

@@ -32,7 +32,7 @@ export interface FinishDeps {
   findProject?: (name: string) => Promise<{ path: string } | null>;
 }
 
-const BUSY = 'Kage is still finishing the last action on this session.';
+export const BUSY = 'Kage is still finishing the last action on this session.';
 const NOT_KAGES = "That window isn't Kage's any more.";
 const ACTIVE = 'Stop the session before archiving it.';
 const ACTIVE_DELETE = 'Stop the session before deleting it.';
@@ -40,7 +40,7 @@ const CHANGED = 'The branch changed since you looked. Look again before deleting
 const notKageWorktree = (worktree: string) =>
   `Kage won't delete ${worktree}: it isn't one of Kage's worktrees.`;
 /** R71: git lists the record's worktree, but on another branch or a detached HEAD. */
-const OFF_BRANCH =
+export const OFF_BRANCH =
   "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.";
 /** Claude's footer while a turn runs (integration §7). */
 const BUSY_FOOTER = /esc to interrupt/i;

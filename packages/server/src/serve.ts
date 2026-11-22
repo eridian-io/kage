@@ -213,6 +213,8 @@ async function startLive(
         gitDir: (repo) => gitCommonDir(repo, gitExec),
         log: (line) => io.err(line),
       }),
+    // A failed resume (R63) is reported on the card and here.
+    log: (line) => io.err(line),
   });
   // Built before source.start(), which starts the auto-archiver that archives through it.
   const lock = new ActionLock();
@@ -396,6 +398,8 @@ async function startServer(
         killOwnedWindow: (w, k) => live.tmux.killOwnedWindow(w, k),
       },
       source: live.source,
+      // Resume shares the one action lock with the controls and finish actions (F5, R68).
+      lock: live.lock,
       claudeBin,
       settingsPath: live.settingsPath,
       hookSocket: live.hookSocket,
@@ -423,7 +427,7 @@ async function startServer(
     token: cfg.token,
     ...(demoReset ? { demoReset } : {}),
     ...(projects ? { projects } : {}),
-    ...(launcher ? { launcher } : {}),
+    ...(launcher ? { launcher, resumer: launcher } : {}),
     ...(invalidateProjects ? { invalidateProjects } : {}),
     ...(controls ? { controls } : {}),
     ...(finish ? { finish } : {}),

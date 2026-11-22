@@ -10,20 +10,22 @@ import {
   realpath,
   stat,
 } from 'node:fs/promises';
-import { delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { NewTaskBody, NewTaskResponse } from '@kage/shared';
+import { BUSY, OFF_BRANCH } from '../finish/actions.ts';
 import { firstLine, type GitExec } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
 import { HEX_COMMIT, type SessionRecord } from '../state/store.ts';
 import type { TmuxClient } from '../tmux/client.ts';
+import { ActionLock } from './actions.ts';
 import { slugify, uniqueSlug } from './slug.ts';
 import { parseNewTask } from './validate.ts';
 
 /** A launch refused or failed; `status` is the HTTP status the route answers with. */
 export class LaunchError extends Error {
-  readonly status: 400 | 404 | 422 | 503;
-  constructor(status: 400 | 404 | 422 | 503, message: string) {
+  readonly status: 400 | 403 | 404 | 409 | 422 | 503;
+  constructor(status: 400 | 403 | 404 | 409 | 422 | 503, message: string) {
     super(message);
     this.name = 'LaunchError';
     this.status = status;
@@ -54,6 +56,26 @@ export function claudeArgv(
     '--',
     task,
   ];
+}
+
+/** A Claude session id Kage passes to `--resume` (a UUID; integration §8). */
+const SESSION_ID = /^[0-9A-Fa-f-]{8,64}$/;
+
+/**
+ * The resume command (B7; R4, R19): the record's permission mode and Kage's settings as at the
+ * start, then `--resume <id>` with the id as its own element, or `--continue` (the folder's most
+ * recent session) when the record has no id, or one that isn't id-shaped.
+ */
+export function resumeArgv(
+  bin: string,
+  settingsPath: string,
+  mode: 'default' | 'acceptEdits',
+  sessionId: string | null,
+): string[] {
+  const base = [bin, '--settings', settingsPath, '--permission-mode', mode];
+  return sessionId !== null && SESSION_ID.test(sessionId)
+    ? [...base, '--resume', sessionId]
+    : [...base, '--continue'];
 }
 
 async function isExecutableFile(path: string): Promise<boolean> {
@@ -99,7 +121,12 @@ export interface LauncherDeps {
   git: GitExec;
   tmux: Pick<TmuxClient, 'newWindow' | 'listWindows' | 'killUntaggedWindow' | 'killOwnedWindow'>;
   /** `branchTaken` lets the slug skip branches that Kage's records use (deleted or not). */
-  source: Pick<LiveSource, 'adopt' | 'claim' | 'abandon' | 'branchTaken'>;
+  source: Pick<
+    LiveSource,
+    'adopt' | 'claim' | 'abandon' | 'branchTaken' | 'finishTarget' | 'resumed' | 'hasWindow'
+  >;
+  /** One action at a time per session, shared with the controls and finish actions (F5, R68). */
+  lock?: ActionLock;
   claudeBin: string | null;
   settingsPath: string;
   hookSocket: string;
@@ -154,9 +181,11 @@ export class TaskLauncher {
   readonly #newId: () => string;
   readonly #now: () => number;
   readonly #queues = new Map<string, Promise<unknown>>();
+  readonly #lock: ActionLock;
 
   constructor(d: LauncherDeps) {
     this.#d = d;
+    this.#lock = d.lock ?? new ActionLock();
     this.#newId = d.newId ?? randomUUID;
     this.#now = d.now ?? Date.now;
   }
@@ -178,6 +207,73 @@ export class TaskLauncher {
     const name = await entryName(d.projectsRoot, found.name);
     const repo = await realpath(found.path).catch(() => resolve(found.path));
     return this.#serial(repo, () => this.#launch(task, bin, name));
+  }
+
+  /**
+   * Resumes an ended Kage session (B7) in a new window tagged with its kage id, in its worktree,
+   * running `claude --resume <session id>`. Under the shared action lock, in order: 404 unknown,
+   * 403 external, 409 archived, 409 not ended, 409 a window already carries its kage id, 503 no
+   * claude, 409 the worktree folder is gone, 409 it isn't on the record's branch (R71); then the
+   * window opens, the session is resumed (running, "Starting Claude…") and the window claimed.
+   * A tmux failure is 422 and leaves the session ended: nothing was created to roll back.
+   */
+  async resume(id: string): Promise<void> {
+    const d = this.#d;
+    if (!d.source.finishTarget(id)) throw new LaunchError(404, `No session with id ${id}`);
+    const release = this.#lock.tryAcquire(id);
+    if (!release) throw new LaunchError(409, BUSY);
+    try {
+      // Read again under the lock.
+      const t = d.source.finishTarget(id);
+      if (!t) throw new LaunchError(404, `No session with id ${id}`);
+      const r = t.record;
+      if (!r) throw new LaunchError(403, 'Kage only resumes sessions it started.');
+      if (r.archived) throw new LaunchError(409, 'Restore the session before resuming it.');
+      if (t.status !== 'ended') throw new LaunchError(409, 'This session is still running.');
+      if (d.source.hasWindow(r.kageId)) {
+        throw new LaunchError(409, 'This session already has a window.');
+      }
+      const bin = d.claudeBin;
+      if (bin === null) throw new LaunchError(503, NO_CLAUDE);
+      // K3: tmux would start the window in $HOME if the folder were missing.
+      const folder = isAbsolute(r.worktree) ? await stat(r.worktree).catch(() => null) : null;
+      if (!folder?.isDirectory()) {
+        throw new LaunchError(409, "The worktree is gone, so Kage can't resume this session.");
+      }
+      await this.#onBranch(r.worktree, r.branch);
+      let windowId: string;
+      try {
+        ({ windowId } = await d.tmux.newWindow({
+          name: basename(r.worktree),
+          cwd: r.worktree,
+          env: {
+            KAGE_SOCKET: d.hookSocket,
+            ...(d.windowPath !== null ? { PATH: d.windowPath } : {}),
+          },
+          argv: resumeArgv(bin, d.settingsPath, r.permissionMode, r.sessionId),
+          kageId: r.kageId,
+        }));
+      } catch (e) {
+        throw new LaunchError(422, `tmux couldn't open a window: ${firstLine(e)}`);
+      }
+      d.source.resumed(r.kageId);
+      d.source.claim(r.kageId, windowId);
+    } finally {
+      release();
+    }
+  }
+
+  /** The worktree's HEAD is the record's branch: else 409 (R71), or 422 when git fails. */
+  async #onBranch(worktree: string, branch: string): Promise<void> {
+    let head: string;
+    try {
+      head = (await this.#d.git(['symbolic-ref', '-q', 'HEAD'], { cwd: worktree })).stdout.trim();
+    } catch (e) {
+      // Exit 1: a detached HEAD.
+      if ((e as { code?: unknown }).code === 1) throw new LaunchError(409, OFF_BRANCH);
+      throw new LaunchError(422, `git couldn't read the branch: ${firstLine(e)}`);
+    }
+    if (head !== `refs/heads/${branch}`) throw new LaunchError(409, OFF_BRANCH);
   }
 
   #serial<T>(key: string, fn: () => Promise<T>): Promise<T> {

@@ -41,6 +41,8 @@ export interface AppDeps {
   projects?: () => Promise<ProjectsResponse>;
   /** Live mode: starts tasks (POST /api/sessions). Without it (demo mode) the route answers 501. */
   launcher?: Pick<TaskLauncher, 'start'>;
+  /** Live mode: resumes ended Kage sessions (B7). Without it (demo mode) the route answers 501. */
+  resumer?: Pick<TaskLauncher, 'resume'>;
   /** R35: forgets the cached project listing after a launch (it adds a branch). */
   invalidateProjects?: () => void;
   /** Live mode: answer, reply and stop. Without it (demo mode) those routes answer 501. */
@@ -297,6 +299,19 @@ export function createApp(deps: AppDeps): Hono {
       (f, id, b) => f.archive(id, b.archived),
     ),
   );
+  const { resumer } = deps;
+  app.post('/api/sessions/:id/resume', async (c) => {
+    if (!resumer) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+    const parsed = parseNoBody(await c.req.text());
+    if (!parsed.ok) return c.json({ error: parsed.error }, 400);
+    try {
+      await resumer.resume(c.req.param('id'));
+    } catch (err) {
+      if (err instanceof LaunchError) return c.json({ error: err.message }, err.status);
+      return c.json({ error: `Kage couldn't resume the session: ${firstLine(err)}` }, 500);
+    }
+    return c.body(null, 204);
+  });
   app.get('/api/archive', (c) => {
     if (!archivedList) return c.json({ error: DEMO_NO_CONTROLS }, 501);
     const body: ArchivedResponse = { sessions: archivedList() };

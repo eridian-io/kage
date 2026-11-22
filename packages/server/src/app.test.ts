@@ -1137,3 +1137,74 @@ describe('DELETE /api/sessions/:id {unpushed, uncommitted, ignored} (phase 4 Tas
     expect(t.calls).toEqual([]);
   });
 });
+
+describe('POST /api/sessions/:id/resume (phase 4 Task 7)', () => {
+  const withResume = (fail: Error | null = null, token = '') => {
+    const calls: string[] = [];
+    const a = createApp({
+      source,
+      hub,
+      assets,
+      allowed,
+      token,
+      resumer: {
+        resume: async (id: string) => {
+          calls.push(id);
+          if (fail) throw fail;
+        },
+      },
+    });
+    return { a, calls };
+  };
+
+  it('no body (or {}) → 204 and reaches the launcher', async () => {
+    const { a, calls } = withResume();
+    expect((await a.fetch(mutate('POST', '/api/sessions/k-1/resume'))).status).toBe(204);
+    expect((await a.fetch(mutate('POST', '/api/sessions/k-2/resume', {}))).status).toBe(204);
+    expect(calls).toEqual(['k-1', 'k-2']);
+  });
+
+  it('a body is a 400 before any resume', async () => {
+    const { a, calls } = withResume();
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/resume', { sessionId: 'x' }));
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Unexpected field "sessionId"' });
+    expect(calls).toEqual([]);
+  });
+
+  it('maps LaunchError statuses (403, 404, 409, 422, 503) and messages; anything else is a one-sentence 500', async () => {
+    for (const status of [403, 404, 409, 422, 503] as const) {
+      const { a } = withResume(new LaunchError(status, `Problem ${status}.`));
+      const res = await a.fetch(mutate('POST', '/api/sessions/k-1/resume'));
+      expect(res.status).toBe(status);
+      expect(await res.json()).toEqual({ error: `Problem ${status}.` });
+    }
+    const { a } = withResume(new Error('boom\nstack'));
+    const res = await a.fetch(mutate('POST', '/api/sessions/k-1/resume'));
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual({ error: "Kage couldn't resume the session: boom" });
+  });
+
+  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+    const res = await app(true).fetch(mutate('POST', '/api/sessions/k-1/resume'));
+    expect(res.status).toBe(501);
+    expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+  });
+
+  it('needs X-Kage and Origin, and the token when one is set', async () => {
+    const { a, calls } = withResume();
+    for (const headers of [
+      {} as Record<string, string>,
+      { 'X-Kage': '1' },
+      { Origin: ORIGIN },
+      { 'X-Kage': '1', Origin: 'http://evil.example' },
+    ]) {
+      const res = await a.fetch(req('/api/sessions/k-1/resume', { method: 'POST', headers }));
+      expect(res.status).toBe(403);
+    }
+    const t = withResume(null, 'x'.repeat(20));
+    expect((await t.a.fetch(mutate('POST', '/api/sessions/k-1/resume'))).status).toBe(401);
+    expect(calls).toEqual([]);
+    expect(t.calls).toEqual([]);
+  });
+});
