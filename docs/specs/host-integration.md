@@ -6,6 +6,24 @@ Fixtures: `packages/server/test/fixtures/ports/ss.txt` and `ps.txt` keep the obs
 
 §4 (tmux control mode and xterm.js) and §5 (git for finishing) were recorded on 2026-11-22 for phase 4, with the same versions plus Node 24.22 in WSL, Node 26.13 and Playwright's Chromium on Windows. Their own "Read first" list is just below.
 
+§7 (the SEA, systemd user units, launchd and Claude's sign-in) was recorded on 2026-11-22 for phase 6, with Node 24.22.3 and systemd 255. Its "Read first" list comes first below.
+
+## Read first: where §7 differs from the phase 6 plan
+
+§7 (SEA, systemd user units, launchd and Claude's sign-in, recorded 2026-11-22) checked the plan's assumptions. Holds: a CommonJS entry, `execArgv` (so `NODE_OPTIONS` isn't needed), a manifest asset, user units restarted rather than ordered after Tailscale, and the credentials file check. The idle SEA is 77.1 to 77.2 MB, under the 80 MB gate. Where the plan must change:
+
+1. **No `node --build-sea` on Node 24.22.3.** The build is `node --experimental-sea-config` plus **`postject` 1.0.0-alpha.6**, a dev dependency (§7.1).
+2. **CommonJS is required, not just preferred.** `mainFormat` is silently ignored, and an ESM main fails with `SyntaxError: Cannot use import statement outside a module`. The CommonJS bundle can't hold `main.ts`'s top-level `await`, `import.meta.url` and `import.meta.dirname` must be defined, and the SEA's `require()` loads built-ins only (§7.1).
+3. **The SEA config never reports an unknown key**, so Task 2's tests check behaviour: one `V8Worker` thread, an empty stderr (§7.1).
+4. **The SEA honours `NODE_OPTIONS` as well as `execArgv`.** `execArgv` wins for the same flag, but any other flag in a user's `NODE_OPTIONS` reaches every `kage`, `kage hook` included (§7.1).
+5. **`process.execPath` is the symlink's target**, not the `kage` on `PATH` (`process.argv[1]` is what was typed). A hook command written from `execPath` names the real file (§7.1).
+6. **A code cache made on another architecture prints `Warning: Code cache data rejected.` on stderr.** `useCodeCache: true` (hook 39.6 ms against 50.8 ms without, and 77.2 ms for the bundle) needs its blob built on its own runner. Without a code cache, an x64-made blob runs on arm64 (§7.2, §7.3).
+7. **Never `strip` an injected SEA**: it segfaults. The SEA is about 128 MB, 43.5 MB gzipped and 29.3 MB with xz -9 (§7.1, §7.2).
+8. **A user unit's `PATH` has neither `~/.local/bin` nor `~/.local/node/bin`**, where Node and `claude` live in the owner's WSL, and a login shell doesn't find `claude` either. The unit has to carry a `PATH` (or Kage absolute paths) captured at setup. The same goes for launchd's `/usr/bin:/bin:/usr/sbin:/sbin` (§7.4, §7.5).
+9. **`systemctl --user is-active` exits 3 for `activating`, `inactive` and `failed` alike** (4 for a missing unit, 1 with no user manager: `Failed to connect to bus: No medium found`). Status reads the word (§7.4).
+10. **`loginctl enable-linger` for oneself needs no root** under the shipped polkit policy (`set-self-linger`: `allow_any yes`), unless a local rule in the unreadable `/etc/polkit-1/rules.d/` overrides it. Not tried (§7.4).
+11. **`claude --version` is verified local**: it printed `2.1.330 (Claude Code)` in a network namespace with only `lo`, down (§7.6).
+
 ## Read first: what phase 5 built from §6
 
 The ntfy facts in §6 are used by the notifier and the client as the design spec's §5.9 (notifications), §5.10 (the one outbound call) and §5.11 (the ntfy keys) describe them, and the new copy is in §6.7 of the design spec (all amended 2026-11-22, phase 5).
@@ -457,3 +475,176 @@ Facts for `NtfyClient` (`packages/server/src/notify/ntfy.ts`), taken from ntfy's
 
 - `http:` is used only for a loopback or tailnet server (100.64.0.0/10, `fd7a:115c:a1e0::/48`, a `.ts.net` name); for any other `http:` server the client sends nothing and logs `ntfy: ntfyServer must be https: unless it is on this machine or your tailnet; no ping sent.` The config (Task 6) refuses such a value at start.
 - No log line, error or `redact` result contains the topic, the token or the server URL.
+
+## 7. Install: SEA, systemd and launchd (recorded 2026-11-22 for phase 6)
+
+Facts for phase 6's single executable (SEA), the systemd user unit and the launchd agent. §7.1 to §7.4 and §7.6 were observed in WSL Ubuntu 24.04 (x86_64, 12 GB, `nproc` 8) with **Node 24.22.3** (`~/.local/node/bin`), **systemd 255** (255.4-1ubuntu8.18) and Claude Code **2.1.330**, and in throwaway `node:24.22.3-bookworm-slim` containers (amd64, and arm64 under Docker Desktop's emulation). §7.5 (launchd) is from Apple's documentation and the `launchd.plist(5)` and `launchctl(1)` man pages. There is no Mac here, and no page was fetched for this record (no external hosts), so **every line of §7.5 is documented, not observed**.
+
+Spike hygiene (F15): scratch files lived in `/tmp/kage-sea`, a copy of the committed branch built with `node packages/web/build.ts` and `node packages/server/src/bundle.ts`. `postject` was installed only inside the container. Nothing was installed on the host or in WSL. Every `kage` process ran under a temp `HOME`, `XDG_*` and `KAGE_SOCKET`. The throwaway user unit was installed and removed within one script, and linger was never changed. `/tmp/kage-sea` was deleted at the end.
+
+### 7.1 Building a SEA on Node 24.22.3
+
+- **There is no `node --build-sea` on 24.22.3.** `node --help` lists only `--experimental-sea-config=...`. The build is the documented two steps: make the blob with the release Node, then inject it into a copy of that same Node binary with **`postject` 1.0.0-alpha.6** (the version `npm install postject` resolved on 2026-11-22):
+  ```
+  node --experimental-sea-config sea-config.json
+  # Wrote single executable preparation blob to kage.blob
+  cp "$(command -v node)" kage
+  npx postject kage NODE_SEA_BLOB kage.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2
+  ```
+  On macOS the documented inject adds `--macho-segment-name NODE_SEA` (§7.5).
+- **The config accepts unknown keys silently.** `{"noSuchField":1}` made a blob with exit 0 and no warning, so a misspelt key is never reported. The checks below therefore test behaviour (threads, stderr), not the config.
+- **The main script must be CommonJS.** `"mainFormat":"module"` with an ESM `probe.mjs` built a blob (exit 0), and the SEA then failed at start:
+  ```
+  (node:354678) Warning: Failed to load the ES module: probe.mjs. Make sure to set "type": "module" in the nearest package.json file or use the .mjs extension.
+  probe.mjs:2
+  import { isSea } from 'node:sea';
+  ^^^^^^
+  SyntaxError: Cannot use import statement outside a module
+      at embedderRunCjs (node:internal/main/embedding:63:7)
+  ```
+  `mainFormat` is ignored on this Node. A CommonJS bundle also can't hold `main.ts`'s top-level `await`, and `import.meta.url` and `import.meta.dirname` are empty in it. The spike bundled a `sea-main.ts` with esbuild `format: 'cjs'`. It holds the same steps as `main.ts`'s `if (import.meta.main)` block, inside an async function, and the build defines `import.meta.url` and `import.meta.dirname` from `process.execPath`. The SEA's `require()` loads built-in modules only: `require('/tmp/…')` throws `ERR_UNKNOWN_BUILTIN_MODULE`. ws's optional `require('bufferutil')` is caught, and with the warning disabled nothing is printed for it.
+- **`execArgv` in the config works.** With `"execArgv":["--v8-pool-size=1"]`, `process.execArgv` is `["--v8-pool-size=1"]` and the process has one V8 platform worker. The threads in `/proc/self/task` (names from `comm`):
+
+  | Run | Threads | V8 workers |
+  |---|---|---|
+  | SEA, no `execArgv` | 7: `MainThread, DelayedTaskSche, V8Worker ×4, SignalInspector` | 4 |
+  | SEA, no `execArgv`, `NODE_OPTIONS=--v8-pool-size=1` | 4: `MainThread, DelayedTaskSche, V8Worker, SignalInspector` | 1 |
+  | SEA with `execArgv` | 4 (as above) | 1 |
+  | SEA with `execArgv`, `NODE_OPTIONS=--v8-pool-size=4` | 4 | 1 (`execArgv` wins) |
+  | `node -e …` / `node --v8-pool-size=1 -e …` (reference) | 7 / 4 | 4 / 1 |
+
+  So the SEA also honours `NODE_OPTIONS`: a user's `NODE_OPTIONS` reaches every `kage` the SEA runs, `kage hook` included. An idle `kage serve --demo` SEA has 8 threads: the 4 above plus 4 `libuv-worker`.
+- **`disableExperimentalSEAWarning: true` keeps stderr empty.** `kage hook Stop` with empty stdin (as `</dev/null`) and with a hook body: exit 0 and 0 bytes on stderr, for both SEAs in §7.2. Without the key, every start prints `ExperimentalWarning: Single executable application is an experimental feature and might change at any time` on stderr.
+- **`process.argv` is `[execPath, argv0 as typed, …args]`, and `process.execPath` is the resolved file.** `./probe-exec a b` gave `["/tmp/kage-sea/out/probe-exec","./probe-exec","a","b"]`. Through a symlink on `PATH`, `kage hook Stop` gave `["/tmp/kage-sea/out/probe-exec","kage","hook","Stop"]` with `execPath` `/tmp/kage-sea/out/probe-exec`: the symlink's target, not the symlink. `argv.slice(2)` holds the arguments, as `main.ts` expects.
+- **Assets.** With `"assets":{"board/manifest.json":"manifest.json"}`:
+  - `sea.isSea()` is `true`;
+  - `sea.getAsset('board/manifest.json', 'utf8')` returns the text (without an encoding, an `ArrayBuffer`);
+  - `sea.getRawAsset(key).byteLength` and `sea.getAssetAsBlob(key).size` are 25;
+  - **`sea.getAssetKeys()` exists** and returns `["board/manifest.json"]` (`[]` with no assets);
+  - a missing key throws `ERR_SINGLE_EXECUTABLE_APPLICATION_ASSET_NOT_FOUND`.
+- **The board from disk.** With `import.meta.dirname` defined as `<dirname(execPath)>/../src`, the SEA in `packages/server/dist/` served `packages/web/dist`: `GET /` gave 200 and 1,067 B. SIGTERM printed `Stopping…` and exited 0.
+- **Stripping after the inject breaks the binary.** `strip` on an injected SEA printed ``section `.text' can't be allocated in segment 1``, and the result died with a segmentation fault on `--help`. Stripping before the inject was not tried.
+
+### 7.2 Code cache, size, start-up time and idle memory
+
+Two SEAs from the same CommonJS bundle (634,852 B), both with `execArgv` `--v8-pool-size=1`, the warning off and the manifest asset:
+
+| | Blob | SEA | gzip -9 | xz -9 | `kage hook` (median of 10) | `kage --help` (median of 10) |
+|---|---|---|---|---|---|---|
+| sources, `node --no-warnings src/main.ts` | | | | | 101.0 ms | 95.5 ms |
+| bundle, `node --v8-pool-size=1 kage.mjs` (629,213 B; 149,079 B gzipped) | | | | | 77.2 ms | 66.0 ms |
+| SEA `useCodeCache: false` | 634,989 B | 127,601,856 B | 43,416,945 B | 29,290,860 B | 50.8 ms (45.6–69.7) | 38.8 ms |
+| SEA `useCodeCache: true` | 728,717 B | 127,732,928 B | 43,456,399 B | 29,325,504 B | **39.6 ms** (37.5–43.0) | **31.4 ms** |
+
+- The container's Node binary is 127,012,032 B (with debug info, not stripped). The code cache adds 93,728 B to the blob.
+- The timing is spawn to exit, as §7 of the design spec measures it: `kage hook Stop` with a hook body on stdin and `TMUX_PANE` set, posting to a stub server on `KAGE_SOCKET` that answers 204 (all 40 posts arrived), after one warm-up run. The design spec's 96 ms was the sources (101 ms here), not the bundle. `kage --version` doesn't exist yet, so `--help` stands in for it.
+- **Idle memory, the 80 MB gate: passed.** The run was the perf spec's idle test: 10 done sessions, no page or stream, 10 s to settle, 30 s measured, from `/proc`. The scratch copy's harness swapped the shipped server for the SEA (`spawn(sea, ['serve', '--port', …])`, `MALLOC_ARENA_MAX=2`, the pool size from `execArgv`). The three runs went one after another in the same session:
+
+  | Server | Idle RSS | Idle CPU (30 s) | Threads |
+  |---|---|---|---|
+  | SEA `useCodeCache: false` | **77.1 MB** | 0.17% | 8 |
+  | SEA `useCodeCache: true` | **77.2 MB** | 0.17% | 8 |
+  | bundle, `node --v8-pool-size=1 kage.mjs` | 78.6 MB | 0.17% | 8 |
+
+  `ps` at 35 s showed the expected process each time: `/tmp/kage-sea/repo/packages/server/dist/kage-nocache serve --port 4395`, then `kage-cache`, then `node --v8-pool-size=1 …/kage.mjs`. Each run reported "1 failed" only because the test's `afterEach` asks for a `page` and WSL has no Playwright browser; both budgets were recorded before that. The bundle measured 75.8 to 76.6 MB in phase 5, so this session ran about 2 MB high for all three. The margin to 80 MB is under 3 MB.
+
+### 7.3 linux-arm64
+
+- **A blob made on x64 without a code cache runs in the arm64 Node.** The arm64 `node` came out of `docker create --platform linux/arm64 node:24.22.3-bookworm-slim` (`ELF 64-bit LSB executable, ARM aarch64`). It was injected with postject in the x64 container and run in `docker run --platform linux/arm64` (`uname -m`: `aarch64`). The probe printed its JSON (one V8 worker, the asset found), and `kage-nocache --help` printed the usage with exit 0.
+- **A code cache made on x64 is rejected on arm64.** The program still runs, but it prints a warning on stderr, so the hook's stderr would no longer be empty:
+  ```
+  (node:29) Warning: Code cache data rejected.
+  (Use `kage-cache-arm64 --trace-warnings ...` to show where the warning was created)
+  ```
+  So a SEA with `useCodeCache: true` must have its blob made on its own architecture. The workflow builds natively on each runner, which does that.
+- Pulling the arm64 image re-pointed the local `node:24.22.3-bookworm-slim` tag at arm64. `docker pull --platform linux/amd64` put it back (`docker image inspect … {{.Architecture}}`: `amd64`).
+
+### 7.4 systemd user units in WSL
+
+WSL starts systemd from `/etc/wsl.conf` (read only):
+```
+[boot]
+systemd=true
+```
+PID 1 is `systemd`. The session had `XDG_RUNTIME_DIR=/run/user/1000/` and `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus`. `XDG_CONFIG_HOME` was unset.
+
+- **Unit path:** `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/kage-spike.service`. `~/.config/systemd/user` didn't exist before, and the spike's empty folders were removed afterwards.
+  - `enable` printed `Created symlink /home/evir/.config/systemd/user/default.target.wants/kage-spike.service → /home/evir/.config/systemd/user/kage-spike.service.`
+  - `disable` printed `Removed "/home/evir/.config/systemd/user/default.target.wants/kage-spike.service".`
+- The unit:
+  ```
+  [Unit]
+  Description=Kage spike (throwaway)
+  After=network-online.target
+  Wants=network-online.target
+
+  [Service]
+  ExecStart=/bin/sh -c 'echo "PATH=$PATH"; exec sleep 600'
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=default.target
+  ```
+- **Commands and exit codes** (all `systemctl --user`):
+
+  | Command | Output | Exit |
+  |---|---|---|
+  | `daemon-reload` | | 0 |
+  | `enable --now kage-spike.service` | the symlink line | 0 |
+  | `is-enabled` | `enabled` | 0 |
+  | `is-active`, running | `active` | 0 |
+  | `restart` | (MainPID 358792 → 358804) | 0 |
+  | `is-active` after `kill -KILL` of the main process (`Restart=on-failure`) | `activating` (SubState `auto-restart`) | 3 |
+  | `is-active` after `disable --now` | `inactive` | 3 |
+  | `is-active`, the file present but not yet loaded (before `daemon-reload`) | `inactive` | 3 |
+  | `is-active`, `ExecStart=/bin/false` with no restart | `failed` | 3 |
+  | `is-active`, file removed and `daemon-reload` (missing) | `inactive` | **4** |
+  | `reset-failed` on the missing unit | `Failed to reset failed state of unit kage-spike.service: Unit kage-spike.service not loaded.` | 1 |
+  | `is-active` or `daemon-reload` under `env -u XDG_RUNTIME_DIR -u DBUS_SESSION_BUS_ADDRESS` (no user manager in reach) | `Failed to connect to bus: No medium found` | 1 |
+
+  Only `active` exits 0. `activating`, `inactive` and `failed` all exit 3, so the word, not the code, tells them apart. A missing unit exits 4.
+- **The default `PATH` of a user unit** (from the journal, `journalctl --user -u kage-spike.service -o cat`): `PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/snap/bin`. `systemctl --user show -p Environment` was empty.
+  - **Neither `~/.local/node/bin` (where Node and `claude` live in this WSL) nor `~/.local/bin` is on it.**
+  - `claude` isn't on a non-interactive login shell's `PATH` either: `bash -lc 'command -v claude'` printed nothing. Only `~/.bashrc` adds `~/.local/node/bin`.
+- **`After=network-online.target` means nothing in the user manager.**
+  - `systemctl --user status network-online.target`: `Unit network-online.target could not be found.` (exit 4).
+  - `list-dependencies` shows it as `○ └─network-online.target`, and `show -p After -p Wants` lists it, but the unit started anyway.
+  - `systemctl --user show tailscaled.service -p LoadState` is `LoadState=not-found`: a user unit can't order itself after a system unit. Restarting until Tailscale has an address (R105) is the way.
+- **Linger:** `loginctl show-user evir -p Linger --value` printed `no` before and after; it was not changed.
+  - In `/usr/share/polkit-1/actions/org.freedesktop.login1.policy`, the action `org.freedesktop.login1.set-self-linger` has `allow_any`, `allow_inactive` and `allow_active` all `yes`. `set-user-linger` (another user) is `auth_admin_keep`.
+  - So by the shipped policy, `loginctl enable-linger` for oneself needs no root, unless a local rule says otherwise. `/usr/share/polkit-1/rules.d/` holds `49-ubuntu-admin.rules`, `50-default.rules`, `org.freedesktop.packagekit.rules` and `systemd-networkd.rules`, and `/etc/polkit-1/rules.d/` is not readable (`Permission denied`).
+  - Not tried: there is no second throwaway user.
+- Before and after: `systemctl --user list-unit-files --no-pager | grep kage` printed nothing (grep exit 1). 71 unit files were listed before.
+
+### 7.5 launchd (documented, not observed)
+
+Every line here is **documented, not observed**. The sources are Apple's "Creating Launch Daemons and Agents", `launchd.plist(5)`, `launchctl(1)` and Node's SEA page for macOS.
+
+- **Path and label:** a per-user agent is `~/Library/LaunchAgents/<label>.plist`. The label is `io.eridian.kage`, so the file is `~/Library/LaunchAgents/io.eridian.kage.plist`, with `Label` equal to the file's name and `ProgramArguments` an array (the executable first). Agents in that folder are loaded into the user's GUI domain at login, so without automatic login the agent starts only once the user logs in.
+- **launchctl:**
+  - `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/io.eridian.kage.plist` loads it and, with `RunAtLoad`, starts it. Bootstrapping a label that is already loaded fails (commonly `Bootstrap failed: 5: Input/output error`), so a reinstall boots it out first.
+  - `launchctl kickstart -k gui/$(id -u)/io.eridian.kage` kills the running instance and starts it again.
+  - `launchctl bootout gui/$(id -u)/io.eridian.kage` stops and unloads it. The plist form, `bootout gui/<uid> <plist>`, works too.
+  - `launchctl print gui/$(id -u)/io.eridian.kage` describes the service. Its `state = running` line (or `state = not running`, `state = waiting`) is the status. For a label that isn't loaded it fails with `Could not find service "io.eridian.kage" in domain for user gui: <uid>` (exit 113). Apple says `print`'s output is not API and may change, so a check should look for `state = running` and treat anything else as not running.
+- **Keys:**
+  - `RunAtLoad` `true`: start when loaded (at bootstrap and at login).
+  - `KeepAlive` as a dictionary `{SuccessfulExit: false}`: restart only when the job exits non-zero or by a signal. A clean `exit 0` stays stopped.
+  - `ThrottleInterval`: the least time between starts, 10 s by default. A job that exits sooner is restarted only after the interval, so a failing start retries about every 10 s.
+  - `EnvironmentVariables`: a dictionary of strings. It is the only environment the job gets beyond launchd's own; no shell profile is read.
+  - `StandardOutPath` and `StandardErrorPath`: files for stdout and stderr. They are created if missing, but their folder must exist.
+- **Default `PATH` of an agent:** launchd's standard path, `/usr/bin:/bin:/usr/sbin:/sbin`. Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), `~/.local/bin` and the Tailscale app's CLI are not on it, so the plist sets `PATH` in `EnvironmentVariables`, or Kage uses absolute paths.
+- **Codesigning a SEA:** the Node binary is signed. So `codesign --remove-signature kage` comes before the inject, then `npx postject kage NODE_SEA_BLOB kage.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --macho-segment-name NODE_SEA`, then `codesign --sign - kage` (an ad-hoc signature). On Apple silicon an arm64 binary without a valid signature is killed at start.
+- **Quarantine:** `curl` does not set the `com.apple.quarantine` extended attribute (only apps that opt in, such as browsers, AirDrop and Mail, do), so Gatekeeper doesn't check a binary that `install.sh` fetched with `curl`. A browser download carries it: `xattr -p com.apple.quarantine <file>` shows it, and `xattr -d com.apple.quarantine <file>` removes it.
+
+### 7.6 Claude signed in, locally
+
+- `test -e` only (the file was never read): `~/.claude/.credentials.json` **exists** on Linux with Claude Code 2.1.330 (`stat`: mode 600, owner evir). `~/.config/claude/.credentials.json` does not. `~/.claude.json` also exists (Claude's settings and state, not the credentials).
+- **`claude --version` makes no network call: verified.** `strace` is not installed, so it ran in a new user and network namespace, made without root, where only `lo` exists and it is down (`unshare -rn ip -o link`: `1: lo: <LOOPBACK> mtu 65536 qdisc noop state DOWN`):
+  ```
+  $ timeout 20 unshare -rn /home/evir/.local/node/bin/claude --version
+  2.1.330 (Claude Code)
+  [exit 0]
+  ```
+  It took 11 ms. With `HTTPS_PROXY` and `HTTP_PROXY` (both cases) set to `http://127.0.0.1:9`, it also printed `2.1.330 (Claude Code)` with exit 0.
+- `claude` here is `~/.local/node/bin/claude` → `~/.local/node/lib/node_modules/@anthropic-ai/claude-code/bin/claude.exe`, a native ELF (x86-64).
