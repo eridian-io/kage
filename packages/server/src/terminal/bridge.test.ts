@@ -468,6 +468,25 @@ describe('TerminalBridge', () => {
     expect(t.bridge.count).toBe(1);
   });
 
+  it('a dead pane: an empty display row (tmux 3.4) or "can\'t find pane" also → 4409', async () => {
+    const t = setup();
+    const a = await t.open({ paneId: '%3' });
+    const b = await t.open({ paneId: '%5' }, { pane: '%5' });
+    const c = await t.open({ paneId: '%6' }, { pane: '%6' });
+    t.last().onLine({ kind: 'layout', windowId: '@2' });
+    await flush();
+    const runs = t.last().runs.splice(0);
+    const forPane = (p: string) => runs.find((r) => r.line.includes(`-t ${p} `)) as Run;
+    // What tmux 3.4 prints for a pane that is gone: every format empty.
+    forPane('%3').resolve([[Buffer.from(' '.repeat(15))]]);
+    forPane('%5').reject(Object.assign(new Error("can't find pane: %5"), { rows: [] }));
+    forPane('%6').reject(Object.assign(new Error('something else'), { rows: [] }));
+    await flush();
+    expect(a.sink.closes).toEqual([[4409, "The session's window has closed."]]);
+    expect(b.sink.closes).toEqual([[4409, "The session's window has closed."]]);
+    expect(c.sink.closes).toEqual([]);
+  });
+
   it('isWindowOpen follows the open terminals', async () => {
     const t = setup();
     expect(t.bridge.isWindowOpen('@2')).toBe(false);

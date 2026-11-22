@@ -344,7 +344,8 @@ describe('TerminalServer: client frames', () => {
     c.ws.send(Buffer.from('ls'), { binary: true });
     expect(await c.closed).toEqual([1003, "Kage didn't understand that."]);
     expect(handle.inputs).toEqual([]);
-    expect(handle.closed).toBe(1);
+    // The server's own 'close' may come a moment after the client's.
+    await vi.waitFor(() => expect(handle.closed).toBe(1));
   });
 
   it.each([

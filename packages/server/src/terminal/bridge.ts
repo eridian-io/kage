@@ -386,8 +386,8 @@ export class TerminalBridge {
 
   /**
    * Every sink on a pane of the window gets its size from a fresh display-message. A pane that
-   * has gone (one pane of a multi-pane window exited) makes tmux describe another pane: its
-   * sinks close with 4409.
+   * has gone (one pane of a multi-pane window exited) closes its sinks with 4409: tmux 3.4 then
+   * prints a row with every format empty, others may describe another pane or refuse.
    */
   #layout(windowId: string): void {
     const c = this.#client;
@@ -398,15 +398,8 @@ export class TerminalBridge {
       c.run([display(paneId)], () => 1).then(
         (blocks) => {
           const info = parsePaneInfo(firstRow(blocks, 0));
-          if (!info) return;
-          if (info.paneId !== paneId) {
-            let closed = false;
-            for (const t of [...this.#terms]) {
-              if (t.paneId !== paneId || t.state === 'closed') continue;
-              this.#close(t, 4409, WINDOW_CLOSED);
-              closed = true;
-            }
-            if (closed) this.#afterClose();
+          if (!info || info.paneId !== paneId) {
+            this.#paneGone(paneId);
             return;
           }
           for (const t of this.#terms) {
@@ -415,9 +408,21 @@ export class TerminalBridge {
             }
           }
         },
-        () => {},
+        (e: Error & { rows?: Buffer[] }) => {
+          if (e.rows && /can't find pane/i.test(e.message)) this.#paneGone(paneId);
+        },
       );
     }
+  }
+
+  #paneGone(paneId: string): void {
+    let closed = false;
+    for (const t of [...this.#terms]) {
+      if (t.paneId !== paneId || t.state === 'closed') continue;
+      this.#close(t, 4409, WINDOW_CLOSED);
+      closed = true;
+    }
+    if (closed) this.#afterClose();
   }
 
   #input(t: Term, data: string): void {
