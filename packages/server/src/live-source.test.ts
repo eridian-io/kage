@@ -3631,3 +3631,84 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     expect(source.get('k-9')?.status).toBe('ended');
   });
 });
+
+describe('LiveSource: a launch on its startup screens (P4F1)', () => {
+  const launched = () =>
+    rec({
+      kageId: 'k-9',
+      windowId: null,
+      task: 'Add a dark mode',
+      branch: 'kage/add-a-dark-mode',
+      worktree: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+      createdAt: T0,
+    });
+  const newWin = () =>
+    win({
+      windowId: '@7',
+      paneId: '%7',
+      kageId: null,
+      command: 'claude',
+      cwd: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+      name: 'add-a-dark-mode',
+      activity: Math.floor(T0 / 1000),
+    });
+  /** A launched window drawing (activity) for its first 5 s, its pane still blank. */
+  async function loading() {
+    const s = setup();
+    await s.source.start();
+    await s.source.adopt(launched());
+    s.tmux.windows = [newWin()];
+    s.tmux.setCapture('%7', '');
+    s.source.claim('k-9', '@7');
+    await flush();
+    for (let t = 0; t < 5; t++) {
+      s.watcher.emit({ type: 'activity', paneId: '%7' });
+      await vi.advanceTimersByTimeAsync(1000);
+    }
+    return s;
+  }
+
+  it('activity stops at 5 s, the trust screen is drawn at 6 s: needs-you, never done', async () => {
+    const s = await loading();
+    await vi.advanceTimersByTimeAsync(1000);
+    s.tmux.setCapture('%7', pane('real-trust-80'));
+    await vi.advanceTimersByTimeAsync(6000);
+    await flush();
+    expect(s.source.get('k-9')).toMatchObject({
+      status: 'needs-you',
+      question: { text: 'Trust this folder?', startup: true },
+    });
+    expect(s.updates('k-9').map((u) => u.status)).not.toContain('done');
+  });
+
+  it('a still pane with no screen yet stays running, "Starting Claude…", and is looked at again', async () => {
+    const s = await loading();
+    await vi.advanceTimersByTimeAsync(6000); // 11 s: the idle rule has run, the pane is blank
+    expect(s.source.get('k-9')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    s.tmux.setCapture('%7', pane('real-trust-80'));
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('needs-you');
+    expect(s.updates('k-9').map((u) => u.status)).not.toContain('done');
+  });
+
+  it('the window dying still ends the wait', async () => {
+    const s = await loading();
+    await vi.advanceTimersByTimeAsync(6000);
+    s.tmux.windows = [];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('ended');
+    const calls = s.tmux.captureCalls.length;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(s.tmux.captureCalls.length).toBe(calls);
+  });
+
+  it('after the first hook the idle rule is the usual one', async () => {
+    const s = await loading();
+    s.hooks.fire(hook('UserPromptSubmit', '%7'));
+    s.hooks.fire(hook('Stop', '%7'));
+    await flush();
+    expect(s.source.get('k-9')?.status).toBe('done');
+  });
+});

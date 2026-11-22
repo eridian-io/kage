@@ -1191,19 +1191,47 @@ export class LiveSource implements SessionSource {
     return this.#clock() - st.lastActivity < ACTIVE_MS ? 'running' : 'done';
   }
 
-  /** Activity mode: running turns done 5 s after the last activity (one timer, re-armed lazily). */
-  #scheduleIdle(st: Live): void {
+  /**
+   * Activity mode: running turns done 5 s after the last activity (one timer, re-armed lazily).
+   * P4F1: a launched or resumed claude that has sent no hook yet is still starting (a quiet pane
+   * may be a startup screen drawn after the last capture), so the idle rule looks at the pane
+   * instead: a startup screen is needs-you; anything else stays running, "Starting Claude…", and
+   * is looked at again STARTUP_RECHECK_MS later, until the first hook, the idle input box, or the
+   * window's end.
+   */
+  #scheduleIdle(st: Live, after?: number): void {
     if (!this.#running) return;
     if (st.timers.idle || st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
-    const wait = Math.max(0, st.lastActivity + ACTIVE_MS - this.#clock());
+    const wait = after ?? Math.max(0, st.lastActivity + ACTIVE_MS - this.#clock());
     st.timers.idle = setTimeout(() => {
       delete st.timers.idle;
-      if (st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
-      if (this.#clock() - st.lastActivity >= ACTIVE_MS) {
+      if (!this.#running || st.mode !== 'activity' || st.status !== 'running' || st.startup) {
+        return;
+      }
+      if (this.#clock() - st.lastActivity < ACTIVE_MS) this.#scheduleIdle(st);
+      else if (this.#stillStarting(st)) void this.#startingCheck(st);
+      else {
         this.#setStatus(st, 'done');
         this.#emitNow(st);
-      } else this.#scheduleIdle(st);
+      }
     }, wait);
+  }
+
+  /** P4F1: a Kage claude with no hook yet and no idle input box seen: still on its way in. */
+  #stillStarting(st: Live): boolean {
+    return st.record !== null && st.firstPromptPending && this.#startupEligible(st);
+  }
+
+  /** P4F1: the idle rule's look at a still-starting pane (see #scheduleIdle). */
+  async #startingCheck(st: Live): Promise<void> {
+    const gen = st.gen;
+    const text = await this.#capture(st);
+    if (!this.#running || this.#sessions.get(st.id) !== st || st.gen !== gen) return;
+    if (st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
+    if (text !== null) this.#processCapture(st, text, gen, false);
+    if (st.mode !== 'activity' || st.status !== 'running' || st.startup) return;
+    // Once the idle input box showed, it is no longer starting: the usual rule from here.
+    this.#scheduleIdle(st, this.#stillStarting(st) ? STARTUP_RECHECK_MS : undefined);
   }
 
   // ------------------------------------------------------------ hooks
