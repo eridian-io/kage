@@ -7,8 +7,8 @@
     "node": ">=24.2"
   },
   "dependencies": {
-    "@fontsource/geist": "^5.2.8",
-    "@fontsource/geist-mono": "^5.2.7",
+    "@fontsource-variable/geist": "5.2.9",
+    "@fontsource-variable/geist-mono": "5.2.8",
     "@kage/shared": "workspace:*",
     "@preact/signals": "^2.11.4",
     "@xterm/addon-fit": "0.11.0",

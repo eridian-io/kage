@@ -166,6 +166,7 @@ test.describe('the terminal (Task 13)', () => {
       );
     });
     await page.goto('/');
+    await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
     await page.keyboard.press('t');
     const rows = page.locator('.k-term .xterm-rows');
     await expect(rows).toContainText('TRUECOLOR');
@@ -203,6 +204,7 @@ test.describe('the terminal (Task 13)', () => {
       ws.send(Buffer.from('external window'));
     });
     await page.goto('/');
+    await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
     await page.keyboard.press('t');
     await expect(page.locator('.k-term .xterm-rows')).toContainText('external window');
     await expect(page.locator('.k-term-ro')).toHaveText(

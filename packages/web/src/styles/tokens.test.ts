@@ -89,14 +89,7 @@ describe('board.css', () => {
     expect(board.match(/all: unset/g)?.length).toBe(8);
   });
   it('self-hosts Geist', () => {
-    for (const f of [
-      'geist-latin-400-normal',
-      'geist-latin-500-normal',
-      'geist-latin-600-normal',
-      'geist-latin-700-normal',
-      'geist-mono-latin-400-normal',
-      'geist-mono-latin-500-normal',
-    ]) {
+    for (const f of ['geist-latin-wght-normal', 'geist-mono-latin-wght-normal']) {
       expect(board).toContain(`/fonts/${f}.woff2`);
     }
   });

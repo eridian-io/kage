@@ -12,15 +12,8 @@ import * as esbuild from 'esbuild';
 
 const here = import.meta.dirname;
 
-/** The Geist files board.css asks for at /fonts/<name>. */
-export const FONTS = [
-  'geist-latin-400-normal.woff2',
-  'geist-latin-500-normal.woff2',
-  'geist-latin-600-normal.woff2',
-  'geist-latin-700-normal.woff2',
-  'geist-mono-latin-400-normal.woff2',
-  'geist-mono-latin-500-normal.woff2',
-];
+/** The two variable Geist files (latin, wght axis; @fontsource-variable) board.css asks for at /fonts/<name>. */
+export const FONTS = ['geist-latin-wght-normal.woff2', 'geist-mono-latin-wght-normal.woff2'];
 const LOGO = 'kage-logo-96.png';
 /**
  * The entries the board loads only on demand, by a dynamic import of their source: never in the
@@ -33,7 +26,7 @@ export const HASHED = /^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 const fontSource = (name: string) =>
   join(
     here,
-    'node_modules/@fontsource',
+    'node_modules/@fontsource-variable',
     name.startsWith('geist-mono-') ? 'geist-mono' : 'geist',
     'files',
     name,

@@ -6,13 +6,7 @@ import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { build, FONTS, HASHED, LAZY } from './build.ts';
-import {
-  allowFailVerdict,
-  measureSizes,
-  SIZE_LIMITS,
-  type Sizes,
-  termLoaderCode,
-} from './sizes.ts';
+import { measureSizes, SIZE_LIMITS, type Sizes, termLoaderCode } from './sizes.ts';
 
 // The limits live in sizes.ts, shared with e2e/perf.spec.ts (ruling PF5, F6).
 const BUDGET = SIZE_LIMITS.firstLoad;
@@ -116,14 +110,14 @@ describe('web build', () => {
     }
   });
 
-  it('copies the fonts and preloads the two 400 weights and the logo', async () => {
-    expect(FONTS).toHaveLength(6);
+  it('copies the fonts and preloads the two variable files and the logo', async () => {
+    expect(FONTS).toHaveLength(2);
     for (const f of FONTS) expect(existsSync(join(out, 'fonts', f)), f).toBe(true);
     const html = await readFile(join(out, 'index.html'), 'utf8');
     const preloads = [...html.matchAll(/<link rel="preload" href="([^"]+)"/g)].map((m) => m[1]);
     expect(preloads).toEqual([
-      '/fonts/geist-latin-400-normal.woff2',
-      '/fonts/geist-mono-latin-400-normal.woff2',
+      '/fonts/geist-latin-wght-normal.woff2',
+      '/fonts/geist-mono-latin-wght-normal.woff2',
       '/kage-logo-96.png',
     ]);
     // Every font the CSS asks for is in dist/fonts.
@@ -132,11 +126,10 @@ describe('web build', () => {
     expect(urls.map((m) => m[1]).sort()).toEqual([...FONTS].sort());
   });
 
-  it(`keeps the fonts (dist/fonts, as served) within ${SIZE_LIMITS.fonts} bytes`, () => {
+  it(`keeps the fonts (dist/fonts, as served) within ${SIZE_LIMITS.fonts} bytes`, async () => {
     console.log(`fonts: ${sizes.fonts} bytes`);
-    // Failing today (six static files); Task 3 removes the marker (ruling PF5, F5).
-    const allowFail = { owner: 'Task 3', baseline: 72_968 };
-    expect(allowFailVerdict('Fonts', sizes.fonts, SIZE_LIMITS.fonts, allowFail)).toBeNull();
+    expect(sizes.fonts).toBeLessThanOrEqual(SIZE_LIMITS.fonts);
+    expect((await readdir(join(out, 'fonts'))).filter((f) => f.endsWith('.woff2'))).toHaveLength(2);
   });
 
   it('bundles exactly one copy of preact', () => {

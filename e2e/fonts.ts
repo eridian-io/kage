@@ -2,13 +2,9 @@ import type { Page } from '@playwright/test';
 import { BASE } from './env.ts';
 
 /** The weights the design target asks Google Fonts for, and the app's file for each. */
-const FACES: [family: string, weight: number, file: string][] = [
-  ['Geist', 400, 'geist-latin-400-normal.woff2'],
-  ['Geist', 500, 'geist-latin-500-normal.woff2'],
-  ['Geist', 600, 'geist-latin-600-normal.woff2'],
-  ['Geist', 700, 'geist-latin-700-normal.woff2'],
-  ['Geist Mono', 400, 'geist-mono-latin-400-normal.woff2'],
-  ['Geist Mono', 500, 'geist-mono-latin-500-normal.woff2'],
+const FACES: [family: string, weights: string, file: string][] = [
+  ['Geist', '100 900', 'geist-latin-wght-normal.woff2'],
+  ['Geist Mono', '100 900', 'geist-mono-latin-wght-normal.woff2'],
 ];
 
 const CSS = FACES.map(

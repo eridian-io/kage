@@ -37,7 +37,7 @@ beforeAll(async () => {
   await writeFile(join(dist, 'palette-abc123.js'), 'export const p = 1;');
   await writeFile(join(dist, 'other-abc123.js'), 'export const o = 1;');
   await writeFile(join(dist, 'app-DEF456.css'), `.k-app{color:red}${'.a{b:c}'.repeat(100)}`);
-  await writeFile(join(dist, 'fonts', 'geist-latin-400-normal.woff2'), new Uint8Array([1, 2, 3]));
+  await writeFile(join(dist, 'fonts', 'geist-latin-wght-normal.woff2'), new Uint8Array([1, 2, 3]));
   // Compressible bytes under already-compressed extensions: must still be served raw.
   await writeFile(join(dist, 'fonts', 'big.woff2'), new Uint8Array(4096).fill(7));
   await writeFile(join(dist, 'logo.png'), new Uint8Array(4096).fill(7));
@@ -100,7 +100,7 @@ describe('loadAssets', () => {
     expect(new TextDecoder().decode(brotliDecompressSync(index?.br as Uint8Array))).toBe(HTML);
     expect(assets.get('/app-ABC123.js')?.type).toBe('text/javascript; charset=utf-8');
     expect(assets.get('/app-DEF456.css')?.type).toBe('text/css; charset=utf-8');
-    expect(assets.get('/fonts/geist-latin-400-normal.woff2')?.type).toBe('font/woff2');
+    expect(assets.get('/fonts/geist-latin-wght-normal.woff2')?.type).toBe('font/woff2');
     expect(assets.get('/app-ABC123.js')?.immutable).toBe(true);
     // The terminal chunk is hashed the same way (Task 13).
     expect(assets.get('/term-GHI789.js')?.immutable).toBe(true);
@@ -111,7 +111,7 @@ describe('loadAssets', () => {
     expect(assets.get('/palette-abc123.js')?.immutable).toBe(true);
     expect(assets.get('/other-abc123.js')?.immutable).toBe(false);
     expect(index?.immutable).toBe(false);
-    expect(assets.get('/fonts/geist-latin-400-normal.woff2')?.immutable).toBe(false);
+    expect(assets.get('/fonts/geist-latin-wght-normal.woff2')?.immutable).toBe(false);
   });
 });
 
@@ -164,7 +164,7 @@ describe('static assets', () => {
 
   it('does not re-encode files that do not shrink', async () => {
     const font = await app().fetch(
-      req('/fonts/geist-latin-400-normal.woff2', { headers: { 'Accept-Encoding': 'br, gzip' } }),
+      req('/fonts/geist-latin-wght-normal.woff2', { headers: { 'Accept-Encoding': 'br, gzip' } }),
     );
     expect(font.status).toBe(200);
     expect(font.headers.get('content-encoding')).toBeNull();

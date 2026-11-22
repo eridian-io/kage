@@ -63,10 +63,12 @@ test('sizes: first load, the terminal chunk and loader, the fonts (packages/web/
     limit: SIZE_LIMITS.termLoader,
     unit: 'B',
   });
-  recordBudget(
-    { name: 'Fonts (woff2)', value: s.fonts, limit: SIZE_LIMITS.fonts, unit: 'B' },
-    { allowFail: { owner: 'Task 3', baseline: 72_968 } },
-  );
+  recordBudget({
+    name: 'Fonts (woff2)',
+    value: s.fonts,
+    limit: SIZE_LIMITS.fonts,
+    unit: 'B',
+  });
 });
 
 test.afterAll(() => {
