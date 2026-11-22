@@ -1,5 +1,6 @@
 import type { Session } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { paletteOpen } from './store.ts';
 
 type DiffModule = typeof import('./components/DiffView.tsx');
 
@@ -53,8 +54,9 @@ export function LazyDiff({ session }: { session: Session }) {
 
   useEffect(() => {
     if (mod !== null) return;
-    // Focus in the diff from the start, as DiffView takes it, so J/K and Esc behave the same.
-    body.current?.focus();
+    // Focus in the diff from the start, as DiffView takes it, so J/K and Esc behave the same;
+    // never while the palette is open (B47).
+    if (!paletteOpen.value) body.current?.focus();
     let gone = false;
     const s = current();
     s.load(s.failures).then(

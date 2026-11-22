@@ -385,7 +385,8 @@ export function closeDiff(): void {
   mainView.value = 'output';
   (
     document.querySelector<HTMLElement>('.k-diff') ??
-    document.querySelector<HTMLElement>('.k-it.on')
+    // The session list's row only: a palette row (k-it on) never matches.
+    document.querySelector<HTMLElement>('.k-side [data-id].k-it.on')
   )?.focus();
 }
 

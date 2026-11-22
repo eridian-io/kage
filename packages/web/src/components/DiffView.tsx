@@ -3,7 +3,7 @@ import { Component } from 'preact';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, errorOf, NO_ANSWER } from '../api.ts';
 import { couldnt } from '../copy.ts';
-import { projectsRoot } from '../store.ts';
+import { paletteOpen, projectsRoot } from '../store.ts';
 
 const GUTTER = { add: '+', del: '−', ctx: ' ' } as const;
 
@@ -93,7 +93,8 @@ export function DiffView({ session: s }: { session: Session }) {
     const el = body.current;
     const sec = view.current;
     if (!el || !sec) return;
-    el.focus();
+    // B47: never take focus from the open palette (it may have opened while the diff loaded).
+    if (!paletteOpen.value) el.focus();
     // J/K anywhere in the diff (its body, the page buttons) move between its files; the board's
     // J/K leave them to it.
     const onKey = (e: KeyboardEvent) => {

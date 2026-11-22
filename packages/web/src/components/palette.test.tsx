@@ -2,13 +2,14 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
 import { Board } from '../main.tsx';
 import { installNotify, notifyState } from '../notify.ts';
 import {
   applyEvent,
   authRequired,
   busy,
+  closeDiff,
   confirmingDelete,
   connection,
   hadSnapshot,
@@ -219,6 +220,28 @@ describe('the command palette', () => {
     key(input, 'Escape');
     await waitFor(() => expect(combo()).toBeNull());
     expect(mainView.value).toBe('diff');
+  });
+
+  it('closeDiff with no View diff → focuses the selected session row, never a palette row', async () => {
+    sessions.value = sessions.value.map((s) =>
+      s.id === 'docs' ? { ...s, files: [], filesTotal: 0 } : s,
+    );
+    const noFiles = sessions.value.find((s) => s.id === 'docs') as Session;
+    render(<Board />);
+    select(noFiles.id);
+    mainView.value = 'diff';
+    await open();
+    expect(document.querySelector('.k-diff')).toBeNull();
+    expect(document.querySelector('.k-pal-o.on')).not.toBeNull();
+    // Even with the palette first in the document, its active row (k-it on) is not the target.
+    const first = (document.querySelector('.k-pal') as HTMLElement).cloneNode(true) as HTMLElement;
+    document.body.prepend(first);
+    onTestFinished(() => first.remove());
+    const focus = vi.spyOn(HTMLElement.prototype, 'focus');
+    closeDiff();
+    expect(focus.mock.contexts).toEqual([
+      document.querySelector(`.k-side .k-it[data-id="${noFiles.id}"]`),
+    ]);
   });
 
   it('Esc over the New task form leaves the form open', async () => {

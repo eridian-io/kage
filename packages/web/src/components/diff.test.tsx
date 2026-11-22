@@ -16,6 +16,7 @@ import {
   linesById,
   mainView,
   now,
+  paletteOpen,
   releaseDigits,
   replyOpen,
   select,
@@ -893,6 +894,46 @@ describe('the diff view', () => {
       await new Promise((r) => setTimeout(r, 0));
       expect(c.querySelector('.k-dv')).toBeNull();
       expect(diffGets()).toEqual([]);
+    });
+
+    // B47: a diff that finishes loading never takes focus from the open palette.
+    const combo = () => document.querySelector<HTMLInputElement>('[role="combobox"]');
+    const ctrlK = () =>
+      fireEvent(
+        document.activeElement ?? document,
+        new KeyboardEvent('keydown', { key: 'k', ctrlKey: true, bubbles: true, cancelable: true }),
+      );
+
+    it('B47: the palette opened while the chunk loads keeps focus when the diff arrives', async () => {
+      try {
+        const calls = heldLoads();
+        const c = openHeld();
+        await waitFor(() => expect(calls).toHaveLength(1));
+        ctrlK();
+        await waitFor(() => expect(combo()).not.toBeNull());
+        expect(document.activeElement).toBe(combo());
+        calls[0]?.ok();
+        await waitFor(() => expect(c.querySelector('.k-diff-file')).not.toBeNull());
+        expect(document.activeElement).toBe(combo());
+      } finally {
+        paletteOpen.value = false;
+      }
+    });
+
+    it('B47: a diff opened while the palette is open does not take focus while it loads', async () => {
+      try {
+        const calls = heldLoads();
+        const r = render(<Board />);
+        fireEvent.click(row(r.container, 'docs'));
+        ctrlK();
+        await waitFor(() => expect(combo()).not.toBeNull());
+        mainView.value = 'diff';
+        await waitFor(() => expect(calls).toHaveLength(1));
+        expect(r.container.querySelector('.k-dv')).not.toBeNull();
+        expect(document.activeElement).toBe(combo());
+      } finally {
+        paletteOpen.value = false;
+      }
     });
   });
 
