@@ -18,7 +18,8 @@ import { blur, chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } fro
  *   of 5 against live mode with 10 sessions;
  * - hook to screen: the test's clock before the hook's socket write to a MutationObserver's
  *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time is an annotation;
- * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc);
+ * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc), on
+ *   the shipped bundle with its flags (R91); the dev run from the sources is an annotation;
  * - rendering: the DOM cap and line identity under a 2,000-line flood, and a 3,000-line diff;
  * - SSE under load: 30 windows writing transcript records and posting tool hooks, frames and
  *   bytes counted over the 10 s burst.
@@ -281,7 +282,8 @@ test.describe('live budgets', () => {
     h.env.FAKE_CLAUDE_STEP_MS = '200';
     await h.startTmux('placeholder');
     await tmux('set-option', '-w', '-t', 'kage:placeholder', '@kage_placeholder', '1');
-    await h.startServe();
+    // The shipped server (ruling R91): the bundle, its flags and environment.
+    await h.startServe('shipped');
     // One after another, so ten Node starts and their hook processes don't pile up at once.
     const idle = Array.from({ length: 10 }, (_, i) => `idle-${i + 1}`);
     for (const [i, name] of idle.entries()) {
@@ -309,7 +311,7 @@ test.describe('live budgets', () => {
   });
 
   test('idle server: CPU and RSS with 10 done sessions and no page or stream open', async () => {
-    test.setTimeout(90_000);
+    test.setTimeout(150_000);
     try {
       test.skip(!existsSync('/proc/self/stat'), 'Reads /proc/<pid>: Linux only');
       await sleep(10_000);
@@ -318,10 +320,31 @@ test.describe('live budgets', () => {
       await sleep(30_000);
       const cpu = ((h.serveCpuMs() - cpu0) / (performance.now() - t0)) * 100;
       recordBudget({ name: 'Idle server CPU (30 s)', value: cpu, limit: 1, unit: '%' });
-      recordBudget(
-        { name: 'Idle server RSS', value: h.serveRss(), limit: 80, unit: 'MB' },
-        { allowFail: { owner: 'Task 4', baseline: 136.7 } },
-      );
+      recordBudget({
+        name: 'Idle server RSS (shipped bundle)',
+        value: h.serveRss(),
+        limit: 80,
+        unit: 'MB',
+      });
+
+      // The sources as `node main.ts` runs them strip TypeScript at runtime (about 40 MB more):
+      // noted, not asserted (ruling R91). Then the shipped server again for the later tests.
+      await h.stopServe();
+      await h.startServe('dev');
+      try {
+        await expect
+          .poll(async () => (await snapshot()).filter((s) => s.task.startsWith('idle-')).length, {
+            timeout: STATUS_MS,
+          })
+          .toBe(10);
+        await sleep(10_000);
+        const note = `Idle server RSS, dev run from the sources (node main.ts): ${h.serveRss().toFixed(1)} MB (not asserted; ruling R91)`;
+        console.log(note);
+        test.info().annotations.push({ type: 'budget (not asserted)', description: note });
+      } finally {
+        await h.stopServe();
+        await h.startServe('shipped');
+      }
     } finally {
       // Ten Node fakes would weigh on every later test (memory): they go now, checked.
       await freeIdle();

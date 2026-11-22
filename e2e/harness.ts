@@ -29,6 +29,13 @@ import { LIVE_PORT } from './env.ts';
 
 export const ROOT = join(import.meta.dirname, '..');
 export const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
+/**
+ * The shipped server (ruling R91): `pnpm build` bundles it into one file, and phase 6 runs it with
+ * these flags and this environment. The perf project measures it; the other specs run the sources.
+ */
+export const BUNDLE = join(ROOT, 'packages/server/dist/kage.mjs');
+export const SHIPPED_FLAGS = ['--v8-pool-size=1'];
+export const SHIPPED_ENV = { MALLOC_ARENA_MAX: '2' };
 const run = promisify(execFile);
 /** Status changes can take a few hook and re-list rounds; never wait on fixed sleeps. */
 export const STATUS_MS = 15_000;
@@ -220,17 +227,32 @@ export class LiveHarness {
     return pane;
   };
 
-  startServe = (): Promise<void> =>
+  /**
+   * Starts `kage serve`: from the sources (`dev`, as `node packages/server/src/main.ts`), or the
+   * bundle with the shipped flags and environment (`shipped`, ruling R91).
+   */
+  startServe = (mode: 'dev' | 'shipped' = 'dev'): Promise<void> =>
     new Promise((resolve, reject) => {
-      const c = spawn(
-        process.execPath,
-        ['packages/server/src/main.ts', 'serve', '--port', String(this.port)],
-        { cwd: ROOT, env: this.env, stdio: ['ignore', 'pipe', 'pipe'] },
-      );
+      if (mode === 'shipped' && !existsSync(BUNDLE)) {
+        reject(new Error(`No server bundle at ${BUNDLE}: run corepack pnpm build`));
+        return;
+      }
+      const args =
+        mode === 'shipped'
+          ? [...SHIPPED_FLAGS, BUNDLE, 'serve', '--port', String(this.port)]
+          : ['packages/server/src/main.ts', 'serve', '--port', String(this.port)];
+      const env = mode === 'shipped' ? { ...this.env, ...SHIPPED_ENV } : this.env;
+      const c = spawn(process.execPath, args, {
+        cwd: ROOT,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+      });
       this.serve = c;
+      // A restart must not resolve on the last run's "running" line.
+      const from = this.serveOut.length;
       const onData = (d: Buffer) => {
         this.serveOut += d.toString();
-        if (this.serveOut.includes('Kage is running at')) resolve();
+        if (this.serveOut.slice(from).includes('Kage is running at')) resolve();
       };
       c.stdout?.on('data', onData);
       c.stderr?.on('data', onData);

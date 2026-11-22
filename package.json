@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "node packages/web/build.ts && pnpm -r --parallel dev",
     "build": "pnpm -r build",
+    "build:server": "pnpm --filter @kage/server build",
     "lint": "biome check .",
     "format": "biome format --write .",
     "typecheck": "tsc -b",
