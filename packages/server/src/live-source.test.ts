@@ -2819,8 +2819,10 @@ describe('LiveSource: branch state (phase 4 Task 3)', () => {
     source.setPreview('k-1', { unpushed: 2, uncommitted: 3 }, true);
     expect(updates('k-1')).toHaveLength(n + 1);
     source.setPreview('k-1', { unpushed: 0, uncommitted: 3 });
-    expect(updates('k-1')).toHaveLength(n + 2);
-    expect(source.get('k-1')).toMatchObject({ unpushed: 0, uncommitted: 3 });
+    source.setPreview('k-1', { ignored: 4 });
+    expect(updates('k-1').at(-1)).toMatchObject({ unpushed: 0, uncommitted: 3, ignored: 4 });
+    expect(updates('k-1')).toHaveLength(n + 3);
+    expect(source.get('k-1')).toMatchObject({ unpushed: 0, uncommitted: 3, ignored: 4 });
     expect(source.list().find((s) => s.id === 'k-1')).toMatchObject({ uncommitted: 3 });
   });
 
@@ -2917,7 +2919,8 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
       git: async () => ({ stdout: '', stderr: '' }),
       projectsRoot: '/p',
       worktreeDir: '.worktrees',
-      counts: async () => ({ unpushed: 0, uncommitted: 0 }),
+      branchPrefix: 'kage/',
+      counts: async () => ({ unpushed: 0, uncommitted: 0, ignored: 0 }),
       publish: () => {},
     });
     events.length = 0;

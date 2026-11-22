@@ -50,6 +50,8 @@ export interface Session {
   unpushed: number;
   /** Files with uncommitted changes, untracked ones included. */
   uncommitted: number;
+  /** Ignored entries in the worktree (`.env`, `node_modules/`): delete removes them too. */
+  ignored: number;
   question?: Question;
   /** The "now doing" line, e.g. "Running npm test". */
   now?: string;
@@ -99,6 +101,7 @@ export interface ArchiveBody {
 export interface DeleteBody {
   unpushed: number;
   uncommitted: number;
+  ignored: number;
 }
 export type DiffLineKind = 'hunk' | 'ctx' | 'add' | 'del';
 export interface DiffFile {
@@ -184,4 +187,6 @@ export const LIMITS = {
   termMaxRows: 200,
   terminals: 8,
   terminalsPerPane: 3,
+  /** The largest count a delete confirmation can carry (unpushed, uncommitted, ignored). */
+  deleteCount: 1_000_000,
 } as const;

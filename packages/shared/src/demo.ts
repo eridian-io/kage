@@ -170,6 +170,7 @@ export function demoSessions(now: number): Session[] {
     external: false,
     unpushed: seed.unpushed ?? 0,
     uncommitted: 0,
+    ignored: 0,
     ...(seed.question ? { question: seed.question } : {}),
     lines: seed.lines.map((l) => ({ ...l })),
     ports: seed.ports.map((p) => ({ ...p })),

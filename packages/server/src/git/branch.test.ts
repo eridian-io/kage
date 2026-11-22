@@ -11,6 +11,7 @@ import {
   SAFE_REF,
   uncommittedCount,
   unpushedCount,
+  worktreeCounts,
 } from './branch.ts';
 import type { GitExec } from './exec.ts';
 
@@ -233,6 +234,20 @@ describe('uncommittedCount', REPO_TESTS, () => {
   it('a clean worktree counts 0', async () => {
     const { dir } = await repo();
     expect(await uncommittedCount(dir)).toBe(0);
+    expect(await worktreeCounts(dir)).toEqual({ uncommitted: 0, ignored: 0 });
+  });
+
+  it('R73: worktreeCounts counts ignored entries apart; an ignored folder counts once', async () => {
+    const { dir } = await repo();
+    await writeFile(join(dir, '.git', 'info', 'exclude'), '.env\n*.log\nnode_modules/\n');
+    await writeFile(join(dir, '.env'), 'SECRET=1\n');
+    await writeFile(join(dir, 'a.log'), 'x\n');
+    await mkdir(join(dir, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(dir, 'node_modules', 'pkg', 'i.js'), 'x\n');
+    await writeFile(join(dir, 'node_modules', 'pkg', 'j.js'), 'x\n');
+    await writeFile(join(dir, 'untracked.txt'), 'u\n');
+    expect(await worktreeCounts(dir)).toEqual({ uncommitted: 1, ignored: 3 });
+    expect(await uncommittedCount(dir)).toBe(1);
   });
 });
 
@@ -373,6 +388,7 @@ describe('fix round 1: what the path check must not miss', REPO_TESTS, () => {
     expect(await branchState(wt, { branch: 'kage/x', base: 'main', baseCommit: base })).toEqual({
       unpushed: 1,
       uncommitted: 0,
+      ignored: 0,
       merged: false,
     });
   });
@@ -495,6 +511,7 @@ describe(
       expect(await branchState(wt, { branch: 'kage/x', base: 'main', baseCommit: cut })).toEqual({
         unpushed: 1,
         uncommitted: 1,
+        ignored: 0,
         merged: false,
       });
       expect(existsSync(m('merge-driver'))).toBe(false);
@@ -545,7 +562,9 @@ describe('branchState', () => {
       if (a.startsWith('rev-list --count refs/heads/kage/x HEAD --not')) {
         return { stdout: '3\n', stderr: '' };
       }
-      if (a.startsWith('status')) return { stdout: ' M a.txt\0?? b.txt\0', stderr: '' };
+      if (a.startsWith('status')) {
+        return { stdout: ' M a.txt\0?? b.txt\0!! .env\0', stderr: '' };
+      }
       if (a === 'symbolic-ref -q HEAD') return { stdout: 'refs/heads/kage/x\n', stderr: '' };
       if (a === `rev-list --count refs/heads/kage/x ^${sha}`) return { stdout: '3\n', stderr: '' };
       if (a.startsWith(`${NAMES.join(' ')} ${sha}`)) {
@@ -562,7 +581,7 @@ describe('branchState', () => {
     // All three parts started before any finished.
     expect(calls.map((c) => c.args[0])).toEqual(['rev-list', 'status', 'symbolic-ref']);
     release();
-    expect(await p).toEqual({ unpushed: 3, uncommitted: 2, merged: true });
+    expect(await p).toEqual({ unpushed: 3, uncommitted: 2, ignored: 1, merged: true });
     const tip = 'refs/heads/kage/x';
     expect(calls).toEqual([
       {
@@ -585,6 +604,7 @@ describe('branchState', () => {
           '--porcelain=v1',
           '-z',
           '--untracked-files=normal',
+          '--ignored=matching',
           '--ignore-submodules=none',
         ],
         cwd: '/w/x',
@@ -619,8 +639,12 @@ describe('branchState', () => {
     const g = noGit();
     expect(
       await branchState('/w', { branch: '-x', base: 'main', baseCommit: 'c'.repeat(40) }, g.exec),
-    ).toEqual({ unpushed: 0, uncommitted: 0, merged: false });
-    expect(await branchCounts('/w', '-x', g.exec)).toEqual({ unpushed: 0, uncommitted: 0 });
+    ).toEqual({ unpushed: 0, uncommitted: 0, ignored: 0, merged: false });
+    expect(await branchCounts('/w', '-x', g.exec)).toEqual({
+      unpushed: 0,
+      uncommitted: 0,
+      ignored: 0,
+    });
     expect(g.calls).toEqual([]);
   });
 

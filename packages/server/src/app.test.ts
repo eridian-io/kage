@@ -75,7 +75,7 @@ const req = (path: string, init: RequestInit & { headers?: Record<string, string
     headers: { Host: HOST, ...init.headers },
   });
 /** A delete's body: the counts the confirmation showed. */
-const SEEN = { unpushed: 0, uncommitted: 0 };
+const SEEN = { unpushed: 0, uncommitted: 0, ignored: 0 };
 const mutate = (method: string, path: string, body?: unknown) =>
   req(path, {
     method,
@@ -1036,8 +1036,9 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
   });
 });
 
-describe('DELETE /api/sessions/:id {unpushed, uncommitted} (phase 4 Task 6)', () => {
-  const EXPECTED_DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+describe('DELETE /api/sessions/:id {unpushed, uncommitted, ignored} (phase 4 Task 6)', () => {
+  const EXPECTED_DELETE =
+    'Expected {"unpushed": <count>, "uncommitted": <count>, "ignored": <count>}';
   const withRemove = (fail: Error | null = null, token = '') => {
     const calls: [string, unknown][] = [];
     const a = createApp({
@@ -1061,19 +1062,20 @@ describe('DELETE /api/sessions/:id {unpushed, uncommitted} (phase 4 Task 6)', ()
   it('live: 204 and the confirmed counts reach FinishActions.remove; the demo source is not touched', async () => {
     const { a, calls } = withRemove();
     const res = await a.fetch(
-      mutate('DELETE', '/api/sessions/k-1', { unpushed: 1, uncommitted: 2 }),
+      mutate('DELETE', '/api/sessions/k-1', { unpushed: 1, uncommitted: 2, ignored: 3 }),
     );
     expect(res.status).toBe(204);
-    expect(calls).toEqual([['k-1', { unpushed: 1, uncommitted: 2 }]]);
+    expect(calls).toEqual([['k-1', { unpushed: 1, uncommitted: 2, ignored: 3 }]]);
   });
 
   it('validates the body (400, the exact sentence) in live and demo modes, before any action', async () => {
     const bad: [unknown, string][] = [
       [undefined, EXPECTED_DELETE],
       [{}, EXPECTED_DELETE],
-      [{ unpushed: -1, uncommitted: 0 }, EXPECTED_DELETE],
-      [{ unpushed: 1.5, uncommitted: 0 }, EXPECTED_DELETE],
-      [{ unpushed: 0, uncommitted: 0, force: true }, 'Unexpected field "force"'],
+      [{ unpushed: -1, uncommitted: 0, ignored: 0 }, EXPECTED_DELETE],
+      [{ unpushed: 0, uncommitted: 0 }, EXPECTED_DELETE],
+      [{ unpushed: 1.5, uncommitted: 0, ignored: 0 }, EXPECTED_DELETE],
+      [{ unpushed: 0, uncommitted: 0, ignored: 0, force: true }, 'Unexpected field "force"'],
     ];
     const { a, calls } = withRemove();
     for (const [body, error] of bad) {
@@ -1097,7 +1099,7 @@ describe('DELETE /api/sessions/:id {unpushed, uncommitted} (phase 4 Task 6)', ()
 
   it('demo mode still removes the session (DemoSource.remove), with any valid counts', async () => {
     const res = await app(true).fetch(
-      mutate('DELETE', '/api/sessions/docs', { unpushed: 3, uncommitted: 1 }),
+      mutate('DELETE', '/api/sessions/docs', { unpushed: 3, uncommitted: 1, ignored: 0 }),
     );
     expect(res.status).toBe(204);
     expect(source.get('docs')).toBeUndefined();

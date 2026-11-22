@@ -84,7 +84,7 @@ function setup(
       o.state ??
       (async (c) => {
         checks.push(c.id);
-        return states.get(c.id) ?? { unpushed: 0, uncommitted: 0, merged: false };
+        return states.get(c.id) ?? { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       }),
     archive:
       o.archive ??
@@ -157,7 +157,7 @@ describe('AutoArchiver: idle cost', () => {
 describe('AutoArchiver: the merge rule', () => {
   it('merged with a clean worktree → archived on touch', async () => {
     const { a, states, archived } = setup({ cands: [cand()] });
-    states.set('k-1', { unpushed: 0, uncommitted: 0, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
     a.start();
     await flush();
     expect(archived).toEqual(['k-1']);
@@ -169,7 +169,7 @@ describe('AutoArchiver: the merge rule', () => {
     await flush();
     expect(checks).toEqual(['k-1']);
     expect(archived).toEqual([]);
-    states.set('k-1', { unpushed: 0, uncommitted: 0, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
     a.touch('k-1');
     await flush();
     expect(checks).toEqual(['k-1', 'k-1']);
@@ -178,7 +178,7 @@ describe('AutoArchiver: the merge rule', () => {
 
   it('merged but 2 uncommitted entries → not archived (work continues)', async () => {
     const { a, states, archived } = setup({ cands: [cand()] });
-    states.set('k-1', { unpushed: 0, uncommitted: 2, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 2, ignored: 0, merged: true });
     a.start();
     a.touch('k-1');
     await flush();
@@ -190,7 +190,7 @@ describe('AutoArchiver: the merge rule', () => {
       cands: [cand()],
       config: { onMerge: false, afterDays: 14 },
     });
-    states.set('k-1', { unpushed: 0, uncommitted: 0, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
     a.start();
     a.touch('k-1');
     await flush();
@@ -226,7 +226,7 @@ describe('AutoArchiver: the merge rule', () => {
       state: async (c) => {
         seen.push(c.id);
         await gate;
-        return { unpushed: 0, uncommitted: 0, merged: true };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: true };
       },
     });
     ctx.a.start();
@@ -269,7 +269,7 @@ describe('AutoArchiver: the age rule', () => {
 
   it('the age rule archives a merged-but-dirty session too (the worktree and branch stay)', async () => {
     const { a, states, archived } = setup({ cands: [cand({ doneAt: T0 - 15 * DAY })] });
-    states.set('k-1', { unpushed: 0, uncommitted: 3, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 3, ignored: 0, merged: true });
     a.start();
     await flush();
     expect(archived).toEqual(['k-1']);
@@ -468,7 +468,7 @@ describe('AutoArchiver: watchers', () => {
       candidates: () => [cand()],
       state: async (c) => {
         checks.push(c.id);
-        return { unpushed: 0, uncommitted: 0, merged: false };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       },
       archive: async () => {},
       gitDir: async () => {
@@ -503,7 +503,7 @@ describe('AutoArchiver: checks', () => {
         await new Promise((r) => setTimeout(r, 100));
         inFlight--;
         done.push(c.id);
-        return { unpushed: 0, uncommitted: 0, merged: false };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       },
     });
     a.start();
@@ -525,7 +525,7 @@ describe('AutoArchiver: checks', () => {
         await new Promise((r) => setTimeout(r, 100));
         inFlight--;
         done.push(c.id);
-        return { unpushed: 0, uncommitted: 0, merged: false };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       },
     });
     a.start();
@@ -542,7 +542,7 @@ describe('AutoArchiver: checks', () => {
       state: async (c) => {
         seen.push(c.id);
         await new Promise<void>((r) => releases.push(r));
-        return { unpushed: 0, uncommitted: 0, merged: false };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       },
     });
     a.start();
@@ -570,7 +570,7 @@ describe('AutoArchiver: checks', () => {
         throw new ActionError(409, 'Kage is still finishing the last action on this session.');
       },
     });
-    states.set('k-1', { unpushed: 0, uncommitted: 0, merged: true });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
     a.start();
     await flush();
     expect(tries).toBe(1);
@@ -605,7 +605,7 @@ describe('AutoArchiver: checks', () => {
         throw new ActionError(403, "That window isn't Kage's any more.");
       },
     });
-    c2.states.set('k-1', { unpushed: 0, uncommitted: 0, merged: true });
+    c2.states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
     c2.a.start();
     await flush();
     c2.a.touch('k-1');
@@ -638,7 +638,7 @@ describe('AutoArchiver: checks', () => {
         await new Promise<void>((r) => {
           release = r;
         });
-        return { unpushed: 0, uncommitted: 0, merged: true };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: true };
       },
     });
     a.start();
@@ -667,8 +667,8 @@ describe('AutoArchiver: fix round 1', () => {
   it('a stale merge result does not archive a session that worked again during the check; the queued re-check decides', async () => {
     const releases: (() => void)[] = [];
     const answers: BranchState[] = [
-      { unpushed: 0, uncommitted: 0, merged: true }, // stale: computed before the new turn
-      { unpushed: 0, uncommitted: 1, merged: true }, // fresh: the new turn left work
+      { unpushed: 0, uncommitted: 0, ignored: 0, merged: true }, // stale: computed before the new turn
+      { unpushed: 0, uncommitted: 1, ignored: 0, merged: true }, // fresh: the new turn left work
     ];
     let seen = 0;
     const ctx = setup({
@@ -702,7 +702,7 @@ describe('AutoArchiver: fix round 1', () => {
         await new Promise<void>((r) => {
           release = r;
         });
-        return { unpushed: 0, uncommitted: 0, merged: true };
+        return { unpushed: 0, uncommitted: 0, ignored: 0, merged: true };
       },
     });
     ctx.a.start();

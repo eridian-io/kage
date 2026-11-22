@@ -319,6 +319,7 @@ describe('session panel', () => {
     expect(apiDelete).toHaveBeenCalledWith('/api/sessions/docs', {
       unpushed: 1,
       uncommitted: 0,
+      ignored: 0,
     });
     await Promise.resolve();
     applyEvent({ type: 'session.removed', id: 'docs' });

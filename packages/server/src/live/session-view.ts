@@ -29,6 +29,7 @@ export interface SessionView {
   /** A record's branch counts (Task 3), refreshed with the files; absent means none yet (0). */
   unpushed?: number;
   uncommitted?: number;
+  ignored?: number;
 }
 
 /** The wire Session for a live session; `lines` is always [] (lines travel separately). */
@@ -51,6 +52,7 @@ export function toSession(v: SessionView): Session {
     // External sessions never get counts: they keep 0.
     unpushed: r ? (v.unpushed ?? 0) : 0,
     uncommitted: r ? (v.uncommitted ?? 0) : 0,
+    ignored: r ? (v.ignored ?? 0) : 0,
     lines: [],
     ports: (v.ports ?? []).map((p) => ({ ...p })),
     files: (v.files ?? []).map((f) => ({ ...f })),

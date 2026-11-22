@@ -296,12 +296,12 @@ describe('parsePin and parseArchive (phase 4 Task 4)', () => {
 });
 
 describe('parseDelete (phase 4 Task 6)', () => {
-  const DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+  const DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>, "ignored": <count>}';
   it('takes exactly the two counts, integers 0–1,000,000', () => {
     for (const body of [
-      { unpushed: 0, uncommitted: 0 },
-      { unpushed: 1, uncommitted: 2 },
-      { unpushed: 1_000_000, uncommitted: 1_000_000 },
+      { unpushed: 0, uncommitted: 0, ignored: 0 },
+      { unpushed: 1, uncommitted: 2, ignored: 0 },
+      { unpushed: 1_000_000, uncommitted: 1_000_000, ignored: 1_000_000 },
     ]) {
       expect(parseDelete(body)).toEqual({ ok: true, value: body });
     }
@@ -309,14 +309,18 @@ describe('parseDelete (phase 4 Task 6)', () => {
   it('refuses a missing count, a negative, a fraction, a string, too big, an array, null and no body', () => {
     for (const body of [
       {},
+      { unpushed: 0, uncommitted: 0 },
+      { unpushed: 0, uncommitted: 0, ignored: -1 },
+      { unpushed: 0, uncommitted: 0, ignored: 0.5 },
+      { unpushed: 0, uncommitted: 0, ignored: 1_000_001 },
       { unpushed: 0 },
-      { uncommitted: 0 },
-      { unpushed: -1, uncommitted: 0 },
-      { unpushed: 1.5, uncommitted: 0 },
-      { unpushed: 0, uncommitted: Number.NaN },
-      { unpushed: '1', uncommitted: 0 },
-      { unpushed: 0, uncommitted: 1_000_001 },
-      { unpushed: null, uncommitted: 0 },
+      { uncommitted: 0, ignored: 0 },
+      { unpushed: -1, uncommitted: 0, ignored: 0 },
+      { unpushed: 1.5, uncommitted: 0, ignored: 0 },
+      { unpushed: 0, uncommitted: Number.NaN, ignored: 0 },
+      { unpushed: '1', uncommitted: 0, ignored: 0 },
+      { unpushed: 0, uncommitted: 1_000_001, ignored: 0 },
+      { unpushed: null, uncommitted: 0, ignored: 0 },
       [],
       null,
       undefined,
@@ -325,7 +329,7 @@ describe('parseDelete (phase 4 Task 6)', () => {
     }
   });
   it('refuses an extra key', () => {
-    expect(parseDelete({ unpushed: 0, uncommitted: 0, force: true })).toEqual({
+    expect(parseDelete({ unpushed: 0, uncommitted: 0, ignored: 0, force: true })).toEqual({
       ok: false,
       error: 'Unexpected field "force"',
     });

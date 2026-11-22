@@ -391,10 +391,15 @@ export class LiveSource implements SessionSource {
         });
       }
     }
-    if (patch.unpushed !== undefined || patch.uncommitted !== undefined) {
+    if (
+      patch.unpushed !== undefined ||
+      patch.uncommitted !== undefined ||
+      patch.ignored !== undefined
+    ) {
       // Branch counts travel in session.updated; emitNow sends one only when a value changed.
       if (patch.unpushed !== undefined) st.unpushed = patch.unpushed;
       if (patch.uncommitted !== undefined) st.uncommitted = patch.uncommitted;
+      if (patch.ignored !== undefined) st.ignored = patch.ignored;
       this.#emitNow(st);
     }
   }

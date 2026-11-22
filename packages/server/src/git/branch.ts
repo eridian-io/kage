@@ -11,6 +11,7 @@ export const SAFE_REF =
 export interface BranchState {
   unpushed: number;
   uncommitted: number;
+  ignored: number;
   merged: boolean;
 }
 
@@ -51,27 +52,49 @@ export async function unpushedCount(
 }
 
 /**
- * Entries of `status --porcelain=v1 -z --untracked-files=normal --ignore-submodules=none` (§5.4;
- * a dirty submodule counts whatever `diff.ignoreSubmodules` or `.gitmodules` say): an untracked folder
- * counts once, ignored files don't count, and a rename or copy counts once (its old path follows
- * as an extra NUL-terminated field). Rejects when git fails.
+ * The worktree's entries from one `status --porcelain=v1 -z --untracked-files=normal
+ * --ignored=matching --ignore-submodules=none` (§5.4; a dirty submodule counts whatever
+ * `diff.ignoreSubmodules` or `.gitmodules` say):
+ * - uncommitted: every entry but `!!`; an untracked folder counts once, and a rename or copy
+ *   counts once (its old path follows as an extra NUL-terminated field);
+ * - ignored (R73): the `!!` entries, which `worktree remove` deletes too; an ignored folder
+ *   (`node_modules/`) counts once and git doesn't walk into it.
+ * Rejects when git fails.
  */
-export async function uncommittedCount(worktree: string, exec: GitExec = gitExec): Promise<number> {
+export async function worktreeCounts(
+  worktree: string,
+  exec: GitExec = gitExec,
+): Promise<{ uncommitted: number; ignored: number }> {
   const { stdout } = await exec(
-    ['status', '--porcelain=v1', '-z', '--untracked-files=normal', '--ignore-submodules=none'],
-    {
-      cwd: worktree,
-    },
+    [
+      'status',
+      '--porcelain=v1',
+      '-z',
+      '--untracked-files=normal',
+      '--ignored=matching',
+      '--ignore-submodules=none',
+    ],
+    { cwd: worktree },
   );
   const fields = stdout.split('\0');
-  let n = 0;
+  let uncommitted = 0;
+  let ignored = 0;
   for (let i = 0; i < fields.length; i++) {
     const f = fields[i] as string;
     if (f.length < 3) continue;
-    n++;
+    if (f.startsWith('!! ')) {
+      ignored++;
+      continue;
+    }
+    uncommitted++;
     if (/^[RC]|^.[RC]/.test(f)) i++;
   }
-  return n;
+  return { uncommitted, ignored };
+}
+
+/** The uncommitted part of worktreeCounts. */
+export async function uncommittedCount(worktree: string, exec: GitExec = gitExec): Promise<number> {
+  return (await worktreeCounts(worktree, exec)).uncommitted;
 }
 
 /** Runs a git command whose exit status is the answer: 0 is true, anything else false. */
@@ -159,20 +182,20 @@ export async function isMerged(
 }
 
 /**
- * The branch's unpushed commits and the worktree's uncommitted entries, in parallel. A branch
- * failing SAFE_REF gives 0 and 0 with no git call. Rejects when either git run fails.
+ * The branch's unpushed commits and the worktree's uncommitted and ignored entries, in parallel.
+ * A branch failing SAFE_REF gives zeros with no git call. Rejects when either git run fails.
  */
 export async function branchCounts(
   worktree: string,
   branch: string,
   exec: GitExec = gitExec,
-): Promise<{ unpushed: number; uncommitted: number }> {
-  if (!SAFE_REF.test(branch)) return { unpushed: 0, uncommitted: 0 };
-  const [unpushed, uncommitted] = await Promise.all([
+): Promise<{ unpushed: number; uncommitted: number; ignored: number }> {
+  if (!SAFE_REF.test(branch)) return { unpushed: 0, uncommitted: 0, ignored: 0 };
+  const [unpushed, w] = await Promise.all([
     unpushedCount(worktree, branch, exec),
-    uncommittedCount(worktree, exec),
+    worktreeCounts(worktree, exec),
   ]);
-  return { unpushed, uncommitted };
+  return { unpushed, ...w };
 }
 
 /**
@@ -184,7 +207,7 @@ export async function branchState(
   o: { branch: string; base: string | null; baseCommit: string | null },
   exec: GitExec = gitExec,
 ): Promise<BranchState> {
-  if (!SAFE_REF.test(o.branch)) return { unpushed: 0, uncommitted: 0, merged: false };
+  if (!SAFE_REF.test(o.branch)) return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
   const [counts, merged] = await Promise.all([
     branchCounts(worktree, o.branch, exec),
     isMerged(worktree, o, exec),

@@ -223,6 +223,7 @@ async function startLive(
     git: gitExec,
     projectsRoot: cfg.projectsRoot,
     worktreeDir: cfg.worktreeDir,
+    branchPrefix: cfg.branchPrefix,
     // Delete recounts what the confirmation showed; a mismatch reaches the board (B10).
     counts: (worktree, branch) => branchCounts(worktree, branch, gitExec),
     publish: (id, counts) => source.setPreview(id, counts),

@@ -25,11 +25,13 @@ export interface PreviewPatch {
   /** Commits only the branch reaches; with uncommitted, refreshed with the files (records only). */
   unpushed?: number;
   uncommitted?: number;
+  ignored?: number;
 }
 
 export interface BranchCounts {
   unpushed: number;
   uncommitted: number;
+  ignored: number;
 }
 
 export type TouchReason = 'edit' | 'turn-end';
@@ -341,10 +343,11 @@ export class PreviewTracker {
   }
 
   #publishCounts(id: string, c: BranchCounts): void {
-    const key = `${c.unpushed},${c.uncommitted}`;
+    const key = `${c.unpushed},${c.uncommitted},${c.ignored}`;
     if (this.#lastCounts.get(id) === key) return;
     this.#lastCounts.set(id, key);
-    this.#d.publish(id, { unpushed: c.unpushed, uncommitted: c.uncommitted }, false);
+    const patch = { unpushed: c.unpushed, uncommitted: c.uncommitted, ignored: c.ignored };
+    this.#d.publish(id, patch, false);
   }
 
   #publishFiles(id: string, r: { files: FileChange[]; total: number }): void {

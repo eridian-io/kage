@@ -99,7 +99,7 @@ async function deleteSession(s: Session): Promise<void> {
   let ok = false;
   try {
     // The server deletes only while the branch still has the counts the confirmation showed.
-    const seen = { unpushed: s.unpushed, uncommitted: s.uncommitted };
+    const seen = { unpushed: s.unpushed, uncommitted: s.uncommitted, ignored: s.ignored };
     ok = (await apiDelete(`/api/sessions/${encodeURIComponent(s.id)}`, seen)).ok;
   } catch {
     // ok stays false

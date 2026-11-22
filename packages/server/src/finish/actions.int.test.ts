@@ -204,6 +204,7 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
       git: gitExec,
       projectsRoot: root,
       worktreeDir: '.worktrees',
+      branchPrefix: 'kage/',
       counts: (w, b) => branchCounts(w, b, gitExec),
       publish: (id, p) => source.published.push(`${id} ${JSON.stringify(p)}`),
     });
@@ -218,7 +219,7 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
     const head = git(repo, 'rev-parse', 'HEAD');
     let err: unknown = null;
     try {
-      await actions().remove('k-1', { unpushed: 0, uncommitted: 0 });
+      await actions().remove('k-1', { unpushed: 0, uncommitted: 0, ignored: 0 });
     } catch (e) {
       err = e;
     }
@@ -227,7 +228,7 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
       409,
       'The branch changed since you looked. Look again before deleting.',
     ]);
-    expect(source.published).toEqual(['k-1 {"unpushed":1,"uncommitted":2}']);
+    expect(source.published).toEqual(['k-1 {"unpushed":1,"uncommitted":2,"ignored":0}']);
     expect(existsSync(join(wt, 'new.txt'))).toBe(true);
     expect(branches()).toEqual(['feature/keep', 'kage/x', 'main']);
     expect(source.records.map((r) => r.kageId)).toEqual(['k-1']);
@@ -244,7 +245,7 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
     expect(before).toContain('"k-1"');
     const windowId = source.windowId;
 
-    await actions().remove('k-1', { unpushed: 1, uncommitted: 2 });
+    await actions().remove('k-1', { unpushed: 1, uncommitted: 2, ignored: 0 });
 
     expect(existsSync(wt)).toBe(false);
     expect(branches()).toEqual(['feature/keep', 'main']);
@@ -263,5 +264,24 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
     if (withTmux) {
       expect(tmux('list-windows', '-a', '-F', '#{window_id}')).not.toContain(`${windowId}\n`);
     }
+  });
+
+  it('R73: an ignored .env confirmed as ignored 0 → 409 and nothing removed; confirmed as 1 → deleted', async () => {
+    const exclude = join(repo, git(repo, 'rev-parse', '--git-path', 'info/exclude').trim());
+    await mkdir(join(exclude, '..'), { recursive: true });
+    await writeFile(exclude, '.env\n');
+    await writeFile(join(wt, '.env'), 'SECRET=1\n');
+    await expect(
+      actions().remove('k-1', { unpushed: 1, uncommitted: 2, ignored: 0 }),
+    ).rejects.toThrow('The branch changed since you looked. Look again before deleting.');
+    expect(source.published).toEqual(['k-1 {"unpushed":1,"uncommitted":2,"ignored":1}']);
+    expect(existsSync(join(wt, '.env'))).toBe(true);
+    expect(branches()).toContain('kage/x');
+    expect(source.records.map((r) => r.kageId)).toEqual(['k-1']);
+
+    await actions().remove('k-1', { unpushed: 1, uncommitted: 2, ignored: 1 });
+    expect(existsSync(wt)).toBe(false);
+    expect(branches()).toEqual(['feature/keep', 'main']);
+    expect(await savedIds()).toEqual([]);
   });
 });

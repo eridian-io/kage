@@ -54,6 +54,7 @@ describe('protocol v3 types', () => {
       termMaxRows: 200,
       terminals: 8,
       terminalsPerPane: 3,
+      deleteCount: 1_000_000,
     });
   });
 });

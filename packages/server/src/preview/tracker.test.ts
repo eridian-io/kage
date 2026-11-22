@@ -44,7 +44,7 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     worktree: string;
     o: { branch: string; base: string | null; baseCommit: string | null };
   }[] = [];
-  let counts = { unpushed: 0, uncommitted: 0 };
+  let counts = { unpushed: 0, uncommitted: 0, ignored: 0 };
   let countsError: Error | null = null;
   const tracker = new PreviewTracker({
     target: (id) => all.get(id) ?? null,
@@ -75,7 +75,7 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     scans: () => scans,
     fileRuns,
     branchRuns,
-    setCounts: (c: { unpushed: number; uncommitted: number }) => {
+    setCounts: (c: { unpushed: number; uncommitted: number; ignored: number }) => {
       counts = c;
     },
     failCounts: (e: Error | null) => {
@@ -202,7 +202,7 @@ describe('PreviewTracker: idle cost', () => {
       publish: (id, patch, always) => published.push({ id, patch, always }),
       scan: null,
       files: async () => ({ files: [], total: 0 }),
-      branch: async () => ({ unpushed: 0, uncommitted: 0 }),
+      branch: async () => ({ unpushed: 0, uncommitted: 0, ignored: 0 }),
     });
     tracker.setViewed(new Set(['a']));
     await vi.advanceTimersByTimeAsync(0);
@@ -302,7 +302,7 @@ describe('PreviewTracker: files', () => {
       files: async () => {
         throw new Error('not a git repository');
       },
-      branch: async () => ({ unpushed: 0, uncommitted: 0 }),
+      branch: async () => ({ unpushed: 0, uncommitted: 0, ignored: 0 }),
     });
     tracker.setViewed(new Set(['a']));
     await vi.advanceTimersByTimeAsync(0);
@@ -496,33 +496,42 @@ describe('PreviewTracker: branch counts (phase 4 Task 3)', () => {
   const countsOf = (p: Published[], id: string) =>
     p
       .filter((x) => x.id === id && x.patch.unpushed !== undefined)
-      .map((x) => ({ unpushed: x.patch.unpushed, uncommitted: x.patch.uncommitted }));
+      .map((x) => ({
+        unpushed: x.patch.unpushed,
+        uncommitted: x.patch.uncommitted,
+        ignored: x.patch.ignored,
+      }));
 
   it('a files run for a record target also publishes unpushed and uncommitted, on change', async () => {
     const t = setup({ a: { branch: 'kage/a', baseCommit: SHA } });
-    t.setCounts({ unpushed: 2, uncommitted: 1 });
+    t.setCounts({ unpushed: 2, uncommitted: 1, ignored: 0 });
     t.tracker.setViewed(new Set(['a']));
     await vi.advanceTimersByTimeAsync(0);
     expect(t.branchRuns).toEqual([
       { worktree: '/w/a', o: { branch: 'kage/a', base: 'main', baseCommit: SHA } },
     ]);
-    expect(countsOf(t.published, 'a')).toEqual([{ unpushed: 2, uncommitted: 1 }]);
+    expect(countsOf(t.published, 'a')).toEqual([{ unpushed: 2, uncommitted: 1, ignored: 0 }]);
     // An edit with the same counts publishes no new counts; a turn end with new ones does.
     t.tracker.touch('a', 'edit');
     await vi.advanceTimersByTimeAsync(600);
     expect(t.branchRuns).toHaveLength(2);
     expect(countsOf(t.published, 'a')).toHaveLength(1);
-    t.setCounts({ unpushed: 3, uncommitted: 0 });
+    t.setCounts({ unpushed: 3, uncommitted: 0, ignored: 0 });
     t.tracker.touch('a', 'turn-end');
     await vi.advanceTimersByTimeAsync(600);
     expect(countsOf(t.published, 'a')).toEqual([
-      { unpushed: 2, uncommitted: 1 },
-      { unpushed: 3, uncommitted: 0 },
+      { unpushed: 2, uncommitted: 1, ignored: 0 },
+      { unpushed: 3, uncommitted: 0, ignored: 0 },
     ]);
+    // R73: a change in ignored entries alone goes out too.
+    t.setCounts({ unpushed: 3, uncommitted: 0, ignored: 2 });
+    t.tracker.touch('a', 'turn-end');
+    await vi.advanceTimersByTimeAsync(600);
+    expect(countsOf(t.published, 'a').at(-1)).toEqual({ unpushed: 3, uncommitted: 0, ignored: 2 });
     // A refresh (another tab) runs them again with the files.
     t.tracker.refresh('a');
     await vi.advanceTimersByTimeAsync(0);
-    expect(t.branchRuns).toHaveLength(4);
+    expect(t.branchRuns).toHaveLength(5);
   });
 
   it('external targets never call branch', async () => {
@@ -538,14 +547,14 @@ describe('PreviewTracker: branch counts (phase 4 Task 3)', () => {
 
   it('a rejected count publishes nothing (the last value stays); the files still go out', async () => {
     const t = setup({ a: { branch: 'kage/a', baseCommit: SHA } });
-    t.setCounts({ unpushed: 1, uncommitted: 1 });
+    t.setCounts({ unpushed: 1, uncommitted: 1, ignored: 0 });
     t.tracker.setViewed(new Set(['a']));
     await vi.advanceTimersByTimeAsync(0);
     t.failCounts(timeoutError());
     t.setFiles({ files: [{ path: 'n.ts', added: 1, removed: 0 }], total: 1 });
     t.tracker.touch('a', 'edit');
     await vi.advanceTimersByTimeAsync(600);
-    expect(countsOf(t.published, 'a')).toEqual([{ unpushed: 1, uncommitted: 1 }]);
+    expect(countsOf(t.published, 'a')).toEqual([{ unpushed: 1, uncommitted: 1, ignored: 0 }]);
     expect(filesOf(t.published, 'a').at(-1)?.filesTotal).toBe(1);
     // A gone worktree publishes no counts either (no zeroing).
     t.failCounts(goneError());

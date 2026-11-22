@@ -2,7 +2,7 @@ import { lstat, realpath } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import type { DeleteBody } from '@kage/shared';
 import { ActionError, ActionLock, GONE_RE, isExecError } from '../control/actions.ts';
-import { SAFE_REF, uncommittedCount } from '../git/branch.ts';
+import { SAFE_REF, worktreeCounts } from '../git/branch.ts';
 import { firstLine, type GitExec } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
@@ -12,7 +12,7 @@ import type { TmuxClient } from '../tmux/client.ts';
 export type FinishTmux = Pick<TmuxClient, 'killOwnedWindow' | 'windowKageId' | 'capturePane'>;
 export type FinishSource = Pick<LiveSource, 'finishTarget' | 'setFlags' | 'markStopped' | 'forget'>;
 
-type Counts = { unpushed: number; uncommitted: number };
+type Counts = { unpushed: number; uncommitted: number; ignored: number };
 
 export interface FinishDeps {
   tmux: FinishTmux;
@@ -22,7 +22,9 @@ export interface FinishDeps {
   git: GitExec;
   projectsRoot: string;
   worktreeDir: string;
-  /** A record's unpushed commits and uncommitted entries (branchCounts), run in its worktree. */
+  /** R74: delete only touches branches with this prefix (a hand-edited record can't name others). */
+  branchPrefix: string;
+  /** A record's unpushed commits, uncommitted and ignored entries (branchCounts), in its worktree. */
   counts: (worktree: string, branch: string) => Promise<Counts>;
   /** Fresh counts after a mismatch, so the board shows them (LiveSource.setPreview). */
   publish: (id: string, patch: Counts) => void;
@@ -37,6 +39,9 @@ const ACTIVE_DELETE = 'Stop the session before deleting it.';
 const CHANGED = 'The branch changed since you looked. Look again before deleting.';
 const notKageWorktree = (worktree: string) =>
   `Kage won't delete ${worktree}: it isn't one of Kage's worktrees.`;
+/** R71: git lists the record's worktree, but on another branch or a detached HEAD. */
+const OFF_BRANCH =
+  "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there.";
 /** Claude's footer while a turn runs (integration §7). */
 const BUSY_FOOTER = /esc to interrupt/i;
 /** `git worktree remove` may delete a large tree: 60 s, like `worktree add`. */
@@ -103,6 +108,8 @@ function parseWorktrees(out: string): WorktreeEntry[] {
 interface DeletePlan {
   /** The project folder (git's cwd). */
   repo: string;
+  /** The worktree's canonical path, the one checked and the one handed to git. */
+  worktree: string;
   /** git lists the record's worktree, on its branch, not as the main worktree. */
   listed: boolean;
   folder: boolean;
@@ -161,14 +168,17 @@ export class FinishActions {
    * Deletes a Kage session's window, worktree, branch and record (spec §5.8, B10), only as
    * `seen` (the counts the confirmation showed) still describes the branch:
    * 1. 403 for an external session, 409 while it runs or needs you;
-   * 2. the record's branch passes SAFE_REF and isn't its base, and its worktree resolves (links
-   *    too) strictly inside `<repo>/<worktreeDir>/` and, when git lists it, is listed on
-   *    `refs/heads/<branch>` and not as the main worktree; else 409 with nothing touched;
-   * 3. a recount differing from `seen` publishes the fresh counts and answers 409;
+   * 2. the record's branch passes SAFE_REF, carries the branch prefix (R74) and isn't its base,
+   *    and its absolute worktree path resolves (links too) strictly inside `<repo>/<worktreeDir>/`
+   *    and, when git lists it, isn't the main worktree; else 409 with nothing touched. Listed on
+   *    another branch or detached is 409 too (R71);
+   * 3. a recount (unpushed, uncommitted, ignored: R73) differing from `seen` publishes the
+   *    fresh counts and answers 409;
    * 4. the window is killed (only while it holds the record's kage id), then 2 and 3 run again
    *    (F10: an idle claude could take a follow-up before the kill);
-   * 5. `git worktree remove [--force]` (--force only for confirmed uncommitted entries), or
-   *    `worktree prune` when git no longer lists it and the folder is gone;
+   * 5. `git worktree remove [--force]` on the canonical path when git lists it (--force only for
+   *    confirmed uncommitted entries; confirmed ignored files go with a plain remove). Never
+   *    `worktree prune` (R72): it would unregister other worktrees too;
    * 6. `git branch -D` (the counts were confirmed);
    * 7. the record is forgotten.
    * A git failure is a 422 naming what stays. When the project folder is gone, only the window
@@ -192,12 +202,13 @@ export class FinishActions {
       }
       if (project) {
         const plan = await this.#check(id, record, project.path, seen);
-        await this.#removeWorktree(record, plan, seen);
+        await this.#removeWorktree(plan, seen);
         if (plan.branch) {
           try {
             await this.#d.git(['branch', '-D', '--', record.branch], { cwd: plan.repo });
           } catch (e) {
-            throw new ActionError(422, `git couldn't delete the branch: ${firstLine(e)}`);
+            const what = `git couldn't delete the branch: ${firstLine(e)}`;
+            throw new ActionError(422, plan.listed ? `Removed the worktree, but ${what}` : what);
           }
         }
       }
@@ -210,18 +221,23 @@ export class FinishActions {
     const plan = await this.#plan(r, repo);
     let fresh: Counts;
     try {
-      if (plan.folder && plan.branch) fresh = await this.#d.counts(r.worktree, r.branch);
+      if (plan.folder && plan.branch) fresh = await this.#d.counts(plan.worktree, r.branch);
       else {
-        fresh = {
-          unpushed: plan.branch ? await this.#unpushedInRepo(repo, r.branch) : 0,
-          uncommitted: plan.folder ? await uncommittedCount(r.worktree, this.#d.git) : 0,
-        };
+        const w = plan.folder
+          ? await worktreeCounts(plan.worktree, this.#d.git)
+          : { uncommitted: 0, ignored: 0 };
+        fresh = { unpushed: plan.branch ? await this.#unpushedInRepo(repo, r.branch) : 0, ...w };
       }
     } catch (e) {
       throw new ActionError(422, `git couldn't count the work on the branch: ${firstLine(e)}`);
     }
-    if (fresh.unpushed !== seen.unpushed || fresh.uncommitted !== seen.uncommitted) {
-      this.#d.publish(id, { unpushed: fresh.unpushed, uncommitted: fresh.uncommitted });
+    if (
+      fresh.unpushed !== seen.unpushed ||
+      fresh.uncommitted !== seen.uncommitted ||
+      fresh.ignored !== seen.ignored
+    ) {
+      const { unpushed, uncommitted, ignored } = fresh;
+      this.#d.publish(id, { unpushed, uncommitted, ignored });
       throw new ActionError(409, CHANGED);
     }
     return plan;
@@ -230,7 +246,10 @@ export class FinishActions {
   /** Step 2 of remove (read-only): refuses with 409 unless the worktree and branch are Kage's. */
   async #plan(r: SessionRecord, projectPath: string): Promise<DeletePlan> {
     const refuse = () => new ActionError(409, notKageWorktree(r.worktree));
+    const prefix = this.#d.branchPrefix;
     if (!SAFE_REF.test(r.branch) || r.branch === r.base) throw refuse();
+    if (!r.branch.startsWith(prefix) || r.branch === prefix) throw refuse();
+    if (!isAbsolute(r.worktree)) throw refuse();
     const repo = await canonical(projectPath);
     const root = await canonical(resolve(projectPath, this.#d.worktreeDir));
     const wt = await canonical(r.worktree);
@@ -245,10 +264,11 @@ export class FinishActions {
     let listed = false;
     for (const [i, e] of entries.entries()) {
       if (!samePath(await canonical(e.path), wt)) continue;
-      if (i === 0 || e.branch !== `refs/heads/${r.branch}`) throw refuse();
+      if (i === 0) throw refuse();
+      if (e.branch !== `refs/heads/${r.branch}`) throw new ActionError(409, OFF_BRANCH);
       listed = true;
     }
-    const folder = await exists(r.worktree);
+    const folder = await exists(wt);
     if (!listed && folder) throw refuse();
     let branch: boolean;
     try {
@@ -260,7 +280,7 @@ export class FinishActions {
       }
       branch = false;
     }
-    return { repo: projectPath, listed, folder, branch };
+    return { repo: projectPath, worktree: wt, listed, folder, branch };
   }
 
   /**
@@ -286,16 +306,20 @@ export class FinishActions {
     return n;
   }
 
-  /** Step 5 of remove. */
-  async #removeWorktree(r: SessionRecord, plan: DeletePlan, seen: Counts): Promise<void> {
-    let args: string[] | null = null;
-    if (plan.listed) {
-      // --force only for uncommitted entries the user confirmed; else git refuses dirty trees.
-      args = ['worktree', 'remove', ...(seen.uncommitted > 0 ? ['--force'] : []), '--', r.worktree];
-    } else if (!plan.folder) args = ['worktree', 'prune'];
-    if (!args) return;
+  /**
+   * Step 5 of remove: `git worktree remove` on the canonical path git lists. Not listed (and,
+   * from #plan, the folder gone): nothing to remove; never `worktree prune` (R72).
+   */
+  async #removeWorktree(plan: DeletePlan, seen: Counts): Promise<void> {
+    if (!plan.listed) return;
+    // --force only for uncommitted entries the user confirmed; else git refuses dirty trees.
+    // Ignored files go with a plain remove, so their confirmed count is what allows it (R73).
+    const force = seen.uncommitted > 0 ? ['--force'] : [];
     try {
-      await this.#d.git(args, { cwd: plan.repo, timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS });
+      await this.#d.git(['worktree', 'remove', ...force, '--', plan.worktree], {
+        cwd: plan.repo,
+        timeoutMs: WORKTREE_REMOVE_TIMEOUT_MS,
+      });
     } catch (e) {
       throw new ActionError(422, `git couldn't remove the worktree: ${firstLine(e)}`);
     }

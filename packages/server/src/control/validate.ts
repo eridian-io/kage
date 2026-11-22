@@ -155,20 +155,23 @@ export function parseArchive(body: unknown): Parsed<ArchiveBody> {
   return typeof archived === 'boolean' ? { ok: true, value: { archived } } : fail(EXPECTED_ARCHIVE);
 }
 
-const EXPECTED_DELETE = 'Expected {"unpushed": <count>, "uncommitted": <count>}';
+const EXPECTED_DELETE =
+  'Expected {"unpushed": <count>, "uncommitted": <count>, "ignored": <count>}';
 /** A count the delete confirmation can show. */
-const MAX_COUNT = 1_000_000;
 const isCount = (n: unknown): n is number =>
-  typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= MAX_COUNT;
+  typeof n === 'number' && Number.isInteger(n) && n >= 0 && n <= LIMITS.deleteCount;
 
 /**
- * A `DELETE /api/sessions/:id` body: exactly `{unpushed, uncommitted}`, the counts the
- * confirmation showed, each an integer 0–1,000,000. The server deletes only while they match.
+ * A `DELETE /api/sessions/:id` body: exactly `{unpushed, uncommitted, ignored}`, the counts the
+ * confirmation showed, each an integer 0–LIMITS.deleteCount. The server deletes only while they
+ * match (R73: ignored files are deleted too, so they are confirmed like the rest).
  */
 export function parseDelete(body: unknown): Parsed<DeleteBody> {
-  const o = exactKeys(body, ['unpushed', 'uncommitted'], EXPECTED_DELETE);
+  const o = exactKeys(body, ['unpushed', 'uncommitted', 'ignored'], EXPECTED_DELETE);
   if (!o.ok) return o;
-  const { unpushed, uncommitted } = o.value;
-  if (!isCount(unpushed) || !isCount(uncommitted)) return fail(EXPECTED_DELETE);
-  return { ok: true, value: { unpushed, uncommitted } };
+  const { unpushed, uncommitted, ignored } = o.value;
+  if (!isCount(unpushed) || !isCount(uncommitted) || !isCount(ignored)) {
+    return fail(EXPECTED_DELETE);
+  }
+  return { ok: true, value: { unpushed, uncommitted, ignored } };
 }
