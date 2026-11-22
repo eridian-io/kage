@@ -56,9 +56,11 @@ Deferred from the phase 4 reviews. None blocks use.
 - **B36** `FileChange.path` is not stripped of control and bidi characters in the files list (the diff strips its own paths). Strip it where the list is built.
 - **B37** `listChanges` reads up to 100 MiB of untracked files on every request (the list and the diff both call it). Cache the untracked counts by file size and mtime, or read less.
 - **B38** A time-of-check to time-of-use gap on Windows, inherited from phase 3's file list: a path is checked and then read, and a swap between the two is not closed there. A fix needs an open-then-check on the file handle.
-- **B39** The delete e2e races after `extra.txt` is written: it should poll the board for "3 files" before it opens the confirmation. It failed once in three Docker runs.
+- **B39** (done, phase 4 fix wave) The delete e2e races after `extra.txt` is written: it should poll the board for "3 files" before it opens the confirmation. It failed once in three Docker runs.
 - **B40** An e2e for auto-archive skipping a session that has a terminal open (F11/R70). Unit tests cover it; no browser test opens a terminal and then merges.
 - **B41** Smaller e2e tidying from the Task 14 review: check that a pinned session stays before the archive step, give each fake scenario distinct file content, and assert the `sentIn` frames on the terminal socket.
+- **B42** A crash leaves resized windows at a manual size. The terminal's resize sets `window-size manual` on the window, and only a clean close unsets it, so after a crash the window stays at the browser's size when you attach at the PC. Fix: at startup, unset `window-size` (`set-option -w -u`) on every Kage-tagged window that has no terminal open.
+- **B43** A merge done in a linked worktree is seen only at the session's next turn end, so auto-archive on merge waits until then. The watcher looks at the top of the git common dir (`HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs`), and such a merge writes its `ORIG_HEAD` under `worktrees/<name>/` and a loose ref under `refs/heads/`. Fix: watch the linked worktrees' own git dirs too.
 
 ## Later
 
