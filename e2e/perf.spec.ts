@@ -752,24 +752,18 @@ test.describe('live budgets', () => {
         0,
       );
       expect(total, 'the burst produced updates').toBeGreaterThan(30 * 5);
-      recordBudget(
-        {
-          name: 'SSE session.updated per session (frames in 10.5 s)',
-          value: Math.max(...perSession),
-          limit: PER_SESSION,
-          unit: 'frames',
-        },
-        { allowFail: { owner: 'Task 4', baseline: 101 } },
-      );
-      recordBudget(
-        {
-          name: 'SSE session.updated, all 30 sessions (frames in 10.5 s)',
-          value: total,
-          limit: 30 * PER_SESSION,
-          unit: 'frames',
-        },
-        { allowFail: { owner: 'Task 4', baseline: 2949 } },
-      );
+      recordBudget({
+        name: 'SSE session.updated per session (frames in 10.5 s)',
+        value: Math.max(...perSession),
+        limit: PER_SESSION,
+        unit: 'frames',
+      });
+      recordBudget({
+        name: 'SSE session.updated, all 30 sessions (frames in 10.5 s)',
+        value: total,
+        limit: 30 * PER_SESSION,
+        unit: 'frames',
+      });
       recordBudget({
         name: 'SSE bytes per second',
         value: bytes / (WINDOW_MS / 1000),
