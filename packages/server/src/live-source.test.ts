@@ -1054,6 +1054,20 @@ describe('LiveSource: pane captures and throttling', () => {
     expect(updates('k-1').length - before).toBeLessThanOrEqual(5);
   });
 
+  it('a tool hook that changes nothing visible arms no throttle timer', async () => {
+    const { hooks, updates, step } = await toolBurst();
+    step(0);
+    await vi.advanceTimersByTimeAsync(300);
+    const sent = updates('k-1').length;
+    const timers = vi.getTimerCount();
+    // Same now line, same status: nothing to send, and nothing waits to send it.
+    hooks.fire(hook('PostToolUse', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    expect(vi.getTimerCount()).toBe(timers);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(updates('k-1').length).toBe(sent);
+  });
+
   it('a PermissionRequest in a burst of tool hooks emits at once', async () => {
     const { hooks, updates, step } = await toolBurst();
     for (let i = 0; i < 5; i++) {

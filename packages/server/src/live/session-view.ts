@@ -118,12 +118,63 @@ export function sameSession(a: Session | null, b: Session): boolean {
   return Object.keys(a).length === Object.keys(b).length && sameQuestion(a.question, b.question);
 }
 
-/** Whether `b` differs from the last sent `a` in its now line only (no difference counts too). */
-export function onlyNowChanged(a: Session | null, b: Session): boolean {
-  if (!a) return false;
-  const { now: _a, ...restA } = a;
-  const { now: _b, ...restB } = b;
-  return sameSession(restA, restB);
+/** How a view differs from the last frame sent: not at all, in its now line only, or otherwise. */
+export type ViewChange = 'none' | 'now' | 'other';
+
+/** The view's question as toSession would send it equals `a` (sameQuestion, without building it). */
+function sameViewQuestion(a: Question | undefined, v: SessionView): boolean {
+  const q = v.question;
+  if (!q || !a) return !q && !a;
+  if (a.text !== q.text || a.options.length !== q.options.length) return false;
+  if (!a.options.every((o, i) => o === q.options[i])) return false;
+  if ((a.startup ?? false) !== (q.startup ?? false) || (a.cut ?? false) !== (q.cut ?? false)) {
+    return false;
+  }
+  return (
+    (a.disabledOptions ?? []).join() === disabledOptions(v.promptKind ?? null, q.options).join()
+  );
+}
+
+/**
+ * What the throttle needs to know (spec §5.5): the same answer as comparing `last` with
+ * toSession(v) through sameSession, read straight from the view so a burst of hooks builds no
+ * Session. Ports, files and filesTotal travel in their own events and are left out, as there.
+ */
+export function viewChange(last: Session | null, v: SessionView): ViewChange {
+  if (!last) return 'other';
+  if (last.status !== v.status || last.statusSince !== v.statusSince) return 'other';
+  const r = v.record;
+  if (r) {
+    if (
+      last.external ||
+      last.project !== r.project ||
+      last.task !== r.task ||
+      last.branch !== r.branch ||
+      last.worktree !== r.worktree ||
+      last.startedAt !== r.createdAt ||
+      last.pinned !== r.pinned ||
+      last.archived !== r.archived ||
+      last.unpushed !== (v.unpushed ?? 0) ||
+      last.uncommitted !== (v.uncommitted ?? 0) ||
+      last.ignored !== (v.ignored ?? 0)
+    ) {
+      return 'other';
+    }
+  } else {
+    const w = v.window;
+    // The project is the cwd's last part or the window name: unchanged when both are.
+    if (
+      !last.external ||
+      last.worktree !== (w?.cwd ?? '') ||
+      last.task !== (w?.name ?? '') ||
+      last.startedAt !== v.firstSeen
+    ) {
+      return 'other';
+    }
+  }
+  if (!sameViewQuestion(last.question, v)) return 'other';
+  const now = v.now && v.status === 'running' ? v.now : undefined;
+  return last.now === now ? 'none' : 'now';
 }
 
 export const sameLines = (a: DisplayLine[], b: DisplayLine[]): boolean =>

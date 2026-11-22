@@ -6,6 +6,7 @@ import {
   type SessionView,
   sameSession,
   toSession,
+  viewChange,
 } from './session-view.ts';
 
 const view = (over: Partial<SessionView> = {}): SessionView => ({
@@ -140,5 +141,72 @@ describe('questionFromToolInput', () => {
     expect(q?.text).not.toContain('\x1b');
     expect(q?.options).toHaveLength(10);
     expect(q?.options.every((o) => o.length <= 200 && !o.includes('\x07'))).toBe(true);
+  });
+});
+
+describe('viewChange (the throttle compares a view with the last frame without building one)', () => {
+  const rec = {
+    kageId: 'k-1',
+    windowId: '@2',
+    project: 'shop',
+    task: 'Fix the cart total',
+    branch: 'kage/fix',
+    worktree: '/w/fix',
+    createdAt: 5,
+    pinned: false,
+    archived: false,
+    sessionId: null,
+    transcriptPath: null,
+    base: null,
+    permissionMode: 'default' as const,
+    baseCommit: null,
+    doneAt: null,
+    archivedAt: null,
+    restoredAt: null,
+    unpinnedAt: null,
+  };
+  const w = { cwd: '/srv/notes', name: 'scratch' } as TmuxWindow;
+  const q = { text: 'Run npm test?', options: ['Yes', 'No'] };
+  const bases: SessionView[] = [
+    view({ window: w }),
+    view({ id: 'k-1', record: rec, unpushed: 2, uncommitted: 1 }),
+    view({ status: 'needs-you', question: q, promptKind: 'permission', window: w }),
+  ];
+  const changes: ((v: SessionView) => SessionView)[] = [
+    (v) => v,
+    (v) => ({ ...v, now: 'Reading a.ts' }),
+    (v) => ({ ...v, now: null }),
+    (v) => ({ ...v, status: 'done' }),
+    (v) => ({ ...v, statusSince: 9 }),
+    (v) => ({ ...v, question: q, status: 'needs-you' }),
+    (v) => ({ ...v, question: { ...q, options: ['Yes'] } }),
+    (v) => ({ ...v, question: v.question ? { ...v.question, cut: true } : null }),
+    (v) => ({ ...v, promptKind: 'ask' }),
+    (v) => ({ ...v, unpushed: 7 }),
+    (v) => ({ ...v, ignored: 3 }),
+    (v) => (v.record ? { ...v, record: { ...v.record, pinned: true } } : v),
+    (v) => (v.record ? { ...v, record: { ...v.record, task: 'Renamed' } } : v),
+    (v) => (v.window ? { ...v, window: { ...v.window, name: 'renamed' } } : v),
+    (v) => (v.window ? { ...v, window: { ...v.window, cwd: '/srv/other' } } : v),
+    (v) => ({ ...v, firstSeen: 3 }),
+    (v) => ({ ...v, ports: [{ port: 1, process: 'x', localOnly: true }], filesTotal: 4 }),
+  ];
+
+  it('agrees with sameSession and toSession for every change', () => {
+    for (const base of bases) {
+      const last = toSession(base);
+      for (const change of changes) {
+        const next = change(base);
+        const s = toSession(next);
+        const { now: _a, ...ra } = last;
+        const { now: _b, ...rb } = s;
+        const want = sameSession(last, s) ? 'none' : sameSession(ra, rb) ? 'now' : 'other';
+        expect(viewChange(last, next), JSON.stringify(next)).toBe(want);
+      }
+    }
+  });
+
+  it('is other with no frame sent yet', () => {
+    expect(viewChange(null, view())).toBe('other');
   });
 });

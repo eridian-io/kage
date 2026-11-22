@@ -15,7 +15,6 @@ import { nextStatus } from './hooks/status.ts';
 import {
   ACTIVE_MS,
   multiSelectByQuestion,
-  onlyNowChanged,
   previewTarget,
   questionFromToolInput,
   questionKey,
@@ -23,6 +22,7 @@ import {
   sameLines,
   sameSession,
   toSession,
+  viewChange,
 } from './live/session-view.ts';
 import {
   numberedPromptKind,
@@ -1848,7 +1848,10 @@ export class LiveSource implements SessionSource {
    */
   #emitThrottled(st: Live): void {
     if (!this.#running) return;
-    if (!onlyNowChanged(st.last, toSession(st))) {
+    const change = viewChange(st.last, st);
+    // Nothing new: nothing to send, and no timer waits to send it.
+    if (change === 'none') return;
+    if (change === 'other') {
       this.#emitNow(st);
       return;
     }
