@@ -1,7 +1,9 @@
 /**
  * Setup's questions (phase 6, Task 5): a line of text with a default, or yes or no. Enter takes
- * the default. Ctrl+C or the end of input stops setup (the pending question rejects with an
- * AbortError).
+ * the default. Ctrl+C or the end of input during a question stops setup: the question rejects
+ * with an AbortError. Ctrl+C between questions (while setup looks something up) exits 130 at
+ * once. After close(), the terminal is back to normal and Ctrl+C is the process's own SIGINT,
+ * which ends it.
  */
 import { createInterface, type Interface } from 'node:readline/promises';
 
@@ -10,6 +12,8 @@ export interface Prompter {
   ask(question: string, def: string): Promise<string>;
   /** Shows `<question> [Y/n] ` (or `[y/N]`) until the answer is empty, yes or no. */
   confirm(question: string, def: boolean): Promise<boolean>;
+  /** Called after the last question; a scripted Prompter needn't have one. */
+  close?(): void;
 }
 
 /** True when a prompter's question was cut short by Ctrl+C or the end of input. */
@@ -17,27 +21,47 @@ export function isStopped(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError';
 }
 
-/** A Prompter over a terminal with node:readline/promises; close() when done. */
+/** A Prompter over a terminal with node:readline/promises; `exit` and `terminal` are test seams. */
 export function ttyPrompter(
   input: NodeJS.ReadableStream,
   output: NodeJS.WritableStream,
+  opts: { exit?: (code: number) => void; terminal?: boolean } = {},
 ): Prompter & { close(): void } {
+  const exit = opts.exit ?? ((code: number) => process.exit(code));
   let rl: Interface | null = null;
+  let pending = 0;
   const stop = new AbortController();
   const open = (): Interface => {
     if (rl === null) {
-      rl = createInterface({ input, output });
-      rl.on('SIGINT', () => {
-        output.write('\n');
-        stop.abort();
+      const r = createInterface({
+        input,
+        output,
+        ...(opts.terminal !== undefined ? { terminal: opts.terminal } : {}),
       });
-      rl.on('close', () => stop.abort());
+      rl = r;
+      r.on('SIGINT', () => {
+        output.write('\n');
+        if (pending > 0) {
+          stop.abort();
+          return;
+        }
+        // No question to cut short, so nothing would see an abort: stop now.
+        output.write('Setup stopped.\n');
+        r.close();
+        exit(130);
+      });
+      r.on('close', () => stop.abort());
     }
     return rl;
   };
   const line = async (text: string): Promise<string> => {
     if (stop.signal.aborted) throw new DOMException('Setup stopped.', 'AbortError');
-    return (await open().question(text, { signal: stop.signal })).trim();
+    pending++;
+    try {
+      return (await open().question(text, { signal: stop.signal })).trim();
+    } finally {
+      pending--;
+    }
   };
   return {
     async ask(question, def) {

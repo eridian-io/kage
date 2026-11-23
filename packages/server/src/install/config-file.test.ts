@@ -1,10 +1,13 @@
 import {
   chmodSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { readdir } from 'node:fs/promises';
@@ -106,6 +109,45 @@ describe('writeConfig', () => {
       `${file} must hold a JSON object. Fix it or move it away, then run kage setup again.`,
     );
     expect(readFileSync(file, 'utf8')).toBe('[1]');
+  });
+});
+
+describe('writeConfig: links and failures', () => {
+  it('a symlinked config.json is written through to its target; the link stays a link', async () => {
+    if (isWin) return; // symlinks need privileges on Windows
+    const dots = join(dir, 'dotfiles');
+    mkdirSync(dots);
+    const target = join(dots, 'kage.json');
+    writeFileSync(target, '{"x":1}');
+    chmodSync(target, 0o644);
+    mkdirSync(join(dir, 'config', 'kage'), { recursive: true });
+    symlinkSync(target, file);
+    await writeConfig(file, { port: 9090 });
+    expect(lstatSync(file).isSymbolicLink()).toBe(true);
+    expect(JSON.parse(readFileSync(target, 'utf8'))).toEqual({ x: 1, port: 9090 });
+    expect(mode(target)).toBe(0o600);
+    expect(await readdir(dots)).toEqual(['kage.json']);
+  });
+
+  it('a link to nothing is refused with a sentence, and nothing is written', async () => {
+    if (isWin) return;
+    mkdirSync(join(dir, 'config', 'kage'), { recursive: true });
+    symlinkSync(join(dir, 'gone.json'), file);
+    await expect(writeConfig(file, { port: 1 })).rejects.toThrow(
+      `${file} is a link to a file that isn't there. Fix it or move it away, then run kage setup again.`,
+    );
+    expect(existsSync(join(dir, 'gone.json'))).toBe(false);
+  });
+
+  it('a failed rename leaves no temporary file behind and the old file as it was', async () => {
+    mkdirSync(join(dir, 'config', 'kage'), { recursive: true });
+    writeFileSync(file, '{"x":1}');
+    const boom = Object.assign(new Error('EXDEV: invented'), { code: 'EXDEV' });
+    await expect(
+      writeConfig(file, { port: 9090 }, { rename: async () => Promise.reject(boom) }),
+    ).rejects.toThrow('EXDEV');
+    expect(await readdir(join(dir, 'config', 'kage'))).toEqual(['config.json']);
+    expect(readFileSync(file, 'utf8')).toBe('{"x":1}');
   });
 });
 

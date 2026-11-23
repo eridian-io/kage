@@ -56,4 +56,28 @@ describe('ttyPrompter', () => {
     // And every later question too.
     expect(isStopped(await p.ask('Again', '').catch((e: unknown) => e))).toBe(true);
   });
+
+  it('Ctrl+C during a question rejects it with an AbortError (setup then says Setup stopped.)', async () => {
+    const s = streams();
+    const exits: number[] = [];
+    const p = ttyPrompter(s.input, s.output, { exit: (c) => exits.push(c), terminal: true });
+    const q = p.ask('Port', '8080');
+    s.input.write('\x03');
+    expect(isStopped(await q.catch((e: unknown) => e))).toBe(true);
+    expect(exits).toEqual([]);
+    p.close();
+  });
+
+  it('Ctrl+C with no question pending exits 130 at once', async () => {
+    const s = streams();
+    const exits: number[] = [];
+    const p = ttyPrompter(s.input, s.output, { exit: (c) => exits.push(c), terminal: true });
+    const q = p.ask('Port', '8080');
+    s.input.write('\r');
+    expect(await q).toBe('8080');
+    s.input.write('\x03');
+    await new Promise((r) => setTimeout(r, 20));
+    expect(exits).toEqual([130]);
+    expect(s.shown()).toContain('Setup stopped.');
+  });
 });

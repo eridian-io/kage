@@ -21,6 +21,7 @@ import { KAGE_VERSION, type RunMode, serviceArgv, serviceEnv } from './runtime.t
 import type { ServiceManager, ServiceSpec } from './service.ts';
 import {
   CLAUDE_LINE,
+  LINGER_ON,
   NEEDS_TTY,
   type SetupDeps,
   servicePath,
@@ -162,7 +163,11 @@ function harness(over: Partial<SetupDeps> = {}, table = GOOD) {
     home,
     mode: BUNDLE,
     manager: fm.m,
-    status: async () => UP,
+    // The unit answers on the port the config now holds.
+    status: async () => ({
+      ...UP,
+      url: `http://box:${existsSync(cfgFile) ? readCfg().port : 8080}`,
+    }),
     fetch: (async (input: string | URL | Request) => {
       urls.push(String(input));
       return new Response(null, { status: 401 });
@@ -376,15 +381,23 @@ describe('kage setup, Review Focus 4: running it again', () => {
     expect(h.settings).toEqual([]);
   });
 
-  it('a key setup did not ask about that serve would refuse: exit 1 before the service', async () => {
+  it('R116(4): a key setup did not ask about that serve would refuse: nothing is written, no token shown, exit 1', async () => {
     mkdirSync(join(home, '.config', 'kage'), { recursive: true });
-    mkdirSync(join(home, 'projects'), { recursive: true });
-    writeFileSync(cfgFile, JSON.stringify({ worktreeDir: '../out' }));
+    const text = JSON.stringify({ worktreeDir: '../out' });
+    writeFileSync(cfgFile, text);
+    if (!isWin) chmodSync(cfgFile, 0o644);
     const h = harness();
     expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(1);
     expect(h.err[0]).toMatch(/^Config error: worktreeDir must be/);
     expect(h.err[1]).toBe('Fix ~/.config/kage/config.json, then run kage setup again.');
+    // Nothing changed: the file (even its mode), no projects folder, no hooks file, no service.
+    expect(readFileSync(cfgFile, 'utf8')).toBe(text);
+    if (!isWin) expect(mode(cfgFile)).toBe(0o644);
+    expect(existsSync(join(home, 'projects'))).toBe(false);
+    expect(h.settings).toEqual([]);
     expect(h.fm.installs).toEqual([]);
+    // The generated token was never shown.
+    expect([...h.out, ...h.err].some((l) => l.startsWith('Your token:'))).toBe(false);
   });
 
   it('the second run installs again, which restarts the one unit (the real systemd manager, a fake systemctl)', async () => {
@@ -640,6 +653,117 @@ describe('kage setup: the service', () => {
     expect(h.out.at(-1)).toBe(
       'Kage is running, but http://box:8080 answers HTTP 500. See: journalctl --user -u kage -e',
     );
+  });
+});
+
+describe('kage setup, fix round 1', () => {
+  it('R116(2): --yes turns linger on and says so, with how to undo it', async () => {
+    const fm = fakeManager({ lingerEnabled: async () => false });
+    const h = harness({ manager: fm.m });
+    expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(0);
+    expect(h.out).toContain(LINGER_ON);
+    expect(LINGER_ON).toBe(
+      "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger",
+    );
+    expect(fm.linger.enabled).toBe(1);
+  });
+
+  it('the linger question comes before install, and the prompter is closed after the last question', async () => {
+    mkdirSync(join(home, 'projects'));
+    const events: string[] = [];
+    const s = scripted(['', '', '', true, false]);
+    const p: Prompter = {
+      ask: async (q, d) => {
+        events.push(`ask ${q}`);
+        return s.p.ask(q, d);
+      },
+      confirm: async (q, d) => {
+        events.push(`confirm ${q}`);
+        return s.p.confirm(q, d);
+      },
+      close: () => events.push('close'),
+    };
+    const fm = fakeManager({
+      lingerEnabled: async () => false,
+      install: async () => {
+        events.push('install');
+      },
+    });
+    const h = harness({ manager: fm.m, prompt: p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    expect(events.slice(-3)).toEqual([
+      "confirm Keep Kage running when you're logged out?",
+      'close',
+      'install',
+    ]);
+    expect(fm.linger.enabled).toBe(0);
+    expect(h.out).not.toContain(LINGER_ON);
+  });
+
+  it('Ctrl+C at a question: Setup stopped., exit 130, and nothing written or installed', async () => {
+    const p: Prompter = {
+      ask: async (q, d) => {
+        if (q === 'Port') throw new DOMException('Setup stopped.', 'AbortError');
+        return d;
+      },
+      confirm: async (_q, d) => d,
+    };
+    const h = harness({ prompt: p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(130);
+    expect(h.err).toEqual(['Setup stopped.']);
+    expect(existsSync(cfgFile)).toBe(false);
+    expect(existsSync(join(home, 'projects'))).toBe(false);
+    expect(h.settings).toEqual([]);
+    expect(h.fm.installs).toEqual([]);
+  });
+
+  it("a tailnet address that isn't this machine's is refused at the question", async () => {
+    const h = harness();
+    expect(await setupCommand(['--yes', '--host', '100.101.102.200'], h.io, h.deps)).toBe(1);
+    expect(h.out).toContain(
+      '100.101.102.200 is another machine on your tailnet (100.101.102.200), not this one.',
+    );
+    expect(existsSync(cfgFile)).toBe(false);
+
+    mkdirSync(join(home, 'projects'));
+    const s = scripted(['', 'other.tail1234.ts.net', '100.101.102.103', '', true]);
+    const g = harness({
+      prompt: s.p,
+      isTty: true,
+      lookup: async () => [{ address: '100.101.102.200', family: 4 }],
+    });
+    expect(await setupCommand([], g.io, g.deps)).toBe(0);
+    expect(g.out).toContain(
+      'other.tail1234.ts.net is another machine on your tailnet (100.101.102.200), not this one.',
+    );
+    expect(readCfg().host).toBe('100.101.102.103');
+  });
+
+  it('a Kage answering on another port (an old kage serve) is not taken for the new unit', async () => {
+    let first: () => void = () => {};
+    const started = new Promise<void>((r) => {
+      first = r;
+    });
+    let polled = 0;
+    const h = harness({
+      waitMs: 1000,
+      status: async () => {
+        if (polled++ === 0) {
+          vi.useFakeTimers();
+          first();
+        }
+        return UP; // http://box:8080
+      },
+    });
+    const done = setupCommand(['--yes', '--port', '9090'], h.io, h.deps);
+    await started;
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(await done).toBe(1);
+    expect(h.out.at(-1)).toBe(
+      'A Kage at http://box:8080 answers instead, not on port 9090. Another kage serve may be running: stop it, then run kage setup again.',
+    );
+    expect(h.urls).toEqual([]);
+    expect(polled).toBeGreaterThan(2);
   });
 });
 

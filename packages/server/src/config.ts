@@ -206,7 +206,6 @@ export async function loadConfig(
   opts: { path?: string; env?: NodeJS.ProcessEnv } = {},
 ): Promise<KageConfig> {
   const env = opts.env ?? process.env;
-  const home = env.HOME || env.USERPROFILE || homedir();
   const path = opts.path ?? configPath(env);
 
   let raw: Obj = {};
@@ -229,7 +228,16 @@ export async function loadConfig(
     if (!isObj(parsed)) throw new ConfigError(`config file ${path} must contain a JSON object`);
     raw = parsed;
   }
+  return configFrom(raw, env);
+}
 
+/**
+ * The config a parsed config file's object stands for, with the environment's overrides; throws
+ * a ConfigError naming the first bad key (never its value). `kage setup` checks the object it is
+ * about to write with this, before writing it.
+ */
+export function configFrom(raw: Record<string, unknown>, env: NodeJS.ProcessEnv): KageConfig {
+  const home = env.HOME || env.USERPROFILE || homedir();
   const c: KageConfig = { ...DEFAULT_CONFIG, autoArchive: { ...DEFAULT_CONFIG.autoArchive } };
   if (raw.name !== undefined) c.name = str(raw.name, 'name');
   if (raw.projectsRoot !== undefined) c.projectsRoot = str(raw.projectsRoot, 'projectsRoot');

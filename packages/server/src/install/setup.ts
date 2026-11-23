@@ -12,7 +12,7 @@ import { mkdir, readdir, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { hostname, userInfo } from 'node:os';
 import { join, posix, resolve } from 'node:path';
-import { ConfigError, configPath, DEFAULT_CONFIG, displayPath, loadConfig } from '../config.ts';
+import { ConfigError, configFrom, configPath, DEFAULT_CONFIG, displayPath } from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
 import { ListenError, resolveListenAddress, shortHostname, tailscaleDnsName } from '../listen.ts';
 import type { Io } from '../main.ts';
@@ -40,6 +40,8 @@ export const CLAUDE_LINE =
   'To start Claude yourself with Kage watching: claude --settings "$(kage hooks-path)" --permission-mode default';
 const TOKEN_QUESTION = 'Set an access token? Anyone on your tailnet can reach Kage.';
 const LINGER_QUESTION = "Keep Kage running when you're logged out?";
+export const LINGER_ON =
+  "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger";
 const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin';
 const POLL_MS = 250;
 const SERVER_TIMEOUT_MS = 3000;
@@ -189,10 +191,37 @@ function logHint(m: ServiceManager | null): string {
   return m?.kind === 'launchd' ? '~/Library/Logs/kage.log' : 'journalctl --user -u kage -e';
 }
 
-/** Why Kage can't listen on a typed host, or null when it can (F8: checked like serve does). */
+/** This machine's Tailscale addresses, from `tailscale status --json`'s Self.TailscaleIPs. */
+export function ownTailscaleIps(statusJson: string): string[] {
+  try {
+    const ips = (JSON.parse(statusJson) as { Self?: { TailscaleIPs?: unknown } } | null)?.Self
+      ?.TailscaleIPs;
+    return Array.isArray(ips)
+      ? ips.filter((ip): ip is string => typeof ip === 'string').map((ip) => ip.toLowerCase())
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+/** An address in Tailscale's ranges: 100.64.0.0/10 or fd7a:115c:a1e0::/48. */
+function inTailnet(address: string): boolean {
+  if (isIP(address) === 4) {
+    const [a, b] = address.split('.').map(Number);
+    return a === 100 && b !== undefined && b >= 64 && b <= 127;
+  }
+  return address.toLowerCase().startsWith('fd7a:115c:a1e0:');
+}
+
+/**
+ * Why Kage can't listen on a typed host, or null when it can (F8: checked like serve does). A
+ * tailnet address must be one of this machine's own (`own`, when known): another machine's
+ * would make the service fail to bind, and restart forever.
+ */
 async function hostProblem(
   name: string,
   lookup: NonNullable<SetupDeps['lookup']>,
+  own: string[],
 ): Promise<string | null> {
   let address = name.replace(/^\[|\]$/g, '');
   if (isIP(address) === 0) {
@@ -205,6 +234,9 @@ async function hostProblem(
     const pick = found.find((a) => a.family === 4) ?? found[0];
     if (!pick) return `Kage can't find the address of ${name}.`;
     address = pick.address;
+  }
+  if (inTailnet(address) && own.length > 0 && !own.includes(address.toLowerCase())) {
+    return `${name} is another machine on your tailnet (${address}), not this one.`;
   }
   try {
     await resolveListenAddress(
@@ -284,7 +316,8 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     return 1;
   }
 
-  // 2. The questions; a flag answers its own, and --yes takes each default.
+  // 2. The questions; a flag answers its own, and --yes takes each default. Nothing is
+  // written until every answer is in and the whole config checks out (R116(4)).
   const ask = (question: string, def: string): Promise<string> =>
     prompt ? prompt.ask(question, def) : Promise.resolve(def);
   const confirm = (question: string, def: boolean): Promise<boolean> =>
@@ -304,12 +337,49 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   const token = wantToken ? (keepToken ? curToken : generateToken()) : '';
   const generated = wantToken && !keepToken;
 
-  // 3. The config (only the keys asked, only when they differ), then Kage's hooks file.
+  // The service's plan, and its one question (linger), before anything changes.
+  const m = deps.manager;
+  let skipped: string | null = null;
+  let argv: string[] | null = null;
+  if (f.service && m !== null) {
+    // R112: state() and install() need a user manager, so ask first.
+    skipped = await m.unavailable();
+    if (skipped === null) {
+      try {
+        argv = serviceArgv(deps.mode);
+      } catch (err) {
+        skipped = firstLine(err);
+      }
+    }
+  }
+  const linger = argv !== null && m !== null ? await askLinger(f, m, confirm) : false;
+  // The last question is asked: from here Ctrl+C stops setup at once (prompt.ts).
+  prompt?.close?.();
+
+  // 3. Check the whole config as it will be, then write it, then Kage's hooks file.
   const patch: Record<string, unknown> = {};
-  if (current?.projectsRoot !== projects) patch.projectsRoot = projects;
+  if (current?.projectsRoot !== projects.value) patch.projectsRoot = projects.value;
   if (host.change) patch.host = host.value;
   if (current?.port !== port) patch.port = port;
   if (current?.token !== token) patch.token = token;
+  try {
+    // A key setup didn't ask about may be wrong too; the service would only restart forever.
+    configFrom({ ...(current ?? {}), ...patch }, deps.env);
+  } catch (err) {
+    if (!(err instanceof ConfigError)) throw err;
+    io.err(`Config error: ${err.message}`);
+    io.err(`Fix ${shown}, then run kage setup again.`);
+    return 1;
+  }
+  if (projects.create) {
+    try {
+      await mkdir(projects.abs, { recursive: true });
+    } catch (err) {
+      io.err(`Couldn't create ${projects.shown}: ${firstLine(err)}`);
+      return 1;
+    }
+    io.out(`Created ${projects.shown}.`);
+  }
   try {
     await writeConfig(cfgFile, patch);
   } catch (err) {
@@ -327,15 +397,6 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   if (generated) {
     io.out(`Your token: ${token}. Kage asks for it once per browser. It's saved in ${shown}.`);
   }
-  // A key setup didn't ask about may still be wrong; the service would only restart forever.
-  try {
-    await loadConfig({ env: deps.env, path: cfgFile });
-  } catch (err) {
-    if (!(err instanceof ConfigError)) throw err;
-    io.err(`Config error: ${err.message}`);
-    io.err(`Fix ${shown}, then run kage setup again.`);
-    return 1;
-  }
   try {
     await deps.writeSettings(deps.env);
   } catch (err) {
@@ -344,47 +405,29 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   }
 
   // 4. The service.
-  const m = deps.manager;
-  let started = false;
-  if (f.service && m !== null) {
-    // R112: state() and install() need a user manager, so ask first.
-    const why = await m.unavailable();
-    let argv: string[] | null = null;
-    if (why !== null) {
-      io.out(why);
-    } else {
-      try {
-        argv = serviceArgv(deps.mode);
-      } catch (err) {
-        io.out(firstLine(err));
-      }
-    }
-    if (argv !== null) {
-      let existed = false;
-      try {
-        existed = (await m.state()) !== 'missing';
-      } catch {
-        // install says what's wrong, if anything is
-      }
-      try {
-        await m.install({ argv, env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode)) });
-      } catch (err) {
-        io.err(`Couldn't install the ${m.name}: ${firstLine(err)}`);
-        io.err('Fix that, then run kage setup again.');
-        return 1;
-      }
-      io.out(existed ? `Updated and restarted the ${m.name}.` : `Installed the ${m.name}.`);
-      started = true;
-      await offerLinger(io, deps, f, m, confirm);
-    }
-  }
-
-  // 5. Does it answer?
-  if (!started) {
+  if (skipped !== null) io.out(skipped);
+  if (argv === null || m === null) {
     io.out('Start Kage with: kage serve');
     io.out(CLAUDE_LINE);
     return 0;
   }
+  let existed = false;
+  try {
+    existed = (await m.state()) !== 'missing';
+  } catch {
+    // install says what's wrong, if anything is
+  }
+  try {
+    await m.install({ argv, env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode)) });
+  } catch (err) {
+    io.err(`Couldn't install the ${m.name}: ${firstLine(err)}`);
+    io.err('Fix that, then run kage setup again.');
+    return 1;
+  }
+  io.out(existed ? `Updated and restarted the ${m.name}.` : `Installed the ${m.name}.`);
+  if (linger) await turnOnLinger(io, deps, m);
+
+  // 5. Does it answer?
   const code = await checkAnswers(io, deps, m, { host: host.value, short: host.short, port });
   if (code !== 0) return code;
   io.out(CLAUDE_LINE);
@@ -394,7 +437,16 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
 type Ask = (question: string, def: string) => Promise<string>;
 type Confirm = (question: string, def: boolean) => Promise<boolean>;
 
-/** The projects folder as it goes in the config (`~/…` kept); null when setup must stop. */
+interface ProjectsAnswer {
+  /** As it goes in the config (`~/…` kept). */
+  value: string;
+  abs: string;
+  shown: string;
+  /** Made only once the config checks out, with the other writes. */
+  create: boolean;
+}
+
+/** The projects folder; null when setup must stop. */
 async function askProjects(
   io: Io,
   deps: SetupDeps,
@@ -402,7 +454,7 @@ async function askProjects(
   current: Record<string, unknown> | null,
   ask: Ask,
   confirm: Confirm,
-): Promise<string | null> {
+): Promise<ProjectsAnswer | null> {
   const cur = typeof current?.projectsRoot === 'string' ? current.projectsRoot : null;
   const def = cur ?? (await suggestProjectsRoot(deps.home));
   for (;;) {
@@ -412,23 +464,13 @@ async function askProjects(
     const abs = expandHome(value, deps.home);
     const name = displayPath(abs, deps.home);
     const again = f.projects === undefined && !f.yes;
-    if (await isDir(abs)) return value;
+    if (await isDir(abs)) return { value, abs, shown: name, create: false };
     if (await exists(abs)) {
       io.out(`${name} isn't a folder.`);
       if (again) continue;
       return null;
     }
-    if (await confirm(`Create ${name}?`, true)) {
-      try {
-        await mkdir(abs, { recursive: true });
-      } catch (err) {
-        io.out(`Couldn't create ${name}: ${firstLine(err)}`);
-        if (again) continue;
-        return null;
-      }
-      io.out(`Created ${name}.`);
-      return value;
-    }
+    if (await confirm(`Create ${name}?`, true)) return { value, abs, shown: name, create: true };
     if (!again) {
       io.out('Kage needs a projects folder. Run kage setup again with one that exists.');
       return null;
@@ -449,11 +491,14 @@ async function askHost(
   ask: Ask,
 ): Promise<{ value: string | null; change: boolean; short: string | null } | undefined> {
   const cur = typeof current?.host === 'string' && current.host.trim() !== '' ? current.host : null;
+  let statusJson = '';
   const dns = await tailscaleDnsName(async (cmd, cmdArgs) => {
     const r = await deps.run(cmd, cmdArgs, { timeoutMs: 5000 });
     if (r.code !== 0) throw new Error(r.stderr);
+    statusJson = r.stdout;
     return r.stdout;
   });
+  const own = ownTailscaleIps(statusJson);
   const short = dns?.split('.')[0] ?? null;
   const def = cur ?? short ?? 'the Tailscale address';
   const lookup = deps.lookup ?? ((n: string) => dnsLookup(n, { all: true }));
@@ -464,7 +509,7 @@ async function askHost(
       // The Tailscale address: a configured host goes back to unset (null).
       return { value: null, change: cur !== null || current?.host === '', short };
     }
-    const problem = await hostProblem(answer, lookup);
+    const problem = await hostProblem(answer, lookup, own);
     if (problem === null) return { value: answer, change: answer !== cur, short };
     io.out(problem);
     if (f.host !== undefined || f.yes) return undefined;
@@ -487,19 +532,20 @@ async function askPort(
   }
 }
 
-/** systemd only: offer linger when it is off, unless --no-linger (R110-10). */
-async function offerLinger(
-  io: Io,
-  deps: SetupDeps,
-  f: Flags,
-  m: ServiceManager,
-  confirm: Confirm,
-): Promise<void> {
-  if (!m.lingerEnabled || !m.enableLinger || f.linger === false) return;
-  if (await m.lingerEnabled()) return;
-  if (!(f.linger ?? (await confirm(LINGER_QUESTION, true)))) return;
-  if (await m.enableLinger()) {
-    io.out("Kage keeps running when you're logged out.");
+/**
+ * systemd only: whether to turn linger on (R110-10). Asked when it is off, unless --linger or
+ * --no-linger answers; --yes takes the default, Yes (R116(2)).
+ */
+async function askLinger(f: Flags, m: ServiceManager, confirm: Confirm): Promise<boolean> {
+  if (!m.lingerEnabled || !m.enableLinger || f.linger === false) return false;
+  if (await m.lingerEnabled()) return false;
+  return f.linger ?? (await confirm(LINGER_QUESTION, true));
+}
+
+/** Turns linger on for oneself, and says so and how to undo it (R116(2)); else the sudo line. */
+async function turnOnLinger(io: Io, deps: SetupDeps, m: ServiceManager): Promise<void> {
+  if (await m.enableLinger?.()) {
+    io.out(LINGER_ON);
     return;
   }
   io.out(`Run this to allow it: sudo loginctl enable-linger ${userName(deps.env)}`);
@@ -527,13 +573,21 @@ async function checkAnswers(
 ): Promise<number> {
   const socket = socketPath(deps.env, deps.platform);
   const deadline = Date.now() + (deps.waitMs ?? 15_000);
+  // An answer on another port is an older kage serve still holding the socket, not the unit.
+  const ours = (s: { url: string } | null) => s !== null && portOf(s.url) === cfg.port;
   let status = await deps.status(socket);
-  while (status === null && Date.now() < deadline) {
+  while (!ours(status) && Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, POLL_MS));
     status = await deps.status(socket);
   }
   if (status === null) {
     io.out(`Kage didn't answer at ${expectedUrl(cfg)}. See: ${logHint(m)}`);
+    return 1;
+  }
+  if (!ours(status)) {
+    io.out(
+      `A Kage at ${status.url} answers instead, not on port ${cfg.port}. Another kage serve may be running: stop it, then run kage setup again.`,
+    );
     return 1;
   }
   let code: number;
@@ -558,6 +612,16 @@ async function checkAnswers(
   }
   io.out(`Kage is running at ${status.url}`);
   return 0;
+}
+
+/** A URL's port as a number (80 when it names none); null when it isn't a URL. */
+function portOf(url: string): number | null {
+  try {
+    const u = new URL(url);
+    return u.port === '' ? (u.protocol === 'https:' ? 443 : 80) : Number(u.port);
+  } catch {
+    return null;
+  }
 }
 
 /** Where Kage should be, for the "didn't answer" line: the host set, else the MagicDNS short name. */
