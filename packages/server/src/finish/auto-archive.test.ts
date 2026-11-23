@@ -6,8 +6,8 @@ import {
   type AutoArchiveDeps,
   AutoArchiver,
   type AutoCandidate,
+  listingAgrees,
   watchFailed,
-  windowGone,
 } from './auto-archive.ts';
 
 const T0 = 1_800_000_000_000;
@@ -126,22 +126,35 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("windowGone (serve's confirm)", () => {
-  const w = (kageId: string | null) => ({ kageId });
-  it('true only when a listing has windows and none is tagged with the id', async () => {
-    expect(await windowGone(async () => [w(null), w('k-2')], 'k-1')).toBe(true);
-    expect(await windowGone(async () => [w(null), w('k-1')], 'k-1')).toBe(false);
+describe("listingAgrees (serve's confirm)", () => {
+  const w = (windowId: string, kageId: string | null) => ({ windowId, kageId });
+  const list = [w('@0', null), w('@2', 'k-2')];
+  it('an ended session whose window is gone: true', async () => {
+    expect(await listingAgrees(async () => list, 'k-1', null)).toBe(true);
+  });
+
+  it('a done session whose own window is listed: true (the archive closes its idle Claude)', async () => {
+    expect(await listingAgrees(async () => [...list, w('@5', 'k-1')], 'k-1', '@5')).toBe(true);
+  });
+
+  it('a window tagged with the id that the source does not hold: false (I1)', async () => {
+    expect(await listingAgrees(async () => [...list, w('@5', 'k-1')], 'k-1', null)).toBe(false);
+    expect(await listingAgrees(async () => [...list, w('@9', 'k-1')], 'k-1', '@5')).toBe(false);
   });
 
   it('an empty listing (session or server missing) is not proof: false', async () => {
-    expect(await windowGone(async () => [], 'k-1')).toBe(false);
+    expect(await listingAgrees(async () => [], 'k-1', null)).toBe(false);
   });
 
   it('a failed listing throws, so the archiver skips and logs it', async () => {
     await expect(
-      windowGone(async () => {
-        throw new Error('tmux timed out');
-      }, 'k-1'),
+      listingAgrees(
+        async () => {
+          throw new Error('tmux timed out');
+        },
+        'k-1',
+        null,
+      ),
     ).rejects.toThrow('tmux timed out');
   });
 });

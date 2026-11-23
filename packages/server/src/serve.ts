@@ -22,7 +22,7 @@ import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { FinishActions } from './finish/actions.ts';
-import { AutoArchiver, windowGone } from './finish/auto-archive.ts';
+import { AutoArchiver, listingAgrees } from './finish/auto-archive.ts';
 import { branchCounts, branchState } from './git/branch.ts';
 import { gitCommonDir, gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
@@ -310,8 +310,9 @@ async function startLive(
         candidates: () => host.autoCandidates(),
         state: (c) => branchState(c.worktree, c, gitExec),
         archive: (id) => finish.archive(id, true, { auto: true }),
-        // I1: right before archiving, a fresh listing must find the session's window gone.
-        confirm: (id) => windowGone(() => tmux.listWindows(), id),
+        // I1: right before archiving, a fresh listing must agree with the window the source holds.
+        confirm: (id) =>
+          listingAgrees(() => tmux.listWindows(), id, source.terminalTarget(id)?.windowId ?? null),
         gitDir: (repo) => gitCommonDir(repo, gitExec),
         log: (line) => io.err(line),
       }),

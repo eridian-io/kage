@@ -28,9 +28,9 @@ export interface AutoArchiveDeps {
   state: (c: AutoCandidate) => Promise<BranchState>;
   archive: (id: string) => Promise<void>;
   /**
-   * Asked right before each archive: true only when the session's window is really gone. A
-   * session can read ended for a moment while its Claude still works (reliability I1), so false
-   * or a failure skips the archive; a later trigger checks again.
+   * Asked right before each archive: true only when a fresh look at tmux agrees with what the
+   * candidate shows. A session can read ended for a moment while its Claude still works
+   * (reliability I1), so false or a failure skips the archive; a later trigger checks again.
    */
   confirm: (id: string) => Promise<boolean>;
   /** `rev-parse --git-common-dir`, made absolute. */
@@ -65,17 +65,23 @@ const DEBOUNCE_MS = 5000;
 const WATCH_NAMES = new Set(['FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', 'HEAD']);
 
 /**
- * `confirm` for serve (reliability I1, F13): a fresh listing of the tmux session finds no window
- * tagged with the session's `@kage_id`. An empty listing means tmux says the server or the
- * session is missing, which doesn't prove the window gone, so it answers false too; a failed
+ * `confirm` for serve (reliability I1, F13): a fresh listing of the tmux session agrees with the
+ * window the source holds for the session (`known`, null when it reads the window as gone). A
+ * window tagged with the session's `@kage_id` that the source doesn't hold means the session
+ * read ended while its Claude may still work: false. A done session whose own window is listed
+ * is archived as before (the archive closes its idle Claude). An empty listing means tmux says
+ * the server or the session is missing, which proves nothing, so it answers false too; a failed
  * listing throws, and the archiver skips and logs it.
  */
-export async function windowGone(
-  listWindows: () => Promise<readonly { kageId: string | null }[]>,
+export async function listingAgrees(
+  listWindows: () => Promise<readonly { windowId: string; kageId: string | null }[]>,
   id: string,
+  known: string | null,
 ): Promise<boolean> {
   const windows = await listWindows();
-  return windows.length > 0 && !windows.some((w) => w.kageId === id);
+  if (windows.length === 0) return false;
+  const tagged = windows.find((w) => w.kageId === id);
+  return tagged === undefined || tagged.windowId === known;
 }
 
 /** Logged once per directory when fs.watch throws. */
