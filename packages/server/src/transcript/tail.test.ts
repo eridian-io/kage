@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import {
   appendFileSync,
   type FSWatcher,
@@ -574,5 +575,62 @@ describe('TranscriptTail: only records read after the first read fire (M1, I2)',
     await fired;
     expect(interrupts).toBe(1);
     expect(ends).toBe(1);
+  });
+});
+
+describe('TranscriptTail: idle tails (hardening Task 9, P7)', () => {
+  /** An fs.watch whose events and errors the test fires; it never sees the disk. */
+  function fakeWatch() {
+    const made: { w: EventEmitter; fn: (event: string, file: string | null) => void }[] = [];
+    const fn = ((_target: string, _options: unknown, listener: unknown) => {
+      const w = Object.assign(new EventEmitter(), { close() {} });
+      made.push({ w, fn: listener as (event: string, file: string | null) => void });
+      return w;
+    }) as unknown as typeof watch;
+    return {
+      fn,
+      fire: () => made.at(-1)?.fn('change', 's.jsonl'),
+      fail: () => made.at(-1)?.w.emit('error', new Error('watch failed')),
+    };
+  }
+
+  it('an idle tail with a working watcher polls nothing; without a watcher it polls every 2 s', async () => {
+    fakeIntervals();
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, say('a'));
+    const fw = fakeWatch();
+    const t = tail(path, { watch: fw.fn });
+    t.setIdle(true);
+    await t.start();
+    expect(vi.getTimerCount()).toBe(0);
+    const seen: DisplayLine[][] = [];
+    t.on((added) => seen.push(added));
+    appendFileSync(path, say('b'));
+    vi.advanceTimersByTime(60_000);
+    await wait(100);
+    // No stat poll: the append is seen only when the watcher reports it.
+    expect(seen).toEqual([]);
+    const got = next(t);
+    fw.fire();
+    expect(await got).toEqual([{ kind: 'say', text: 'b' }]);
+    // Running again: the 2 s poll is back.
+    t.setIdle(false);
+    expect(vi.getTimerCount()).toBe(1);
+    t.setIdle(true);
+    expect(vi.getTimerCount()).toBe(0);
+    // A watcher that failed once is not trusted: an idle tail polls again.
+    fw.fail();
+    await wait(100);
+    expect(vi.getTimerCount()).toBe(1);
+
+    const path2 = join(dir, 'p.jsonl');
+    writeFileSync(path2, say('a'));
+    const polled = tail(path2, { watch: false });
+    polled.setIdle(true);
+    await polled.start();
+    const got2 = next(polled);
+    appendFileSync(path2, say('c'));
+    vi.advanceTimersByTime(2000);
+    expect(await got2).toEqual([{ kind: 'say', text: 'c' }]);
   });
 });

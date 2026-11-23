@@ -200,6 +200,11 @@ class FakeTail implements TailLike {
   stop(): void {
     this.stopped = true;
   }
+  /** Every setIdle call, in order (Task 9: a tail that isn't running doesn't poll). */
+  idleCalls: boolean[] = [];
+  setIdle(idle: boolean): void {
+    this.idleCalls.push(idle);
+  }
   lines(): DisplayLine[] {
     return this.#lines.slice();
   }
@@ -4393,5 +4398,223 @@ describe('LiveSource: a turn that ends without a Stop (hardening Task 7: I2, M1,
       expect(s.tmux.captureCalls.length).toBe(captures);
       expect(s.source.get('k-1')?.status).toBe('needs-you');
     });
+  });
+});
+
+describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)', () => {
+  const endedRec = (i: number, over: Partial<SessionRecord> = {}) =>
+    rec({
+      kageId: `k-${i}`,
+      windowId: null,
+      branch: `kage/task-${i}`,
+      sessionId: `s-${i}`,
+      transcriptPath: `/home/dev/.claude/projects/-home-dev-projects-shop/s-${i}.jsonl`,
+      doneAt: T0 - 10_000,
+      ...over,
+    });
+  const archivedRec = (i: number) =>
+    endedRec(i, { archived: true, archivedAt: T0 - 1_000_000 + i });
+
+  it('50 archived records start no tail; GET /api/archive still lists them', async () => {
+    const records = Array.from({ length: 50 }, (_, i) => archivedRec(i));
+    const { source, tails } = setup({ records });
+    await source.start();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(tails).toHaveLength(0);
+    expect(source.archivedCount()).toBe(50);
+    const list = source.archivedList();
+    expect(list).toHaveLength(Math.min(50, LIMITS.archived));
+    expect(list[0]).toMatchObject({ id: 'k-49', project: 'shop', branch: 'kage/task-49' });
+    // FinishActions still finds them, so restore works.
+    expect(source.finishTarget('k-3')).toMatchObject({
+      id: 'k-3',
+      windowId: null,
+      status: 'ended',
+      external: false,
+      record: { archived: true },
+    });
+    expect(source.list()).toEqual([]);
+    await source.stop();
+  });
+
+  it('a start with 500 archived records reads no archived transcript', async () => {
+    const records = Array.from({ length: 500 }, (_, i) => archivedRec(i));
+    const { source, tails } = setup({ records: [...records, endedRec(900)] });
+    await source.start();
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(tails.map((t) => t.path)).toEqual([endedRec(900).transcriptPath]);
+    await source.stop();
+  });
+
+  it('restoring an archived record reads its transcript and shows its lines', async () => {
+    const r = archivedRec(1);
+    const lines: DisplayLine[] = [{ kind: 'say', text: 'The cart total is fixed.' }];
+    const { source, tails, events, lineEvents } = setup({
+      records: [r],
+      tails: { [r.transcriptPath as string]: { lines } },
+    });
+    await source.start();
+    expect(tails).toHaveLength(0);
+    events.length = 0;
+    await source.setFlags('k-1', { archived: false });
+    await flush();
+    expect(tails).toHaveLength(1);
+    expect(tails[0]?.stopped).toBe(true);
+    expect(source.lines('k-1')).toEqual(lines);
+    expect(events.map((e) => e.type)).toEqual(['session.updated', 'archive', 'session.lines']);
+    expect(lineEvents('k-1').at(-1)).toEqual({
+      type: 'session.lines',
+      id: 'k-1',
+      lines,
+      reset: true,
+    });
+    expect(source.list().map((s) => s.id)).toEqual(['k-1']);
+    await source.stop();
+  });
+
+  it('archiving drops the session after session.removed; restoring builds it again', async () => {
+    const lines: DisplayLine[] = [{ kind: 'say', text: 'Ready.' }];
+    const r = endedRec(1);
+    const { source, tails, events } = setup({
+      records: [r],
+      tails: { [r.transcriptPath as string]: { lines } },
+    });
+    await source.start();
+    await flush();
+    events.length = 0;
+    await source.setFlags('k-1', { archived: true });
+    expect(events.map((e) => e.type)).toEqual(['session.removed', 'archive']);
+    expect(source.lines('k-1')).toEqual([]);
+    expect(source.get('k-1')?.archived).toBe(true);
+    await source.setFlags('k-1', { archived: false });
+    await flush();
+    expect(tails).toHaveLength(2);
+    expect(source.lines('k-1')).toEqual(lines);
+    await source.stop();
+  });
+
+  it("F28: a restored record ending in an interrupt doesn't blink done", async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kage-ls-'));
+    try {
+      const path = join(dir, 's-1.jsonl');
+      const j = (o: unknown) => `${JSON.stringify(o)}\n`;
+      writeFileSync(
+        path,
+        j({ type: 'user', message: { role: 'user', content: 'Run the tests' } }) +
+          j({ type: 'user', message: { content: '[Request interrupted by user]' } }),
+      );
+      const s = setup({
+        records: [endedRec(1, { transcriptPath: path, archived: true, archivedAt: T0 - 5 })],
+        tail: (p) => new TranscriptTail(p, { watch: false }),
+      });
+      await s.source.start();
+      await s.source.setFlags('k-1', { archived: false });
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(s.source.get('k-1')?.status).toBe('ended');
+      expect(s.updates('k-1').map((u) => u.status)).not.toContain('done');
+      expect(s.source.lines('k-1').length).toBeGreaterThan(0);
+      await s.source.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('a hook that arrives during start is applied before the transcript reads finish', async () => {
+    const gate: TailGate = { wait: null };
+    const open = holdTails(gate);
+    const ended = endedRec(5);
+    const { source, hooks, tails } = setup({
+      windows: [kageWin()],
+      records: [rec(), ended],
+      tailGate: gate,
+    });
+    const started = source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2', { transcriptPath: null }));
+    await started;
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+    const endedTail = tails.find((t) => t.path === ended.transcriptPath);
+    expect(endedTail?.started).toBe(false);
+    open();
+    await flush();
+    expect(endedTail?.started).toBe(true);
+    await source.stop();
+  });
+
+  it('ended records read at most 4 transcripts at a time, each emitting its lines as it finishes', async () => {
+    const records = Array.from({ length: 10 }, (_, i) => endedRec(i));
+    let active = 0;
+    let max = 0;
+    const release: (() => void)[] = [];
+    const made: FakeTail[] = [];
+    const { source, lineEvents } = setup({
+      records,
+      tail: (path) => {
+        const t = new FakeTail(path, { lines: [{ kind: 'say', text: path }] });
+        const start = t.start.bind(t);
+        t.start = async () => {
+          active++;
+          max = Math.max(max, active);
+          await new Promise<void>((r) => release.push(r));
+          active--;
+          await start();
+        };
+        made.push(t);
+        return t;
+      },
+    });
+    await source.start();
+    await flush();
+    expect(made).toHaveLength(4);
+    (release.shift() as () => void)();
+    await flush();
+    // The first finished read is on the board before the others finish.
+    const first = made[0] as FakeTail;
+    const firstId = records.find((r) => r.transcriptPath === first.path)?.kageId as string;
+    expect(lineEvents(firstId).at(-1)).toMatchObject({
+      reset: true,
+      lines: [{ text: first.path }],
+    });
+    expect(made).toHaveLength(5);
+    while (release.length > 0) {
+      (release.shift() as () => void)();
+      await flush();
+    }
+    expect(made).toHaveLength(10);
+    expect(max).toBe(4);
+    for (const r of records) expect(source.lines(r.kageId)).toHaveLength(1);
+    await source.stop();
+  });
+
+  it("a done session's tail is idle, and running again makes it poll", async () => {
+    const { source, hooks, tails } = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+    });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    const t = tails.find((x) => x.path === TRANSCRIPT) as FakeTail;
+    expect(t.idleCalls.at(-1)).toBe(false);
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    expect(t.idleCalls.at(-1)).toBe(true);
+    // The next turn's hook re-arms the poll.
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('running');
+    expect(t.idleCalls.at(-1)).toBe(false);
+    hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(t.idleCalls.at(-1)).toBe(true);
+    // Ended: the final flush keeps its one poll, then the tail stops.
+    hooks.fire(hook('SessionEnd', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(t.idleCalls.slice(-2)).toEqual([true, false]);
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(t.stopped).toBe(true);
+    await source.stop();
   });
 });

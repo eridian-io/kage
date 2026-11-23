@@ -53,7 +53,7 @@ export type HookServerLike = Pick<HookServer, 'on'>;
 export type StateStoreLike = Pick<StateStore, 'load' | 'save'>;
 export type TailLike = Pick<
   TranscriptTail,
-  'start' | 'stop' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt' | 'onTurnEnd'
+  'start' | 'stop' | 'setIdle' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt' | 'onTurnEnd'
 >;
 
 /** What LiveSource tells the preview tracker. */
@@ -144,6 +144,8 @@ const STOP_RECHECK_MS = 300;
 const SAVE_MAX_MS = 30_000;
 /** Lines kept and scrollback captured. */
 const MAX_LINES = 200;
+/** I4: ended records' transcripts are read after start, at most this many at a time. */
+const READ_ONCE_CONCURRENCY = 4;
 /** A claude window still in its startup checks is captured once more this long after attach. */
 const STARTUP_RECHECK_MS = 1000;
 /** P4F1: a still-starting launch is looked at once a second for at most this long (Task 0). */
@@ -355,7 +357,7 @@ export class LiveSource implements SessionSource {
   }
 
   get(id: string): Session | undefined {
-    const st = this.#sessions.get(id);
+    const st = this.#view(id);
     return st ? toSession(st) : undefined;
   }
 
@@ -586,6 +588,8 @@ export class LiveSource implements SessionSource {
     if (st) this.#removeSession(st);
     const r = this.#records.get(id);
     if (!r) return;
+    // An archived record has no session (I4), but the board still hears that it went.
+    if (!st && this.#running) this.#emit({ type: 'session.removed', id });
     this.#records.delete(id);
     this.#auto?.sync();
     await this.#saveNow();
@@ -604,7 +608,7 @@ export class LiveSource implements SessionSource {
 
   /** What SessionControls checks before it sends keys; null only for an unknown id. */
   target(id: string): ControlTarget | null {
-    const st = this.#sessions.get(id);
+    const st = this.#view(id);
     if (!st) return null;
     const q = st.question;
     return {
@@ -690,7 +694,7 @@ export class LiveSource implements SessionSource {
 
   /** What FinishActions checks before pin, archive or restore; null only for an unknown id. */
   finishTarget(id: string): FinishTarget | null {
-    const st = this.#sessions.get(id);
+    const st = this.#view(id);
     if (!st) return null;
     return {
       id: st.id,
@@ -710,7 +714,7 @@ export class LiveSource implements SessionSource {
    * window and pane, which the terminal answers with "This session has ended." (4409).
    */
   terminalTarget(id: string): TerminalTarget | null {
-    const st = this.#sessions.get(id);
+    const st = this.#view(id);
     if (!st) return null;
     const w = st.record?.archived ? undefined : st.window;
     return {
@@ -738,9 +742,10 @@ export class LiveSource implements SessionSource {
    * auto-archive skips it until its next done) and emits session.updated, then archive {count}.
    */
   async setFlags(id: string, f: { pinned?: boolean; archived?: boolean }): Promise<void> {
+    // I4: an archived record usually has no session; its record is enough here.
     const st = this.#sessions.get(id);
-    const r = st?.record;
-    if (!st || !r) return;
+    const r = this.#records.get(id);
+    if (!r || (st && st.record !== r)) return;
     const before = { ...r };
     const archiving = f.archived === true && !r.archived;
     const restoring = f.archived === false && r.archived;
@@ -763,17 +768,37 @@ export class LiveSource implements SessionSource {
       throw e;
     }
     this.#auto?.sync();
-    if (!this.#running || this.#sessions.get(id) !== st) return;
+    if (!this.#running) return;
+    const now = this.#sessions.get(id);
     if (archiving) {
-      // Hidden from the board: the preview stops looking, and a restore sends it afresh.
-      st.last = null;
-      this.#preview?.forget(id);
-      this.#emit({ type: 'session.removed', id });
-    } else {
-      if (restoring) st.last = null;
-      this.#emitNow(st);
+      if (now) {
+        // Hidden from the board: the preview stops looking, and a restore sends it afresh.
+        now.last = null;
+        this.#preview?.forget(id);
+        this.#emit({ type: 'session.removed', id });
+        // I4: an archived record keeps no session, tail or lines; a restore builds them again.
+        this.#dropSession(now);
+      }
+      this.#emit({ type: 'archive', count: this.archivedCount() });
+      return;
     }
-    if (archiving || restoring) this.#emit({ type: 'archive', count: this.archivedCount() });
+    if (restoring) {
+      if (now) {
+        now.last = null;
+        this.#emitNow(now);
+        this.#emit({ type: 'archive', count: this.archivedCount() });
+        return;
+      }
+      // I4: the session is built, and its transcript read, now rather than at start.
+      const fresh = this.#fresh(id, r);
+      this.#sessions.set(id, fresh);
+      this.#trackDone(fresh);
+      this.#emitNow(fresh);
+      this.#emit({ type: 'archive', count: this.archivedCount() });
+      await this.#readLater(fresh);
+      return;
+    }
+    if (now && now === st) this.#emitNow(now);
   }
 
   /**
@@ -848,7 +873,10 @@ export class LiveSource implements SessionSource {
       this.#d.watcher.on((e) => this.#onWatch(e)),
     ];
     for (const r of await this.#d.store.load()) this.#records.set(r.kageId, r);
-    for (const r of this.#records.values()) this.#sessions.set(r.kageId, this.#fresh(r.kageId, r));
+    // I4: archived records get no session and no read; archivedList() reads the records.
+    for (const r of this.#records.values()) {
+      if (!r.archived) this.#sessions.set(r.kageId, this.#fresh(r.kageId, r));
+    }
     try {
       await this.#d.tmux.ensureSession();
     } catch {
@@ -862,12 +890,6 @@ export class LiveSource implements SessionSource {
     await this.#reconcile(listing.windows, listing.seq);
     // A record saved before phase 4 that is done or ended now gets the load time as its doneAt.
     for (const st of this.#sessions.values()) this.#trackDone(st);
-    await Promise.all(
-      [...this.#sessions.values()]
-        .filter((st) => !st.window && st.transcriptPath)
-        .map((st) => this.#readOnce(st)),
-    );
-    if (!this.#running) return;
     for (const st of this.#sessions.values()) this.#emitNow(st);
     try {
       this.#d.onLoaded?.();
@@ -881,6 +903,11 @@ export class LiveSource implements SessionSource {
     for (const e of early) this.#onHook(e);
     this.#d.watcher.start();
     this.#auto?.start();
+    // I4: ended records' last lines are read after the board is up and the early hooks applied,
+    // a few at a time; each session's lines go out as its read finishes.
+    void this.#readEnded(
+      [...this.#sessions.values()].filter((st) => !st.window && st.transcriptPath && !st.tail),
+    );
   }
 
   async stop(): Promise<void> {
@@ -1588,6 +1615,7 @@ export class LiveSource implements SessionSource {
     st.tailPath = path;
     st.tailQuestionKey = null;
     st.lines = [];
+    tail.setIdle(st.status !== 'running');
     st.tailOff = [
       tail.on((added, reset) => {
         if (st.tail !== tail) return;
@@ -1713,8 +1741,69 @@ export class LiveSource implements SessionSource {
     }
   }
 
+  /**
+   * I4: reads ended sessions' transcripts after start, READ_ONCE_CONCURRENCY at a time. A session
+   * that moved on meanwhile (a window, a resume, archived or forgotten) is skipped.
+   */
+  async #readEnded(list: Live[]): Promise<void> {
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (this.#running && next < list.length) await this.#readLater(list[next++] as Live);
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(READ_ONCE_CONCURRENCY, list.length) }, () => worker()),
+    );
+  }
+
+  /**
+   * A deferred read (after start, or at a restore): the session's last lines from its transcript,
+   * sent as session.lines {reset}. The tail's first read fires no listener (M1, F28). Skipped, or
+   * its result dropped, when the session has a window or a tail by then, or is gone.
+   */
+  async #readLater(st: Live): Promise<void> {
+    const current = () =>
+      this.#running && this.#sessions.get(st.id) === st && !st.window && !st.tail;
+    const path = st.transcriptPath;
+    if (!path || !current()) return;
+    const tail = this.#d.tail(path);
+    let lines: DisplayLine[] | null = null;
+    try {
+      await tail.start();
+      lines = tail.lines();
+    } catch {
+    } finally {
+      tail.stop();
+    }
+    if (lines === null || !current() || st.transcriptPath !== path) return;
+    st.lines = lines;
+    st.now = null;
+    if (lines.length > 0 && !st.record?.archived) this.#emitLines(st, lines, true);
+  }
+
+  /** I4: an archived session leaves memory: its timers, tail and lines go with it. */
+  #dropSession(st: Live): void {
+    this.#clearTimers(st);
+    this.#stopTail(st);
+    st.window = null;
+    st.gen++;
+    this.#sessions.delete(st.id);
+  }
+
+  /**
+   * The session, or for an archived record without one (I4) a throwaway ended view of it, so
+   * get, finishTarget, terminalTarget and target still answer for it. Never stored.
+   */
+  #view(id: string): Live | undefined {
+    const st = this.#sessions.get(id);
+    if (st) return st;
+    const r = this.#records.get(id);
+    return r?.archived ? this.#fresh(id, r) : undefined;
+  }
+
   #retireTailSoon(st: Live): void {
     if (!this.#running || !st.tail || st.timers.retire) return;
+    // The final flush keeps its one size poll (fs.watch can miss events): the tail stops after it.
+    st.tail.setIdle(false);
     st.timers.retire = setTimeout(() => {
       delete st.timers.retire;
       if (st.status !== 'ended' || !st.tail) return;
@@ -1921,6 +2010,8 @@ export class LiveSource implements SessionSource {
     st.shellEnded = false;
     st.statusSince = this.#now();
     st.gen++;
+    // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.
+    st.tail?.setIdle(status !== 'running');
     // Ended (SessionEnd, the window gone, claude back at a shell, a kill) before any hook: no
     // resume or first prompt is awaited any more.
     if (status === 'ended') {

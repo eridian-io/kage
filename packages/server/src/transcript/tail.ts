@@ -17,7 +17,11 @@ export const MAX_LINE = 8 * 1024 * 1024;
 const CHUNK = 64 * 1024;
 /** Poll for the file while it doesn't exist (R10). */
 const MISSING_POLL_MS = 1000;
-/** Fallback size poll while following, for filesystems where fs.watch misses events. */
+/**
+ * Fallback size poll while following, for filesystems where fs.watch misses events. An idle tail
+ * (its session isn't running) with a working file watcher skips it (P7): the watcher, a hook or
+ * pane activity wakes it.
+ */
 const FOLLOW_POLL_MS = 2000;
 /**
  * Read-only and non-blocking: opening a FIFO returns at once instead of waiting for a writer (M1).
@@ -70,6 +74,12 @@ export class TranscriptTail {
   #watching: 'file' | 'dir' | null = null;
   #timer: ReturnType<typeof setInterval> | null = null;
   #timerMs = 0;
+  /** P7: the session isn't running; with a working file watcher, no size poll. */
+  #idle = false;
+  /** A watcher reported an error once: watchers aren't trusted alone after that. */
+  #watchFailed = false;
+  /** One read buffer per tail, made at the first read and reused (P7). */
+  #buf: Buffer | null = null;
 
   // Read position and decoding state.
   #ino: number | undefined;
@@ -112,6 +122,16 @@ export class TranscriptTail {
     this.#running = false;
     this.#unwatch();
     this.#setTimer(0);
+  }
+
+  /**
+   * P7: an idle tail (its session isn't running) whose file watcher works doesn't poll the file
+   * size; otherwise it polls every FOLLOW_POLL_MS. The watcher still wakes an idle tail.
+   */
+  setIdle(idle: boolean): void {
+    this.#idle = idle;
+    // Only while following the file; a missing file keeps its own poll.
+    if (this.#running && this.#watching === 'file') this.#setTimer(this.#followMs());
   }
 
   lines(): DisplayLine[] {
@@ -250,7 +270,7 @@ export class TranscriptTail {
     // Skip the first line unless the byte before the start ends a line.
     this.#skipping = true;
     try {
-      const b = Buffer.alloc(1);
+      const b = this.#buffer();
       const { bytesRead } = await fh.read(b, 0, 1, this.#offset - 1);
       if (bytesRead === 1 && b[0] === 0x0a) this.#skipping = false;
     } catch {}
@@ -259,7 +279,7 @@ export class TranscriptTail {
   async #read(fh: FileHandle, size: number): Promise<void> {
     const added: DisplayLine[] = [];
     try {
-      const buf = Buffer.alloc(this.#chunk);
+      const buf = this.#buffer();
       while (this.#running && this.#offset < size) {
         const want = Math.min(this.#chunk, size - this.#offset);
         const { bytesRead } = await fh.read(buf, 0, want, this.#offset);
@@ -271,6 +291,12 @@ export class TranscriptTail {
       // A read error leaves the offset where it got to; the next check carries on.
     }
     if (this.#running) this.#emit(added);
+  }
+
+  /** The reused read buffer; its bytes are only ever read up to what fh.read filled. */
+  #buffer(): Buffer {
+    this.#buf ??= Buffer.allocUnsafe(this.#chunk);
+    return this.#buf;
   }
 
   /** Splits decoded text into lines; the unfinished last line is held back. */
@@ -400,7 +426,12 @@ export class TranscriptTail {
       });
       if (this.#watcher) this.#watching = 'file';
     }
-    this.#setTimer(FOLLOW_POLL_MS);
+    this.#setTimer(this.#followMs());
+  }
+
+  /** The size poll while following: none when idle with a watcher that works (P7). */
+  #followMs(): number {
+    return this.#idle && this.#watching === 'file' && !this.#watchFailed ? 0 : FOLLOW_POLL_MS;
   }
 
   /** The file is missing (R10): watch its directory if there is one, and poll every second. */
@@ -424,6 +455,7 @@ export class TranscriptTail {
         if (this.#running) fn(event, typeof file === 'string' ? file : null);
       });
       w.on('error', () => {
+        this.#watchFailed = true;
         if (this.#watcher === w) this.#unwatch();
         if (this.#running) void this.#check();
       });

@@ -54,6 +54,7 @@ afterAll(() => {
 const quietTail: TailLike = {
   start: async () => {},
   stop: () => {},
+  setIdle: () => {},
   lines: () => [],
   question: () => null,
   now: () => null,
