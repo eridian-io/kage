@@ -595,7 +595,7 @@ describe('kage update', UNDER_LOAD, () => {
     expect(await updateCommand([], o.io, deps({ manager: manager('missing').m }))).toBe(0);
     expect(o.out.slice(-2)).toEqual([
       `Updated Kage ${KAGE_VERSION} → ${NEW_VERSION}.`,
-      'Restart Kage to use it.',
+      'Restart Kage to use it: run kage serve again.',
     ]);
     expect(await updateCommand(['--force'], io().io, deps({ manager: null }))).toBe(0);
   });
@@ -608,7 +608,7 @@ describe('kage update', UNDER_LOAD, () => {
       expect(await updateCommand(['--force'], o.io, deps({ manager: m }))).toBe(0);
       expect(calls).toEqual([]);
       expect(o.out.at(-1)).toBe(
-        "The service isn't running, so it stays stopped. To start it: systemctl --user start kage.service",
+        "The service isn't running, so it stays stopped. To start it, run kage restart.",
       );
     }
     const { m, calls } = manager('inactive', {
@@ -619,7 +619,7 @@ describe('kage update', UNDER_LOAD, () => {
     expect(await updateCommand(['--force'], o.io, deps({ manager: m, uid: 501 }))).toBe(0);
     expect(calls).toEqual([]);
     expect(o.out.at(-1)).toBe(
-      "The service isn't running, so it stays stopped. To start it: launchctl kickstart gui/501/io.eridian.kage",
+      "The service isn't running, so it stays stopped. To start it, run kage restart.",
     );
   });
 
@@ -751,7 +751,7 @@ describe('kage update', UNDER_LOAD, () => {
     const o = io();
     expect(await updateCommand([], o.io, deps({ manager: m }))).toBe(0);
     expect(calls).toEqual([]);
-    expect(o.out.at(-1)).toBe('Restart Kage to use it.');
+    expect(o.out.at(-1)).toBe('Restart Kage to use it: run kage serve again.');
   });
 
   it('a failed restart: the program is updated, says so, exit 1', async () => {
@@ -767,7 +767,7 @@ describe('kage update', UNDER_LOAD, () => {
     expect(o.out.at(-1)).toBe(`Updated Kage ${KAGE_VERSION} → ${NEW_VERSION}.`);
     expect(o.err).toEqual([
       'Couldn\'t restart the systemd user unit kage.service: "systemctl --user restart kage.service" exited 1: Job failed',
-      'Restart Kage to use it.',
+      'Restart Kage to use it: run kage restart.',
     ]);
   });
 

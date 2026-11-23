@@ -1097,6 +1097,20 @@ describe('installChecks', () => {
         },
       ]);
     });
+
+    it('with the service installed, the gone program points at kage restart (U9)', async () => {
+      const exe = join(dir, "it's gone", 'kage');
+      const d = deps(tableRun({}).run, { manager: fakeManager('starting', null) });
+      await writeHooksSettings(stateDir(d.env), hookArgv({ kind: 'sea', exe }));
+      expect(byId(await installChecks(d), 'install-path')).toEqual([
+        {
+          id: 'install-path',
+          level: 'warn',
+          label: `Claude's hooks run ${exe}, which isn't there anymore.`,
+          fix: 'Restart Kage so it writes them again: run kage restart.',
+        },
+      ]);
+    });
   });
 });
 

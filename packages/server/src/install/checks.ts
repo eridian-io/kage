@@ -365,7 +365,7 @@ export async function installChecks(d: CheckDeps): Promise<Check[]> {
   const service = await serviceChecks(d);
   checks.push(...service.checks);
   checks.push(await serverCheck(d, service.installed, cfgCheck?.label !== NO_CONFIG));
-  checks.push(...(await installPathChecks(d)));
+  checks.push(...(await installPathChecks(d, service.installed)));
   return checks;
 }
 
@@ -654,7 +654,7 @@ async function hookProgram(env: NodeJS.ProcessEnv): Promise<string | null> {
   return null;
 }
 
-async function installPathChecks(d: CheckDeps): Promise<Check[]> {
+async function installPathChecks(d: CheckDeps, serviceInstalled: boolean): Promise<Check[]> {
   const checks: Check[] = [];
   const program = await hookProgram(d.env);
   if (program !== null) {
@@ -663,7 +663,10 @@ async function installPathChecks(d: CheckDeps): Promise<Check[]> {
         warn(
           'install-path',
           `Claude's hooks run ${program}, which isn't there anymore.`,
-          'Restart Kage so it writes them again: run kage serve, or kage setup for the service.',
+          // U9: kage restart when the service is installed, else kage serve.
+          d.manager && serviceInstalled
+            ? 'Restart Kage so it writes them again: run kage restart.'
+            : 'Restart Kage so it writes them again: run kage serve, or kage setup for the service.',
         ),
       );
     } else if (checkoutOf({ kind: 'bundle', node: '', script: program }) !== null) {

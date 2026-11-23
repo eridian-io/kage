@@ -456,13 +456,6 @@ function restartCommand(m: ServiceManager, uid: number | undefined): string {
     : `launchctl kickstart -k gui/${uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
 }
 
-/** The command that starts a stopped service by hand. */
-function startCommand(m: ServiceManager, uid: number | undefined): string {
-  return m.kind === 'systemd'
-    ? `systemctl --user start ${SYSTEMD_UNIT}`
-    : `launchctl kickstart gui/${uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
-}
-
 /** `<exe> --version`'s first line, or null when it doesn't run or says nothing. */
 function runVersion(exe: string): Promise<string | null> {
   return new Promise((resolve) => {
@@ -690,14 +683,14 @@ async function restartAfter(
     }
   }
   if (m === null || state === 'missing') {
-    io.out('Restart Kage to use it.');
+    // U9: no service (or no user manager to reach it), so kage serve.
+    io.out('Restart Kage to use it: run kage serve again.');
     return 0;
   }
   // R119-5: only a running (or starting) service is restarted; a stopped one stays stopped.
   if (state !== 'active' && state !== 'starting') {
-    io.out(
-      `The service isn't running, so it stays stopped. To start it: ${startCommand(m, deps.uid)}`,
-    );
+    // U9: kage restart starts a stopped service too.
+    io.out("The service isn't running, so it stays stopped. To start it, run kage restart.");
     return 0;
   }
   const status = deps.status ?? ((socket: string) => fetchStatus(socket));
@@ -707,7 +700,7 @@ async function restartAfter(
     await m.restart();
   } catch (err) {
     io.err(`Couldn't restart the ${m.name}: ${firstLine(err)}`);
-    io.err('Restart Kage to use it.');
+    io.err('Restart Kage to use it: run kage restart.');
     return 1;
   }
   const deadline = Date.now() + (deps.waitMs ?? WAIT_MS);
