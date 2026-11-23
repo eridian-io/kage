@@ -2,13 +2,12 @@
 # The Kage installer (https://github.com/eridian-io/kage). Setup flags go after "sh -s --":
 #   curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | sh -s -- --yes
 #
-# It picks the build for this machine (Linux or macOS, x64 or arm64), downloads it and
-# SHA256SUMS from the latest stable release over HTTPS only, stops unless the sha256 matches,
-# renames it into ~/.local/bin/kage (or $KAGE_INSTALL_DIR/kage) in one step, adds that folder
-# to PATH in your shell's start-up file if needed (KAGE_NO_MODIFY_PATH=1 only prints the line),
-# then runs "kage setup" in your terminal, which asks before it changes anything
-# (KAGE_NO_SETUP=1 skips it). It refuses root. KAGE_RELEASE_BASE names another release
-# folder: https, or plain http on 127.x or localhost only (for tests).
+# It picks the build for this machine (Linux or macOS, x64 or arm64), downloads it and SHA256SUMS
+# from the latest stable release over HTTPS only, stops unless the sha256 matches and the program
+# runs here, renames it into ~/.local/bin/kage (or $KAGE_INSTALL_DIR/kage) in one step, adds that
+# folder to PATH in your shell's start-up file if needed (KAGE_NO_MODIFY_PATH=1 only prints the
+# line), then runs "kage setup" in your terminal, which asks first (KAGE_NO_SETUP=1 skips it). It
+# refuses root. KAGE_RELEASE_BASE names another release folder: https, or http on 127.x/localhost.
 # Everything happens inside main, called on the last line, so a download cut short runs nothing.
 
 set -eu
@@ -122,6 +121,7 @@ main() {
   new=$(mktemp "$dir/.kage-new.XXXXXX")
   gunzip -c "$tmp/$asset" >"$new"
   chmod 755 "$new"
+  "$new" --version >/dev/null 2>&1 || die "This build doesn't run here (Kage needs glibc on Linux). Nothing was installed."
   mv -f "$new" "$dir/kage" && new=''
   rm -rf "$tmp" # exec below skips the EXIT trap
 

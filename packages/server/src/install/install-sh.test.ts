@@ -32,9 +32,12 @@ const TEXT = readFileSync(SCRIPT, 'utf8');
 const isWindows = process.platform === 'win32';
 
 const ASSET = 'kage-linux-x64.gz';
-/** The fake kage: records its arguments, and whether stdin is a terminal. */
+/**
+ * The fake kage: answers --version (install.sh's check that it runs here) and leaves no trace;
+ * anything else, it records its arguments, and whether stdin is a terminal.
+ */
 const KAGE = Buffer.from(
-  '#!/bin/sh\nprintf \'%s\\n\' "$*" >"$KAGE_TEST_LOG"\nif [ -t 0 ]; then echo tty >>"$KAGE_TEST_LOG"; fi\n',
+  '#!/bin/sh\nif [ "$1" = --version ]; then echo 9.9.9; exit 0; fi\nprintf \'%s\\n\' "$*" >"$KAGE_TEST_LOG"\nif [ -t 0 ]; then echo tty >>"$KAGE_TEST_LOG"; fi\n',
 );
 const GZ = gzipSync(KAGE);
 const sha = (b: Uint8Array) => createHash('sha256').update(b).digest('hex');
@@ -352,6 +355,22 @@ describe.runIf(!isWindows)('install.sh, run against a local release', { timeout:
     expect(r.code).toBe(0);
     expect(readFileSync(installed())).toEqual(KAGE);
     expect(leftovers()).toEqual([]);
+  });
+
+  it("a build that doesn't run here (no glibc, say): says so, keeps the old kage, leaves nothing", async () => {
+    // Checksum-correct, but it can't start: like a glibc build on musl.
+    const broken = gzipSync(Buffer.from('#!/bin/sh\necho "not found" >&2\nexit 127\n'));
+    release = { asset: broken, sums: `${sha(broken)}  ${ASSET}\n` };
+    mkdirSync(bin);
+    writeFileSync(installed(), 'old kage');
+    const r = await run();
+    expect(r.code).not.toBe(0);
+    expect(r.err).toBe(
+      "This build doesn't run here (Kage needs glibc on Linux). Nothing was installed.\n",
+    );
+    expect(readFileSync(installed(), 'utf8')).toBe('old kage');
+    expect(leftovers()).toEqual([]);
+    expect(existsSync(log)).toBe(false);
   });
 
   const DOWNLOAD = (name: string) => `Couldn't download ${base}/${name}. Nothing was installed.`;

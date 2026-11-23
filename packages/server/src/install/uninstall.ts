@@ -1,7 +1,7 @@
 /**
  * `kage uninstall` (phase 6, Task 7): removes what Kage installed (its service, its program and
  * its hooks file, R119-6) and, with --purge, its config and state folders. Never a project, a worktree, a branch or the
- * tmux session "kage": nothing here runs git or tmux, and the user's windows keep running.
+ * tmux session (the configured tmuxSession, "kage" by default): nothing here runs git or tmux, and the user's windows keep running.
  * Linger is left as it is (other programs may need it); uninstall says how to turn it off.
  */
 import { lstat, readFile, realpath, rm } from 'node:fs/promises';
@@ -11,6 +11,7 @@ import { socketPath } from '../hooks/cli.ts';
 import { SETTINGS_FILE } from '../hooks/settings.ts';
 import type { Io } from '../main.ts';
 import { stateDir } from '../state/store.ts';
+import { readConfigObject } from './config-file.ts';
 import { markedPathLines, rcCandidates } from './path-rc.ts';
 import { isStopped, type Prompter } from './prompt.ts';
 import type { RunMode } from './runtime.ts';
@@ -30,8 +31,19 @@ export interface UninstallDeps {
 export const NEEDS_TTY_UNINSTALL =
   'kage uninstall needs a terminal to ask first. Run it in one, or pass --yes to remove Kage without asking.';
 const QUESTION = 'Remove the Kage service and program?';
-const KEPT_WORK =
-  'Kept: your projects, their worktrees and branches, and the tmux session "kage" with its windows.';
+/** What uninstall keeps of the user's work; `session` is the configured tmuxSession. */
+const keptWork = (session: string) =>
+  `Kept: your projects, their worktrees and branches, and the tmux session "${session}" with its windows.`;
+
+/** The configured tmuxSession, read before --purge removes the config; "kage" when unset or unreadable. */
+async function tmuxSession(cfgFile: string): Promise<string> {
+  try {
+    const s = (await readConfigObject(cfgFile))?.tmuxSession;
+    return typeof s === 'string' && s.trim() !== '' ? s : 'kage';
+  } catch {
+    return 'kage';
+  }
+}
 
 function firstLine(err: unknown): string {
   return ((err as Error)?.message ?? String(err)).split(/\r?\n/)[0] ?? '';
@@ -86,6 +98,8 @@ export async function uninstallCommand(
   }
 
   const shown = (p: string) => displayPath(p, deps.home);
+  const cfgFile = configPath(deps.env);
+  const session = await tmuxSession(cfgFile);
   const removed: string[] = [];
   const notes: string[] = [];
 
@@ -140,7 +154,6 @@ export async function uninstallCommand(
 
   // 4. With --purge, Kage's own folders: the config, and the state (records, the hooks file,
   // the socket). Each is a folder named kage, never anything above it.
-  const cfgFile = configPath(deps.env);
   const cfgDir = dirname(cfgFile);
   if (purge) {
     for (const folder of [cfgDir, state]) {
@@ -161,7 +174,7 @@ export async function uninstallCommand(
   if (removed.length === 0) io.out("Removed: nothing. Kage's service and program weren't there.");
   for (const r of removed) io.out(`Removed: ${r}.`);
   for (const n of notes) (n.startsWith("Couldn't") ? io.err : io.out)(n);
-  io.out(KEPT_WORK);
+  io.out(keptWork(session));
   // R120: the installer's PATH lines stay; uninstall never edits a shell start-up file, it says
   // where they are.
   for (const file of rcCandidates(deps.home, deps.env.ZDOTDIR)) {

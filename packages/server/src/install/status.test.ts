@@ -94,14 +94,29 @@ describe('kage status', () => {
     expect(await line('missing')).toBe('Service: not installed');
   });
 
-  it('the server not answering: one line naming the socket, exit 1', async () => {
+  it('the server not answering: a line naming the socket and what to do, exit 1', async () => {
     const o = io();
     expect(await statusCommand(o.io, deps(manager('missing'), null))).toBe(1);
     expect(o.out).toEqual([
       `Kage ${KAGE_VERSION}`,
       'Service: not installed',
       `Kage isn't answering on ${join(dir, 'run')}/kage.sock.`,
+      'Run kage setup.',
     ]);
+  });
+
+  it('not answering with the service installed (or no service here): kage doctor says why', async () => {
+    for (const s of ['active', 'starting', 'inactive', 'failed'] as const) {
+      const o = io();
+      expect(await statusCommand(o.io, deps(manager(s), null))).toBe(1);
+      expect(o.out.at(-1)).toBe('Run kage doctor to see why.');
+    }
+    const cant = manager('missing', { unavailable: async () => 'No user manager.' });
+    for (const m of [null, cant]) {
+      const o = io();
+      expect(await statusCommand(o.io, deps(m, null))).toBe(1);
+      expect(o.out.at(-1)).toBe('Run kage doctor to see why.');
+    }
   });
 
   it('no user service manager: unavailable() is asked first and state() never (R112)', async () => {

@@ -183,8 +183,12 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
       if (r.code !== 0) return existsSync(file) ? 'inactive' : 'missing';
       // print's output is not API (Apple): only "state = running" counts as running.
       if (/^\s*state = running\s*$/m.test(r.stdout)) return 'active';
+      // Loaded, not running, after a non-zero exit: KeepAlive {SuccessfulExit: false} starts it
+      // again once ThrottleInterval (10 s) has passed (§7.5). That is how Kage waits for
+      // Tailscale (R105: it exits while Tailscale has no address), like systemd's activating, so
+      // it is starting (R111), not failed. Only a clean exit 0 stays stopped.
       const last = /^\s*last exit code = (-?\d+)/m.exec(r.stdout)?.[1];
-      return last !== undefined && last !== '0' ? 'failed' : 'inactive';
+      return last !== undefined && last !== '0' ? 'starting' : 'inactive';
     },
 
     async pathOfInstalled() {

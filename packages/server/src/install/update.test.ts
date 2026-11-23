@@ -375,6 +375,69 @@ describe('kage update', () => {
     expect(readdirSync(join(dir, 'bin')).sort()).toEqual(['kage', 'kage.previous']);
   });
 
+  it("R124: the tag comes from latest/download's first redirect, and all three files from that release", async () => {
+    // GitHub's shape: latest/download/<name> → download/<tag>/<name>. Here 9.1.0 is published
+    // between the VERSION request and the others; its files must not mix in.
+    const latest =
+      (name: string, tag: string): Handler =>
+      (_req, res) => {
+        res.writeHead(302, { location: `/download/${tag}/${name}`, 'content-length': 0 });
+        res.end();
+      };
+    const gz = gzipSync(NEW);
+    const later = gzipSync(Buffer.from('#!/bin/sh\necho newer\n'));
+    routes.set('/latest/download/VERSION', latest('VERSION', 'v9.0.0'));
+    routes.set('/latest/download/SHA256SUMS', latest('SHA256SUMS', 'v9.1.0'));
+    routes.set(`/latest/download/${ASSET}`, latest(ASSET, 'v9.1.0'));
+    routes.set('/download/v9.0.0/VERSION', send('9.0.0\n'));
+    routes.set('/download/v9.0.0/SHA256SUMS', send(`${sha(gz)}  ${ASSET}\n`));
+    routes.set(`/download/v9.0.0/${ASSET}`, send(gz));
+    routes.set('/download/v9.1.0/SHA256SUMS', send(`${sha(later)}  ${ASSET}\n`));
+    routes.set(`/download/v9.1.0/${ASSET}`, send(later));
+    const port = (server.address() as AddressInfo).port;
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    expect(await updateCommand([], o.io, deps({ programVersion: async () => '9.0.0' }))).toBe(0);
+    expect(o.err).toEqual([]);
+    expect(readFileSync(exe).equals(NEW)).toBe(true);
+    expect(hits).toEqual([
+      '/latest/download/VERSION',
+      '/download/v9.0.0/VERSION',
+      '/download/v9.0.0/SHA256SUMS',
+      `/download/v9.0.0/${ASSET}`,
+    ]);
+  });
+
+  it('a first redirect to another name (a CDN) pins nothing; one off https is refused', async () => {
+    release();
+    routes.set('/latest/download/VERSION', (_req, res) => {
+      res.writeHead(302, { location: '/rel/VERSION?sig=abc', 'content-length': 0 });
+      res.end();
+    });
+    const port = (server.address() as AddressInfo).port;
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    // VERSION follows the redirect (to /rel/VERSION); the other names resolve against the base.
+    expect(await updateCommand([], o.io, deps())).toBe(1);
+    expect(hits).toEqual([
+      '/latest/download/VERSION',
+      '/latest/download/VERSION',
+      '/rel/VERSION',
+      '/latest/download/SHA256SUMS',
+    ]);
+    expect(o.err).toEqual(['Update failed: HTTP 404. Nothing was changed.']);
+    expectUntouched();
+
+    hits.length = 0;
+    routes.set('/latest/download/VERSION', (_req, res) => {
+      res.writeHead(302, { location: 'http://example.com/VERSION', 'content-length': 0 });
+      res.end();
+    });
+    const p = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    expect(await updateCommand([], p.io, deps())).toBe(1);
+    expect(p.err).toEqual(['Update failed: a redirect away from HTTPS. Nothing was changed.']);
+    expect(hits).toEqual(['/latest/download/VERSION']);
+    expectUntouched();
+  });
+
   it('no service installed: says to restart Kage', async () => {
     release();
     const o = io();

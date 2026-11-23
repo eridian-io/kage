@@ -6,6 +6,8 @@
  * - downloads over HTTPS only (plain http only on loopback, for tests), from KAGE_RELEASE_BASE or
  *   the latest GitHub release, which never points at a pre-release (R118: pre-releases ship with
  *   --prerelease, so they are reached only by pointing KAGE_RELEASE_BASE at their tag);
+ * - reads VERSION, SHA256SUMS and the asset from one release: the tag latest/download's first
+ *   redirect names (pinRelease), so a release published mid-update can't mix files;
  * - checks the download's SHA-256 against its line in SHA256SUMS, unpacks it next to the old
  *   program (the same folder, so the same file system), checks the new program answers
  *   `--version` with the release's version, and only then renames it over the old one;
@@ -178,6 +180,24 @@ async function get(
   maxBytes: number,
   o: DownloadLimits = {},
 ): Promise<Uint8Array> {
+  const r = await request(doFetch, url, maxBytes, o, false);
+  if (r instanceof URL) throw new ReleaseError('HTTP 302'); // not reached: fetch follows
+  return r;
+}
+
+const REDIRECTS = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * get, or with `manual` the first hop only: a redirect comes back as the URL it names (resolved,
+ * and only an allowed one), anything else is read as get reads it.
+ */
+async function request(
+  doFetch: typeof fetch,
+  url: URL,
+  maxBytes: number,
+  o: DownloadLimits,
+  manual: boolean,
+): Promise<Uint8Array | URL> {
   const ac = new AbortController();
   let timedOut = false;
   const stop = () => {
@@ -196,13 +216,25 @@ async function get(
     try {
       res = await doFetch(url, {
         signal: ac.signal,
-        redirect: 'follow',
+        redirect: manual ? 'manual' : 'follow',
         headers: { 'accept-encoding': 'identity' },
       });
     } catch {
       throw new ReleaseError(timedOut ? 'timed out' : "couldn't reach the release server");
     }
     poke();
+    const location = manual && REDIRECTS.has(res.status) ? res.headers.get('location') : null;
+    if (location !== null) {
+      await res.body?.cancel().catch(() => {});
+      let next: URL;
+      try {
+        next = new URL(location, url);
+      } catch {
+        throw new ReleaseError(`HTTP ${res.status}`);
+      }
+      if (!allowed(next)) throw new ReleaseError('a redirect away from HTTPS');
+      return next;
+    }
     if (res.url && !allowed(new URL(res.url))) {
       await res.body?.cancel().catch(() => {});
       throw new ReleaseError('a redirect away from HTTPS');
@@ -250,6 +282,28 @@ async function get(
     clearTimeout(idle);
     clearTimeout(total);
   }
+}
+
+/**
+ * The release folder this update reads every file from, and its VERSION (R124). GitHub answers
+ * `…/releases/latest/download/VERSION` with a redirect to `…/releases/download/<tag>/VERSION`:
+ * that tag's folder is then the base for SHA256SUMS and the asset too, so a release published
+ * mid-update can't mix the files of two. Without such a redirect (a fixed KAGE_RELEASE_BASE, a
+ * test server) the base stays as it is, and VERSION's bytes are the first answer's.
+ */
+export async function pinRelease(
+  doFetch: typeof fetch,
+  base: URL,
+  o: DownloadLimits = {},
+): Promise<{ base: URL; version: string }> {
+  const first = await request(doFetch, new URL(VERSION_FILE, base), MAX_TEXT, o, true);
+  if (!(first instanceof URL)) return { base, version: new TextDecoder().decode(first) };
+  // Only a hop to a file of the same name names a release folder; anything else (a CDN's
+  // signed URL) is followed for VERSION, and the other names resolve against the base.
+  const folder = first.pathname.endsWith(`/${VERSION_FILE}`) && first.search === '';
+  const pinned = folder ? new URL('.', first) : base;
+  const body = await get(doFetch, folder ? first : new URL(VERSION_FILE, base), MAX_TEXT, o);
+  return { base: pinned, version: new TextDecoder().decode(body) };
 }
 
 /**
@@ -524,11 +578,10 @@ async function update(
   const old = KAGE_VERSION;
   let next: string;
   try {
-    const base = releaseBase(io.env);
-    const versionText = new TextDecoder().decode(
-      await get(deps.fetch, new URL(VERSION_FILE, base), MAX_TEXT, limits),
-    );
-    next = versionText.trim();
+    // One release folder for all three files (R124), pinned by VERSION's first redirect.
+    const pinned = await pinRelease(deps.fetch, releaseBase(io.env), limits);
+    const base = pinned.base;
+    next = pinned.version.trim();
     if (!isVersion(next)) throw new ReleaseError("the release's VERSION isn't a version");
     if (!force && compareVersions(next, old) <= 0) {
       io.out(`Kage ${old} is the latest.`);

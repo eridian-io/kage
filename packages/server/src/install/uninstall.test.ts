@@ -310,6 +310,25 @@ describe('kage uninstall', () => {
     expect(o.out).toContain(KEPT_WORK);
   });
 
+  it('names the configured tmux session, also with --purge (read before the config goes)', async () => {
+    const cfg = join(home, '.config', 'kage', 'config.json');
+    writeFileSync(cfg, '{"projectsRoot":"~/projects","tmuxSession":"agents"}\n');
+    const o = io();
+    expect(await uninstallCommand(['--yes', '--purge'], o.io, deps())).toBe(0);
+    expect(existsSync(cfg)).toBe(false);
+    expect(o.out).toContain(
+      'Kept: your projects, their worktrees and branches, and the tmux session "agents" with its windows.',
+    );
+    expect(o.out).not.toContain(KEPT_WORK);
+  });
+
+  it('a config it cannot read: the default session name', async () => {
+    writeFileSync(join(home, '.config', 'kage', 'config.json'), '{not json');
+    const o = io();
+    expect(await uninstallCommand(['--yes'], o.io, deps())).toBe(0);
+    expect(o.out).toContain(KEPT_WORK);
+  });
+
   it('linger on: leaves it on and says how to turn it off', async () => {
     const m = { ...manager(), lingerEnabled: async () => true };
     const o = io();

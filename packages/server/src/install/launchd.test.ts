@@ -126,6 +126,21 @@ describe('renderPlist', () => {
     expect(xml).toContain('<string>--v8-pool-size=1</string>');
   });
 
+  it("R124: setup's folder settings reach EnvironmentVariables escaped, never an API key", () => {
+    const env = serviceEnv(SEA, '/usr/bin', {
+      CLAUDE_CONFIG_DIR: '/Users/u/A & B <claude>',
+      XDG_STATE_HOME: '/Users/u/state',
+      KAGE_TMUX_SOCKET: 'agents',
+      ANTHROPIC_API_KEY: 'sk-ant-invented',
+    });
+    const xml = renderPlist({ argv: serviceArgv(SEA), env }, '/l');
+    expect(xml).not.toContain('sk-ant-invented');
+    expect(xml).not.toContain('ANTHROPIC_API_KEY');
+    expect(plistEnvValue(xml, 'CLAUDE_CONFIG_DIR')).toBe('/Users/u/A & B <claude>');
+    expect(plistEnvValue(xml, 'XDG_STATE_HOME')).toBe('/Users/u/state');
+    expect(plistEnvValue(xml, 'KAGE_TMUX_SOCKET')).toBe('agents');
+  });
+
   it('escapes every value: arguments, env keys and values, the log path', () => {
     const xml = renderPlist(
       { argv: [`/a b/<&>"'/kage`, 'serve'], env: { PATH: `/x&y:/p q/<z>` } },
@@ -362,9 +377,15 @@ describe('launchdManager', () => {
       expect(calls).toEqual(['launchctl print gui/501/io.eridian.kage']);
     });
 
-    it('not running after a non-zero exit → failed', async () => {
-      const { run } = fakeRun(() => ({ stdout: printOut('not running', '1') }));
-      expect(await launchdManager(deps(run)).state()).toBe('failed');
+    it('not running after a non-zero exit → starting: KeepAlive restarts it (the Tailscale wait, R111)', async () => {
+      for (const [state, exit] of [
+        ['not running', '1'],
+        ['waiting', '1'],
+        ['not running', '-15'],
+      ] as const) {
+        const { run } = fakeRun(() => ({ stdout: printOut(state, exit) }));
+        expect(await launchdManager(deps(run)).state()).toBe('starting');
+      }
     });
 
     it('not running after exit 0 → inactive', async () => {

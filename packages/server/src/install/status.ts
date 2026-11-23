@@ -92,26 +92,36 @@ const SERVICE_WORDS: Record<ServiceState, (name: string) => string> = {
   missing: () => 'not installed',
 };
 
-/** The Service line's words; unavailable() comes first, since state() needs a user manager (R112). */
-async function serviceWords(m: ServiceManager | null): Promise<string> {
-  if (m === null) return SERVICE_WORDS.missing('');
+/**
+ * The Service line's words, and the state when known; unavailable() comes first, since state()
+ * needs a user manager (R112).
+ */
+async function serviceWords(
+  m: ServiceManager | null,
+): Promise<{ words: string; state: ServiceState | null }> {
+  // No service manager here (not Linux or macOS): nothing setup could install either.
+  if (m === null) return { words: SERVICE_WORDS.missing(''), state: null };
   const why = await m.unavailable();
-  if (why !== null) return `can't run here. ${why}`;
+  if (why !== null) return { words: `can't run here. ${why}`, state: null };
   try {
-    return SERVICE_WORDS[await m.state()](m.name);
+    const state = await m.state();
+    return { words: SERVICE_WORDS[state](m.name), state };
   } catch {
-    return "unknown (Kage couldn't read its state)";
+    return { words: "unknown (Kage couldn't read its state)", state: null };
   }
 }
 
 /** `kage status`: the version, the service, and the server's address and sessions. 0 when the server answers, else 1. */
 export async function statusCommand(io: Io, deps: CheckDeps): Promise<number> {
   io.out(`Kage ${KAGE_VERSION}`);
-  io.out(`Service: ${await serviceWords(deps.manager)}`);
+  const service = await serviceWords(deps.manager);
+  io.out(`Service: ${service.words}`);
   const socket = socketPath(deps.env, deps.platform);
   const status = await deps.status(socket);
   if (status === null) {
     io.out(`Kage isn't answering on ${socket}.`);
+    // Without a service, setup installs one; otherwise doctor says what's wrong.
+    io.out(service.state === 'missing' ? 'Run kage setup.' : 'Run kage doctor to see why.');
     return 1;
   }
   io.out(`Address: ${status.url}`);
