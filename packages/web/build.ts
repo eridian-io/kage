@@ -26,14 +26,19 @@ const LICENCES = { 'OFL-geist.txt': 'geist', 'OFL-geist-mono.txt': 'geist-mono' 
 const LOGO = 'kage-logo-96.png';
 /**
  * The entries the board loads only on demand, by a dynamic import of their source: never in the
- * first load: the diff view (R78) and the command palette (R95).
+ * first load: the diff view (R78), the command palette (R95), and New task, the archived list and
+ * notify (performance P6; lazy.tsx). The login screen stays in the first load (F2).
  */
 export const LAZY = {
   diff: 'src/components/DiffView.tsx',
   palette: 'src/components/Palette.tsx',
+  newtask: 'src/components/NewTask.tsx',
+  archived: 'src/components/ArchivedList.tsx',
+  notify: 'src/notify.ts',
 } as const;
 /** Every name the build writes; assets.ts caches the same names immutable. */
-export const HASHED = /^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
+export const HASHED =
+  /^(app|term|diff|palette|newtask|archived|notify|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 
 /**
  * The manifest of the precompressed sidecars, at the top of dist/: { "/<path>": "<hash>" }, the

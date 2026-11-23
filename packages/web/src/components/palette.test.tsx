@@ -3,8 +3,9 @@ import { join } from 'node:path';
 import { demoSessions, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from 'vitest';
+import { installLink } from '../link.ts';
 import { Board } from '../main.tsx';
-import { installNotify, notifyState } from '../notify.ts';
+import { notifyState } from '../notify.ts';
 import {
   applyEvent,
   authRequired,
@@ -433,7 +434,7 @@ describe('the selected row comes into view (R95)', () => {
     try {
       render(<Board />);
       window.history.replaceState(null, '', '/#s=docs');
-      const stop = installNotify(window);
+      const stop = installLink(window);
       try {
         expect(selectedId.value).toBe('docs');
         await waitFor(() =>

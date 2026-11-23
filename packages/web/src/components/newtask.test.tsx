@@ -1,7 +1,8 @@
 import { demoSessions, type ProjectsResponse, type Session } from '@kage/shared';
 import { cleanup, fireEvent, render, waitFor } from '@testing-library/preact';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { apiGet, apiPost } from '../api.ts';
+import { newTaskChunk } from '../lazy.tsx';
 import { Board } from '../main.tsx';
 import {
   applyEvent,
@@ -72,6 +73,10 @@ async function open(c: Element) {
   fireEvent.click(q(c, '.k-side > .k-new'));
   await waitFor(() => expect(select(c, 'Project').disabled).toBe(false));
 }
+
+// As the board after its idle prefetch (lazy.tsx): the form's chunk is in, so N shows it at once.
+// Loading it on demand is newtask-lazy.test.tsx.
+beforeAll(() => newTaskChunk.load());
 
 beforeEach(() => {
   vi.spyOn(Date, 'now').mockReturnValue(NOW);

@@ -10,10 +10,11 @@ import * as esbuild from 'esbuild';
 export const SIZE_LIMITS = {
   /**
    * index.html + every JS and CSS file it names (app, its chunks, its CSS). Spec §7 allows 30 KB;
-   * the cap is the first load measured after Task 8 (26,432 B, the palette lazy) + 1 KB, exactly
-   * (rulings PF5 F7, R96).
+   * the cap is the first load measured after hardening Task 14 (26,314 B: New task, the archived
+   * list and notify lazy, Login kept in by F2) + 1 KB, exactly. It was Task 8's 26,432 B + 1 KB
+   * (rulings PF5 F7, R96); no task raises it.
    */
-  firstLoad: 26_432 + 1024,
+  firstLoad: 26_314 + 1024,
   /** The terminal chunk, JS plus CSS (spec §7: about 90 KB; the plan: at most 100 KB). */
   termChunk: 100 * 1024,
   /** term-loader.ts, the only terminal code in the first load (F14). */

@@ -89,8 +89,9 @@ describe('web build', () => {
     expect(Object.keys(outputs[term]?.inputs ?? {}).some((p) => p.endsWith('leave.ts'))).toBe(true);
   });
 
-  it('caps the first load at Task 8’s measurement + 1 KB (rulings PF5 F7, R96)', () => {
-    expect(BUDGET).toBe(27_456);
+  it('the first load is under the new cap: hardening Task 14’s measurement + 1 KB (performance P6)', () => {
+    expect(BUDGET).toBe(26_314 + 1024);
+    expect(sizes.firstLoad).toBeLessThanOrEqual(BUDGET);
   });
 
   it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {
@@ -100,7 +101,9 @@ describe('web build', () => {
         !/\.(br|gz)$/.test(f),
     );
     for (const f of files) expect(f).toMatch(HASHED);
-    expect(HASHED.source).toBe('^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\\.(js|css)$');
+    expect(HASHED.source).toBe(
+      '^(app|term|diff|palette|newtask|archived|notify|chunk)-[A-Za-z0-9]+\\.(js|css)$',
+    );
     const count = (re: RegExp) => files.filter((f) => re.test(f)).length;
     expect(count(/^app-.*\.js$/)).toBe(1);
     expect(count(/^app-.*\.css$/)).toBe(1);
@@ -160,6 +163,38 @@ describe('web build', () => {
       .filter((i) => i.kind === 'import-statement')
       .map((i) => i.path.split(/[\\/]/).pop());
     for (const i of imports) expect(result.firstLoad).toContain(i);
+  });
+
+  it('NewTask, the archived list and notify are lazy chunks outside the first load; Login stays in it (F2)', async () => {
+    expect(Object.keys(LAZY)).toEqual(['diff', 'palette', 'newtask', 'archived', 'notify']);
+    const firstJs = result.firstLoad.filter((n) => n.endsWith('.js'));
+    const firstText = (await Promise.all(firstJs.map(textOf))).join('\n');
+    // A string only each entry's own code holds.
+    const marks = {
+      newtask: 'What should Claude do?',
+      archived: 'k-restore',
+      notify: 'requestPermission',
+    } as const;
+    for (const [name, mark] of Object.entries(marks)) {
+      const file = await built(new RegExp(`^${name}-.*\\.js$`));
+      expect(result.firstLoad, name).not.toContain(file);
+      console.log(`${name} chunk gzipped: ${await gzFile(file)} bytes`);
+      expect(await textOf(file), name).toContain(mark);
+      expect(firstText, name).not.toContain(mark);
+    }
+    // The metafile agrees: no first-load output takes an input from these modules.
+    for (const f of firstJs) {
+      const key = Object.keys(result.metafile.outputs).find((k) => k.endsWith(f)) as string;
+      const inputs = Object.keys(result.metafile.outputs[key]?.inputs ?? {});
+      for (const src of ['NewTask.tsx', 'ArchivedList.tsx', 'notify.ts']) {
+        expect(
+          inputs.some((i) => i.endsWith(`/${src}`)),
+          `${f} has ${src}`,
+        ).toBe(false);
+      }
+    }
+    // F2: the login screen is in the first load, so a board can always show it.
+    expect(firstText).toContain("That token isn't right.");
   });
 
   it('the demo data stays out of the first load (the server serves it)', async () => {

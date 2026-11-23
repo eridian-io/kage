@@ -15,6 +15,7 @@ import {
   sessions,
   toast,
 } from '../store.ts';
+import { archivedChunk } from './Archived.tsx';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
 const HOUR = 3_600_000;
@@ -111,6 +112,20 @@ describe('the archived list', () => {
     applyEvent({ type: 'archive', count: 3 });
     await Promise.resolve();
     expect(toggle(container)?.textContent).toBe('archived 3');
+  });
+
+  // The first test in this file to open the list (the chunk stays loaded after it).
+  it('the list is a lazy chunk, loaded on the first open (performance P6)', async () => {
+    snapshot(2);
+    const { container } = render(<Board />);
+    expect(archivedChunk.loaded()).toBeNull();
+    fireEvent.click(toggle(container) as HTMLButtonElement);
+    // Its box is there at once, empty, as the list shows before its first answer.
+    const id = toggle(container)?.getAttribute('aria-controls') as string;
+    expect(container.querySelector(`#${id}`)).not.toBeNull();
+    await waitFor(() => expect(rows(container)).toHaveLength(2));
+    expect(archivedChunk.loaded()).not.toBeNull();
+    expect(rows(container)[0]?.parentElement?.id).toBe(id);
   });
 
   it('opening it fetches once and lists the rows like done rows, with Restore', async () => {

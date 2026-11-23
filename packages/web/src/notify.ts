@@ -1,7 +1,8 @@
 /**
- * The board's side of notifications (W1, spec 5.9): the needs-you count in the tab title,
- * browser notifications when a session moves into needs-you, and `#s=<id>` links (a ping's
- * `click`). Event driven: no timers, no polling.
+ * The board's side of notifications (W1, spec 5.9): the needs-you count in the tab title and
+ * browser notifications when a session moves into needs-you. Event driven: no timers, no polling.
+ * A lazy chunk itself (performance P6): lazy.tsx loads and installs it after the first snapshot,
+ * and hands notifyApi to the palette. `#s=<id>` links are link.ts, in the first load.
  *
  * Browsers expose `Notification` only in a secure context (https, localhost), so a board opened
  * as `http://my-pc.tail1234.ts.net:8080` over the tailnet has the title count and ntfy, not
@@ -10,14 +11,12 @@
  */
 import { LIMITS, type ServerEvent, type Session, type SessionStatus } from '@kage/shared';
 import { computed, effect, type Signal, signal } from '@preact/signals';
-import { hadSnapshot, host, onApplied, select, selectWhenSeen, sorted } from './store.ts';
+import { host, onApplied, select, sorted } from './store.ts';
 
 export type NotifyState = 'unsupported' | 'insecure' | 'default' | 'granted' | 'denied';
 export const notifyState: Signal<NotifyState> = signal('unsupported');
 
 const TITLE = 'kage';
-/** The server's session ids: a UUID, or `ext-@<window>` (as terminal/upgrade.ts accepts). */
-const SESSION_ID = /^[A-Za-z0-9@_-]{1,100}$/;
 
 let win: Window | undefined = typeof window === 'undefined' ? undefined : window;
 
@@ -46,8 +45,8 @@ export async function enableNotifications(): Promise<void> {
 }
 
 /**
- * What the palette needs from here, handed to it by palette-loader.tsx: the palette chunk importing
- * this module would split it out of app into a first-load chunk of its own.
+ * What the palette needs from here, handed to it by palette-loader.tsx once this chunk is in, so
+ * the palette chunk doesn't import this module.
  */
 export interface NotifyApi {
   state: Signal<NotifyState>;
@@ -69,38 +68,12 @@ const waiting = computed(() =>
 );
 const isWaiting = (id: string) => sorted.value.some((s) => s.id === id && s.status === 'needs-you');
 
-/** `#s=<id>`, decoded and checked: the id, '' when malformed, null for any other hash. */
-function linkedId(hash: string): string | null {
-  if (!hash.startsWith('#s=')) return null;
-  try {
-    const id = decodeURIComponent(hash.slice(3));
-    return SESSION_ID.test(id) ? id : '';
-  } catch {
-    return '';
-  }
-}
-
-/** The title count, browser notifications on moves into needs-you, and #s=<id> on load. Returns the stopper. */
+/** The title count and browser notifications on moves into needs-you. Returns the stopper. */
 export function installNotify(w: Window | undefined = win): () => void {
   if (!w) return () => {};
   win = w;
   let stopped = false;
   const open = new Map<string, Notification>();
-  /** A link's id still waiting for the first snapshot; an unknown one is then dropped. */
-  let linked: string | null = null;
-
-  const follow = () => {
-    const id = linkedId(w.location.hash);
-    if (id === null) return;
-    // Drop the hash first, so a reload doesn't follow it again.
-    w.history.replaceState(w.history.state, '', w.location.pathname + w.location.search);
-    if (id === '') return;
-    if (sorted.value.some((s) => s.id === id)) select(id);
-    else if (!hadSnapshot.value) {
-      linked = id;
-      selectWhenSeen.value = id;
-    }
-  };
 
   const shut = (id: string) => {
     open.get(id)?.close();
@@ -127,16 +100,8 @@ export function installNotify(w: Window | undefined = win): () => void {
     );
   };
 
-  onApplied((e: ServerEvent, was: SessionStatus | undefined) => {
-    if (e.type === 'snapshot' && linked !== null) {
-      // The snapshot has already selected a linked session it carries; an unknown id goes quietly.
-      if (selectWhenSeen.value === linked) selectWhenSeen.value = null;
-      linked = null;
-    } else if (
-      e.type === 'session.updated' &&
-      e.session.status === 'needs-you' &&
-      was !== 'needs-you'
-    ) {
+  const off = onApplied((e: ServerEvent, was: SessionStatus | undefined) => {
+    if (e.type === 'session.updated' && e.session.status === 'needs-you' && was !== 'needs-you') {
       notify(e.session);
     }
   });
@@ -149,12 +114,9 @@ export function installNotify(w: Window | undefined = win): () => void {
   });
 
   readPermission();
-  follow();
-  w.addEventListener('hashchange', follow);
   return () => {
     stopped = true;
-    w.removeEventListener('hashchange', follow);
-    onApplied(null);
+    off();
     stopWaiting();
     for (const id of [...open.keys()]) shut(id);
     w.document.title = TITLE;

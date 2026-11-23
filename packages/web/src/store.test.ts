@@ -269,11 +269,11 @@ describe('the heartbeat (reliability I3)', () => {
     select('shop');
     const before = { s: sessions.value, l: linesById.value, sel: selectedId.value };
     const heard: string[] = [];
-    onApplied((e) => heard.push(e.type));
+    const off = onApplied((e) => heard.push(e.type));
     try {
       applyEvent({ type: 'hb' });
     } finally {
-      onApplied(null);
+      off();
     }
     expect(sessions.value).toBe(before.s);
     expect(linesById.value).toBe(before.l);

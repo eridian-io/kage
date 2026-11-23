@@ -35,6 +35,10 @@ beforeAll(async () => {
   await writeFile(join(dist, 'chunk-abc123.js'), 'export const c = 1;');
   await writeFile(join(dist, 'diff-abc123.js'), 'export const d = 1;');
   await writeFile(join(dist, 'palette-abc123.js'), 'export const p = 1;');
+  // Hardening Task 14 (performance P6): three more lazy entries.
+  for (const name of ['newtask', 'archived', 'notify']) {
+    await writeFile(join(dist, `${name}-abc123.js`), 'export const l = 1;');
+  }
   await writeFile(join(dist, 'other-abc123.js'), 'export const o = 1;');
   await writeFile(join(dist, 'app-DEF456.css'), `.k-app{color:red}${'.a{b:c}'.repeat(100)}`);
   await writeFile(join(dist, 'fonts', 'geist-latin-wght-normal.woff2'), new Uint8Array([1, 2, 3]));
@@ -115,6 +119,9 @@ describe('loadAssets', () => {
     expect(assets.get('/diff-abc123.js')?.immutable).toBe(true);
     // A lazy palette (ruling PF5, F7) is ready too; an unknown name is not.
     expect(assets.get('/palette-abc123.js')?.immutable).toBe(true);
+    for (const name of ['newtask', 'archived', 'notify']) {
+      expect(assets.get(`/${name}-abc123.js`)?.immutable, name).toBe(true);
+    }
     expect(assets.get('/other-abc123.js')?.immutable).toBe(false);
     expect(index?.immutable).toBe(false);
     expect(assets.get('/fonts/geist-latin-wght-normal.woff2')?.immutable).toBe(false);

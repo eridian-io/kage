@@ -1,5 +1,7 @@
 import type { Session, SessionStatus } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { installLazy, notifyChunk } from './lazy.tsx';
+import { installLink } from './link.ts';
 import { enableNotifications, installNotify, notifyState } from './notify.ts';
 import { applyEvent, hadSnapshot, select, selectedId, selectWhenSeen } from './store.ts';
 
@@ -95,8 +97,14 @@ const snapshot = (list: Session[]) =>
 const update = (s: Session) => applyEvent({ type: 'session.updated', session: s });
 
 let stop: (() => void) | null = null;
+/** The link follow (first load, link.ts) and notify (its lazy chunk), as main.tsx has them. */
 const install = (w: FakeWin) => {
-  stop = installNotify(w as unknown as Window);
+  const unlink = installLink(w as unknown as Window);
+  const unnotify = installNotify(w as unknown as Window);
+  stop = () => {
+    unlink();
+    unnotify();
+  };
   return w;
 };
 /** Lets the lazy notify-show chunk load and run. */
@@ -337,7 +345,33 @@ describe('title', () => {
   });
 });
 
+describe('notify as a lazy chunk (performance P6)', () => {
+  it('the title count still follows needs-you once notify has loaded', async () => {
+    const w = fakeWin();
+    stop = installLazy(w as unknown as Window);
+    // Nothing is loaded before the first snapshot.
+    expect(w.document.title).toBe('kage');
+    snapshot([session('a', 'needs-you'), session('b', 'running')]);
+    await notifyChunk.load();
+    expect(w.document.title).toBe('(1) kage');
+    update(session('b', 'needs-you'));
+    expect(w.document.title).toBe('(2) kage');
+    update(session('a', 'done'));
+    update(session('b', 'done'));
+    expect(w.document.title).toBe('kage');
+  });
+});
+
 describe('#s= links', () => {
+  it('a #s= link still selects its session on the first snapshot, with notify not loaded', () => {
+    const w = fakeWin({ hash: '#s=s1' });
+    stop = installLink(w as unknown as Window);
+    expect(w.location.hash).toBe('');
+    snapshot([session('s0', 'running'), session('s1', 'done')]);
+    expect(selectedId.value).toBe('s1');
+    expect(selectWhenSeen.value).toBeNull();
+  });
+
   it('#s=s1 at load selects s1 once it is seen, and the hash is gone', () => {
     const w = install(fakeWin({ hash: '#s=s1' }));
     expect(w.location.hash).toBe('');

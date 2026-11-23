@@ -1,5 +1,6 @@
 import type { Session } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
+import { chunkUrl } from './lazy.tsx';
 import { paletteOpen } from './store.ts';
 
 type DiffModule = typeof import('./components/DiffView.tsx');
@@ -9,10 +10,7 @@ type DiffModule = typeof import('./components/DiffView.tsx');
  * writes it), or null outside a build. A browser keeps a failed module fetch for its URL, so a retry
  * must ask under a new one.
  */
-export function retryUrl(retry: number): string | null {
-  const url = document.querySelector<HTMLMetaElement>('meta[name="kage-diff"]')?.content;
-  return url ? `${url}?r=${retry}` : null;
-}
+export const retryUrl = (retry: number): string | null => chunkUrl('diff', retry);
 
 /** The import of the diff chunk (build.ts LAZY) and the page reload, swappable in tests. */
 export const diffImport = {

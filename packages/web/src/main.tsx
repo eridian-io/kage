@@ -7,7 +7,8 @@ import { SessionPanel } from './components/SessionPanel.tsx';
 import { Toast } from './components/Toast.tsx';
 import { TopBar } from './components/TopBar.tsx';
 import { installKeys } from './keys.ts';
-import { installNotify } from './notify.ts';
+import { installLazy } from './lazy.tsx';
+import { installLink } from './link.ts';
 import { PaletteHost } from './palette-loader.tsx';
 import { connect } from './sse.ts';
 import {
@@ -117,6 +118,8 @@ if (root) {
   render(<Board />, root);
   installView();
   // Before the stream: a #s= link must be waiting when the first snapshot arrives.
-  installNotify();
+  installLink();
+  // After the first snapshot: notify (the title count, notifications) and New task's prefetch.
+  installLazy();
   connect();
 }

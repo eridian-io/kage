@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'preact/hooks';
-import { notifyApi } from './notify.ts';
+import { chunkUrl, notifyChunk } from './lazy.tsx';
+import type { NotifyApi } from './notify.ts';
 import { paletteHint } from './platform.ts';
 import { paletteOpen, toast } from './store.ts';
 
@@ -11,13 +12,10 @@ type PaletteModule = typeof import('./components/Palette.tsx');
  */
 export const paletteImport = {
   load: (retry = 0): Promise<PaletteModule> => {
-    const url =
-      retry > 0
-        ? document.querySelector<HTMLMetaElement>('meta[name="kage-palette"]')?.content
-        : undefined;
-    return url
-      ? (import(/* @vite-ignore */ `${url}?r=${retry}`) as Promise<PaletteModule>)
-      : import('./components/Palette.tsx');
+    const url = retry > 0 ? chunkUrl('palette', retry) : null;
+    return url === null
+      ? import('./components/Palette.tsx')
+      : (import(/* @vite-ignore */ url) as Promise<PaletteModule>);
   },
 };
 
@@ -41,22 +39,29 @@ export function loadPalette(): Promise<PaletteModule> {
   return pending;
 }
 
+/** The palette and notify's API (notify is a lazy chunk too, lazy.tsx), once both are in. */
+type Loaded = { palette: PaletteModule; notify: NotifyApi };
+const both = (): Loaded | null => {
+  const n = notifyChunk.loaded();
+  return mod && n ? { palette: mod, notify: n.notifyApi } : null;
+};
+
 /**
- * Renders the palette while `paletteOpen`, loading its chunk on the first open. If the chunk
- * won't load, the palette closes again and the toast says so; the next ⌘K tries again under a new
- * URL.
+ * Renders the palette while `paletteOpen`, loading its chunk (and notify's, usually in already
+ * after the first snapshot) on the first open. If the chunk won't load, the palette closes again
+ * and the toast says so; the next ⌘K tries again under a new URL.
  */
 export function PaletteHost() {
   const open = paletteOpen.value;
-  const [m, setM] = useState(mod);
+  const [m, setM] = useState(both);
   useEffect(() => {
     if (!open || m) return;
     let gone = false;
-    loadPalette().then(
-      (x) => {
+    Promise.all([loadPalette(), notifyChunk.load()]).then(
+      ([palette, n]) => {
         if (gone) return;
         if (toast.value?.kind === 'note') toast.value = null;
-        setM(x);
+        setM({ palette, notify: n.notifyApi });
       },
       () => {
         if (gone) return;
@@ -71,5 +76,5 @@ export function PaletteHost() {
       gone = true;
     };
   }, [open]);
-  return open && m ? <m.Palette notify={notifyApi} /> : null;
+  return open && m ? <m.palette.Palette notify={m.notify} /> : null;
 }

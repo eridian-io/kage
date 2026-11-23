@@ -30,6 +30,7 @@ import {
   toast,
 } from '../store.ts';
 import { installView } from '../view.ts';
+import { Row } from './SessionList.tsx';
 
 // The board's own actions (act) use the real api module, so they reach the stubbed fetch below.
 vi.mock('../api.ts', async (importOriginal) => ({
@@ -454,6 +455,83 @@ describe('ages', () => {
     await Promise.resolve();
     expect(q(row(container, 'web'), '.tm').textContent).toBe('1h');
     expect(texts(container, '.k-meta > span')[2]).toBe('started 1h ago');
+  });
+});
+
+describe('memoised rows (performance P3)', () => {
+  /**
+   * Counts Row renders. Preact's options.diffed fires for a row whose shouldComponentUpdate said
+   * no as well (preact/src/diff/index.js calls it after the bail-out too), so the count is taken
+   * on Row's render itself.
+   */
+  const renders = () => {
+    const ids: string[] = [];
+    const real = Row.prototype.render;
+    vi.spyOn(Row.prototype, 'render').mockImplementation(function (this: Row) {
+      ids.push(this.props.s.id);
+      return real.call(this);
+    });
+    return ids;
+  };
+  const update = (id: string, over: Partial<Session>) => {
+    const s = sessions.value.find((x) => x.id === id) as Session;
+    applyEvent({ type: 'session.updated', session: { ...s, ...over } });
+  };
+
+  it('a session.updated that changes only now renders no Row', async () => {
+    const { container } = render(<Board />);
+    const ids = renders();
+    update('shop', { now: 'Running npm test' });
+    update('infra', { now: 'Reading main.tf' });
+    await Promise.resolve();
+    expect(ids).toEqual([]);
+    expect(container.querySelectorAll('.k-side .k-it')).toHaveLength(6);
+  });
+
+  it('a row still renders when its own status, task, pin or external flag changes, and only that row', async () => {
+    const { container } = render(<Board />);
+    const ids = renders();
+    update('shop', { status: 'needs-you', statusSince: NOW });
+    await Promise.resolve();
+    expect(ids).toEqual(['shop']);
+    expect(q(row(container, 'shop'), '.w').textContent).toBe('waiting for your reply');
+    expect(q(row(container, 'shop'), '.tm').textContent).toBe('now');
+    // The needs-you count in the top bar follows.
+    expect(texts(container, '.k-side .k-g')[0]).toBe('needs you');
+    expect(container.querySelectorAll('.k-side .k-it .w')).toHaveLength(2);
+    ids.length = 0;
+    update('docs', { task: 'a better readme', pinned: true });
+    await Promise.resolve();
+    expect(ids).toEqual(['docs']);
+    expect(row(container, 'docs').textContent).toContain('★ ');
+    expect(row(container, 'docs').textContent).toContain('a better readme');
+    ids.length = 0;
+    update('rate', { external: true });
+    await Promise.resolve();
+    expect(ids).toEqual(['rate']);
+    expect(q(row(container, 'rate'), '.x').textContent).toBe('external');
+  });
+
+  it('a selection renders only the two rows it moves between', async () => {
+    const { container } = render(<Board />);
+    const ids = renders();
+    fireEvent.click(row(container, 'infra'));
+    await Promise.resolve();
+    expect(ids.sort()).toEqual(['infra', 'web']);
+    expect(row(container, 'infra').classList.contains('on')).toBe(true);
+    expect(row(container, 'web').classList.contains('on')).toBe(false);
+  });
+
+  it('the clock renders only the rows whose age text changes', async () => {
+    const { container } = render(<Board />);
+    const ids = renders();
+    now.value = NOW + 1000;
+    await Promise.resolve();
+    expect(ids).toEqual([]);
+    now.value = NOW + 60 * 60_000;
+    await Promise.resolve();
+    expect(ids.length).toBeGreaterThan(0);
+    expect(q(row(container, 'web'), '.tm').textContent).toBe('1h');
   });
 });
 

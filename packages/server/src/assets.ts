@@ -56,10 +56,11 @@ async function readManifest(board: BoardFiles, paths: string[]): Promise<Map<str
 }
 
 /**
- * esbuild's hashed names (packages/web/build.ts HASHED): the board, the terminal, the lazy diff and
- * palette, and the chunks they share. Their content never changes under the same name.
+ * esbuild's hashed names (packages/web/build.ts HASHED): the board, the terminal, the lazy diff,
+ * palette, New task, archived list and notify, and the chunks they share. Their content never
+ * changes under the same name.
  */
-const HASHED = /^\/(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
+const HASHED = /^\/(app|term|diff|palette|newtask|archived|notify|chunk)-[A-Za-z0-9]+\.(js|css)$/;
 
 const br = promisify(brotliCompress);
 const gz = promisify(gzip);

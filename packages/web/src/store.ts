@@ -259,12 +259,17 @@ function keepLive(incoming: Session): Session {
 }
 
 /**
- * Told of each event once the store has applied it (notify.ts, W1), with the status a
- * session.updated replaced (undefined for a session new to the store). One listener.
+ * Told of each event once the store has applied it (link.ts, and notify.ts once its chunk is in;
+ * W1), with the status a session.updated replaced (undefined for a session new to the store).
+ * Returns the listener's remover.
  */
-let appliedHook: ((e: ServerEvent, was: SessionStatus | undefined) => void) | null = null;
-export function onApplied(fn: typeof appliedHook): void {
-  appliedHook = fn;
+type AppliedHook = (e: ServerEvent, was: SessionStatus | undefined) => void;
+const appliedHooks = new Set<AppliedHook>();
+export function onApplied(fn: AppliedHook): () => void {
+  appliedHooks.add(fn);
+  return () => {
+    appliedHooks.delete(fn);
+  };
 }
 
 export function applyEvent(e: ServerEvent): void {
@@ -351,7 +356,7 @@ export function applyEvent(e: ServerEvent): void {
     if (waiting !== null && sorted.value.some((s) => s.id === waiting)) select(waiting);
     keepSelection();
   });
-  appliedHook?.(e, was);
+  for (const fn of appliedHooks) fn(e, was);
 }
 
 export function selectNext(delta: 1 | -1): void {
