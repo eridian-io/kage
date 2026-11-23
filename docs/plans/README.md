@@ -10,5 +10,6 @@ The design is in [`../specs/2026-11-21-kage-design.md`](../specs/2026-11-21-kage
 | 4. Finish and terminal: pin, archive, auto-archive, delete, resume, diff view, lazy terminal. Starts with a spike on tmux control mode | [2026-11-21-phase-4-finish-and-terminal.md](2026-11-21-phase-4-finish-and-terminal.md) | Built (branch `phase-4`) |
 | 5. Polish: notifications (ntfy and the browser), command palette, performance budgets | [2026-11-22-phase-5-polish.md](2026-11-22-phase-5-polish.md) | Built, not merged (branch `phase-5`) |
 | 6. Install and release: `kage setup`, the services, `install.sh`, SEA builds. Starts with a SEA spike on Linux and macOS | [2026-11-22-phase-6-install-and-release.md](2026-11-22-phase-6-install-and-release.md) | Built, not merged (branch `phase-6`) |
+| Hardening: what four reviews of the whole product found (security, reliability, performance, usability), within ruling R126, and phase 6's parked items. Release signing, the phone layout and the contrast tokens are left to the owner (backlog B72, B51, B73) | [2026-11-23-hardening.md](2026-11-23-hardening.md) | Built, not merged (branch `hardening`) |
 
 Before the first release: the one-line install fetches `install.sh` from `main`, so phase 6 must be merged into `main` before the first `v*` tag is pushed.

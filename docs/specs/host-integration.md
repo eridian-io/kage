@@ -470,7 +470,7 @@ Facts for `NtfyClient` (`packages/server/src/notify/ntfy.ts`), taken from ntfy's
 
 - **On ntfy.sh a topic is public: anyone who knows or guesses its name can subscribe and read every message sent to it**, past messages included while the server keeps them (12 hours by default). The topic name is the only secret unless the topic is reserved with access control (a paid feature on ntfy.sh) or the server is self-run with `auth-default-access: deny-all`.
 - Hence the config rule (Task 6): with no token on ntfy.sh, `ntfyTopic` must be at least 16 characters.
-- What the ntfy server itself sees for each ping: the topic, the title (`<project> needs you` or `<project> is done`), the task text (stripped and cut to 100 characters), the priority, and the `click` link, which carries the machine's MagicDNS name, Kage's port and the session id. It also sees the sender's IP address, and (amended 2026-11-23, hardening, R139) a sequence id, in the `X-Sequence-ID` header and the body's `sequence_id` with the same value: 16 random bytes in base64url, new for each ping and the same for its retries, made from nothing of the session, the topic or the token. It never sees a question, a command, a branch, a path, output or file names.
+- What the ntfy server itself sees for each ping: the topic, the title (`<project> needs you` or `<project> is done`), the task text (stripped and cut to 100 characters), the priority, and the `click` link, which carries Kage's host (the configured `host`, else the MagicDNS name, else the bound IP; amended 2026-11-23, hardening, spec §5.9), Kage's port and the session id. It also sees the sender's IP address, and (amended 2026-11-23, hardening, R139) a sequence id, in the `X-Sequence-ID` header and the body's `sequence_id` with the same value: 16 random bytes in base64url, new for each ping and the same for its retries, made from nothing of the session, the topic or the token. It never sees a question, a command, a branch, a path, output or file names.
 - **Hand-off to Task 11 (PF5 F15):** the README states the previous bullet in plain words for users of ntfy.sh.
 
 ### 6.5 What the client does with each answer
@@ -581,6 +581,7 @@ PID 1 is `systemd`. The session had `XDG_RUNTIME_DIR=/run/user/1000/` and `DBUS_
 - **Unit path:** `${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/kage-spike.service`. `~/.config/systemd/user` didn't exist before, and the spike's empty folders were removed afterwards.
   - `enable` printed `Created symlink /home/evir/.config/systemd/user/default.target.wants/kage-spike.service → /home/evir/.config/systemd/user/kage-spike.service.`
   - `disable` printed `Removed "/home/evir/.config/systemd/user/default.target.wants/kage-spike.service".`
+  - (recorded 2026-11-23 at the hardening pre-flight, read-only) `systemctl --user show -p UnitPath --value` lists the manager's search path, space-separated. Its first entry that ends in `/systemd/user` and isn't under `/etc/`, `/run/`, `/usr/` or `/lib/` is `~/.config/systemd/user`, the folder above. Since hardening (R125) Kage takes the unit's folder from that entry (spec §5.13). A folder with a space in it can't be told apart in that list (backlog B80).
 - The unit:
   ```
   [Unit]

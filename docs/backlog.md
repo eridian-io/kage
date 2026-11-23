@@ -22,7 +22,7 @@ Work deliberately left out of a phase, with the reason it's needed. Each item na
 
 Deferred from the phase 3 reviews. None blocks use; each is a small change.
 
-- **B20** The token cookie has no server-side expiry: it lasts its 30 days. To revoke every device, change the token and restart. A server-side session list or a rotating secret would give a real sign-out.
+- **B20** (done, hardening Task 1, security I1: a random session per login, kept hashed in memory, bound to the address that signed in, ended after 7 idle days or 30 days, by Sign out, or by a restart) The token cookie has no server-side expiry: it lasts its 30 days. To revoke every device, change the token and restart. A server-side session list or a rotating secret would give a real sign-out.
 - **B21** (done, hardening Task 5, security M2: an address with no recent failure always gets its try) A peer can use up the global login ceiling (30 failures a minute) and lock everyone out of signing in for 60 s. Cookies that exist keep working. Behind a reverse proxy, all clients share one address and one bucket.
 - **B22** The multi-select question (checkboxes) is unrecorded: Kage disables answering it and says to use the terminal. Capture a real one, record the keys, and then support it.
 - **B23** The port scan misses a daemon that detached from the pane (its parent became init). Match by working directory or process group as well.
@@ -59,7 +59,7 @@ Deferred from the phase 4 reviews. None blocks use.
 - **B39** (done, phase 4 fix wave) The delete e2e races after `extra.txt` is written: it should poll the board for "3 files" before it opens the confirmation. It failed once in three Docker runs.
 - **B40** An e2e for auto-archive skipping a session that has a terminal open (F11/R70). Unit tests cover it; no browser test opens a terminal and then merges.
 - **B41** Smaller e2e tidying from the Task 14 review: check that a pinned session stays before the archive step, give each fake scenario distinct file content, and assert the `sentIn` frames on the terminal socket.
-- **B42** A crash leaves resized windows at a manual size. The terminal's resize sets `window-size manual` on the window, and only a clean close unsets it, so after a crash the window stays at the browser's size when you attach at the PC. Fix: at startup, unset `window-size` (`set-option -w -u`) on every Kage-tagged window that has no terminal open.
+- **B42** (live half done, hardening Task 11, reliability M7: a terminal control client that exits leaves no window at the browser's size once the next client starts, since it first restores every window Kage resized; B71 would restore them at once. A crash of Kage itself still needs the start-up sweep below) A crash leaves resized windows at a manual size. The terminal's resize sets `window-size manual` on the window, and only a clean close unsets it, so after a crash the window stays at the browser's size when you attach at the PC. Fix: at startup, unset `window-size` (`set-option -w -u`) on every Kage-tagged window that has no terminal open.
 - **B43** A merge done in a linked worktree is seen only at the session's next turn end, so auto-archive on merge waits until then. The watcher looks at the top of the git common dir (`HEAD`, `ORIG_HEAD`, `FETCH_HEAD`, `packed-refs`), and such a merge writes its `ORIG_HEAD` under `worktrees/<name>/` and a loose ref under `refs/heads/`. Fix: watch the linked worktrees' own git dirs too.
 
 ## Found in phase 5
@@ -71,13 +71,13 @@ Deferred from the phase 4 reviews. None blocks use.
 - **B47** (done, phase 5 final review) Pressing Ctrl+K (or ⌘K) while the diff is still loading lets the diff view's mount effect (`DiffView.tsx`, the `el.focus()` at line 96) take focus from the open palette's field: the palette stays open but typing goes to the diff. Fix: skip that focus while the palette holds it.
 - **B48** Smaller things from the phase 5 reviews, each optional: a test for a hook from another pane inside the 5 s window; (done) `closeDiff`'s fallback selector, `[data-id].k-it.on`, was broader than it needed to be; an ignored-mark that has expired can be seen out of order with the session's next event; the revert pair `808e21a`/`029d197` is in the branch history (squash at merge if wanted).
 - **B49** Pings can be quieter. Skip a ping while a board tab for that session is visible and focused (the board already says so with the title count). Collect a burst of pings (several sessions at once) into one, "3 sessions need you".
-- **B50** A sign-out action on the board. It needs to know whether a token is set, which the API doesn't say today, so the button can be hidden when there is none.
-- **B51** A phone layout for the page a ping opens: the link `#s=<id>` lands on the desktop layout (at least 1100 px), which is cramped on a phone.
+- **B50** (done, hardening Task 1: "Sign out" in the command palette while a token is set; the snapshot's `auth` says whether one is) A sign-out action on the board. It needs to know whether a token is set, which the API doesn't say today, so the button can be hidden when there is none.
+- **B51** A phone layout for the whole board, as a future phase of its own (widened 2026-11-23, hardening; usability U1). The owner chose desktop first (R126). The board is laid out for at least 1100 px: a phone at 390 px shows it, but its columns don't fit, and a ping's `#s=<id>` link lands there. The README says "Desktop first. A phone shows the board, and a phone layout is planned." It needs its own design and reference screenshots (spec §8).
 - **B52** (done, phase 6 Tasks 0 and 10: `kage ping` and serve's "Tailscale isn't running" line both name the config file Kage actually reads) `kage ping` names a fixed path, "No ntfyTopic in ~/.config/kage/config.json." (`main.ts`, and the spec §6.7 copy), even when `XDG_CONFIG_HOME` puts the config elsewhere. Fix: print the path the config was actually read from.
 - **B53** `tailQuestionKey` can stay null when the attach guard (`live-source.ts`, `st.hookCount === hooks`) skips `#rebuildFromTail` because a hook landed while the tail started; then the transcript's open question at that moment is not remembered, and the next tail change that still shows it is taken for a new question. Fix: record the key even when the rebuild is skipped.
 - **B54** `resumeAborted` sets the status back to ended through `#setStatus`, which resets `statusSince`, the clock auto-archive measures an ended session's age by: a resume whose window failed to open restarts the 14 days. Fix: keep the `statusSince` the session had before `resumed()`.
 
-B53 and B54 are still open after phase 6.
+B53 and B54 are still open after hardening.
 
 ## Found in phase 6
 
@@ -85,7 +85,7 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 
 - **B55** macOS notarisation. The SEA is ad-hoc signed, which is enough for a binary `curl` fetched (no quarantine attribute), but a browser download meets Gatekeeper. Notarising needs an Apple developer account, the owner's call.
 - **B56** A Homebrew tap (`brew install eridian-io/tap/kage`), as a third way in on macOS.
-- **B57** `kage update` checks only `SHA256SUMS`, fetched over HTTPS from the same release: that catches corruption, not a compromised release host. Check the build provenance attestation too, as `gh attestation verify` does by hand, without needing `gh`.
+- **B57** (see B72, the owner's decision) `kage update` checks only `SHA256SUMS`, fetched over HTTPS from the same release: that catches corruption, not a compromised release host. Check the build provenance attestation too, as `gh attestation verify` does by hand, without needing `gh`.
 - **B58** Pin `node:<version>-trixie-slim` in `Dockerfile.install` and `Dockerfile.reboot` by digest, not only by tag, with their apt packages (see B18), so `pnpm test:install` and `pnpm test:reboot` are reproducible.
 - **B59** WSL doesn't start at Windows boot, so neither does Kage in it, linger or not. It is out of Kage's hands; the README says so. A documented way (a Task Scheduler entry that runs `wsl.exe -d <distro> --exec true` at logon) would help WSL users.
 - **B60** If someone deletes Kage's unit file by hand while the service runs, `kage uninstall` can't tell the running unit is Kage's and leaves it running. `systemctl --user stop kage.service` is the manual fix, and doctor shows the state.
@@ -103,9 +103,52 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 - **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, and pin the apt packages it installs (tmux, git, iproute2 and procps are unpinned), so `pnpm test:linux` is reproducible.
 - **B19** Split `live-source.ts`: it carries tmux events, hooks, transcripts and pane checks. Pull the pane-capture decision out as a pure function first.
 
+## Found in hardening
+
+Left out of hardening by its scope ruling (R126), or parked by its reviews. None blocks the first release.
+
 - **B67** (from hardening Task 2, R130) Warn at startup, on stderr, when an explicit `host` is a single label or a `.local` name: Kage then trusts everyone on the local network to answer for that name (spec §5.10).
 - **B68** (from hardening Task 2, R130) Print one stderr line when `--unsafe-listen-all` starts with Tailscale down and no configured host name: the allow-list is then empty, so every request gets 403.
 - **B69** (pre-flight F1, hardening) HTTPS through `tailscale serve` doesn't work and isn't advised: the CSRF guard takes only `http://<name>:<port>` Origins, so `https://box.tail….ts.net` is refused, and `Secure` never sets because Kage sees http. Any reverse proxy, `tailscale serve` included, also makes every device one peer address: that voids the per-login address binding (a cookie is then good from every device behind the proxy) and the per-address login limiter and stream cap. Making it work needs https Origins for the MagicDNS name and trusted `X-Forwarded-*` handling.
 - **B70** (R127, security M1, parked) Read a transcript only when its real path lies under `~/.claude/projects/`, so a forged hook can't point a card at any `.jsonl` file the user can read. Every e2e fake has to write its transcripts there first.
 - **B71** (hardening Task 11 review, R139; reliability M7 follow-up) When the terminal control client exits, the windows Kage resized stay at the browser's size until the next terminal opens (that client restores them first). Restore them at once in `TerminalBridge`'s `#clientGone`, through the one-shot tmux client (`set-option -w -u -t @W window-size`), instead of waiting for a new control client.
+- **B72** (the owner's decision; security I4, with B57) Release signing. `install.sh` and `kage update` check the program against `SHA256SUMS` from the same release, which catches corruption, not a compromised release host or account. Sign `SHA256SUMS` with a key the owner holds offline (minisign or ed25519), embed the public key in `install.sh` and the program, and verify before hashing; or verify the GitHub attestation's Sigstore bundle offline in `kage update`, pinned to the repository and `release.yml` at a `v*` tag. Then publish `install.sh` as a release asset covered by the signature (the second half of security M9; the README already gives a tag-pinned template).
+- **B73** (the owner's decision; usability U10) The contrast tokens. `--fg-3` (#5f6672, 3.27:1 on the background, 2.92:1 on the selected row) and the row age colour (#565d68, 2.85:1) are below WCAG AA for their 12 px text: the group labels, the `project /` prefixes, the ages and every key hint. The review suggests `--fg-3: #7d8490` (5.02:1) and the age colour at `--fg-3`. It is a design change: the target page and the reference screenshots change with it (spec §8).
+- **B74** (security M6) Title-only pings. A ping carries the task's text, the project, the host and the session's id to the ntfy server, and on ntfy.sh to anyone who learns the topic. Offer a mode that sends the project and "needs you" only, with no task text and no session id in `click`. Setup already says each ping carries the task's text.
+- **B75** (security I1, the longer term) Sign in by Tailscale identity: ask the local Tailscale daemon who a peer address belongs to (LocalAPI `whois`) instead of, or as well as, the token.
+- **B76** Usability minors the hardening scope didn't take, each optional (the usability review's U11 to U13 and U15 to U30):
+  - U11: "No git repositories in …" is a dead end. Say that repos must sit directly inside the folder and how to change it, and disable the task field while there are none.
+  - U12: the login screen doesn't say where the token is (Kage's config file on the PC; setup printed it). Select the field's text after a wrong try.
+  - U13: a long disconnect never says what to check. After about 15 s, say what to check (the PC, Tailscale on this device); a grey host dot while not live; Terminal disabled with the other actions.
+  - U15: "Starting Claude…" never says it's taking a while. After 20 s with no hook, a muted line that suggests T.
+  - U16: screen readers: no live region for a new needs-you, rows without their status in their name, group labels that aren't headings, no h1.
+  - U17: a disabled option's reason lives only in a tooltip.
+  - U18: the old "Available in a later version" tooltip on an ended external session's Terminal button.
+  - U19: the external window's sign-in note points at `tmux attach`, not T.
+  - U21: the generated token is printed with a full stop after it; put it on its own line.
+  - U22: setup ends on the "start Claude yourself" line, not on opening the address and pressing N.
+  - U23: the projects and host questions are terse.
+  - U24: `kage status` names the socket path instead of saying Kage isn't running.
+  - U25: config errors give a character offset and an absolute path, not a line and column with `~`.
+  - U26: the archive toast has no Restore button.
+  - U27: a ping for a session that's gone lands silently.
+  - U28: a digit approves a prompt with one key (the README says so); show the chosen option for about a second first.
+  - U29: "1 needs you" on the board against doctor's "0 need you"; "external" unexplained; "Follow up" against "Reply". (Spec §8's `kage --demo` is fixed.)
+  - U30: small hints: Enter sends the reply, Shift+Enter makes a new line in New task, a copy button for the `ssh -L` line, "No output yet." for a done session with no lines.
+
+  U20 (the message when the token is turned off) was fixed in hardening Task 3.
+- **B77** Performance minors the hardening scope didn't take, each optional:
+  - P8: the terminal's control client unescapes every pane's `%output` before it filters by pane. Read the pane id first.
+  - P10: the watcher's `#lastActivity` never drops closed panes, and `#byPane` is a linear scan per hook. Prune on `windows-changed`, and keep a pane-to-session map.
+  - P11: `Output` reads `scrollHeight` on every render of the selected session. Scroll only when a line was added or the session changed.
+- **B78** Parked from the review of the restart fixes (eebfcb7, 3044e5f):
+  - in the restart branch that keeps a done session done, a busy footer in the attach capture doesn't count as running, so a turn already in progress shows done until its first tool hook;
+  - two tests to add: a restarted done session whose transcript shows a question becomes needs-you, and one that shows a turn in progress becomes running;
+  - `doneAt` can be stale after a crash before the debounced state save.
+- **B79** Parked from the setup review (hardening Task 17): an error thrown, not returned, after the config is written skips showing the saved ntfy topic, so a saved topic may never be shown. Handle it like a returned failure.
+- **B80** (hardening Task 19, R150) A unit folder with a space can't be read from systemd's `UnitPath`, which is space-separated. Such a home gives a unit that doesn't load, which doctor shows.
+- **B81** `pnpm test:install` checks the SEA's one V8 worker but not the service's `--max-semi-space-size=1`. Add it.
+
+## Later, small
+
 - **B11** Small hardening and tidying, each optional: per-encoding or weak ETags (one ETag now covers every encoding); case-insensitive `q=` parsing in Accept-Encoding; pixelmatch `includeAA` in the visual tests; CI `cancel-in-progress` only off `main`; add esbuild to `onlyBuiltDependencies` (the owner's call).

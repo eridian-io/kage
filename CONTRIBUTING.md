@@ -22,7 +22,7 @@ pnpm install
 pnpm dev          # runs Kage in demo mode with sample sessions, no tmux needed
 ```
 
-`pnpm dev` listens on your Tailscale address, so it needs Tailscale up. Without Tailscale, run it on loopback: `KAGE_HOST=127.0.0.1 pnpm dev`. Your own settings go in `~/.config/kage/config.json` (see [Configuration](README.md#configuration)), outside the repo.
+`pnpm dev` serves the demo on `127.0.0.1` and rebuilds as you edit, so it needs no Tailscale. `pnpm demo` builds once and serves the same demo from the build. Your own settings go in `~/.config/kage/config.json` (see [Configuration](README.md#configuration)), outside the repo.
 
 Before you open a pull request, run:
 
@@ -45,6 +45,22 @@ The tmux and Unix-socket tests, and the live e2e, need Linux or macOS. On Window
 - Add or update tests for behaviour you change.
 - Keep the performance budgets in the design document (§7) green.
 - Use clear commit messages, for example `fix(server): …`, `feat(ui): …` or `docs: …`.
+
+## Releasing
+
+For maintainers, and only on the owner's go:
+
+1. Set the new version in `packages/server/package.json`.
+2. Tag the commit `v<version>` and push the tag.
+
+The release workflow (`.github/workflows/release.yml`) does the rest: it builds and smoke-tests the program for each platform, makes the npm package, `VERSION` and `SHA256SUMS`, attests them, creates the GitHub release and publishes to npm. A version with a `-` (`1.2.0-rc.1`) is a pre-release, which `kage update` and the installer don't pick up. `pnpm release:local` builds the same files for this machine into `dist/release`.
+
+The workflow's gates live in the repository's settings, so set them before the first tag:
+
+- **The `release` environment** needs required reviewers (the owner), and its deployment branches and tags limited to `v*` tags. The publish job runs in it, so nothing is published until a reviewer approves.
+- **A tag ruleset** for `v*` lets only the owner create, move or delete those tags.
+
+The one-line install fetches `install.sh` from `main`, so the branch that holds it must be merged into `main` before the first tag.
 
 ## What goes in the repo
 
