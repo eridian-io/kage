@@ -80,8 +80,12 @@ interface Result {
   err: string;
 }
 
-describe.runIf(!isWindows)('install.sh, run against a local release', () => {
+// Each test runs real shells, curl and sometimes script(1) or two installs: vitest's 5 s default
+// is too tight under a loaded full run (the Task 8 WSL flake), so the budget is 30 s.
+describe.runIf(!isWindows)('install.sh, run against a local release', { timeout: 30_000 }, () => {
   let server: Server;
+  /** Called when a request for the asset arrives (before any hang), for the signal tests. */
+  let onAsset: (() => void) | undefined;
   let base: string;
   let release: Release;
   let hits: string[];
@@ -107,6 +111,7 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
               ? null
               : (release.asset ?? GZ)
             : null;
+      if (name === ASSET) onAsset?.();
       if (name === ASSET && release.hang) {
         hanging.push(res);
       } else if (body === null) {
@@ -133,6 +138,7 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
   beforeEach(() => {
     release = {};
     hits = [];
+    onAsset = undefined;
     dir = mkdtempSync(join(tmpdir(), 'kage-install-sh-'));
     home = join(dir, 'home');
     tmp = join(dir, 'tmp');
@@ -281,6 +287,34 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
       },
     );
 
+    it('variables from the environment never reach the traps: a failed download keeps victims', async () => {
+      release = { asset: null };
+      const victim = join(dir, 'victim');
+      const victimDir = join(dir, 'victim-dir');
+      writeFileSync(victim, 'mine');
+      mkdirSync(victimDir);
+      writeFileSync(join(victimDir, 'f'), 'mine');
+      const r = await run({
+        shell,
+        env: env({ new: victim, tmp: victimDir, missing: 'curl', fresh: '1', line: 'x' }),
+      });
+      expect(r.code).toBe(1);
+      expect(r.err).toContain(DOWNLOAD(ASSET));
+      expect(readFileSync(victim, 'utf8')).toBe('mine');
+      expect(readFileSync(join(victimDir, 'f'), 'utf8')).toBe('mine');
+      expect(leftovers()).toEqual([]);
+    });
+
+    it('fresh=1 from the environment: a folder already on PATH prints no "new terminal" line', async () => {
+      const r = await run({
+        shell,
+        env: env({ PATH: `${fake}:${bin}:/usr/bin:/bin`, fresh: '1', new: join(dir, 'victim') }),
+      });
+      expect(r.code).toBe(0);
+      expect(r.out).not.toContain('Open a new terminal');
+      expect(readFileSync(installed())).toEqual(KAGE);
+    });
+
     it('piped and cut short anywhere before the last line: runs nothing', async () => {
       for (const at of cuts()) {
         const r = await run({ shell, stdin: TEXT.slice(0, at) });
@@ -393,6 +427,10 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     'http://localhost:1@evil.example/rel',
     'http://127.0.0.1?@evil.example/rel',
     'http://127.0.0.1:/rel',
+    'http://127.0.0.1.2.3/rel',
+    'http://127.0.0.1./rel',
+    'http://127..1/rel',
+    'http://127./rel',
     'ftp://127.0.0.1/rel',
   ])('KAGE_RELEASE_BASE=%s is refused: https only, http only on loopback', async (b) => {
     const r = await run({ env: env({ KAGE_RELEASE_BASE: b }) });
@@ -413,15 +451,30 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
       mkdirSync(bin);
       writeFileSync(installed(), 'old kage');
       let child: ChildProcess | undefined;
+      // Resolved by the server's handler the moment curl asks for the file: no polling.
+      const asked = new Promise<void>((resolve) => {
+        onAsset = resolve;
+      });
       const done = run({
         onStart: (p) => {
           child = p;
         },
       });
-      for (let i = 0; i < 200 && !hits.includes(`/rel/${ASSET}`); i++) {
-        await new Promise((r) => setTimeout(r, 25));
+      let timer: NodeJS.Timeout | undefined;
+      const tooLong = new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`install.sh didn't ask for ${ASSET} within 15 s`)),
+          15_000,
+        );
+      });
+      try {
+        await Promise.race([asked, tooLong]);
+      } catch (e) {
+        process.kill(-(child?.pid as number), 'SIGKILL');
+        throw e;
+      } finally {
+        clearTimeout(timer);
       }
-      expect(hits).toContain(`/rel/${ASSET}`);
       process.kill(-(child?.pid as number), `SIG${sig}`);
       const r = await done;
       expect(r.code).not.toBe(0);

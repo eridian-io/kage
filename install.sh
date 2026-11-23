@@ -19,14 +19,14 @@ have() { command -v "$1" >/dev/null 2>&1; }
 
 sha() { if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
 
-# True for http://localhost or http://127.x with an optional all-digit port, and nothing else
-# (no user@ part, no other host).
+# True for http://localhost or http://127.x (2 to 4 digit groups) with an optional all-digit
+# port, and nothing else (no user@ part, no other host, no trailing dot).
 loopback() {
   h=${1#http://} && h=${h%%/*}
   case $h in *@*) return 1 ;; esac
   case $h in *:*) case ${h##*:} in '' | *[!0-9]*) return 1 ;; esac ;; esac
   h=${h%:*}
-  case $h in localhost) return 0 ;; *[!0-9.]*) return 1 ;; 127.*) return 0 ;; esac
+  case $h in localhost) return 0 ;; *[!0-9.]* | *. | *..* | *.*.*.*.*) return 1 ;; 127.*) return 0 ;; esac
   return 1
 }
 
@@ -51,6 +51,8 @@ add_path() {
 }
 
 main() {
+  # Everything the traps and later lines read starts empty here, never from the environment.
+  new='' tmp='' missing='' fresh='' line=''
   uid=$(id -u)
   [ "$uid" != 0 ] || die 'Run the installer as your own user, not root.'
 
@@ -72,7 +74,6 @@ main() {
   esac
   asset=kage-$target.gz
 
-  missing=
   for tool in curl gunzip; do have "$tool" || missing=${missing:+$missing, }$tool; done
   have sha256sum || have shasum || missing=${missing:+$missing, }sha256sum
   [ -z "$missing" ] || die "Install $missing, then run the installer again."
@@ -121,10 +122,9 @@ main() {
   new=$(mktemp "$dir/.kage-new.XXXXXX")
   gunzip -c "$tmp/$asset" >"$new"
   chmod 755 "$new"
-  mv -f "$new" "$dir/kage"
+  mv -f "$new" "$dir/kage" && new=''
   rm -rf "$tmp" # exec below skips the EXIT trap
 
-  fresh=
   case :$PATH: in
     *:"$dir":*) ;;
     *)
