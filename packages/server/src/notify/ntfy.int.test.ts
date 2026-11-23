@@ -95,7 +95,7 @@ describe('NtfyClient against the fake ntfy server', () => {
     expect(lines).toEqual(['ntfy: the server refused the ping (HTTP 302).']);
   });
 
-  it('a server that hangs is cut off at the timeout on every try', async () => {
+  it('a server that hangs is cut off at the timeout, and the ping is not sent again (M8)', async () => {
     const f = await fake({ hang: true });
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const lines: string[] = [];
@@ -105,13 +105,13 @@ describe('NtfyClient against the fake ntfy server', () => {
       sleep: async () => {},
     });
     const done = c.send(PING);
-    for (let i = 1; i <= 4; i++) {
-      // wait (in real time) until the request has reached the fake, then let the timeout fire
-      while (f.received.length < i) await new Promise((r) => setImmediate(r));
-      await vi.advanceTimersByTimeAsync(NTFY.timeoutMs);
-    }
+    // wait (in real time) until the request has reached the fake, then let the timeout fire
+    while (f.received.length < 1) await new Promise((r) => setImmediate(r));
+    await vi.advanceTimersByTimeAsync(NTFY.timeoutMs);
     expect(await done).toBe(false);
-    expect(f.received).toHaveLength(4);
+    // The ping reached the server, which may still deliver it: no second copy.
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(f.received).toHaveLength(1);
     expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
   });
 });

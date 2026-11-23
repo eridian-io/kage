@@ -143,7 +143,9 @@ export async function uninstallCommand(
   // 3. Kage's own hooks file (R119-6): Claude never reads it once the program is gone.
   const state = stateDir(deps.env);
   const hooks = join(state, SETTINGS_FILE);
-  if (!purge && (await exists(hooks))) {
+  // M11: Claude sessions started with these hooks keep calling them; say so at the end.
+  const hadHooks = await exists(hooks);
+  if (!purge && hadHooks) {
     try {
       await rm(hooks, { force: true });
       removed.push(shown(hooks));
@@ -192,6 +194,9 @@ export async function uninstallCommand(
     io.out(
       'Linger is still on. If nothing else needs it, turn it off with: loginctl disable-linger',
     );
+  }
+  if (hadHooks && !(await exists(hooks))) {
+    io.out('Claude sessions still running will show hook errors until you restart them.');
   }
   return notes.some((n) => n.startsWith("Couldn't")) ? 1 : 0;
 }

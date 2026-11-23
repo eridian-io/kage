@@ -480,7 +480,8 @@ Facts for `NtfyClient` (`packages/server/src/notify/ntfy.ts`), taken from ntfy's
 | 3xx | not followed (`redirect: 'manual'`), so the token never reaches another host; `ntfy: the server refused the ping (HTTP <n>).` |
 | 401, 403 | final; `ntfy: the server refused the ping (HTTP <n>). Check ntfyToken.` |
 | other 4xx | final; `ntfy: the server refused the ping (HTTP <n>).` |
-| 429, 5xx, a network error, no answer within 5 s | retried after 2 s, 8 s, 30 s (a 429's `Retry-After` replaces the wait, at most 60 s); after the 4th attempt `ntfy: couldn't send a ping (<timeout, HTTP <n>, an error code such as ECONNREFUSED, or network error>).` |
+| 429, 5xx, a network error | retried after 2 s, 8 s, 30 s (a 429's `Retry-After` replaces the wait, at most 60 s); after the 4th attempt `ntfy: couldn't send a ping (<HTTP <n>, an error code such as ECONNREFUSED, or network error>).` |
+| no answer within 5 s | final (amended 2026-11-23, hardening; reliability M8): the request went out and may still be delivered, so it is never sent again; `ntfy: couldn't send a ping (timeout).` |
 
 - `http:` is used only for a loopback or tailnet server (100.64.0.0/10, `fd7a:115c:a1e0::/48`, a `.ts.net` name); for any other `http:` server the client sends nothing and logs `ntfy: ntfyServer must be https: unless it is on this machine or your tailnet; no ping sent.` The config (Task 6) refuses such a value at start.
 - No log line, error or `redact` result contains the topic, the token or the server URL.

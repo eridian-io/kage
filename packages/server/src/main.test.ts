@@ -18,6 +18,7 @@ import {
   MAX_CONNECTIONS_PER_PEER,
   NO_TOKEN_REFUSAL,
   SERVER_OPTIONS,
+  serveCommand,
 } from './serve.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
@@ -404,6 +405,52 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
     expect(r).toBe(1);
     expect(err).toEqual(["Couldn't start Kage: EACCES: permission denied, open dist/app.js"]);
     expect(out).toEqual([]);
+  });
+});
+
+describe('kage serve: the Claude settings file (reliability M5)', () => {
+  /** Live startup up to the settings file, against a fake tmux and a private hook socket. */
+  async function serveWithFailingWrite(current: string | null) {
+    const e = env({
+      KAGE_HOST: '127.0.0.1',
+      KAGE_PORT: String(await port()),
+      KAGE_SOCKET: isWin
+        ? `\\\\.\\pipe\\kage-test-${randomBytes(6).toString('hex')}`
+        : join(root, 'run', 'k.sock'),
+    });
+    const ac = new AbortController();
+    const tmuxExec: ExecFn = async () => ({ stdout: '', stderr: '' });
+    return serveCommand(
+      ['--allow-no-token'],
+      io(e, { dist: makeDist(), tmuxExec, signal: ac.signal }),
+      {
+        usage: USAGE,
+        writeSettings: async () => {
+          // The signal stops startup right after this step, so the test needs no tmux watcher.
+          ac.abort();
+          throw new Error('ENOSPC: no space left on device, write');
+        },
+        currentSettings: async () => current,
+      },
+    );
+  }
+
+  it('serve starts when the write fails but the file is current, and logs one line', async () => {
+    const r = await serveWithFailingWrite('/state/kage/claude-settings.json');
+    // Past the settings step: the signal it set stops startup there (130), not the failure (1).
+    expect(r).toBe(130);
+    expect(err).toEqual([
+      "kage: couldn't rewrite the Claude settings file (ENOSPC: no space left on device, write), but the one there is current.",
+      'Stopped before Kage was ready.',
+    ]);
+  });
+
+  it('serve stops when the write fails and the file there is missing or out of date', async () => {
+    const r = await serveWithFailingWrite(null);
+    expect(r).toBe(1);
+    expect(err).toEqual([
+      "Couldn't write the Claude settings file: ENOSPC: no space left on device, write",
+    ]);
   });
 });
 

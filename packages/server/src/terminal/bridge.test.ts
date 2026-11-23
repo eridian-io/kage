@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events';
+import { PassThrough } from 'node:stream';
 import { LIMITS } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
@@ -9,7 +11,7 @@ import {
   TerminalBridge,
   type TermSink,
 } from './bridge.ts';
-import type { ControlLine } from './control.ts';
+import { ControlClient, type ControlLine } from './control.ts';
 
 const MiB = 1024 * 1024;
 
@@ -542,6 +544,24 @@ describe('TerminalBridge', () => {
     expect(t.last().started).toBe(1);
   });
 
+  it('a new control client restores the sizes the last one left manual', async () => {
+    // M7: `tmux attach -d` at the PC ends the client while a phone's rw terminal had @2 resized.
+    const t = setup();
+    await t.open({ cols: 40, rows: 30 });
+    await t.open({ windowId: '@7', paneId: '%8', cols: 50, rows: 20 });
+    t.last().onExit();
+    // The next client restores both before anything else; a window opened rw again isn't.
+    await t.open({ windowId: '@7', paneId: '%8', cols: 60, rows: 20 });
+    expect(t.clients).toHaveLength(2);
+    expect(t.last().written[0]).toBe('set-option -w -u -t @2 window-size');
+    expect(t.last().written).not.toContain('set-option -w -u -t @7 window-size');
+    // Restored once: a later client doesn't restore @2 again.
+    t.last().onExit();
+    await t.open({ mode: 'ro' });
+    expect(t.last().written).not.toContain('set-option -w -u -t @2 window-size');
+    expect(t.last().written[0]).toBe('set-option -w -u -t @7 window-size');
+  });
+
   it('a %exit line counts as the client stopping', async () => {
     const t = setup();
     const a = await t.open();
@@ -727,5 +747,82 @@ describe('TerminalBridge', () => {
     expect(t.last().written).not.toContain('set-option -w -u -t @7 window-size');
     expect(t.last().closed).toBe(true);
     expect(vi.getTimerCount()).toBe(0);
+  });
+});
+
+describe('TerminalBridge over a real ControlClient (reliability M6)', () => {
+  class SilentProc extends EventEmitter {
+    stdout = new PassThrough();
+    stderr = new PassThrough();
+    stdin = new PassThrough();
+    killed = false;
+    kill() {
+      this.killed = true;
+      queueMicrotask(() => this.emit('exit'));
+      return true;
+    }
+  }
+
+  function realBridge(answerAttach: boolean) {
+    const procs: SilentProc[] = [];
+    const spawn = (() => {
+      const p = new SilentProc();
+      procs.push(p);
+      // The attach block only; every later command goes unanswered (a wedged tmux).
+      if (answerAttach) queueMicrotask(() => p.stdout.write('%begin 1 1 0\n%end 1 1 0\n'));
+      return p;
+    }) as never;
+    const bridge = new TerminalBridge({
+      client: ({ onLine, onExit }) =>
+        new ControlClient({ target: { socket: null }, session: 'kage', spawn, onLine, onExit }),
+    });
+    return { bridge, procs };
+  }
+
+  const openOn = (bridge: TerminalBridge) =>
+    bridge.open({
+      windowId: '@2',
+      paneId: '%3',
+      mode: 'rw',
+      cols: null,
+      rows: null,
+      sink: new FakeSink(),
+    });
+
+  it('a control client that never answers fails open within 5 s, and the count drops', async () => {
+    const { bridge, procs } = realBridge(false);
+    const p = openOn(bridge);
+    const settled = p.then(
+      () => 'opened',
+      (e: unknown) => e,
+    );
+    expect(bridge.count).toBe(1);
+    await vi.advanceTimersByTimeAsync(5000);
+    const e = await settled;
+    expect(e).toBeInstanceOf(BridgeError);
+    expect((e as BridgeError).code).toBe(1011);
+    expect(bridge.count).toBe(0);
+    expect(procs[0]?.killed).toBe(true);
+    bridge.stop();
+  });
+
+  it('a snapshot that never comes back fails open within 5 s, and the count drops', async () => {
+    const { bridge, procs } = realBridge(true);
+    const p = openOn(bridge);
+    const settled = p.then(
+      () => 'opened',
+      (e: unknown) => e,
+    );
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(bridge.count).toBe(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(await settled).toBeInstanceOf(BridgeError);
+    expect(bridge.count).toBe(0);
+    expect(procs[0]?.killed).toBe(true);
+    // The next open starts a new client.
+    void openOn(bridge).catch(() => {});
+    await vi.advanceTimersByTimeAsync(0);
+    expect(procs).toHaveLength(2);
+    bridge.stop();
   });
 });

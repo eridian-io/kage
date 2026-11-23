@@ -258,7 +258,7 @@ When you get a ping:
 - With `ntfyOnDone`, a session that worked for at least a minute and then finished is pinged "is done". A session you stopped is not, nor one whose prompt you answered No or Esc.
 - At most 10 pings go out in any 10 minutes. Kage logs how many it skipped.
 - Sessions already waiting when Kage starts are not pinged.
-- A failed ping is tried again after 2, 8 and 30 seconds, then given up. Tapping a ping opens that session on the board.
+- A failed ping is tried again after 2, 8 and 30 seconds, then given up. A ping the server took more than 5 seconds to answer isn't sent again, since it may still arrive. Tapping a ping opens that session on the board.
 
 **What the ntfy server sees.** The topic, a title such as "my-app needs you", the task text (cut to 100 characters), the board link (your machine's name, the port and the session's id), and your PC's address and the time. It never gets the question, the output, a command, a branch or a path. A window Kage didn't start has no task to show: its ping says "Claude needs you" with the PC's name. Kage logs no topic, token or server address; a failure is named by a status or an error code only. If the task text itself is private, use your own ntfy server, or leave ntfy off.
 

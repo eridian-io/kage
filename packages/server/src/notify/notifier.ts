@@ -112,6 +112,10 @@ export class Notifier {
     /** The name in an external session's fixed text (cfg.name). */
     hostName: string;
     options: NotifierOptions;
+    /**
+     * Monotonic ms (M2: default performance.now) for the hold, the quiet period, lastPingAt and
+     * the rate window, so a wall clock stepped back delays no ping. Nothing here shows a time.
+     */
     clock?: () => number;
     log: (line: string) => void;
   }) {
@@ -120,7 +124,7 @@ export class Notifier {
     this.#link = d.link;
     this.#host = d.hostName;
     this.#o = d.options;
-    this.#clock = d.clock ?? Date.now;
+    this.#clock = d.clock ?? (() => performance.now());
     this.#log = d.log;
   }
 

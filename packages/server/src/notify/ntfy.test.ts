@@ -267,7 +267,7 @@ describe('NtfyClient.send', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('a hang → aborted at 5,000 ms on each try, then false after 4 tries', async () => {
+  it('a hang → aborted at 5,000 ms, not tried again (M8), false with one line', async () => {
     vi.useFakeTimers();
     let tries = 0;
     const aborts: number[] = [];
@@ -284,12 +284,53 @@ describe('NtfyClient.send', () => {
     expect(aborts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(aborts).toEqual([5000]);
-    await vi.advanceTimersByTimeAsync(2000 + 5000 + 8000 + 5000 + 30000 + 5000);
+    await vi.advanceTimersByTimeAsync(60_000);
     expect(await done).toBe(false);
-    expect(tries).toBe(4);
-    expect(aborts).toEqual([5000, 12_000, 25_000, 60_000]);
+    expect(tries).toBe(1);
     expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('a ping that timed out after sending is not tried again', async () => {
+    // M8: a slow ntfy that answers after 6 s still delivered the ping; a retry would be a copy.
+    vi.useFakeTimers();
+    const calls: number[] = [];
+    const fetch: FetchFn = (_url, init) => {
+      calls.push(Date.now());
+      // Like fetch: the answer would come at 6 s, but the abort at 5 s rejects first.
+      return new Promise((resolve, reject) => {
+        const t = setTimeout(() => resolve(new Response('ok')), 6000);
+        const signal = init.signal as AbortSignal;
+        signal.addEventListener(
+          'abort',
+          () => {
+            clearTimeout(t);
+            reject(signal.reason);
+          },
+          { once: true },
+        );
+      });
+    };
+    const lines: string[] = [];
+    const c = new NtfyClient({ config: CFG, fetch, log: (l) => lines.push(l) });
+    const done = c.send(NEEDS);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(await done).toBe(false);
+    expect(calls).toHaveLength(1);
+    expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
+  });
+
+  it('a network error before an answer is still tried again', async () => {
+    const f = recording([
+      () => {
+        throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+      },
+      status(200),
+    ]);
+    const { c, waits } = client({ fetch: f.fetch });
+    expect(await c.send(NEEDS)).toBe(true);
+    expect(f.calls).toHaveLength(2);
+    expect(waits).toEqual([2000]);
   });
 
   it('stillWanted false before the second try → false and no second call', async () => {

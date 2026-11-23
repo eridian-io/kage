@@ -1,10 +1,25 @@
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HOOK_EVENTS } from './event.ts';
-import { hookCommand, shellQuote, writeHooksSettings } from './settings.ts';
+import {
+  currentHooksSettings,
+  hookCommand,
+  SETTINGS_FILE,
+  shellQuote,
+  writeHooksSettings,
+} from './settings.ts';
 
 /** A tiny POSIX-sh word splitter for single-quoted words separated by spaces (what we emit). */
 function unquote(command: string): string[] {
@@ -117,6 +132,23 @@ describe('writeHooksSettings', () => {
 
   it('rejects an empty command', async () => {
     await expect(writeHooksSettings(dir, [])).rejects.toThrow();
+  });
+
+  it('a failed settings write leaves no .tmp', async () => {
+    // M5: the rename fails (a folder holds the name), as a full disk fails the write; either way
+    // the temp file goes, so the service's restart loop doesn't leave one every 5 s.
+    mkdirSync(join(dir, SETTINGS_FILE, 'x'), { recursive: true });
+    await expect(writeHooksSettings(dir, COMMAND)).rejects.toThrow();
+    expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('currentHooksSettings: the path when the file holds exactly what a write would, else null', async () => {
+    expect(await currentHooksSettings(dir, COMMAND)).toBeNull();
+    const path = await writeHooksSettings(dir, COMMAND);
+    expect(await currentHooksSettings(dir, COMMAND)).toBe(path);
+    expect(await currentHooksSettings(dir, ['other'])).toBeNull();
+    writeFileSync(path, `${readFileSync(path, 'utf8')} `);
+    expect(await currentHooksSettings(dir, COMMAND)).toBeNull();
   });
 });
 

@@ -525,6 +525,29 @@ describe('Notifier: timers', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('a wall clock stepped back an hour delays no ping', () => {
+    // M2 (the review's R5): NTP, a VM resume or WSL2 after host sleep steps Date.now back.
+    start();
+    source.set('s1', 'needs-you');
+    at(3000);
+    expect(sent).toHaveLength(1);
+    source.set('s1', 'running');
+    vi.setSystemTime(Date.now() - 3_600_000);
+    at(200_000);
+    source.set('s1', 'needs-you');
+    at(3000);
+    expect(sent).toHaveLength(2);
+    // The rate window ages out by the monotonic clock too.
+    for (let i = 0; i < 8; i++) source.set(`r${i}`, 'needs-you');
+    at(3000);
+    expect(sent).toHaveLength(10);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    at(600_000);
+    source.set('late', 'needs-you');
+    at(3000);
+    expect(sent).toHaveLength(11);
+  });
+
   it('a send that rejects is ignored', async () => {
     source.sessions = [];
     notifier = new Notifier({

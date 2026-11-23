@@ -138,6 +138,8 @@ type Outcome =
   | { kind: 'ok' }
   | { kind: 'final'; status: number }
   | { kind: 'retry'; err: unknown; waitMs: number | null }
+  /** M8: the try timed out after the request went out; ntfy may have delivered it. */
+  | { kind: 'timeout'; err: unknown }
   | { kind: 'closed' };
 
 export class NtfyClient {
@@ -207,6 +209,11 @@ export class NtfyClient {
       const out = await this.#try(body);
       if (out.kind === 'ok') return true;
       if (out.kind === 'closed') return false;
+      if (out.kind === 'timeout') {
+        // M8: never tried again, so a slow ntfy that delivers anyway doesn't get a copy.
+        this.#say(`ntfy: couldn't send a ping (${redact(out.err)}).`);
+        return false;
+      }
       if (out.kind === 'final') {
         const hint = out.status === 401 || out.status === 403 ? ' Check ntfyToken.' : '';
         this.#say(`ntfy: the server refused the ping (HTTP ${out.status}).${hint}`);
@@ -245,6 +252,8 @@ export class NtfyClient {
       return { kind: 'final', status: res.status };
     } catch (err) {
       if (this.#closed.signal.aborted) return { kind: 'closed' };
+      // Kage can't see when the request's bytes left, so a timeout counts as sent (M8).
+      if (timeout.signal.aborted) return { kind: 'timeout', err: timeout.signal.reason ?? err };
       return { kind: 'retry', err, waitMs: null };
     } finally {
       clearTimeout(timer);

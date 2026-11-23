@@ -173,6 +173,10 @@ const KILL_AFTER_MS = 2000;
 
 const stopped = (): Error => new Error('tmux stopped.');
 
+/** M6: how long the attach and each command may take, as every other tmux call (tmux/client.ts). */
+export const ANSWER_TIMEOUT_MS = 5000;
+const timedOut = (): Error => new Error("tmux didn't answer within 5 s.");
+
 /**
  * One tmux control-mode client (`tmux -C attach`) that writes commands and reads their answers.
  * stdout is read as bytes and split on \n. Answers are matched to commands in order; a block
@@ -213,7 +217,9 @@ export class ControlClient {
       return Promise.reject(new Error('The control client was started already.'));
     this.#state = 'up';
     return new Promise<void>((resolve, reject) => {
-      this.#queue.push({ blocks: 1, results: [], attach: true, resolve: () => resolve(), reject });
+      this.#queue.push(
+        this.#timed({ blocks: 1, results: [], attach: true, resolve: () => resolve(), reject }),
+      );
       const args = tmuxArgs(this.#target, ['-C', 'attach', '-t', `=${this.#session}`]);
       const proc = this.#spawn('tmux', args);
       this.#proc = proc;
@@ -246,9 +252,36 @@ export class ControlClient {
     }
     if (this.#state !== 'up' || !this.#proc) return Promise.reject(stopped());
     return new Promise((resolve, reject) => {
-      this.#queue.push({ blocks: cmds.length, countFor, results: [], resolve, reject });
+      this.#queue.push(
+        this.#timed({ blocks: cmds.length, countFor, results: [], resolve, reject }),
+      );
       this.#proc?.stdin?.write(`${line}\n`);
     });
+  }
+
+  /**
+   * M6: the entry settles within ANSWER_TIMEOUT_MS. A timeout rejects it, then kills tmux and
+   * reports the exit: every later answer would be matched to the wrong command.
+   */
+  #timed(e: Entry): Entry {
+    const timer = setTimeout(() => {
+      const i = this.#queue.indexOf(e);
+      if (i < 0) return;
+      this.#queue.splice(i, 1);
+      e.reject(timedOut());
+      this.#broken();
+    }, ANSWER_TIMEOUT_MS);
+    timer.unref?.();
+    const { resolve, reject } = e;
+    e.resolve = (v) => {
+      clearTimeout(timer);
+      resolve(v);
+    };
+    e.reject = (err) => {
+      clearTimeout(timer);
+      reject(err);
+    };
+    return e;
   }
 
   /** Fire-and-forget (keys, sizes); throws TypeError when SAFE_LINE refuses the line. */

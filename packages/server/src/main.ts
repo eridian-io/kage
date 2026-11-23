@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 import type { Readable } from 'node:stream';
 import type { Asset, BoardFiles } from './assets.ts';
 import { runHookCli } from './hooks/cli.ts';
-import { writeHooksSettings } from './hooks/settings.ts';
+import { currentHooksSettings, writeHooksSettings } from './hooks/settings.ts';
 import type { CheckDeps } from './install/checks.ts';
 import { hookArgv, KAGE_VERSION, runMode } from './install/runtime.ts';
 import { stateDir } from './state/store.ts';
@@ -81,6 +81,11 @@ export interface Running {
  */
 export function writeSettings(env: NodeJS.ProcessEnv): Promise<string> {
   return writeHooksSettings(stateDir(env), hookArgv(runMode()));
+}
+
+/** The hooks settings file's path when it already holds what writeSettings would write, else null. */
+export function currentSettings(env: NodeJS.ProcessEnv): Promise<string | null> {
+  return currentHooksSettings(stateDir(env), hookArgv(runMode()));
 }
 
 /**
@@ -249,7 +254,7 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
     case 'serve': {
       const { serveCommand } = await import('./serve.ts');
       // serve.ts must not import this file at runtime: this module is still evaluating.
-      return serveCommand(rest, io, { usage: USAGE, writeSettings });
+      return serveCommand(rest, io, { usage: USAGE, writeSettings, currentSettings });
     }
     case 'ping':
       return pingCommand(io);

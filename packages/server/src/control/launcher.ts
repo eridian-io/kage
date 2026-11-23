@@ -103,7 +103,7 @@ async function searchPath(name: string, pathVar: string | undefined): Promise<st
 }
 
 /**
- * The claude executable (F12: the only producer of `claudeBin`): `KAGE_CLAUDE_BIN` (a path, or a
+ * The claude executable (F12: the only producer of the launcher's claude): `KAGE_CLAUDE_BIN` (a path, or a
  * name looked up on PATH), else the first executable `claude` on PATH; null when there is none.
  */
 export async function resolveClaude(env: NodeJS.ProcessEnv): Promise<string | null> {
@@ -138,7 +138,11 @@ export interface LauncherDeps {
   >;
   /** One action at a time per session, shared with the controls and finish actions (F5, R68). */
   lock?: ActionLock;
-  claudeBin: string | null;
+  /**
+   * Looks up the claude executable, or null (serve: resolveClaude). M10: the launcher asks at
+   * each launch until it finds one, then keeps it while that file is still there.
+   */
+  findClaude: () => Promise<string | null>;
   settingsPath: string;
   hookSocket: string;
   /** PATH inside the window (Kage's); null leaves it out, so the window gets tmux's default. */
@@ -193,6 +197,8 @@ export class TaskLauncher {
   readonly #now: () => number;
   readonly #queues = new Map<string, Promise<unknown>>();
   readonly #lock: ActionLock;
+  /** M10: the last claude found, kept while the file is still there. */
+  #claude: string | null = null;
 
   constructor(d: LauncherDeps) {
     this.#d = d;
@@ -201,10 +207,20 @@ export class TaskLauncher {
     this.#now = d.now ?? Date.now;
   }
 
+  /**
+   * M10: claude installed, or moved by its updater, after Kage started is found at the next
+   * launch. A hit is kept and looked up again only once its file is gone; a miss asks every time.
+   */
+  async #claudeBin(): Promise<string> {
+    if (this.#claude !== null && (await isExecutableFile(this.#claude))) return this.#claude;
+    this.#claude = await this.#d.findClaude();
+    if (this.#claude === null) throw new LaunchError(503, NO_CLAUDE);
+    return this.#claude;
+  }
+
   /** Throws LaunchError (400, 404, 422 or 503); anything else is a bug. */
   async start(body: NewTaskBody | unknown): Promise<NewTaskResponse> {
-    const bin = this.#d.claudeBin;
-    if (bin === null) throw new LaunchError(503, NO_CLAUDE);
+    const bin = await this.#claudeBin();
     const parsed = parseNewTask(body);
     if (!parsed.ok) throw new LaunchError(400, parsed.error);
     const task = parsed.value;
@@ -244,8 +260,7 @@ export class TaskLauncher {
       if (d.source.hasWindow(r.kageId)) {
         throw new LaunchError(409, 'This session already has a window.');
       }
-      const bin = d.claudeBin;
-      if (bin === null) throw new LaunchError(503, NO_CLAUDE);
+      const bin = await this.#claudeBin();
       // K3: tmux would start the window in $HOME if the folder were missing.
       const folder = isAbsolute(r.worktree) ? await stat(r.worktree).catch(() => null) : null;
       const gone = new LaunchError(409, "The worktree is gone, so Kage can't resume this session.");

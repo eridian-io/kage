@@ -266,7 +266,16 @@ async function startLive(
   try {
     settingsPath = await cli.writeSettings(io.env);
   } catch (err) {
-    throw new StartError(`Couldn't write the Claude settings file: ${oneLine(err)}`);
+    // M5: a full disk under the service's restart loop must not keep Kage down when the file
+    // there already says exactly what it would write.
+    const current = await cli.currentSettings(io.env).catch(() => null);
+    if (current === null) {
+      throw new StartError(`Couldn't write the Claude settings file: ${oneLine(err)}`);
+    }
+    io.err(
+      `kage: couldn't rewrite the Claude settings file (${oneLine(err)}), but the one there is current.`,
+    );
+    settingsPath = current;
   }
   checkSignal(io);
 
@@ -421,6 +430,8 @@ export interface CliParts {
   usage: string;
   /** Writes the hooks settings file (the same file as `kage hooks-path`). */
   writeSettings: (env: NodeJS.ProcessEnv) => Promise<string>;
+  /** The settings file's path when it already holds what writeSettings would write, else null. */
+  currentSettings: (env: NodeJS.ProcessEnv) => Promise<string | null>;
 }
 
 /**
@@ -590,9 +601,6 @@ async function startServer(
     }));
     projects = () => cache.get();
     invalidateProjects = () => cache.invalidate();
-    // Resolved once; when it is missing, POST /api/sessions says so (503), nothing is logged.
-    const claudeBin = await resolveClaude(io.env);
-    checkSignal(io);
     launcher = new TaskLauncher({
       projectsRoot: cfg.projectsRoot,
       worktreeDir: cfg.worktreeDir,
@@ -607,7 +615,9 @@ async function startServer(
       source: live.source,
       // Resume shares the one action lock with the controls and finish actions (F5, R68).
       lock: live.lock,
-      claudeBin,
+      // M10: looked up at each launch until found; when it is missing, POST /api/sessions says
+      // so (503), nothing is logged.
+      findClaude: () => resolveClaude(io.env),
       settingsPath: live.settingsPath,
       hookSocket: live.hookSocket,
       // The window's PATH is Kage's, so claude and `kage hook` resolve as they do for Kage.

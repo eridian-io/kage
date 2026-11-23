@@ -324,6 +324,7 @@ export class TerminalBridge {
           throw new Error(TMUX_STOPPED);
         }
         this.#client = c;
+        this.#restoreLeftovers(c);
         return c;
       },
       (e: unknown) => {
@@ -335,6 +336,21 @@ export class TerminalBridge {
     );
     this.#starting = starting;
     return starting;
+  }
+
+  /**
+   * M7: a client that exited (`tmux attach -d`, %exit, a timeout) closed its terms without R61's
+   * restore. The next client first restores every window this bridge resized that has no rw
+   * term now, so the PC's window doesn't stay at the phone's size.
+   */
+  #restoreLeftovers(c: Client): void {
+    for (const w of [...this.#resized]) {
+      let rw = false;
+      for (const t of this.#terms) if (t.windowId === w && t.mode === 'rw') rw = true;
+      if (rw) continue;
+      this.#resized.delete(w);
+      c.write(restoreLine(w));
+    }
   }
 
   async #snapshot(t: Term, client: Client): Promise<void> {

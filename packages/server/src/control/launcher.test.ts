@@ -177,7 +177,7 @@ function setup(over: Partial<LauncherDeps> = {}) {
     git: spy,
     tmux,
     source,
-    claudeBin: '/opt/claude/bin/claude',
+    findClaude: async () => '/opt/claude/bin/claude',
     settingsPath: '/state/kage/claude-settings.json',
     hookSocket: '/run/kage/hook.sock',
     windowPath: '/usr/local/bin:/usr/bin',
@@ -265,6 +265,30 @@ describe('resolveClaude', () => {
     await writeFile(join(bin, 'claude'), '#!/bin/sh\n');
     await chmod(join(bin, 'claude'), 0o644);
     expect(await resolveClaude({ PATH: bin })).toBeNull();
+  });
+
+  it('claude installed after Kage started is found at the next launch', async () => {
+    // M10: looked up per launch; a hit is kept while it is still there, a miss asks again.
+    let asked = 0;
+    const { launcher } = setup({
+      findClaude: () => {
+        asked++;
+        return resolveClaude({ PATH: bin });
+      },
+    });
+    expect((await launchError(launcher.start(body()))).status).toBe(503);
+    const exe = join(bin, 'claude');
+    await writeFile(exe, '#!/bin/sh\n');
+    await chmod(exe, 0o755);
+    // Past the claude check: the launch now gets as far as the project (none named so).
+    expect((await launchError(launcher.start(body({ project: 'nope' })))).status).toBe(404);
+    expect(asked).toBe(2);
+    await launchError(launcher.start(body({ project: 'nope' })));
+    expect(asked).toBe(2);
+    // Moved by its updater: the kept path is gone, so Kage looks again.
+    await rm(exe);
+    expect((await launchError(launcher.start(body()))).status).toBe(503);
+    expect(asked).toBe(3);
   });
 });
 
@@ -524,7 +548,7 @@ describe('TaskLauncher', () => {
   });
 
   it('without claude it is a 503 and runs no git', async () => {
-    const { launcher, gitCalls } = setup({ claudeBin: null });
+    const { launcher, gitCalls } = setup({ findClaude: async () => null });
     const err = await launchError(launcher.start(body()));
     expect(err.status).toBe(503);
     expect(err.message).toBe(
@@ -894,7 +918,7 @@ describe('TaskLauncher.resume (B7)', () => {
   });
 
   it('without claude it is a 503 with phase 3’s message, and no tmux call', async () => {
-    const { launcher, tmux } = resumable({}, {}, { claudeBin: null });
+    const { launcher, tmux } = resumable({}, {}, { findClaude: async () => null });
     const err = await launchError(launcher.resume('k-1'));
     expect([err.status, err.message]).toEqual([
       503,

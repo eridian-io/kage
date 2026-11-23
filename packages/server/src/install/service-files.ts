@@ -3,7 +3,17 @@
  * atomic writes, value checks and the start timeout. It imports nothing of service.ts,
  * systemd.ts or launchd.ts, so there is no import cycle at run time.
  */
-import { chmodSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeSync,
+} from 'node:fs';
 import { basename, dirname, join, posix } from 'node:path';
 import type { RunResult } from './run.ts';
 
@@ -36,22 +46,71 @@ export function assertOurs(path: string, isOurs: (lines: string[]) => boolean): 
   }
 }
 
+/** The file calls writeServiceFile makes; a test seam (M11). */
+export interface ServiceFs {
+  mkdirSync: (path: string, o: { recursive: true }) => unknown;
+  openSync: (path: string, flags: string, mode?: number) => number;
+  writeSync: (fd: number, buf: Buffer, offset: number, length: number) => number;
+  fsyncSync: (fd: number) => void;
+  closeSync: (fd: number) => void;
+  chmodSync: (path: string, mode: number) => void;
+  renameSync: (from: string, to: string) => void;
+  rmSync: (path: string, o: { force: true }) => void;
+}
+
+const nodeFs: ServiceFs = {
+  mkdirSync,
+  openSync,
+  writeSync,
+  fsyncSync,
+  closeSync,
+  chmodSync,
+  renameSync,
+  rmSync,
+};
+
+/** Folders can't be opened or fsynced on Windows (and some filesystems); that's fine. */
+const DIR_SYNC_UNSUPPORTED = new Set(['EPERM', 'EISDIR', 'EINVAL', 'EACCES', 'ENOTSUP']);
+
+function syncDir(fs: ServiceFs, dir: string): void {
+  let fd: number | null = null;
+  try {
+    fd = fs.openSync(dir, 'r');
+    fs.fsyncSync(fd);
+  } catch (err) {
+    if (!DIR_SYNC_UNSUPPORTED.has((err as NodeJS.ErrnoException).code ?? '')) throw err;
+  } finally {
+    if (fd !== null) fs.closeSync(fd);
+  }
+}
+
 /**
  * Writes a service file atomically: a temp file in the same folder (0644), renamed over the old
- * one. The rename replaces a symlink at `path` instead of writing through it.
+ * one. The rename replaces a symlink at `path` instead of writing through it. M11: the file and
+ * its folder are fsynced before the rename and the folder again after it, so a power cut right
+ * after setup leaves the old unit or the new one, never an empty file.
  */
-export function writeServiceFile(path: string, text: string): void {
+export function writeServiceFile(path: string, text: string, fs: ServiceFs = nodeFs): void {
   const dir = dirname(path);
-  mkdirSync(dir, { recursive: true });
+  fs.mkdirSync(dir, { recursive: true });
   const tmp = join(dir, `.${basename(path)}.${process.pid}.${Date.now().toString(36)}.tmp`);
   try {
-    writeFileSync(tmp, text, { mode: 0o644, flag: 'wx' });
-    chmodSync(tmp, 0o644);
-    renameSync(tmp, path);
+    const fd = fs.openSync(tmp, 'wx', 0o644);
+    try {
+      const buf = Buffer.from(text);
+      for (let off = 0; off < buf.length; ) off += fs.writeSync(fd, buf, off, buf.length - off);
+      fs.chmodSync(tmp, 0o644);
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    syncDir(fs, dir);
+    fs.renameSync(tmp, path);
   } catch (err) {
-    rmSync(tmp, { force: true });
+    fs.rmSync(tmp, { force: true });
     throw err;
   }
+  syncDir(fs, dir);
 }
 
 /** Throws for a value a service file can't hold: a control character or a lone surrogate. */

@@ -18,6 +18,7 @@ import type { Prompter } from './prompt.ts';
 import type { Run } from './run.ts';
 import type { RunMode } from './runtime.ts';
 import type { ServiceManager } from './service.ts';
+import { type ServiceFs, writeServiceFile } from './service-files.ts';
 import { systemdManager, UNIT_MARKER_LINE } from './systemd.ts';
 import { type UninstallDeps, uninstallCommand } from './uninstall.ts';
 
@@ -134,6 +135,9 @@ function expectWorkKept(branchesBefore: string) {
   }
 }
 
+/** M11: the last line when uninstall removed the hooks file running Claude sessions still call. */
+const HOOK_ERRORS = 'Claude sessions still running will show hook errors until you restart them.';
+
 const KEPT_WORK =
   'Kept: your projects, their worktrees and branches, and the tmux session "kage" with its windows.';
 
@@ -156,6 +160,7 @@ describe('kage uninstall', () => {
       'Removed: ~/.config/kage.',
       'Removed: ~/.local/state/kage.',
       KEPT_WORK,
+      HOOK_ERRORS,
     ]);
   });
 
@@ -176,6 +181,7 @@ describe('kage uninstall', () => {
       'Removed: ~/.local/state/kage/claude-settings.json.',
       KEPT_WORK,
       'Kept: ~/.config/kage/config.json and ~/.local/state/kage (kage uninstall --purge removes them).',
+      HOOK_ERRORS,
     ]);
   });
 
@@ -333,9 +339,87 @@ describe('kage uninstall', () => {
     const m = { ...manager(), lingerEnabled: async () => true };
     const o = io();
     expect(await uninstallCommand(['--yes'], o.io, deps({ manager: m }))).toBe(0);
-    expect(o.out.at(-1)).toBe(
+    expect(o.out.slice(-2)).toEqual([
       'Linger is still on. If nothing else needs it, turn it off with: loginctl disable-linger',
-    );
+      HOOK_ERRORS,
+    ]);
     expect(calls.some((c) => c.includes('disable-linger'))).toBe(false);
+  });
+});
+
+describe('kage uninstall: Claude sessions still running (reliability M11)', () => {
+  it('uninstall says running sessions will show hook errors', async () => {
+    const o = io();
+    expect(await uninstallCommand(['--yes'], o.io, deps())).toBe(0);
+    expect(o.out.at(-1)).toBe(HOOK_ERRORS);
+    // --purge removes the hooks file with the state folder: the same line.
+    writeFileSync(join(home, '.local', 'state', 'kage', 'claude-settings.json'), '{}\n');
+    const p = io();
+    expect(await uninstallCommand(['--yes', '--purge'], p.io, deps())).toBe(0);
+    expect(p.out.at(-1)).toBe(HOOK_ERRORS);
+  });
+
+  it('no hooks file removed, no such line', async () => {
+    rmSync(join(home, '.local', 'state', 'kage', 'claude-settings.json'));
+    const o = io();
+    expect(await uninstallCommand(['--yes'], o.io, deps())).toBe(0);
+    expect(o.out).not.toContain(HOOK_ERRORS);
+  });
+});
+
+describe('writeServiceFile (reliability M11)', () => {
+  it('the service file is fsynced before the rename', () => {
+    const ops: string[] = [];
+    const fds = new Map<number, string>();
+    let next = 10;
+    const fs: ServiceFs = {
+      mkdirSync: () => undefined,
+      openSync: (p, flags) => {
+        const fd = next++;
+        fds.set(fd, String(p).endsWith('.tmp') ? 'tmp' : 'dir');
+        ops.push(`open ${fds.get(fd)} ${flags}`);
+        return fd;
+      },
+      writeSync: (fd, _buf, _off, length) => {
+        ops.push(`write ${fds.get(fd)}`);
+        return length;
+      },
+      fsyncSync: (fd) => {
+        ops.push(`fsync ${fds.get(fd)}`);
+      },
+      closeSync: (fd) => {
+        ops.push(`close ${fds.get(fd)}`);
+      },
+      chmodSync: () => {
+        ops.push('chmod');
+      },
+      renameSync: () => {
+        ops.push('rename');
+      },
+      rmSync: () => {
+        ops.push('rm');
+      },
+    };
+    writeServiceFile(join(home, 'units', 'kage.service'), '[Unit]\n', fs);
+    expect(ops).toEqual([
+      'open tmp wx',
+      'write tmp',
+      'chmod',
+      'fsync tmp',
+      'close tmp',
+      'open dir r',
+      'fsync dir',
+      'close dir',
+      'rename',
+      'open dir r',
+      'fsync dir',
+      'close dir',
+    ]);
+  });
+
+  it('writes the file for real, and a folder that refuses fsync (Windows) is fine', () => {
+    const path = join(home, 'units', 'kage.service');
+    writeServiceFile(path, '[Unit]\n');
+    expect(readFileSync(path, 'utf8')).toBe('[Unit]\n');
   });
 });
