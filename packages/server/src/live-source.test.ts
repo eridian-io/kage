@@ -4097,6 +4097,32 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     expect(source.lines('k-1')).toContainEqual(failedLine);
   });
 
+  it('a failed resume whose SessionEnd waits on a listing that still shows the window, gone by the next, ends with the R63 line (Task 0)', async () => {
+    const logs: string[] = [];
+    const { source, hooks, tmux, updates, lineEvents } = setup({
+      records: [ended()],
+      log: (line) => logs.push(line),
+    });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    // new-window has run: the claim's own listing still shows the window, claude exiting in it.
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    source.claim('k-1', '@7', '%7');
+    // The SessionEnd lands while that listing runs: no session has %7 yet, so it waits on a
+    // re-list (#unknown).
+    hooks.fire(otherEnd());
+    await flush();
+    expect(source.finishTarget('k-1')?.windowId).toBe('@7'); // the claim's listing attached it
+    // By the re-list the hook asked for, the window is gone.
+    tmux.windows = [];
+    await vi.advanceTimersByTimeAsync(200);
+    expect(lineEvents('k-1').at(-1)?.lines.at(-1)?.text).toBe(failedLine.text);
+    expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended' });
+    expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-1');
+    expect(logs.filter((l) => l.includes("wasn't resumed"))).toHaveLength(1);
+  });
+
   it('B34: a set-aside hook from another pane, or older than 5 s, is not replayed', async () => {
     const { source, hooks } = setup({ records: [ended()] });
     await source.start();

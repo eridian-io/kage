@@ -1183,7 +1183,12 @@ export class LiveSource implements SessionSource {
     for (const st of [...this.#sessions.values()]) {
       if (seen.has(st.id)) continue;
       if (!st.record) this.#removeSession(st);
-      else if (st.window) this.#detach(st);
+      else if (st.window) {
+        // Task 0: hooks that waited on this listing came from the window now gone (a failed
+        // resume's SessionEnd, queued while an earlier listing still showed the window).
+        this.#takeQueued(st, st.window.paneId);
+        this.#detach(st);
+      }
       // R138: an archived record keeps no session without a window.
       else if (st.record.archived) this.#dropSession(st);
     }
@@ -1194,13 +1199,9 @@ export class LiveSource implements SessionSource {
       const st = this.#sessions.get(id);
       if (!st?.record || st.window || st.status === 'ended') continue;
       // B34: the pane's hooks waiting on this listing are its own (a failed resume's SessionEnd).
-      const mine = this.#unknown.filter((e) => e.pane === pane);
-      if (mine.length > 0) {
-        this.#unknown = this.#unknown.filter((e) => e.pane !== pane);
-        for (const e of mine) this.#applyHook(st, e);
-        // TS keeps the narrowing from above; #applyHook may have ended it (resumeFailed).
-        if ((st.status as SessionStatus) === 'ended') continue;
-      }
+      this.#takeQueued(st, pane);
+      // TS keeps the narrowing from above; #applyHook may have ended it (resumeFailed).
+      if ((st.status as SessionStatus) === 'ended') continue;
       this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
       st.mode = 'hooks';
       this.#clearPending(st);
@@ -1312,6 +1313,19 @@ export class LiveSource implements SessionSource {
       this.#lastRecheckAt = this.#clock();
       if (this.#running) void this.#relist();
     }, wait);
+  }
+
+  /**
+   * The hooks waiting on a listing (#unknown) from `paneId`, a pane this listing found gone, are
+   * this session's: applied in order and taken off the queue, so #resolveUnknown doesn't set
+   * them aside for a pane no session has any more (Task 0, B34).
+   */
+  #takeQueued(st: Live, paneId: string | undefined): void {
+    if (paneId === undefined) return;
+    const mine = this.#unknown.filter((e) => e.pane === paneId);
+    if (mine.length === 0) return;
+    this.#unknown = this.#unknown.filter((e) => e.pane !== paneId);
+    for (const e of mine) this.#applyHook(st, e);
   }
 
   /** The window is gone (or tmux is down): a Kage session is ended. */
