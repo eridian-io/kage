@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { LIMITS, TERM_PROTOCOL } from '@kage/shared';
-import { isAuthorised, SIGN_IN } from '../auth.ts';
+import { type Auth, SIGN_IN, sessionOf } from '../auth.ts';
 import { type Allowed, hostAllowed, originAllowed } from '../security.ts';
 
 /** The terminal's path, matched on the raw (undecoded) path: one segment, the session id. */
@@ -10,7 +10,14 @@ const SESSION_ID = /^[A-Za-z0-9@_-]{1,100}$/;
 const SIZE = /^\d{1,4}$/;
 
 export type UpgradeCheck =
-  | { ok: true; id: string; cols: number | null; rows: number | null }
+  | {
+      ok: true;
+      id: string;
+      cols: number | null;
+      rows: number | null;
+      /** The login session's key when a token is set: its sign-out closes this terminal. */
+      session?: string;
+    }
   | { ok: false; status: 400 | 401 | 403 | 404; error: string };
 
 const refuse = (status: 400 | 401 | 403 | 404, error: string): UpgradeCheck => ({
@@ -39,12 +46,13 @@ function size(
 
 /**
  * Every check of a terminal upgrade, before it happens (Task 12), in order: the path, GET with
- * `Upgrade: websocket`, Host, the exact Origin, the token cookie, the `kage.term.v1` protocol, and
- * `cols`/`rows` within the limits. The first that fails gives the HTTP status and sentence.
+ * `Upgrade: websocket`, Host, the exact Origin, a live session from `peer` (the TCP address) when
+ * a token is set, the `kage.term.v1` protocol, and `cols`/`rows` within the limits. The first
+ * that fails gives the HTTP status and sentence.
  */
 export function checkUpgrade(
   req: { method?: string; url?: string; headers: IncomingHttpHeaders },
-  o: { allowed: Allowed; token: string },
+  o: { allowed: Allowed; auth: Auth; peer: string },
 ): UpgradeCheck {
   const url = req.url ?? '';
   const qi = url.indexOf('?');
@@ -65,7 +73,8 @@ export function checkUpgrade(
   }
   if (!hostAllowed(one(h.host), o.allowed)) return refuse(403, 'Unknown host');
   if (!originAllowed(one(h.origin), o.allowed)) return refuse(403, 'Bad origin');
-  if (!isAuthorised(o.token, one(h.cookie))) return refuse(401, SIGN_IN);
+  const session = sessionOf(o.auth, one(h.cookie), o.peer);
+  if (session === null) return refuse(401, SIGN_IN);
   const offered = (one(h['sec-websocket-protocol']) ?? '').split(',').map((p) => p.trim());
   if (!offered.includes(TERM_PROTOCOL))
     return refuse(400, `Kage's terminal speaks ${TERM_PROTOCOL}.`);
@@ -75,5 +84,5 @@ export function checkUpgrade(
   if (cols === undefined || rows === undefined) {
     return refuse(400, 'The terminal size is out of range.');
   }
-  return { ok: true, id, cols, rows };
+  return session === '' ? { ok: true, id, cols, rows } : { ok: true, id, cols, rows, session };
 }

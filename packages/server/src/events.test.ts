@@ -74,6 +74,40 @@ describe('EventHub', () => {
     await reader.cancel();
     hub.close();
   });
+  it('the snapshot says whether a token is set (auth), false by default', async () => {
+    const source = new DemoSource(1_000_000);
+    const snap = async (hub: EventHub) => {
+      const reader = hub.stream().getReader();
+      const text = await read(reader);
+      await reader.cancel();
+      return JSON.parse(text.slice('event: snapshot\ndata: '.length));
+    };
+    expect((await snap(new EventHub(source, 'my-pc', '/p'))).auth).toBe(false);
+    expect((await snap(new EventHub(source, 'my-pc', '/p', { auth: true }))).auth).toBe(true);
+  });
+
+  it('dropOwner errors the streams that session opened, and no others', async () => {
+    const source = new StubSource();
+    const hub = new EventHub(source, 'my-pc', '/p');
+    const mine = [hub.stream('key-a').getReader(), hub.stream('key-a').getReader()];
+    const theirs = hub.stream('key-b').getReader();
+    const open = hub.stream(null).getReader();
+    for (const r of [...mine, theirs, open]) await read(r);
+    expect(hub.clientCount).toBe(4);
+    hub.dropOwner('key-a');
+    for (const r of mine) await expect(r.read()).rejects.toThrow();
+    expect(hub.clientCount).toBe(2);
+    // The others still get events.
+    source.emit({ type: 'session.removed', id: 'x' });
+    expect(await read(theirs)).toContain('session.removed');
+    expect(await read(open)).toContain('session.removed');
+    // An unknown key, or one already dropped, changes nothing.
+    hub.dropOwner('key-a');
+    hub.dropOwner('nobody');
+    expect(hub.clientCount).toBe(2);
+    hub.close();
+  });
+
   it('the snapshot carries archived from archivedCount(), or 0 without one', async () => {
     const none = new EventHub(new StubSource(), 'h', '/p');
     const r1 = none.stream().getReader();

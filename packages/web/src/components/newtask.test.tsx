@@ -37,6 +37,7 @@ const json = (body: unknown, status: number) =>
 function snapshot(list: Session[]) {
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/home/me/code',

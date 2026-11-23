@@ -1,25 +1,38 @@
-import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { performance } from 'node:perf_hooks';
 import type { MiddlewareHandler } from 'hono';
 
-/** Token login (spec §5.10, backlog B13). The token itself is never logged, echoed or stored. */
-export const AUTH_COOKIE = 'kage_auth';
-const COOKIE_LABEL = 'kage-auth-v1';
-const MAX_AGE_S = 30 * 24 * 60 * 60;
-const ATTRS = 'HttpOnly; SameSite=Strict; Path=/';
-
+/**
+ * Token login with per-login sessions (spec §5.10; security I1, B20, B50). The token itself is
+ * never logged, echoed or stored, and neither is a session id: the server keeps only its SHA-256.
+ */
 export const SIGN_IN = 'Sign in to Kage';
 
-/** The cookie's value: base64url(HMAC-SHA256(key = token, 'kage-auth-v1')). It reveals nothing of the token. */
-export function authCookieValue(token: string): string {
-  return createHmac('sha256', token).update(COOKIE_LABEL).digest('base64url');
+/** A session ends after 7 days without a request. */
+export const SESSION_IDLE_MS = 7 * 24 * 60 * 60 * 1000;
+/** A session ends 30 days after its login, however often it is used. */
+export const SESSION_MAX_MS = 30 * 24 * 60 * 60 * 1000;
+/** At most this many sessions; a new login drops the least recently seen one. */
+export const SESSION_MAX = 64;
+
+const MAX_AGE_S = SESSION_MAX_MS / 1000;
+const ATTRS = 'HttpOnly; SameSite=Strict; Path=/';
+/** A session id as create() makes it: 32 random bytes, base64url. */
+const SESSION_ID = /^[A-Za-z0-9_-]{43}$/;
+/** setTimeout's longest delay. */
+const MAX_DELAY_MS = 2 ** 31 - 1;
+
+/** The cookie's name carries the port (`kage_auth_8080`), so another port on the host can't confuse it. */
+export function authCookieName(port: number): string {
+  return `kage_auth_${port}`;
 }
 
-/** The Set-Cookie header for a successful login (Secure is added by the route over https only). */
-export function setCookieHeader(token: string): string {
-  return `${AUTH_COOKIE}=${authCookieValue(token)}; ${ATTRS}; Max-Age=${MAX_AGE_S}`;
+/** The TCP peer's address as sessions compare it: an IPv4-mapped IPv6 address is its IPv4. */
+export function normalizePeer(address: string): string {
+  const a = address.toLowerCase();
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
+  return mapped ? (mapped[1] as string) : a;
 }
-
-export const CLEAR_COOKIE = `${AUTH_COOKIE}=; ${ATTRS}; Max-Age=0`;
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
@@ -31,29 +44,216 @@ export function sameSecret(a: string, b: string): boolean {
   return timingSafeEqual(digest(a), digest(b));
 }
 
-/** True when no token is set, or when the Cookie header holds the right `kage_auth` value. */
-export function isAuthorised(token: string, cookieHeader: string | undefined): boolean {
-  if (token === '') return true;
-  if (!cookieHeader) return false;
-  const expected = authCookieValue(token);
-  let ok = false;
+interface Entry {
+  /** SHA-256 of the session id. */
+  hash: Buffer;
+  /** The address that signed in (normalised). */
+  peer: string;
+  created: number;
+  seen: number;
+}
+
+export interface SessionStoreOptions {
+  idleMs?: number;
+  maxAgeMs?: number;
+  max?: number;
+  /** Milliseconds on a monotonic clock (default `performance.now`): a wall-clock jump can't revive or end a session. */
+  clock?: () => number;
+}
+
+/**
+ * The logins, in memory only (ruling R127): a restart signs every browser out, because the leak
+ * in I1 happens while Kage is down, and a session that survived the restart would be the one a
+ * port squatter caught. Each session is bound to the address that signed in.
+ *
+ * Every way a session ends fires `onRevoke` (F6): sign-out, eviction of the least recently seen
+ * at `max`, and expiry. Expiry is found at every `create`, `check` and `has`, and by one timer set
+ * for the earliest moment a session can expire, held only while there are sessions (spec §5.5),
+ * so an expired session's streams and terminals close even when no request comes.
+ */
+export class SessionStore {
+  readonly #idleMs: number;
+  readonly #maxAgeMs: number;
+  readonly #max: number;
+  readonly #clock: () => number;
+  /** By key (the id's SHA-256, base64url); Map order is least recently seen first. */
+  readonly #entries = new Map<string, Entry>();
+  readonly #listeners = new Set<(key: string) => void>();
+  #timer: ReturnType<typeof setTimeout> | null = null;
+
+  constructor(o: SessionStoreOptions = {}) {
+    this.#idleMs = o.idleMs ?? SESSION_IDLE_MS;
+    this.#maxAgeMs = o.maxAgeMs ?? SESSION_MAX_MS;
+    this.#max = o.max ?? SESSION_MAX;
+    this.#clock = o.clock ?? (() => performance.now());
+  }
+
+  get size(): number {
+    return this.#entries.size;
+  }
+
+  /** A new session for `peer`. Returns the raw id for the cookie; only its SHA-256 is kept. */
+  create(peer: string): string {
+    this.#sweep();
+    while (this.#entries.size >= this.#max) {
+      this.revoke(this.#entries.keys().next().value as string);
+    }
+    const id = randomBytes(32).toString('base64url');
+    const hash = digest(id);
+    const now = this.#clock();
+    this.#entries.set(hash.toString('base64url'), { hash, peer, created: now, seen: now });
+    this.#arm();
+    return id;
+  }
+
+  /**
+   * The session's key when `id` names a live session that signed in from `peer`, else null. A
+   * live match counts as seen. The id's hash is compared with every session's in constant time.
+   */
+  check(id: string, peer: string): string | null {
+    this.#sweep();
+    if (!SESSION_ID.test(id)) return null;
+    const hash = digest(id);
+    let found: string | null = null;
+    for (const [key, e] of this.#entries) {
+      // No early exit: the time doesn't depend on which session matched.
+      if (timingSafeEqual(e.hash, hash)) found = key;
+    }
+    if (found === null) return null;
+    const e = this.#entries.get(found) as Entry;
+    if (e.peer !== peer) return null;
+    e.seen = this.#clock();
+    // Re-inserted, so Map order stays least recently seen first.
+    this.#entries.delete(found);
+    this.#entries.set(found, e);
+    return found;
+  }
+
+  /** True while the session `key` is live. It doesn't count as seen. */
+  has(key: string): boolean {
+    this.#sweep();
+    return this.#entries.has(key);
+  }
+
+  /** Ends the session `key`, if it is live, and tells every onRevoke listener once. */
+  revoke(key: string): void {
+    if (!this.#entries.delete(key)) return;
+    if (this.#entries.size === 0) this.#disarm();
+    for (const fn of [...this.#listeners]) fn(key);
+  }
+
+  /** Called with the key of every session that ends, however it ends. Returns the unsubscriber. */
+  onRevoke(fn: (key: string) => void): () => void {
+    this.#listeners.add(fn);
+    return () => {
+      this.#listeners.delete(fn);
+    };
+  }
+
+  #deadline(e: Entry): number {
+    return Math.min(e.seen + this.#idleMs, e.created + this.#maxAgeMs);
+  }
+
+  /** Revokes every expired session. */
+  #sweep(): void {
+    const now = this.#clock();
+    for (const [key, e] of [...this.#entries]) if (now >= this.#deadline(e)) this.revoke(key);
+  }
+
+  /** Sets the timer for the earliest deadline, unless one is set; a timer that fires early re-arms. */
+  #arm(): void {
+    if (this.#timer !== null || this.#entries.size === 0) return;
+    let next = Number.POSITIVE_INFINITY;
+    for (const e of this.#entries.values()) next = Math.min(next, this.#deadline(e));
+    const delay = Math.min(Math.max(Math.ceil(next - this.#clock()), 1), MAX_DELAY_MS);
+    const t = setTimeout(() => {
+      this.#timer = null;
+      this.#sweep();
+      this.#arm();
+    }, delay);
+    t.unref?.();
+    this.#timer = t;
+  }
+
+  #disarm(): void {
+    if (this.#timer !== null) clearTimeout(this.#timer);
+    this.#timer = null;
+  }
+}
+
+/** What the routes and the terminal need to know about logins. */
+export interface Auth {
+  /** The config's access token; '' means no login (spec §5.10). */
+  token: string;
+  sessions: SessionStore;
+  /** The cookie's name: authCookieName(port). */
+  cookie: string;
+}
+
+/**
+ * '' (open) when no token is set; else the session key the Cookie header names for `peer`, or
+ * null. Every cookie of that name is checked, so the time doesn't depend on which one matched.
+ */
+export function sessionOf(
+  auth: Auth,
+  cookieHeader: string | undefined,
+  peer: string,
+): string | null {
+  if (auth.token === '') return '';
+  if (!cookieHeader) return null;
+  let key: string | null = null;
   for (const part of cookieHeader.split(';')) {
     const eq = part.indexOf('=');
-    if (eq < 0 || part.slice(0, eq).trim() !== AUTH_COOKIE) continue;
+    if (eq < 0 || part.slice(0, eq).trim() !== auth.cookie) continue;
     const value = part.slice(eq + 1).trim();
-    // Every candidate is compared, so the time doesn't depend on which one matched.
-    if (value !== '' && sameSecret(value, expected)) ok = true;
+    if (value === '') continue;
+    const k = auth.sessions.check(value, peer);
+    if (k !== null && key === null) key = k;
   }
-  return ok;
+  return key;
 }
+
+/** The Set-Cookie header for a new login. `secure` (the request came over https) adds Secure. */
+export function setCookieHeader(name: string, id: string, secure: boolean): string {
+  return `${name}=${id}; ${ATTRS}; Max-Age=${MAX_AGE_S}${secure ? '; Secure' : ''}`;
+}
+
+/** The Set-Cookie header that removes the cookie (sign-out). */
+export function clearCookieHeader(name: string): string {
+  return `${name}=; ${ATTRS}; Max-Age=0`;
+}
+
+/**
+ * The TCP peer's address, normalised, from @hono/node-server's `env.incoming` (or a Node
+ * request's socket: pass `{ incoming: req }`); never from a header, which the client controls.
+ * Requests without a socket (tests calling fetch directly) share one key.
+ */
+export function remoteAddress(env: unknown): string {
+  const incoming = (env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)
+    ?.incoming;
+  const a = incoming?.socket?.remoteAddress;
+  return a ? normalizePeer(a) : 'unknown';
+}
+
+/** The routes' variables: `session` is the session key the guard found ('' when open). */
+export type AuthEnv = { Variables: { session: string } };
 
 const OPEN = new Set(['GET /api/auth', 'HEAD /api/auth', 'POST /api/login', 'POST /api/logout']);
 
-/** With a token set, every /api/* route but `GET /api/auth`, `POST /api/login` and `POST /api/logout` needs the cookie. */
-export function authGuard(token: string): MiddlewareHandler {
+/**
+ * With a token set, every /api/* route but `GET /api/auth`, `POST /api/login` and
+ * `POST /api/logout` needs a live session from the requesting address. The session's key goes to
+ * the route as `c.get('session')` ('' when no token is set, or on an open route).
+ */
+export function authGuard(auth: Auth): MiddlewareHandler<AuthEnv> {
   return async (c, next) => {
-    if (token === '' || OPEN.has(`${c.req.method} ${c.req.path}`)) return next();
-    if (!isAuthorised(token, c.req.header('Cookie'))) return c.json({ error: SIGN_IN }, 401);
+    if (auth.token === '' || OPEN.has(`${c.req.method} ${c.req.path}`)) {
+      c.set('session', '');
+      return next();
+    }
+    const key = sessionOf(auth, c.req.header('Cookie'), remoteAddress(c.env));
+    if (key === null) return c.json({ error: SIGN_IN }, 401);
+    c.set('session', key);
     await next();
   };
 }

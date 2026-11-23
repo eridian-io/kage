@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net';
 import type { SessionStatus } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
+import { authCookieName, SessionStore } from '../auth.ts';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
 import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { TerminalBridge } from './bridge.ts';
@@ -79,7 +80,7 @@ describe.runIf(hasTmux)('terminal WebSocket (real tmux, private socket, real bri
     port = (server.address() as AddressInfo).port;
     terms = new TerminalServer({
       allowed: { hostNames: ['127.0.0.1'], port },
-      token: '',
+      auth: { token: '', sessions: new SessionStore(), cookie: authCookieName(port) },
       source: { terminalTarget: (id) => targets.get(id) ?? null },
       bridge,
       tmux: new TmuxClient({ session: 'kage', socket: sock, configFile: '/dev/null' }),

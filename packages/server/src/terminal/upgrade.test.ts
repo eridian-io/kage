@@ -1,6 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { describe, expect, it } from 'vitest';
-import { authCookieValue } from '../auth.ts';
+import { type Auth, authCookieName, SessionStore } from '../auth.ts';
 import { checkUpgrade, TERMINAL_PATH } from './upgrade.ts';
 
 const allowed = { hostNames: ['my-pc', '100.64.0.7'], port: 8080 };
@@ -14,11 +14,21 @@ const good = (over: IncomingHttpHeaders = {}): IncomingHttpHeaders => ({
   'sec-websocket-protocol': 'kage.term.v1',
   ...over,
 });
+const PEER = '100.64.0.9';
+const authOf = (token: string, sessions = new SessionStore()): Auth => ({
+  token,
+  sessions,
+  cookie: authCookieName(8080),
+});
 const check = (
   url: string,
   headers: IncomingHttpHeaders = good(),
-  o: { method?: string; token?: string } = {},
-) => checkUpgrade({ method: o.method ?? 'GET', url, headers }, { allowed, token: o.token ?? '' });
+  o: { method?: string; token?: string; auth?: Auth; peer?: string } = {},
+) =>
+  checkUpgrade(
+    { method: o.method ?? 'GET', url, headers },
+    { allowed, auth: o.auth ?? authOf(o.token ?? ''), peer: o.peer ?? PEER },
+  );
 const without = (name: string): IncomingHttpHeaders => {
   const h = good();
   delete h[name];
@@ -81,13 +91,39 @@ describe('checkUpgrade', () => {
     expect(
       check('/api/sessions/k-1/terminal', good({ cookie: 'kage_auth=nope' }), { token: TOKEN }),
     ).toEqual(signIn);
+    const sessions = new SessionStore();
+    const id = sessions.create(PEER);
+    const auth = authOf(TOKEN, sessions);
+    const ok = check('/api/sessions/k-1/terminal', good({ cookie: `a=b; kage_auth_8080=${id}` }), {
+      auth,
+    });
+    expect(ok.ok).toBe(true);
+    // The check names the session, so the terminal server can close it on sign-out.
+    expect((ok as { session?: string }).session).toBe(sessions.check(id, PEER));
+  });
+
+  it('the upgrade needs a live session from the same peer', () => {
+    const sessions = new SessionStore();
+    const id = sessions.create(PEER);
+    const auth = authOf(TOKEN, sessions);
+    const signIn = { ok: false, status: 401, error: 'Sign in to Kage' };
+    const withCookie = good({ cookie: `kage_auth_8080=${id}` });
+    expect(check('/api/sessions/k-1/terminal', withCookie, { auth }).ok).toBe(true);
+    // Another address with the same cookie: refused.
+    expect(check('/api/sessions/k-1/terminal', withCookie, { auth, peer: '100.64.0.10' })).toEqual(
+      signIn,
+    );
+    // The old cookie name, or another port's: refused.
     expect(
-      check(
-        '/api/sessions/k-1/terminal',
-        good({ cookie: `a=b; kage_auth=${authCookieValue(TOKEN)}` }),
-        { token: TOKEN },
-      ).ok,
-    ).toBe(true);
+      check('/api/sessions/k-1/terminal', good({ cookie: `kage_auth=${id}` }), { auth }),
+    ).toEqual(signIn);
+    // A revoked session: refused.
+    sessions.revoke(sessions.check(id, PEER) as string);
+    expect(check('/api/sessions/k-1/terminal', withCookie, { auth })).toEqual(signIn);
+    // A restart's new store: refused.
+    expect(check('/api/sessions/k-1/terminal', withCookie, { auth: authOf(TOKEN) })).toEqual(
+      signIn,
+    );
   });
 
   it('a missing or other subprotocol → 400', () => {

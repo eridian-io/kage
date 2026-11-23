@@ -66,6 +66,8 @@ export interface Session {
 export type ServerEvent =
   | {
       type: 'snapshot';
+      /** A token is set, so the board offers Sign out (amended 2026-11-23, hardening). */
+      auth: boolean;
       host: string;
       streamId: string;
       projectsRoot: string;

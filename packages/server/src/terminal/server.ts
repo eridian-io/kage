@@ -8,6 +8,7 @@ import {
   type TermServerMsg,
 } from '@kage/shared';
 import { type RawData, WebSocket, WebSocketServer } from 'ws';
+import { type Auth, remoteAddress, SIGN_IN } from '../auth.ts';
 import { GONE_RE, isExecError } from '../control/actions.ts';
 import { firstLine } from '../git/exec.ts';
 import type { LiveSource } from '../live-source.ts';
@@ -80,11 +81,14 @@ interface Conn {
   alive: boolean;
   mode: 'rw' | 'ro';
   handle: TermHandle | null;
+  /** The login session that opened it (its key), or null with no token. */
+  owner: string | null;
 }
 
 export interface TerminalServerDeps {
   allowed: Allowed;
-  token: string;
+  /** The token and the logins: an upgrade needs a live session from the same address. */
+  auth: Auth;
   /** Null in demo mode. */
   source: Pick<LiveSource, 'terminalTarget'> | null;
   bridge: Pick<TerminalBridge, 'open'> | null;
@@ -134,7 +138,11 @@ export class TerminalServer {
       refuse(socket, 503, STOPPING);
       return;
     }
-    const check = checkUpgrade(req, { allowed: this.#d.allowed, token: this.#d.token });
+    const check = checkUpgrade(req, {
+      allowed: this.#d.allowed,
+      auth: this.#d.auth,
+      peer: remoteAddress({ incoming: req }),
+    });
     if (!check.ok) {
       refuse(socket, check.status, check.error);
       return;
@@ -144,14 +152,29 @@ export class TerminalServer {
         ws.close(1001, STOPPING);
         return;
       }
+      const owner = check.session ?? null;
+      // The session may have ended during the handshake.
+      if (owner !== null && !this.#d.auth.sessions.has(owner)) {
+        ws.on('error', () => {});
+        ws.close(TERM_CLOSE.forbidden, SIGN_IN);
+        return;
+      }
       // B35: LIMITS.terminals caps open terminals in the bridge; this caps the ones still opening.
       if (this.#opening >= MAX_OPENING) {
         ws.on('error', () => {});
         ws.close(TERM_CLOSE.tooMany, TOO_MANY);
         return;
       }
-      this.#attach(ws, check.id, check.cols, check.rows);
+      this.#attach(ws, check.id, check.cols, check.rows, owner);
     });
+  }
+
+  /**
+   * Closes every terminal the login session `key` opened, with 4403 "Sign in to Kage" (sign-out,
+   * eviction or expiry, F6).
+   */
+  closeOwner(key: string): void {
+    for (const c of this.#conns) if (c.owner === key) this.#end(c, TERM_CLOSE.forbidden, SIGN_IN);
   }
 
   /** Every socket closes with 1001; later upgrades are refused (503). */
@@ -166,8 +189,14 @@ export class TerminalServer {
     }, CLOSE_GRACE_MS).unref();
   }
 
-  #attach(ws: WebSocket, id: string, cols: number | null, rows: number | null): void {
-    const conn: Conn = { ws, alive: true, mode: 'ro', handle: null };
+  #attach(
+    ws: WebSocket,
+    id: string,
+    cols: number | null,
+    rows: number | null,
+    owner: string | null,
+  ): void {
+    const conn: Conn = { ws, alive: true, mode: 'ro', handle: null, owner };
     this.#conns.add(conn);
     this.#startTimer();
     // ws reports a too-large frame (it closes with 1009 itself) and socket errors here.

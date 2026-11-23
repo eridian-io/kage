@@ -74,6 +74,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
   mainView.value = 'output';
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

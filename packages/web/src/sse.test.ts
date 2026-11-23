@@ -105,6 +105,31 @@ describe('connect: sign-in (B13)', () => {
     again();
   });
 
+  // Review Focus 1: after a restart (every login lost) the stream drops, and its reconnect check
+  // answers 401. A regression guard: this held before per-login sessions too (F25).
+  it('a 401 after the stream drops shows the login screen', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      auth: true,
+      host: 'my-pc',
+      streamId: 's1',
+      projectsRoot: '/p',
+      archived: 0,
+      sessions: demoSessions(NOW),
+    });
+    expect(connection.value).toBe('live');
+    // Kage restarts: the stream drops, and the old cookie is no longer a session.
+    authStatus = 401;
+    latest().fail();
+    expect(connection.value).toBe('reconnecting');
+    await vi.advanceTimersByTimeAsync(0);
+    expect(authRequired.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeEventSource.all).toHaveLength(1);
+    stop();
+  });
+
   it('a 204 retries as before', async () => {
     const stop = connect('/api/events', { retryMs: 100 });
     latest().fail();
@@ -150,6 +175,7 @@ describe('connect', () => {
     expect(connection.value).toBe('connecting');
     latest().emit('snapshot', {
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -167,6 +193,7 @@ describe('connect', () => {
     const stop = connect();
     latest().emit('snapshot', {
       type: 'snapshot',
+      auth: false,
       host: 'h',
       streamId: 's',
       projectsRoot: '/p',
@@ -191,6 +218,7 @@ describe('connect', () => {
     const first = latest();
     first.emit('snapshot', {
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -218,6 +246,7 @@ describe('connect', () => {
     const fresh = demoSessions(NOW).slice(0, 2);
     latest().emit('snapshot', {
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -251,6 +280,7 @@ describe('connect', () => {
     for (const ms of [1000, 2000, 4000, 8000, 10_000, 10_000]) waitFor(ms);
     latest().emit('snapshot', {
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -295,6 +325,7 @@ describe('the archive event', () => {
 describe('the kage:board mark (spec §7, time to a usable board)', () => {
   const snapshot = {
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

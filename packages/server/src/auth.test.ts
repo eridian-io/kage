@@ -1,65 +1,226 @@
-import { describe, expect, it } from 'vitest';
+import { createHmac } from 'node:crypto';
+import { describe, expect, it, vi } from 'vitest';
 import {
-  AUTH_COOKIE,
-  authCookieValue,
-  CLEAR_COOKIE,
-  isAuthorised,
+  type Auth,
+  authCookieName,
+  clearCookieHeader,
   LoginLimiter,
+  normalizePeer,
+  SESSION_IDLE_MS,
+  SESSION_MAX,
+  SESSION_MAX_MS,
+  SessionStore,
+  sessionOf,
   setCookieHeader,
 } from './auth.ts';
 
 const TOKEN = 'correct-horse-battery-staple';
-const OTHER = 'another-token-of-16+';
+const PEER = '100.64.0.9';
+const OTHER_PEER = '100.64.0.10';
+const DAY = 24 * 60 * 60 * 1000;
 
-describe('authCookieValue', () => {
-  it('is base64url, stable per token, and never contains the token', () => {
-    const v = authCookieValue(TOKEN);
-    expect(v).toMatch(/^[A-Za-z0-9_-]{43}$/);
-    expect(authCookieValue(TOKEN)).toBe(v);
-    expect(authCookieValue(OTHER)).not.toBe(v);
-    expect(v).not.toContain(TOKEN);
-    expect(setCookieHeader(TOKEN)).not.toContain(TOKEN);
-  });
-
-  it('builds the cookie headers exactly', () => {
-    expect(setCookieHeader(TOKEN)).toBe(
-      `kage_auth=${authCookieValue(TOKEN)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000`,
-    );
-    expect(CLEAR_COOKIE).toBe('kage_auth=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0');
-    expect(AUTH_COOKIE).toBe('kage_auth');
-  });
+/** A store on a clock the test moves by hand. */
+function clocked(o: { max?: number } = {}) {
+  let t = 1_000_000;
+  const store = new SessionStore({ clock: () => t, ...o });
+  return {
+    store,
+    advance: (ms: number) => {
+      t += ms;
+    },
+  };
+}
+const authWith = (sessions: SessionStore, token = TOKEN): Auth => ({
+  token,
+  sessions,
+  cookie: authCookieName(8080),
 });
+const cookie = (id: string) => `kage_auth_8080=${id}`;
 
-describe('isAuthorised', () => {
-  const cookie = (v: string) => `${AUTH_COOKIE}=${v}`;
-
-  it('passes everything when no token is set', () => {
-    expect(isAuthorised('', undefined)).toBe(true);
-    expect(isAuthorised('', 'kage_auth=nonsense')).toBe(true);
+describe('SessionStore and the session cookie (security I1)', () => {
+  it('a login gets its own id; a second login gets another; both check', () => {
+    const { store } = clocked();
+    const a = store.create(PEER);
+    const b = store.create(PEER);
+    expect(a).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(b).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(a).not.toBe(b);
+    const ka = store.check(a, PEER);
+    const kb = store.check(b, PEER);
+    expect(ka).not.toBeNull();
+    expect(kb).not.toBeNull();
+    expect(ka).not.toBe(kb);
+    // Only the id's SHA-256 is kept: the key the store answers with is not the id.
+    expect(ka).not.toContain(a);
+    expect(store.size).toBe(2);
+    // A changed character, a short or empty id, the token itself: none is a session.
+    const last = a.at(-1) === 'A' ? 'B' : 'A';
+    expect(store.check(a.slice(0, -1) + last, PEER)).toBeNull();
+    expect(store.check(a.slice(0, -1), PEER)).toBeNull();
+    expect(store.check('', PEER)).toBeNull();
+    expect(store.check(TOKEN, PEER)).toBeNull();
   });
 
-  it('passes the right cookie', () => {
-    expect(isAuthorised(TOKEN, cookie(authCookieValue(TOKEN)))).toBe(true);
+  it('the cookie is kage_auth_<port>, HttpOnly, SameSite=Strict, Path=/, Max-Age=2592000, Secure only when asked', () => {
+    expect(authCookieName(8080)).toBe('kage_auth_8080');
+    expect(authCookieName(4385)).toBe('kage_auth_4385');
+    expect(setCookieHeader('kage_auth_8080', 'abc', false)).toBe(
+      'kage_auth_8080=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000',
+    );
+    expect(setCookieHeader('kage_auth_8080', 'abc', true)).toBe(
+      'kage_auth_8080=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000; Secure',
+    );
+    expect(clearCookieHeader('kage_auth_8080')).toBe(
+      'kage_auth_8080=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0',
+    );
   });
 
-  it('fails a cookie for another token, a one-character change, an empty or missing cookie', () => {
-    const right = authCookieValue(TOKEN);
-    const last = right.at(-1) === 'A' ? 'B' : 'A';
-    expect(isAuthorised(TOKEN, cookie(authCookieValue(OTHER)))).toBe(false);
-    expect(isAuthorised(TOKEN, cookie(right.slice(0, -1) + last))).toBe(false);
-    expect(isAuthorised(TOKEN, cookie(right.slice(0, -1)))).toBe(false);
-    expect(isAuthorised(TOKEN, cookie(''))).toBe(false);
-    expect(isAuthorised(TOKEN, '')).toBe(false);
-    expect(isAuthorised(TOKEN, undefined)).toBe(false);
-    // The token itself is not the cookie.
-    expect(isAuthorised(TOKEN, cookie(TOKEN))).toBe(false);
+  it('revoke refuses that session only and fires onRevoke once', () => {
+    const { store } = clocked();
+    const a = store.create(PEER);
+    const b = store.create(PEER);
+    const ka = store.check(a, PEER) as string;
+    const heard: string[] = [];
+    const off = store.onRevoke((k) => heard.push(k));
+    store.revoke(ka);
+    store.revoke(ka);
+    expect(heard).toEqual([ka]);
+    expect(store.check(a, PEER)).toBeNull();
+    expect(store.check(b, PEER)).not.toBeNull();
+    expect(store.size).toBe(1);
+    off();
+    store.revoke(store.check(b, PEER) as string);
+    expect(heard).toEqual([ka]);
   });
 
-  it('ignores other cookies in the header', () => {
-    const right = authCookieValue(TOKEN);
-    expect(isAuthorised(TOKEN, `theme=dark; ${cookie(right)}; other=1`)).toBe(true);
-    expect(isAuthorised(TOKEN, `theme=dark; x_kage_auth=${right}`)).toBe(false);
-    expect(isAuthorised(TOKEN, `theme=${right}`)).toBe(false);
+  it('a session idle for 7 days, or 30 days old, is refused', () => {
+    expect(SESSION_IDLE_MS).toBe(7 * DAY);
+    expect(SESSION_MAX_MS).toBe(30 * DAY);
+    const { store, advance } = clocked();
+    const heard: string[] = [];
+    store.onRevoke((k) => heard.push(k));
+    const short = store.create(PEER);
+    const idle = store.create(PEER);
+    advance(SESSION_IDLE_MS - 1);
+    expect(store.check(short, PEER)).not.toBeNull();
+    advance(1);
+    // 7 days since `idle` was last seen: refused, and its end is heard (F6).
+    expect(store.check(idle, PEER)).toBeNull();
+    expect(heard).toHaveLength(1);
+    expect(store.check(short, PEER)).not.toBeNull();
+
+    // Seen every day, a session still ends 30 days after its login.
+    const { store: s2, advance: adv2 } = clocked();
+    const old = s2.create(PEER);
+    for (let d = 1; d < 30; d++) {
+      adv2(DAY);
+      expect(s2.check(old, PEER)).not.toBeNull();
+    }
+    adv2(DAY - 1);
+    expect(s2.check(old, PEER)).not.toBeNull();
+    adv2(1);
+    expect(s2.check(old, PEER)).toBeNull();
+    expect(s2.size).toBe(0);
+  });
+
+  it('expiry is swept without a request: a timer at the earliest expiry fires onRevoke (F6)', async () => {
+    vi.useFakeTimers();
+    try {
+      let t = 0;
+      const store = new SessionStore({ clock: () => t, idleMs: 1000, maxAgeMs: 10_000 });
+      const heard: string[] = [];
+      store.onRevoke((k) => heard.push(k));
+      const a = store.create(PEER);
+      const ka = store.check(a, PEER) as string;
+      t = 999;
+      await vi.advanceTimersByTimeAsync(999);
+      expect(heard).toEqual([]);
+      t = 1000;
+      await vi.advanceTimersByTimeAsync(1);
+      expect(heard).toEqual([ka]);
+      expect(store.size).toBe(0);
+      // With no session left, no timer is held.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a cookie from another peer address is refused; ::ffff:100.64.0.1 is 100.64.0.1', () => {
+    expect(normalizePeer('::ffff:100.64.0.1')).toBe('100.64.0.1');
+    expect(normalizePeer('::FFFF:100.64.0.1')).toBe('100.64.0.1');
+    expect(normalizePeer('100.64.0.1')).toBe('100.64.0.1');
+    expect(normalizePeer('FD7A:115C:A1E0::1')).toBe('fd7a:115c:a1e0::1');
+    const { store } = clocked();
+    const id = store.create(PEER);
+    expect(store.check(id, OTHER_PEER)).toBeNull();
+    // Refused, not revoked: the owner's own device still gets in.
+    expect(store.check(id, PEER)).not.toBeNull();
+    const mapped = store.create(normalizePeer('::ffff:100.64.0.1'));
+    expect(store.check(mapped, normalizePeer('100.64.0.1'))).not.toBeNull();
+  });
+
+  it('a new SessionStore (a restart) refuses every old cookie', () => {
+    const before = new SessionStore();
+    const id = before.create(PEER);
+    expect(sessionOf(authWith(before), cookie(id), PEER)).not.toBeNull();
+    const after = new SessionStore();
+    expect(after.check(id, PEER)).toBeNull();
+    expect(sessionOf(authWith(after), cookie(id), PEER)).toBeNull();
+  });
+
+  it('a 65th session drops the least recently seen', () => {
+    expect(SESSION_MAX).toBe(64);
+    const { store, advance } = clocked();
+    const heard: string[] = [];
+    store.onRevoke((k) => heard.push(k));
+    const ids: string[] = [];
+    for (let i = 0; i < SESSION_MAX; i++) {
+      ids.push(store.create(PEER));
+      advance(1);
+    }
+    // The first login is seen again, so the second is now the least recently seen.
+    const second = store.check(ids[1] as string, PEER) as string;
+    for (let i = 2; i < SESSION_MAX; i++) store.check(ids[i] as string, PEER);
+    store.check(ids[0] as string, PEER);
+    const extra = store.create(PEER);
+    expect(store.size).toBe(SESSION_MAX);
+    expect(heard).toEqual([second]);
+    expect(store.check(ids[1] as string, PEER)).toBeNull();
+    expect(store.check(ids[0] as string, PEER)).not.toBeNull();
+    expect(store.check(extra, PEER)).not.toBeNull();
+  });
+
+  it('the old HMAC value of the token is no longer accepted', () => {
+    const old = createHmac('sha256', TOKEN).update('kage-auth-v1').digest('base64url');
+    const store = new SessionStore();
+    store.create(PEER);
+    const auth = authWith(store);
+    expect(sessionOf(auth, cookie(old), PEER)).toBeNull();
+    expect(sessionOf(auth, `kage_auth=${old}`, PEER)).toBeNull();
+  });
+
+  it('with no token, sessionOf is open ("")', () => {
+    const auth = authWith(new SessionStore(), '');
+    expect(sessionOf(auth, undefined, PEER)).toBe('');
+    expect(sessionOf(auth, 'kage_auth_8080=nonsense', PEER)).toBe('');
+  });
+
+  it('sessionOf reads only its own cookie name, and checks every cookie of that name', () => {
+    const store = new SessionStore();
+    const id = store.create(PEER);
+    const auth = authWith(store);
+    const key = store.check(id, PEER);
+    expect(sessionOf(auth, undefined, PEER)).toBeNull();
+    expect(sessionOf(auth, '', PEER)).toBeNull();
+    expect(sessionOf(auth, `theme=dark; ${cookie(id)}; other=1`, PEER)).toBe(key);
+    expect(sessionOf(auth, `kage_auth_8080=bad; ${cookie(id)}`, PEER)).toBe(key);
+    expect(sessionOf(auth, `${cookie(id)}; kage_auth_8080=bad`, PEER)).toBe(key);
+    // Another port's cookie, or a name that only ends the same, is not this Kage's.
+    expect(sessionOf(auth, `kage_auth_9090=${id}`, PEER)).toBeNull();
+    expect(sessionOf(auth, `x_kage_auth_8080=${id}`, PEER)).toBeNull();
+    expect(sessionOf(auth, `kage_auth=${id}`, PEER)).toBeNull();
+    expect(sessionOf(auth, cookie(id), OTHER_PEER)).toBeNull();
   });
 });
 

@@ -5,6 +5,7 @@ import {
   applyEvent,
   archivedCount,
   archiveOpen,
+  authRequired,
   busy,
   confirmingDelete,
   connection,
@@ -14,15 +15,17 @@ import {
   select,
   selectedId,
   stopSent,
+  tokenSet,
 } from '../store.ts';
 import { type Command, commands, textOf } from './commands.ts';
 
 const NOW = Date.UTC(2026, 10, 21, 12, 0, 0);
 let fetchMock: ReturnType<typeof vi.fn>;
 
-function load(list: Session[], archived = 0) {
+function load(list: Session[], archived = 0, auth = false) {
   applyEvent({
     type: 'snapshot',
+    auth,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -214,5 +217,28 @@ describe('commands: general', () => {
       'Browser notifications need HTTPS; use ntfy instead',
     ]);
     expect(find('Browser notifications need HTTPS; use ntfy instead').disabled).toBe(true);
+  });
+
+  it('Sign out is listed only when a token is set, and signing out shows the login screen', async () => {
+    authRequired.value = false;
+    expect(tokenSet.value).toBe(false);
+    expect(titles('general')).not.toContain('Sign out');
+    load(demoSessions(NOW), 0, true);
+    expect(tokenSet.value).toBe(true);
+    expect(titles('general').at(-1)).toBe('Sign out');
+    find('Sign out').run();
+    await vi.waitFor(() => expect(authRequired.value).toBe(true));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/logout',
+      expect.objectContaining({ method: 'POST', headers: { 'X-Kage': '1' } }),
+    );
+    // A failed request still leaves the board on the login screen: the cookie may be gone.
+    authRequired.value = false;
+    fetchMock.mockRejectedValueOnce(new TypeError('offline'));
+    find('Sign out').run();
+    await vi.waitFor(() => expect(authRequired.value).toBe(true));
+    authRequired.value = false;
+    load(demoSessions(NOW), 0, false);
+    expect(titles('general')).not.toContain('Sign out');
   });
 });

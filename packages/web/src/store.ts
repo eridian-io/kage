@@ -31,6 +31,8 @@ export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
 /** True when the server answered 401: the board shows the login screen (spec §5.10, F18). */
 export const authRequired: Signal<boolean> = signal(false);
+/** A token is set (the snapshot's `auth`): the palette offers Sign out. */
+export const tokenSet: Signal<boolean> = signal(false);
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
@@ -269,6 +271,7 @@ export function applyEvent(e: ServerEvent): void {
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
+      tokenSet.value = e.auth;
       // A new stream (a reconnect) starts without lines: the view brings them again.
       const fresh = streamId.value !== e.streamId;
       streamId.value = e.streamId;

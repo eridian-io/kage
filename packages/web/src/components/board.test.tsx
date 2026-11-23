@@ -80,6 +80,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
   termNote.value = null;
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -528,6 +529,7 @@ describe('reconnect bar', () => {
     expect(bar.getAttribute('role')).toBe('status');
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -562,6 +564,7 @@ describe('before the first snapshot', () => {
     // An empty first snapshot is a real answer: now it says so.
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -608,6 +611,7 @@ describe('pending delete', () => {
     // The removal happened while disconnected; the snapshot no longer has it.
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -787,6 +791,7 @@ describe('board v2', () => {
     withSession({ worktree: '/home/dev/projects/api/.worktrees/x' }, 'web');
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/home/dev/projects',
@@ -912,6 +917,7 @@ describe('controls', () => {
       expect(answered.value).not.toBeNull();
       applyEvent({
         type: 'snapshot',
+        auth: false,
         host: 'my-pc',
         streamId: 's2',
         projectsRoot: '/p',

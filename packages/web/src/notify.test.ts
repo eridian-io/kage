@@ -85,6 +85,7 @@ const session = (id: string, status: SessionStatus, over: Partial<Session> = {})
 const snapshot = (list: Session[]) =>
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 'st',
     projectsRoot: '/p',

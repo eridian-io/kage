@@ -5,6 +5,8 @@ interface Client {
   streamId: string;
   /** The session whose lines this stream receives, or null. */
   viewing: string | null;
+  /** The login session that opened it (its key), or null with no token. */
+  owner: string | null;
   controller: ReadableStreamDefaultController<Uint8Array>;
   timer: ReturnType<typeof setInterval>;
 }
@@ -19,6 +21,8 @@ export class EventHub {
   private readonly projectsRoot: string;
   private readonly heartbeatMs: number;
   private readonly maxQueue: number;
+  /** A token is set: the snapshot's `auth`, so the board offers Sign out. */
+  private readonly auth: boolean;
   private readonly clients = new Map<string, Client>();
   private unsubscribe: (() => void) | null = null;
   /** The union of every stream's viewed session, as last told to the source. */
@@ -28,26 +32,29 @@ export class EventHub {
     source: SessionSource,
     host: string,
     projectsRoot: string,
-    opts: { heartbeatMs?: number; maxQueue?: number } = {},
+    opts: { heartbeatMs?: number; maxQueue?: number; auth?: boolean } = {},
   ) {
     this.source = source;
     this.host = host;
     this.projectsRoot = projectsRoot;
     this.heartbeatMs = opts.heartbeatMs ?? 30_000;
     this.maxQueue = opts.maxQueue ?? 256;
+    this.auth = opts.auth ?? false;
   }
 
   get clientCount(): number {
     return this.clients.size;
   }
 
-  stream(): ReadableStream<Uint8Array> {
+  /** A new stream; `owner` is the login session that opened it (dropOwner closes it). */
+  stream(owner: string | null = null): ReadableStream<Uint8Array> {
     let client: Client | undefined;
     return new ReadableStream<Uint8Array>({
       start: (controller) => {
         const c: Client = {
           streamId: crypto.randomUUID(),
           viewing: null,
+          owner,
           controller,
           timer: setInterval(() => this.send(c, ': hb\n\n'), this.heartbeatMs),
         };
@@ -58,6 +65,7 @@ export class EventHub {
           c,
           frame({
             type: 'snapshot',
+            auth: this.auth,
             host: this.host,
             streamId: c.streamId,
             projectsRoot: this.projectsRoot,
@@ -88,6 +96,22 @@ export class EventHub {
     this.syncViewed();
     if (already) this.source.refreshView?.(id);
     return true;
+  }
+
+  /**
+   * Errors every stream the session `key` opened (sign-out, eviction or expiry, F6). The tab sees
+   * the stream fail, asks GET /api/auth, gets 401 and shows the login screen.
+   */
+  dropOwner(key: string): void {
+    for (const c of [...this.clients.values()]) {
+      if (c.owner !== key) continue;
+      this.drop(c);
+      try {
+        c.controller.error(new Error('Signed out'));
+      } catch {
+        // already closed
+      }
+    }
   }
 
   close(): void {

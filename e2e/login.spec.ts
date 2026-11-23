@@ -118,10 +118,38 @@ test('a terminal upgrade needs the token cookie: 401 without it, 101 (then demo 
   });
   expect(res.status).toBe(204);
   const cookie = (res.headers.get('set-cookie') ?? '').split(';')[0] as string;
-  expect(cookie).toMatch(/^kage_auth=./);
+  // A session id of its own, in a cookie named for the port (security I1).
+  expect(cookie).toMatch(new RegExp(`^kage_auth_${PORT}=[A-Za-z0-9_-]{43}$`));
 
   const signedIn = await rawUpgrade(PORT, path, { ...good, Cookie: cookie });
   expect(signedIn.status).toBe(101);
   // Demo mode has no terminal: it closes right after the upgrade with 4501.
   expect(closeCode(signedIn.frame)).toBe(4501);
+});
+
+test('Sign out in the palette ends this login: the login screen, and the old cookie is refused', async ({
+  page,
+}) => {
+  await page.goto(`${BASE}/`);
+  await page.getByLabel('Access token').fill(TOKEN);
+  await page.getByRole('button', { name: 'Sign in' }).click();
+  await expect(page.locator('.k-it').first()).toBeVisible();
+  const [cookie] = await page.context().cookies(BASE);
+  expect(cookie?.name).toBe(`kage_auth_${PORT}`);
+  expect(cookie?.httpOnly).toBe(true);
+  expect(cookie?.sameSite).toBe('Strict');
+
+  await page.keyboard.press('ControlOrMeta+k');
+  const input = page.getByRole('dialog', { name: 'Command palette' }).getByRole('combobox');
+  await expect(input).toBeFocused();
+  await page.keyboard.type('sign out');
+  await expect(page.getByRole('option', { name: 'Sign out' })).toBeVisible();
+  await page.keyboard.press('Enter');
+  await expect(page.getByLabel('Access token')).toBeVisible();
+  expect(await page.context().cookies(BASE)).toEqual([]);
+
+  // The session is gone on the server too: its id, sent again by hand, is refused.
+  const old = `${cookie?.name}=${cookie?.value}`;
+  const res = await fetch(`${BASE}/api/auth`, { headers: { Cookie: old } });
+  expect(res.status).toBe(401);
 });

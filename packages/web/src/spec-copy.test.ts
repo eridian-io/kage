@@ -181,6 +181,22 @@ describe('spec §6.8 copy (phase 6) is in the code or install.sh', () => {
   });
 });
 
+describe('spec §6.9 copy (hardening) is in the code or install.sh', () => {
+  const sentences = quoted68(section('6.9'));
+
+  it('finds the sentences (the section is there)', () => {
+    expect(sentences.length).toBeGreaterThanOrEqual(1);
+    expect(sentences).toContain('Sign out');
+  });
+
+  it('every sentence occurs in packages/*/src outside tests, or in install.sh', () => {
+    const missing = sentences.filter(
+      (s) => !pattern(s).test(CORPUS) && !pattern(s).test(INSTALL_SH),
+    );
+    expect(missing).toEqual([]);
+  });
+});
+
 describe('the house style of error sentences', () => {
   const server = SRC.filter((s) => s.file.startsWith('packages/server/'));
   const web = SRC.filter((s) => s.file.startsWith('packages/web/'));

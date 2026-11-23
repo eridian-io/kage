@@ -4,7 +4,7 @@
  * 401 rules hold, and Delete… only opens the confirmation.
  */
 import { groupOf, type Session } from '@kage/shared';
-import { archive, canAct, pin, resume, stop } from '../api.ts';
+import { archive, canAct, logout, pin, resume, stop } from '../api.ts';
 import type { NotifyApi } from '../notify.ts';
 import {
   archivedCount,
@@ -20,6 +20,7 @@ import {
   selected,
   sorted,
   stopPending,
+  tokenSet,
 } from '../store.ts';
 
 export type CommandGroup = 'sessions' | 'this session' | 'general';
@@ -177,6 +178,10 @@ export function commands(notify: NotifyApi): Command[] {
       disabled: true,
       run: () => {},
     });
+  }
+  // Only with a token: without one there is nothing to sign out of.
+  if (tokenSet.value) {
+    out.push({ id: 'logout', group: 'general', title: 'Sign out', run: () => void logout() });
   }
   return out;
 }

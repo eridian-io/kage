@@ -7,6 +7,7 @@ import { serve } from '@hono/node-server';
 import type { ArchivedSession, ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, type BoardFiles, boardFor, dirFiles, loadAssets } from './assets.ts';
+import { type Auth, authCookieName, SessionStore } from './auth.ts';
 import {
   ConfigError,
   configPath,
@@ -542,7 +543,13 @@ async function startServer(
     differ = new DiffService({ target: (id) => liveSource.previewTarget(id) });
   }
 
-  const hub = new EventHub(source, cfg.name, cfg.projectsRoot);
+  // Logins live in memory only (R127): a restart signs every browser out (security I1).
+  const auth: Auth = {
+    token: cfg.token,
+    sessions: new SessionStore(),
+    cookie: authCookieName(cfg.port),
+  };
+  const hub = new EventHub(source, cfg.name, cfg.projectsRoot, { auth: cfg.token !== '' });
   cleanups.push(() => hub.close());
   const allowed = { hostNames: listen.hostNames, port: cfg.port };
   const app = createApp({
@@ -550,7 +557,7 @@ async function startServer(
     hub,
     assets,
     allowed,
-    token: cfg.token,
+    auth,
     ...(demoReset ? { demoReset } : {}),
     ...(projects ? { projects } : {}),
     ...(launcher ? { launcher, resumer: launcher } : {}),
@@ -563,13 +570,20 @@ async function startServer(
   // The terminal WebSocket (B9), in both modes: demo answers 4501 after its guards.
   const terminals = new TerminalServer({
     allowed,
-    token: cfg.token,
+    auth,
     source: liveParts?.source ?? null,
     bridge: liveParts?.bridge ?? null,
     tmux: liveParts?.tmux ?? null,
   });
   // Closed before the HTTP server (and again here if the server never started).
   cleanups.push(() => terminals.close());
+  // However a session ends (sign-out, eviction, expiry), its streams and terminals close (F6).
+  cleanups.push(
+    auth.sessions.onRevoke((k) => {
+      hub.dropOwner(k);
+      terminals.closeOwner(k);
+    }),
+  );
 
   let server: ReturnType<typeof serve>;
   try {

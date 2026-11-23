@@ -74,6 +74,19 @@ export function authStatus(): Promise<number> {
   return fetch('/api/auth').then((r) => r.status);
 }
 
+/**
+ * Signs this browser out: the server ends this login's session (its stream and terminals close)
+ * and clears the cookie. The login screen shows even if the request fails.
+ */
+export async function logout(): Promise<void> {
+  try {
+    await fetch('/api/logout', { method: 'POST', headers: HEADERS });
+  } catch {
+    // Offline: the login screen still shows; signing in again replaces the stream.
+  }
+  authRequired.value = true;
+}
+
 export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' | 'error'> {
   try {
     const { status } = await apiPost('/api/login', { token });

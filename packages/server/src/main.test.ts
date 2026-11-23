@@ -114,6 +114,48 @@ describe('kage serve: live-mode checks', () => {
     await expect(fetch(`http://127.0.0.1:${p}/`)).rejects.toThrow();
   });
 
+  it('--demo with a token: the snapshot says so, and logout closes that login stream (I1, F6)', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1' });
+    const p = port();
+    writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
+    const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
+    expect(typeof r).toBe('object');
+    const base = `http://127.0.0.1:${p}`;
+    const headers = { 'X-Kage': '1', Origin: base, 'Content-Type': 'application/json' };
+    try {
+      const login = await fetch(`${base}/api/login`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ token: 'a-secret-of-16-chars' }),
+      });
+      expect(login.status).toBe(204);
+      const cookie = (login.headers.get('set-cookie') ?? '').split(';')[0] as string;
+      expect(cookie).toMatch(new RegExp(`^kage_auth_${p}=`));
+      const res = await fetch(`${base}/api/events`, { headers: { Cookie: cookie } });
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      expect(JSON.parse(first.slice(first.indexOf('data: ') + 6)).auth).toBe(true);
+      const out = await fetch(`${base}/api/logout`, {
+        method: 'POST',
+        headers: { ...headers, Cookie: cookie },
+      });
+      expect(out.status).toBe(204);
+      // The server ends the stream (serve.ts wires onRevoke to the hub); no heartbeat comes first.
+      const end = async () => {
+        try {
+          for (;;) if ((await reader.read()).done) return 'ended';
+        } catch {
+          return 'ended';
+        }
+      };
+      expect(await end()).toBe('ended');
+      expect((await fetch(`${base}/api/auth`, { headers: { Cookie: cookie } })).status).toBe(401);
+    } finally {
+      await (r as Running).stop();
+    }
+  });
+
   it('--demo without a token prints no token warning (R53 is for live mode)', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
     const p = port();

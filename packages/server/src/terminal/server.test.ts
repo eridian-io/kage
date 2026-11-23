@@ -3,7 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { LIMITS, type SessionStatus } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
-import { authCookieValue } from '../auth.ts';
+import { type Auth, authCookieName, SessionStore, SIGN_IN } from '../auth.ts';
 import { BridgeError, type TermHandle, type TermSink } from './bridge.ts';
 import { TerminalServer } from './server.ts';
 
@@ -103,9 +103,14 @@ async function setup(
   server = s;
   await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
   const port = (s.address() as AddressInfo).port;
+  const auth: Auth = {
+    token: o.token ?? '',
+    sessions: new SessionStore(),
+    cookie: authCookieName(port),
+  };
   const t = new TerminalServer({
     allowed: { hostNames: ['127.0.0.1'], port },
-    token: o.token ?? '',
+    auth,
     source: o.demo ? null : { terminalTarget: (id: string) => targets.get(id) ?? null },
     bridge: o.demo ? null : bridge,
     tmux: o.demo
@@ -160,7 +165,15 @@ async function setup(
     const opened = new Promise<void>((r) => ws.on('open', () => r()));
     return { ws, messages, closed, refused, opened };
   };
-  return { t, bridge, connect, reads, port, targets, held };
+  /** A signed-in Cookie header from this test's peer (127.0.0.1), and the session's key. */
+  const signIn = () => {
+    const id = auth.sessions.create('127.0.0.1');
+    return {
+      headers: { Cookie: `${auth.cookie}=${id}` },
+      key: auth.sessions.check(id, '127.0.0.1') as string,
+    };
+  };
+  return { t, bridge, connect, reads, port, targets, held, auth, signIn };
 }
 
 describe('TerminalServer: refusals before the upgrade', () => {
@@ -172,8 +185,8 @@ describe('TerminalServer: refusals before the upgrade', () => {
   });
 
   it('a missing Origin → 403; a missing protocol → 400; no cookie with a token → 401', async () => {
-    const { connect, bridge } = await setup({ token: 'tok' });
-    const good = { headers: { Cookie: `kage_auth=${authCookieValue('tok')}` } };
+    const { connect, bridge, signIn } = await setup({ token: 'x'.repeat(20) });
+    const good = { headers: signIn().headers };
     expect((await connect(undefined, { ...good, origin: null }).refused)[0]).toBe(403);
     expect((await connect(undefined, { ...good, protocol: null }).refused)[0]).toBe(400);
     expect(await connect().refused).toEqual([401, 'Sign in to Kage\n']);
@@ -184,6 +197,40 @@ describe('TerminalServer: refusals before the upgrade', () => {
     const ok = connect(undefined, good);
     await ok.opened;
     await vi.waitFor(() => expect(bridge.opens).toHaveLength(1));
+  });
+});
+
+describe('TerminalServer: sign-out (security I1, F6)', () => {
+  it('revoking a session closes its terminals with 4403 and "Sign in to Kage"', async () => {
+    const { t, connect, bridge, auth, signIn } = await setup({ token: 'x'.repeat(20) });
+    const mine = signIn();
+    const theirs = signIn();
+    auth.sessions.onRevoke((k) => t.closeOwner(k));
+    const a = connect(undefined, { headers: mine.headers });
+    const b = connect(undefined, { headers: theirs.headers });
+    await Promise.all([a.opened, b.opened]);
+    await vi.waitFor(() => expect(bridge.opens).toHaveLength(2));
+    await vi.waitFor(() => expect(bridge.opens.every((x) => x.handle !== undefined)).toBe(true));
+    auth.sessions.revoke(mine.key);
+    expect(await a.closed).toEqual([4403, SIGN_IN]);
+    expect(SIGN_IN).toBe('Sign in to Kage');
+    // The other login's terminal stays open.
+    expect(b.ws.readyState).toBe(WebSocket.OPEN);
+    // The revoked cookie can't open another.
+    expect(await connect(undefined, { headers: mine.headers }).refused).toEqual([
+      401,
+      'Sign in to Kage\n',
+    ]);
+  });
+
+  it('an evicted session (the 65th login) loses its terminal too', async () => {
+    const { t, connect, auth, signIn } = await setup({ token: 'x'.repeat(20) });
+    auth.sessions.onRevoke((k) => t.closeOwner(k));
+    const first = signIn();
+    const c = connect(undefined, { headers: first.headers });
+    await c.opened;
+    for (let i = 0; i < 64; i++) auth.sessions.create('127.0.0.1');
+    expect(await c.closed).toEqual([4403, 'Sign in to Kage']);
   });
 });
 

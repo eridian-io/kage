@@ -4,12 +4,15 @@ import { Hono } from 'hono';
 import { bodyLimit } from 'hono/body-limit';
 import type { Asset } from './assets.ts';
 import {
+  type Auth,
+  type AuthEnv,
   authGuard,
-  CLEAR_COOKIE,
-  isAuthorised,
+  clearCookieHeader,
   LoginLimiter,
+  remoteAddress,
   SIGN_IN,
   sameSecret,
+  sessionOf,
   setCookieHeader,
 } from './auth.ts';
 import { ActionError, type SessionControls } from './control/actions.ts';
@@ -34,8 +37,8 @@ export interface AppDeps {
   hub: EventHub;
   assets: Map<string, Asset>;
   allowed: { hostNames: string[]; port: number };
-  /** The config's access token; '' means no login (spec §5.10). */
-  token: string;
+  /** The token and the logins (spec §5.10); `auth.token` '' means no login. */
+  auth: Auth;
   /** Demo mode only: registers POST /api/demo/reset, which calls this. */
   demoReset?: () => void;
   /** Live mode: the projects under projectsRoot. Without it (demo mode) the route answers 501. */
@@ -132,19 +135,13 @@ function serveAsset(asset: Asset, req: Request): Response {
   return new Response(body as Uint8Array<ArrayBuffer>, { status: 200, headers });
 }
 
-/**
- * The TCP peer's address, from @hono/node-server's `env.incoming`; never from a header, which the
- * client controls. Requests without a socket (tests calling fetch directly) share one key.
- */
-function remoteAddress(env: unknown): string {
-  const incoming = (env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)
-    ?.incoming;
-  return incoming?.socket?.remoteAddress ?? 'unknown';
-}
+/** The TCP peer's address, normalised (auth.ts); terminal/server.ts uses the same. */
+export { remoteAddress };
 
-export function createApp(deps: AppDeps): Hono {
-  const { source, hub, assets, allowed, token } = deps;
-  const app = new Hono();
+export function createApp(deps: AppDeps): Hono<AuthEnv> {
+  const { source, hub, assets, allowed, auth } = deps;
+  const { token } = auth;
+  const app = new Hono<AuthEnv>();
 
   app.use('*', async (c, next) => {
     await next();
@@ -159,10 +156,10 @@ export function createApp(deps: AppDeps): Hono {
     '/api/*',
     bodyLimit({ maxSize: 16 * 1024, onError: (c) => c.json({ error: 'Request too large.' }, 413) }),
   );
-  app.use('/api/*', authGuard(token));
+  app.use('/api/*', authGuard(auth));
 
   app.get('/api/auth', (c) =>
-    isAuthorised(token, c.req.header('Cookie'))
+    sessionOf(auth, c.req.header('Cookie'), remoteAddress(c.env)) !== null
       ? c.body(null, 204)
       : c.json({ error: SIGN_IN }, 401),
   );
@@ -185,14 +182,19 @@ export function createApp(deps: AppDeps): Hono {
       limiter.fail(peer);
       return c.json({ error: "That token isn't right." }, 401);
     }
+    // A session of its own for this login, bound to this address (security I1).
+    const id = auth.sessions.create(peer);
     // Kage is usually served over plain http on the tailnet, where Secure would drop the cookie.
-    const secure = new URL(c.req.url).protocol === 'https:' ? '; Secure' : '';
-    c.header('Set-Cookie', setCookieHeader(token) + secure);
+    const secure = new URL(c.req.url).protocol === 'https:';
+    c.header('Set-Cookie', setCookieHeader(auth.cookie, id, secure));
     return c.body(null, 204);
   });
 
+  // Ends the session the cookie names (its streams and terminals close through onRevoke).
   app.post('/api/logout', (c) => {
-    c.header('Set-Cookie', CLEAR_COOKIE);
+    const key = sessionOf(auth, c.req.header('Cookie'), remoteAddress(c.env));
+    if (key) auth.sessions.revoke(key);
+    c.header('Set-Cookie', clearCookieHeader(auth.cookie));
     return c.body(null, 204);
   });
 
@@ -205,7 +207,10 @@ export function createApp(deps: AppDeps): Hono {
     // Hono routes HEAD here too, and a HEAD body is dropped without cancel: a stream
     // would leave its client (heartbeat and queue) in the hub forever.
     if (c.req.method === 'HEAD') return new Response(null, { headers });
-    return new Response(hub.stream(), { headers });
+    // The stream belongs to its session: signing out, or the session's end, closes it (F6).
+    const owner = c.get('session');
+    if (owner !== '' && !auth.sessions.has(owner)) return c.json({ error: SIGN_IN }, 401);
+    return new Response(hub.stream(owner === '' ? null : owner), { headers });
   });
 
   // The terminal is a WebSocket (serve.ts takes the upgrade before Hono); a plain GET lands here.

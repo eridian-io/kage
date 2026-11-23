@@ -45,6 +45,7 @@ const posts = () =>
 function snapshot(count: number) {
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

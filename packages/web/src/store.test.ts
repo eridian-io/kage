@@ -22,6 +22,7 @@ const line = (n: number): DisplayLine => ({ kind: 'out', text: `line ${n}` });
 const snap = () =>
   applyEvent({
     type: 'snapshot',
+    auth: false,
     host: 'h',
     streamId: 's1',
     projectsRoot: '/p',
@@ -62,6 +63,7 @@ describe('protocol v2 store', () => {
     applyEvent({ type: 'session.lines', id: 'b', lines: [line(2)], reset: true });
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -77,6 +79,7 @@ describe('protocol v2 store', () => {
     expect(lineKeyBase('b', 0)).toBeGreaterThan(0);
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -90,6 +93,7 @@ describe('protocol v2 store', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1)], reset: true });
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'h',
       streamId: 's2',
       projectsRoot: '/p',
@@ -109,6 +113,7 @@ describe('protocol v3 store', () => {
   const seed = () =>
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -145,6 +150,7 @@ describe('protocol v3 store', () => {
     expect(sessions.value[0]).toMatchObject({ status: 'done', ports, files, filesTotal: 250 });
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -169,6 +175,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     selectWhenSeen.value = null;
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -202,6 +209,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     selectStarted('new');
     applyEvent({
       type: 'snapshot',
+      auth: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -223,6 +231,7 @@ describe('the archive count', () => {
   it('a snapshot sets it and an archive event changes it', () => {
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -239,6 +248,7 @@ describe('the archived list and the removal toasts (Task 9, F12)', () => {
   const withDemo = () =>
     applyEvent({
       type: 'snapshot',
+      auth: false,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
