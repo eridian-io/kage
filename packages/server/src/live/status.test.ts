@@ -35,17 +35,16 @@ function deepFreeze<T>(v: T): T {
 }
 
 describe('status: step', () => {
-  it('set moves to its status with its cause, and never when the status is already that', () => {
-    for (const cause of ['live', 'reconcile', 'act'] as const) {
-      const s = step(facts({ status: 'running' }), { kind: 'set', to: 'done', cause });
-      expect(s.move).toEqual({ from: 'running', to: 'done', cause });
-      expect(s.facts.status).toBe('done');
-    }
-    const same = step(facts({ status: 'done' }), { kind: 'set', to: 'done', cause: 'live' });
+  it('a move goes to the next status with its cause, and never when the status is already that', () => {
+    // Task 6: the set shim is gone; acts stand in for any observation.
+    const s = step(facts({ status: 'running' }), { kind: 'stopped' });
+    expect(s.move).toEqual({ from: 'running', to: 'ended', cause: 'act' });
+    expect(s.facts.status).toBe('ended');
+    const same = step(facts({ status: 'running' }), { kind: 'replied' });
     expect(same.move).toBeNull();
-    expect(same.facts.status).toBe('done');
+    expect(same.facts.status).toBe('running');
     // Off the board (null) counts as different: the first placement is a move.
-    const first = step(facts({ status: null }), { kind: 'set', to: 'ended', cause: 'act' });
+    const first = step(facts({ status: null }), { kind: 'restored' });
     expect(first.move).toEqual({ from: null, to: 'ended', cause: 'act' });
   });
 
@@ -61,9 +60,9 @@ describe('status: step', () => {
       }),
     );
     const observations: Observation[] = [
-      { kind: 'set', to: 'ended', cause: 'live' },
-      { kind: 'set', to: 'running', cause: 'act' },
-      { kind: 'set', to: 'needs-you', cause: 'reconcile' },
+      { kind: 'stopped' },
+      { kind: 'answered' },
+      { kind: 'rebuilt', question: true, turn: false, active: false, wasDone: false },
       { kind: 'loaded' },
     ];
     for (const obs of observations) {
@@ -89,39 +88,41 @@ describe('status: step', () => {
     }
   });
 
-  it('causeOf: set keeps its cause, loaded is reconcile, other kinds are reconcile while catching up and live otherwise', () => {
+  it('causeOf: acts are act, loaded is reconcile, other kinds are reconcile while catching up and live otherwise', () => {
     for (const catchingUp of [false, true]) {
       const f = facts({ catchingUp });
-      for (const cause of ['live', 'reconcile', 'act'] as const) {
-        expect(causeOf(f, { kind: 'set', to: 'done', cause })).toBe(cause);
-      }
+      expect(causeOf(f, { kind: 'stopped' })).toBe('act');
       expect(causeOf(f, { kind: 'loaded' })).toBe('reconcile');
-      // The other kinds arrive with Tasks 2–5; one they don't name yet stands in for them.
-      const other = { kind: 'activity' } as unknown as Observation;
-      expect(causeOf(f, other)).toBe(catchingUp ? 'reconcile' : 'live');
+      expect(causeOf(f, { kind: 'activity' })).toBe(catchingUp ? 'reconcile' : 'live');
     }
   });
 
   it('any move clears shellEnded, and startup unless it moves into needs-you', () => {
     const f = facts({ status: 'ended', shellEnded: true, startup: true });
-    const toRunning = step(f, { kind: 'set', to: 'running', cause: 'live' });
+    const toRunning = step(f, { kind: 'resumed', sessionId: 's-1' });
     expect(toRunning.facts).toMatchObject({ shellEnded: false, startup: false });
-    const toNeedsYou = step(f, { kind: 'set', to: 'needs-you', cause: 'live' });
+    const toNeedsYou = step(f, {
+      kind: 'rebuilt',
+      question: true,
+      turn: false,
+      active: false,
+      wasDone: false,
+    });
     expect(toNeedsYou.facts).toMatchObject({ shellEnded: false, startup: true });
     // No move: both stay as they were.
-    const still = step(f, { kind: 'set', to: 'ended', cause: 'live' });
+    const still = step(f, { kind: 'restored' });
     expect(still.move).toBeNull();
     expect(still.facts).toMatchObject({ shellEnded: true, startup: true });
   });
 
   it('a move into ended clears the resume and the first-prompt wait (F4)', () => {
     const f = facts({ record: { firstPromptPending: true, resuming: { sessionId: 's-1' } } });
-    const ended = step(f, { kind: 'set', to: 'ended', cause: 'live' });
+    const ended = step(f, { kind: 'stopped' });
     expect(ended.facts.record).toEqual({ firstPromptPending: false, resuming: null });
-    const done = step(f, { kind: 'set', to: 'done', cause: 'live' });
+    const done = step(f, { kind: 'answer-denied' });
     expect(done.facts.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
     // An external session has no record facts.
-    const ext = step(facts({ record: null }), { kind: 'set', to: 'ended', cause: 'live' });
+    const ext = step(facts({ record: null }), { kind: 'stopped' });
     expect(ext.facts.record).toBeNull();
   });
 });
@@ -547,7 +548,8 @@ describe('step: the screen and activity (group 3)', () => {
       const s = step(facts({ status: 'running', catchingUp, ...busy() }), {
         kind: 'answer-denied',
       });
-      expect(s.move).toEqual({ from: 'running', to: 'done', cause: causeFor(catchingUp) });
+      // Task 6: Kage's check after its own answer sees the No Kage sent: act, as the answer was.
+      expect(s.move).toEqual({ from: 'running', to: 'done', cause: 'act' });
       expect(s.facts.pending.size).toBe(0);
       expect(s.facts.toolsDone.size).toBe(0);
     }
@@ -937,5 +939,179 @@ describe('step: windows and restarts (group 4)', () => {
     expect(before.mode).toBe('activity');
     expect([...before.pending]).toEqual(['toolu_1']);
     expect(before.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  });
+});
+
+describe('step: acts (group 5)', () => {
+  const STATUSES = [null, 'running', 'needs-you', 'done', 'ended'] as const;
+  const busy = () => ({ pending: new Set(['toolu_1']), toolsDone: new Set(['toolu_0']) });
+  const waiting = () => ({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  const ACTS: Observation[] = [
+    { kind: 'launched' },
+    { kind: 'resumed', sessionId: 's-1' },
+    { kind: 'resume-aborted' },
+    { kind: 'answered' },
+    { kind: 'replied' },
+    { kind: 'stopped' },
+    { kind: 'restored' },
+  ];
+
+  it('launched: a record off the board goes running, its first prompt awaited', () => {
+    const s = step(facts({ status: null, mode: 'activity' }), { kind: 'launched' });
+    expect(s.move).toEqual({ from: null, to: 'running', cause: 'act' });
+    expect(s.facts.record).toEqual({ firstPromptPending: true, resuming: null });
+    expect(s.facts.mode).toBe('activity');
+    for (const status of STATUSES.filter((x) => x !== null)) {
+      const placed = step(facts({ status }), { kind: 'launched' });
+      expect(placed.move).toBeNull();
+      expect(placed.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+    }
+    // Only Kage's own sessions are launched.
+    const ext = step(facts({ status: null, record: null }), { kind: 'launched' });
+    expect(ext.move).toBeNull();
+    expect(ext.facts.status).toBeNull();
+  });
+
+  it('resumed: an ended record goes running, resuming, its first prompt awaited, nothing pending', () => {
+    for (const sessionId of ['s-1', null]) {
+      const s = step(
+        facts({ status: 'ended', shellEnded: true, startup: true, mode: 'hooks', ...busy() }),
+        { kind: 'resumed', sessionId },
+      );
+      expect(s.move).toEqual({ from: 'ended', to: 'running', cause: 'act' });
+      expect(s.facts.record).toEqual({ firstPromptPending: true, resuming: { sessionId } });
+      expect(s.facts.pending.size).toBe(0);
+      expect(s.facts.toolsDone.size).toBe(0);
+      expect(s.facts).toMatchObject({ shellEnded: false, startup: false, mode: 'hooks' });
+    }
+  });
+
+  it('resume-aborted: a record still resuming goes back to ended, the resume and the wait over (R101)', () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const s = step(facts({ status, ...busy(), record: waiting() }), { kind: 'resume-aborted' });
+      expect(s.move).toEqual({ from: status, to: 'ended', cause: 'act' });
+      expect(s.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+      // As the shim did: the tools are left as they were.
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+    // A hook ended the resume meanwhile: nothing.
+    for (const status of STATUSES) {
+      expect(step(facts({ status }), { kind: 'resume-aborted' }).move).toBeNull();
+    }
+    // Ended or off the board already: nothing either.
+    for (const status of [null, 'ended'] as const) {
+      const s = step(facts({ status, record: waiting() }), { kind: 'resume-aborted' });
+      expect(s.move).toBeNull();
+      expect(s.facts.record).toEqual(waiting());
+    }
+  });
+
+  it('answered: a needs-you session goes running, its tools left as they are', () => {
+    const s = step(facts({ status: 'needs-you', startup: true, ...busy() }), { kind: 'answered' });
+    expect(s.move).toEqual({ from: 'needs-you', to: 'running', cause: 'act' });
+    expect([...s.facts.pending]).toEqual(['toolu_1']);
+    expect(s.facts.startup).toBe(false);
+  });
+
+  it('replied: a session on the board and not ended goes running with nothing pending', () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const s = step(facts({ status, ...busy() }), { kind: 'replied' });
+      expect(s.move).toEqual(
+        status === 'running' ? null : { from: status, to: 'running', cause: 'act' },
+      );
+      expect(s.facts.status).toBe('running');
+      expect(s.facts.pending.size).toBe(0);
+      expect(s.facts.toolsDone.size).toBe(0);
+    }
+    for (const status of [null, 'ended'] as const) {
+      const s = step(facts({ status, ...busy() }), { kind: 'replied' });
+      expect(s.move).toBeNull();
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+  });
+
+  it('stopped: a session on the board and not ended goes ended, in hooks mode, nothing pending', () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const s = step(facts({ status, mode: 'activity', ...busy(), record: waiting() }), {
+        kind: 'stopped',
+      });
+      expect(s.move).toEqual({ from: status, to: 'ended', cause: 'act' });
+      expect(s.facts).toMatchObject({ mode: 'hooks', shellEnded: false });
+      expect(s.facts.pending.size).toBe(0);
+      expect(s.facts.toolsDone.size).toBe(0);
+      expect(s.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+    }
+    for (const status of [null, 'ended'] as const) {
+      const s = step(facts({ status, mode: 'activity', ...busy() }), { kind: 'stopped' });
+      expect(s.move).toBeNull();
+      expect(s.facts.mode).toBe('activity');
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+  });
+
+  it('restored: a session off the board goes on it as ended', () => {
+    for (const record of [{ firstPromptPending: false, resuming: null }, null]) {
+      const s = step(facts({ status: null, record }), { kind: 'restored' });
+      expect(s.move).toEqual({ from: null, to: 'ended', cause: 'act' });
+    }
+    for (const status of STATUSES.filter((x) => x !== null)) {
+      expect(step(facts({ status }), { kind: 'restored' }).move).toBeNull();
+    }
+  });
+
+  it('every act is cause act', () => {
+    for (const catchingUp of [false, true]) {
+      for (const obs of ACTS) expect(causeOf(facts({ catchingUp }), obs)).toBe('act');
+    }
+    // Each act from a status it moves, also while an attach catches up.
+    const from: Record<string, StatusFacts> = {
+      launched: facts({ status: null, catchingUp: true }),
+      resumed: facts({ status: 'ended', catchingUp: true }),
+      'resume-aborted': facts({ status: 'running', catchingUp: true, record: waiting() }),
+      answered: facts({ status: 'needs-you', catchingUp: true }),
+      replied: facts({ status: 'done', catchingUp: true }),
+      stopped: facts({ status: 'running', catchingUp: true }),
+      restored: facts({ status: null, catchingUp: true }),
+    };
+    for (const obs of ACTS) {
+      const f = from[obs.kind];
+      if (!f) throw new Error(obs.kind);
+      expect(step(f, obs).move?.cause).toBe('act');
+    }
+  });
+
+  it('resumed moves only an ended record; answered only needs-you', () => {
+    for (const status of STATUSES) {
+      const ext = step(facts({ status, record: null, ...busy() }), {
+        kind: 'resumed',
+        sessionId: 's-1',
+      });
+      expect(ext.move).toBeNull();
+      expect(ext.facts.record).toBeNull();
+      if (status === 'ended') continue;
+      const s = step(facts({ status, ...busy() }), { kind: 'resumed', sessionId: 's-1' });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(status);
+      expect(s.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+    for (const status of STATUSES.filter((x) => x !== 'needs-you')) {
+      const s = step(facts({ status }), { kind: 'answered' });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(status);
+    }
+  });
+
+  it('act steps never mutate the facts they are given', () => {
+    for (const status of STATUSES) {
+      const before = deepFreeze(
+        facts({ status, mode: 'activity', startup: true, record: waiting(), ...busy() }),
+      );
+      for (const obs of ACTS) expect(step(before, obs).facts).not.toBe(before);
+      expect(before.status).toBe(status);
+      expect(before.mode).toBe('activity');
+      expect([...before.pending]).toEqual(['toolu_1']);
+      expect(before.record).toEqual(waiting());
+    }
   });
 });

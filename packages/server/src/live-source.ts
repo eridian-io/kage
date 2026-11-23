@@ -560,13 +560,12 @@ export class LiveSource implements SessionSource {
     }
     const st = this.#fresh(r.kageId, r);
     st.now = STARTING;
-    st.firstPromptPending = true;
     st.startingSince = null;
     st.lastActivity = this.#clock();
     st.launchedAt = this.#clock();
-    // F17: on the map before its first transition (null → running, act).
+    // F17: on the map before its first transition (null → running, act; the first-prompt wait on).
     this.#sessions.set(r.kageId, st);
-    this.#setStatus(st, 'running', 'act');
+    this.#apply(st, { kind: 'launched' });
     this.#emitNow(st);
     // While ready, its transition (from off the board) re-synced auto-archive already.
     if (!this.#ready) this.#auto?.sync();
@@ -623,17 +622,15 @@ export class LiveSource implements SessionSource {
       return;
     }
     this.#clearTimers(st, ['retire', 'firstPrompt']);
-    st.resuming = { sessionId };
-    st.firstPromptPending = true;
     st.startingSince = null;
     // A new claude in a new window: its startup screens are checked afresh (R9).
     st.claudeExited = true;
     st.hookSeen = false;
     st.idleSeen = false;
-    this.#clearPending(st);
     st.lastActivity = this.#clock();
     st.launchedAt = this.#clock();
-    this.#setStatus(st, 'running', 'act');
+    // Ended → running, act: resuming, the first-prompt wait on, nothing pending.
+    this.#apply(st, { kind: 'resumed', sessionId });
     st.now = STARTING;
     if (st.transcriptPath) void this.#ensureTail(st);
     this.#emitNow(st);
@@ -641,13 +638,13 @@ export class LiveSource implements SessionSource {
 
   /**
    * R101: the resume's window didn't open (tmux failed after resumed()): ended again, the wait
-   * and the resume cleared (#setStatus), the tail retired as for any end. A session that has
+   * and the resume cleared (#apply), the tail retired as for any end. A session that has
    * moved on meanwhile (a window, a hook) is left alone.
    */
   resumeAborted(kageId: string): void {
     const st = this.#sessions.get(kageId);
     if (!st?.record || st.status === 'ended' || st.window || !st.resuming || !this.#running) return;
-    this.#setStatus(st, 'ended', 'act');
+    this.#apply(st, { kind: 'resume-aborted' });
     st.now = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -726,7 +723,7 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(id);
     if (st?.status !== 'needs-you' || !this.#running) return;
     this.#clearTimers(st, ['retry', 'answered']);
-    this.#setStatus(st, 'running', 'act');
+    this.#apply(st, { kind: 'answered' });
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -743,7 +740,7 @@ export class LiveSource implements SessionSource {
     if (text === null || !this.#running || st.gen !== gen || st.status !== 'running') return;
     if (!showsPrompt(text) && showsDenialLast(text)) {
       this.#clearTimers(st, ['idle']);
-      // Running (checked above): done, no tool pending.
+      // Running (checked above): done, no tool pending; act, as the answer it follows (Task 6).
       this.#apply(st, { kind: 'answer-denied' });
       this.#emitNow(st);
       return;
@@ -775,8 +772,8 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended') return;
     this.#clearTimers(st, ['retry', 'answered']);
-    this.#clearPending(st);
-    this.#setStatus(st, 'running', 'act');
+    // Running, act, nothing pending (also when it was running already).
+    this.#apply(st, { kind: 'replied' });
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -890,7 +887,7 @@ export class LiveSource implements SessionSource {
       const fresh = this.#fresh(id, r);
       this.#sessions.set(id, fresh);
       // A restore is Kage's act: back on the board as ended (null → ended).
-      this.#setStatus(fresh, 'ended', 'act');
+      this.#apply(fresh, { kind: 'restored' });
       this.#emitNow(fresh);
       this.#emit({ type: 'archive', count: this.archivedCount() });
       await this.#readLater(fresh);
@@ -958,9 +955,8 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended') return;
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
-    st.mode = 'hooks';
-    this.#setStatus(st, 'ended', 'act');
-    this.#clearPending(st);
+    // Ended, act, in hooks mode with nothing pending.
+    this.#apply(st, { kind: 'stopped' });
     this.#retireTailSoon(st);
     this.#emitNow(st);
     this.#recheckSoon(STOP_RECHECK_MS);
@@ -1667,16 +1663,6 @@ export class LiveSource implements SessionSource {
     if (this.#setAside.length > SET_ASIDE_MAX) this.#setAside.shift();
   }
 
-  /**
-   * No tool is pending (an answer, a denial, an end): the early-PostToolUse notes go too. The
-   * hook path's tool tracking is the status module's (R12, M11); the paths not moved yet use
-   * this until Task 6 (F9).
-   */
-  #clearPending(st: Live): void {
-    st.pending.clear();
-    st.toolsDone.clear();
-  }
-
   /** A claim ends: its window, listing number and pane go together. */
   #dropClaim(windowId: string): void {
     this.#claims.delete(windowId);
@@ -2288,18 +2274,6 @@ export class LiveSource implements SessionSource {
   /** Within 5 s of Kage's reply Escape (Review Focus 6). */
   #replying(st: Live): boolean {
     return st.replying;
-  }
-
-  /**
-   * Migration shim (Task 6 deletes it): a call site not moved to its own observation yet. The
-   * cause defaults to reconcile while an attach catches up, else live; Kage's acts pass 'act'.
-   */
-  #setStatus(st: Live, status: SessionStatus, cause?: Cause): void {
-    this.#apply(st, {
-      kind: 'set',
-      to: status,
-      cause: cause ?? (st.catchingUp ? 'reconcile' : 'live'),
-    });
   }
 
   /** The facts the status module reads off a session. */

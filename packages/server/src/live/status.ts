@@ -50,8 +50,6 @@ export interface StatusStep {
 
 /** One thing Kage learned about a session, as the status module reads it. */
 export type Observation =
-  /** Migration shim: a call site not moved yet names the status and cause. Task 6 deletes it. */
-  | { kind: 'set'; to: SessionStatus; cause: Cause }
   /** The start places a session no window placed: ended. */
   | { kind: 'loaded' }
   /** A Claude Code hook for this session. Always live, also while an attach catches up (F3). */
@@ -93,7 +91,22 @@ export type Observation =
   /** R17: the pane is back at a shell, its window lives on. */
   | { kind: 'claude-exited' }
   /** The window is gone, or tmux is (`serverDown`: the watcher's down). */
-  | { kind: 'window-gone'; serverDown: boolean };
+  | { kind: 'window-gone'; serverDown: boolean }
+  // Kage's acts (group 5): each moves only from the status it names, always with cause act.
+  /** Kage launched a task (adopt): a record off the board goes running, its first prompt awaited. */
+  | { kind: 'launched' }
+  /** B7: Kage opened a window resuming an ended record: running, resuming, nothing pending. */
+  | { kind: 'resumed'; sessionId: string | null }
+  /** R101: the resume's window didn't open; a record still resuming is ended again. */
+  | { kind: 'resume-aborted' }
+  /** Kage answered the prompt: needs-you → running. */
+  | { kind: 'answered' }
+  /** Kage sent a reply: running, nothing pending; an ended session stays ended. */
+  | { kind: 'replied' }
+  /** Kage killed the window: ended, hooks mode, nothing pending. */
+  | { kind: 'stopped' }
+  /** A restore: back on the board (null → ended). */
+  | { kind: 'restored' };
 
 /** What the first-prompt fallback's capture showed; `failed`: no capture, twice. */
 export type FirstPromptScreen = 'startup' | 'prompt' | 'busy' | 'idle' | 'failed';
@@ -126,8 +139,16 @@ export function permissionCounts(facts: StatusFacts, e: HookEvent): boolean {
 /** Why the transition an observation makes would happen (the whole rule). */
 export function causeOf(facts: StatusFacts, obs: Observation): Cause {
   switch (obs.kind) {
-    case 'set':
-      return obs.cause;
+    case 'launched':
+    case 'resumed':
+    case 'resume-aborted':
+    case 'answered':
+    case 'replied':
+    case 'stopped':
+    case 'restored':
+    // Task 6: the answer check sees the No Kage itself sent (only markAnswered arms it).
+    case 'answer-denied':
+      return 'act';
     case 'loaded':
       return 'reconcile';
     case 'hook':
@@ -160,8 +181,6 @@ export function step(facts: StatusFacts, obs: Observation): StatusStep {
  */
 function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
   switch (obs.kind) {
-    case 'set':
-      return obs.to;
     case 'loaded':
       return facts.status ?? 'ended';
     case 'hook': {
@@ -223,7 +242,32 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
     case 'claude-exited':
     case 'window-gone':
       return 'ended';
+    // Kage's acts (group 5).
+    case 'launched':
+      return launches(facts) ? 'running' : facts.status;
+    case 'resumed':
+      return resumes(facts) ? 'running' : facts.status;
+    case 'resume-aborted':
+      return onBoard(facts) && facts.record?.resuming ? 'ended' : facts.status;
+    case 'answered':
+      return facts.status === 'needs-you' ? 'running' : facts.status;
+    case 'replied':
+      return onBoard(facts) ? 'running' : facts.status;
+    case 'stopped':
+      return onBoard(facts) ? 'ended' : facts.status;
+    case 'restored':
+      return facts.status ?? 'ended';
   }
+}
+
+/** Only a record off the board is launched (adopt builds it fresh). */
+function launches(facts: StatusFacts): boolean {
+  return facts.status === null && facts.record !== null;
+}
+
+/** B7: only an ended record is resumed. */
+function resumes(facts: StatusFacts): boolean {
+  return facts.status === 'ended' && facts.record !== null;
 }
 
 /** R141: a record that was done stays done whatever the pane drew; else the 5 s rule. */
@@ -259,11 +303,29 @@ function endsTurn(facts: StatusFacts): boolean {
 /** What the observation sets, whether it moves the status or not. */
 function observe(facts: StatusFacts, obs: Observation): StatusFacts {
   switch (obs.kind) {
-    case 'set':
     case 'loaded':
     case 'transcript-question':
     case 'activity':
+    case 'resume-aborted':
+    case 'answered':
+    case 'restored':
       return { ...facts };
+    case 'launched':
+      return launches(facts) && facts.record
+        ? { ...facts, record: { ...facts.record, firstPromptPending: true } }
+        : { ...facts };
+    case 'resumed':
+      return resumes(facts)
+        ? {
+            ...facts,
+            ...noTools(),
+            record: { firstPromptPending: true, resuming: { sessionId: obs.sessionId } },
+          }
+        : { ...facts };
+    case 'replied':
+      return onBoard(facts) ? { ...facts, ...noTools() } : { ...facts };
+    case 'stopped':
+      return onBoard(facts) ? { ...facts, mode: 'hooks', ...noTools() } : { ...facts };
     case 'idle':
       // R104: the quiet ends the resume too: its replayed question no longer hides a new one.
       return goesIdle(facts)

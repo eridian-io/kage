@@ -5638,3 +5638,88 @@ describe('LiveSource: windows and restarts through the status module (Task 5)', 
     await s.source.stop();
   });
 });
+
+describe("LiveSource: Kage's acts through the status module (Task 6)", () => {
+  const moves = (events: SourceEvent[], id: string) =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && e.transition.id === id
+        ? [[e.transition.from, e.transition.to, e.transition.cause]]
+        : [],
+    );
+  async function permission() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    s.events.length = 0;
+    return s;
+  }
+
+  it('a launch goes on the board running with cause act, "Starting Claude…"', async () => {
+    const s = setup();
+    await s.source.start();
+    await s.source.adopt(rec({ kageId: 'k-9', windowId: null }));
+    expect(moves(s.events, 'k-9')).toEqual([[null, 'running', 'act']]);
+    expect(s.source.get('k-9')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    await s.source.stop();
+  });
+
+  it('a resume whose window never opened: ended → running → ended, both act (R101)', async () => {
+    const s = setup({ records: [rec({ windowId: null, sessionId: 's-1' })] });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.events.length = 0;
+    s.source.resumed('k-1', 's-1');
+    expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    s.source.resumeAborted('k-1');
+    expect(moves(s.events, 'k-1')).toEqual([
+      ['ended', 'running', 'act'],
+      ['running', 'ended', 'act'],
+    ]);
+    await s.source.stop();
+  });
+
+  it("an answer the check shows was a No: needs-you → running → done, all act (Kage's own check)", async () => {
+    const s = await permission();
+    s.tmux.setCapture('%2', DENIED_PANE);
+    s.source.markAnswered('k-1');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(moves(s.events, 'k-1')).toEqual([
+      ['needs-you', 'running', 'act'],
+      ['running', 'done', 'act'],
+    ]);
+    await s.source.stop();
+  });
+
+  it("the answer check finding Claude's next prompt keeps that move live", async () => {
+    const s = await permission();
+    s.source.markAnswered('k-1');
+    await vi.advanceTimersByTimeAsync(500);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    expect(moves(s.events, 'k-1')).toEqual([
+      ['needs-you', 'running', 'act'],
+      ['running', 'needs-you', 'live'],
+    ]);
+    await s.source.stop();
+  });
+
+  it('a reply, then a stop: needs-you → running → ended, both act', async () => {
+    const s = await permission();
+    s.source.markReplied('k-1');
+    s.source.markStopped('k-1');
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(moves(s.events, 'k-1')).toEqual([
+      ['needs-you', 'running', 'act'],
+      ['running', 'ended', 'act'],
+    ]);
+    await s.source.stop();
+  });
+});
