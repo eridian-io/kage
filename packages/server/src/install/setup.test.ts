@@ -539,6 +539,10 @@ describe('kage setup: the questions', () => {
     const h = harness();
     expect(await setupCommand(['--yes', '--host', 'box'], h.io, h.deps)).toBe(0);
     expect(readCfg().host).toBeNull();
+    // R130: the guard stays, and setup says what Kage answers to and how to opt in by hand.
+    expect(h.out).toContain(
+      'Kage answers to box.tail1234.ts.net. To use "box", set "host" in ~/.config/kage/config.json by hand (this trusts everyone on your local network).',
+    );
   });
 
   it('--host that Kage cannot use, with --yes: exit 1, nothing written', async () => {

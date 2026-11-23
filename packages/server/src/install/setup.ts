@@ -331,7 +331,7 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
 
   const projects = await askProjects(io, deps, f, current, ask, confirm);
   if (projects === null) return 1;
-  const host = await askHost(io, deps, f, current, ask);
+  const host = await askHost(io, deps, f, current, ask, shown);
   if (host === undefined) return 1;
   const port = await askPort(io, f, current, ask);
   if (port === null) return 1;
@@ -512,6 +512,7 @@ async function askHost(
   f: Flags,
   current: Record<string, unknown> | null,
   ask: Ask,
+  shown: string,
 ): Promise<{ value: string | null; change: boolean; at: string | null } | undefined> {
   const cur = typeof current?.host === 'string' && current.host.trim() !== '' ? current.host : null;
   let statusJson = '';
@@ -533,7 +534,13 @@ async function askHost(
     if (answer === def && cur !== null) return { value: cur, change: false, at };
     const typed = answer.toLowerCase().replace(/\.$/, '');
     if (answer === def || (dns !== null && (typed === short || typed === dns))) {
-      // The Tailscale address: a configured host goes back to unset (null).
+      // The Tailscale address: a configured host goes back to unset (null). A typed short name
+      // isn't written (it may not resolve at start), so say what Kage answers to instead (R130).
+      if (answer !== def && typed === short) {
+        io.out(
+          `Kage answers to ${dns}. To use "${short}", set "host" in ${shown} by hand (this trusts everyone on your local network).`,
+        );
+      }
       return { value: null, change: cur !== null || current?.host === '', at };
     }
     const problem = await hostProblem(answer, lookup, own);

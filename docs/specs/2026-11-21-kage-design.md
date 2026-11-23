@@ -292,7 +292,7 @@ Two channels tell the developer that a session needs them: ntfy on the phone, an
 
 **The board** (W1):
 - **Title count.** The tab title is "(N) kage" while N sessions need you, and "kage" with none.
-- **Browser notifications** need a secure context (https or `localhost`): the browser doesn't offer `Notification` on `http://my-pc:8080` over the tailnet, so there the board has the title count and ntfy. In a secure context the user turns them on from the command palette, which asks the browser. A notification shows only when a session moves into needs you and the page has no focus, with the same text as a ping. A click focuses the tab and selects the session; answering it elsewhere closes the notification.
+- **Browser notifications** need a secure context (https or `localhost`): the browser doesn't offer `Notification` on `http://my-pc.tail1234.ts.net:8080` over the tailnet, so there the board has the title count and ntfy. In a secure context the user turns them on from the command palette, which asks the browser. A notification shows only when a session moves into needs you and the page has no focus, with the same text as a ping. A click focuses the tab and selects the session; answering it elsewhere closes the notification.
 - **`#s=<id>` links.** A board address with `#s=<id>` selects that session on load and then drops the hash. An id the first snapshot doesn't hold is ignored.
 
 ### 5.10 Security
@@ -309,7 +309,7 @@ Kage can run commands on the machine, so the defaults are strict:
   - Names are compared case-insensitively, with the port. One trailing dot is dropped for a multi-label name only (§5.6).
   - Even the MagicDNS name relies on the client device using Tailscale DNS; only the bound IP can't be rebound.
   - **Not trusted:** `os.hostname()` and its short form, any other `.local` name or single label, and `name` from the config (the host pill's label only). On a café or office network a device can answer for those names over mDNS (`.local`) or LLMNR and NBT-NS (single labels, on Windows), point one at its own page, then rebind it to Kage's address and act as a page on Kage's origin. B12 reasoned only about public DNS. Setting `host` to such a name means trusting everyone on your local network.
-  - Kage prints `http://<configured host name, else the MagicDNS name, else the bound IP>:<port>` (`kage status` and `kage doctor` show the same address), so the address it prints always passes its own guard. The ping links use the configured host, else the MagicDNS name, else the bound IP. `kage setup` offers the MagicDNS name as the host question's default; typing it or its first label leaves `host` unset, and its "didn't answer" line uses the configured host, else the MagicDNS name, else the Tailscale IP.
+  - Kage prints `http://<configured host name, else the MagicDNS name, else the bound IP>:<port>` (`kage status` and `kage doctor` show the same address), so the address it prints always passes its own guard. The ping links use the configured host, else the MagicDNS name, else the bound IP. `kage setup` offers the MagicDNS name as the host question's default; typing it or its first label leaves `host` unset (for the first label setup says so and how to set it by hand, §6.9), and its "didn't answer" line uses the configured host, else the MagicDNS name, else the Tailscale IP.
   - A refused `Host` or `Origin` gets 403 and a sentence that says what to set (§6.9).
 - **CSRF:** every POST and WebSocket needs the header `X-Kage: 1` and a matching `Origin`. As built (amended 2026-11-22, phase 4): a browser can't add `X-Kage` to a WebSocket, so the terminal's upgrade is checked **before it happens**, in this order: the path, `GET` with `Upgrade: websocket`, the `Host` (403), the **exact** `Origin` (`http://<allowed name>:<port>`; a missing one is refused, 403), a live login session from the same address when a token is set (401; amended 2026-11-23, hardening), the sub-protocol `kage.term.v1` (400) and the size in the query (400). A page on another origin can't open a terminal.
 - **Optional token** (as built, amended 2026-11-21, phase 3; sessions amended 2026-11-23, hardening): `token` in the config, at least 16 characters (a shorter one stops Kage at start). When set, every `/api/*` route and the terminal's upgrade need a live login session, except `GET /api/auth`, `POST /api/login` and `POST /api/logout`.
@@ -435,7 +435,7 @@ curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | s
 2. asks for the projects folder (it suggests `~/projects` or the folder that holds most git repos), confirms the Tailscale host name and port, and asks whether to set an access token;
 3. writes `~/.config/kage/config.json`;
 4. installs and starts a service: a systemd user unit on Linux (and offers `loginctl enable-linger`, so Kage runs without a login), or a launchd agent on macOS;
-5. prints the address to open, for example `http://my-pc:8080`, and checks that it answers.
+5. prints the address to open, for example `http://my-pc.tail1234.ts.net:8080`, and checks that it answers.
 
 **Other commands:** `kage status` (the service, the address, the session count), `kage update` (downloads the latest release the same verified way, then restarts the service), `kage uninstall` (removes the service and the program; it keeps sessions, worktrees and the config unless `--purge` is given), and `kage doctor` (runs the requirement checks again).
 
@@ -682,6 +682,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
 - **Refused Host and Origin** (403, plain text; the HTTP guards and the terminal's upgrade; security I2). They replace the bare words of §5.6 and §6.6:
   - a refused Host: “Open the address "kage status" shows. Kage doesn't answer to this name. To use this name, set "host" to it in Kage's config file (this trusts everyone on your local network).”
   - a refused or missing Origin: “Open the address "kage status" shows. Kage only takes requests from a page on its own address. To use this page's name, set "host" to it in Kage's config file (this trusts everyone on your local network).”
+- **Setup, a typed MagicDNS short name** (R130). It is never written, so setup says what Kage answers to: “Kage answers to <MagicDNS name>. To use "<short name>", set "host" in <config file> by hand (this trusts everyone on your local network).”
 - **No token, no live mode** (security I3; §5.10):
   - `kage serve` refuses live mode without a token or the opt-out, on one line: "No access token is set, so anyone who can reach Kage could run commands as you." followed by “Run kage setup to set one, or add "allowNoToken": true to <config path>.”;
   - with the opt-out, the startup warning stays as it was: "No token set: anyone on your tailnet can start and approve tasks.";

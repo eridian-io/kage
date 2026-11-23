@@ -19,7 +19,7 @@ const MAX_EARLY = 256;
  */
 export interface ServerStatus {
   version: string;
-  /** The address `kage serve` printed, e.g. "http://box:8080". */
+  /** The address `kage serve` printed, e.g. "http://box.tail1234.ts.net:8080". */
   url: string;
   sessions: number;
   needsYou: number;

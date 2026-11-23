@@ -262,7 +262,7 @@ When you get a ping:
 
 **What the ntfy server sees.** The topic, a title such as "my-app needs you", the task text (cut to 100 characters), the board link (your machine's name, the port and the session's id), and your PC's address and the time. It never gets the question, the output, a command, a branch or a path. A window Kage didn't start has no task to show: its ping says "Claude needs you" with the PC's name. Kage logs no topic, token or server address; a failure is named by a status or an error code only. If the task text itself is private, use your own ntfy server, or leave ntfy off.
 
-**In the browser.** The tab's title shows how many sessions need you, as "(2) kage". Browser notifications need `https:` or `localhost`: a browser doesn't offer them on a plain `http://my-pc:8080` over the tailnet. Over plain tailnet `http:`, you get the tab title and ntfy. On `localhost`, open the command palette and choose "Turn on browser notifications". A notification shows only when a session starts to need you while the page has no focus, with the same text as a ping.
+**In the browser.** The tab's title shows how many sessions need you, as "(2) kage". Browser notifications need `https:` or `localhost`: a browser doesn't offer them on a plain `http://my-pc.tail1234.ts.net:8080` over the tailnet. Over plain tailnet `http:`, you get the tab title and ntfy. On `localhost`, open the command palette and choose "Turn on browser notifications". A notification shows only when a session starts to need you while the page has no focus, with the same text as a ping.
 
 ## Command palette
 
@@ -294,7 +294,7 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | Key | Default | Meaning |
 |---|---|---|
 | `name` | The PC's hostname, before the first dot | The name in the dashboard's host pill. It is only a label: Kage doesn't answer to it |
-| `host` | `null` | The address to listen on. `null` uses your Tailscale IP (from `tailscale ip -4`). Kage only accepts a Tailscale or loopback address, or a name that resolves to one. Kage answers to its Tailscale IP and full MagicDNS name (`box.tail1234.ts.net`), and to the name you set here. To use the short name (`box`), set it here. A `.local` name or a single word here means trusting everyone on your local network |
+| `host` | `null` | The address to listen on. `null` uses your Tailscale IP (from `tailscale ip -4`). Kage only accepts a Tailscale or loopback address, or a name that resolves to one. Kage answers to its Tailscale IP and full MagicDNS name (`box.tail1234.ts.net`), and to the name you set here. To use the short name (`box`), set it by hand in the config file; `kage setup` won't write it. A `.local` name or a single word here means trusting everyone on your local network |
 | `port` | `8080` | The port the dashboard listens on |
 | `projectsRoot` | `"~/projects"` | The folder that holds your git projects |
 | `tmuxSession` | `"kage"` | The tmux session Kage uses for agent windows |

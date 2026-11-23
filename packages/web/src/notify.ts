@@ -4,9 +4,9 @@
  * `click`). Event driven: no timers, no polling.
  *
  * Browsers expose `Notification` only in a secure context (https, localhost), so a board opened
- * as `http://my-pc:8080` over the tailnet has the title count and ntfy, not notifications. The
- * notification's text and construction are a lazy chunk (notify-show.ts), loaded only when one
- * may show.
+ * as `http://my-pc.tail1234.ts.net:8080` over the tailnet has the title count and ntfy, not
+ * notifications. The notification's text and construction are a lazy chunk (notify-show.ts),
+ * loaded only when one may show.
  */
 import { LIMITS, type ServerEvent, type Session, type SessionStatus } from '@kage/shared';
 import { computed, effect, type Signal, signal } from '@preact/signals';
