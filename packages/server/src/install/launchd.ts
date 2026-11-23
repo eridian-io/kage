@@ -95,9 +95,8 @@ export function renderPlist(spec: ServiceSpec, logPath: string): string {
     // daemonises into a group of its own anyway; this makes sure. Documented, not observed (§7.5).
     '  <key>AbandonProcessGroup</key>',
     '  <true/>',
-    // Security M8: what the agent creates is 0600 (umask 077 = 63), on a home that is 0755.
-    '  <key>Umask</key>',
-    '  <integer>63</integer>',
+    // No Umask key: every child (tmux, its shells, git, Claude) would inherit it. The log file's
+    // privacy comes from creating it 0600 at install (security M8); launchd only appends to it.
     '  <key>StandardOutPath</key>',
     str('  ', logPath),
     '  <key>StandardErrorPath</key>',

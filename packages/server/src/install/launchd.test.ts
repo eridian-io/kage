@@ -109,9 +109,6 @@ describe('renderPlist', () => {
         // R122: a stop never takes the tmux server's process group along.
         '  <key>AbandonProcessGroup</key>',
         '  <true/>',
-        // security M8: files the agent creates are 0600 (umask 077).
-        '  <key>Umask</key>',
-        '  <integer>63</integer>',
         '  <key>StandardOutPath</key>',
         '  <string>/Users/u/Library/Logs/kage.log</string>',
         '  <key>StandardErrorPath</key>',
@@ -187,8 +184,9 @@ describe('launchdManager', () => {
     ]);
   });
 
-  it('the plist sets Umask 63, and the log file is created 0600', async () => {
-    expect(renderPlist(SPEC, logPath())).toContain('  <key>Umask</key>\n  <integer>63</integer>\n');
+  it('the plist sets no Umask, and the log file is created 0600', async () => {
+    // A launchd Umask is inherited by tmux, its shells, git and Claude: their files would be 0600.
+    expect(renderPlist(SPEC, logPath())).not.toContain('Umask');
     // Made before launchd opens it: bootstrap finds it there already, private.
     let atBootstrap: number | null = null;
     const { run } = fakeRun((_c, args) => {
