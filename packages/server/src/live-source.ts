@@ -1251,9 +1251,7 @@ export class LiveSource implements SessionSource {
       if ((st.status as SessionStatus) === 'ended') continue;
       this.#rememberResume(st, pane);
       this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
-      st.mode = 'hooks';
-      this.#clearPending(st);
-      this.#setStatus(st, 'ended');
+      this.#apply(st, { kind: 'window-gone', serverDown: false });
       this.#retireTailSoon(st);
       this.#emitNow(st);
     }
@@ -1287,8 +1285,6 @@ export class LiveSource implements SessionSource {
       st.record.windowId = w.windowId;
       this.#saveSoon();
     }
-    st.mode = 'activity';
-    this.#clearPending(st);
     if (this.#claudeGone(st, w)) {
       this.#endInWindow(st);
       if (!st.tail && st.transcriptPath) await this.#readOnce(st);
@@ -1300,7 +1296,8 @@ export class LiveSource implements SessionSource {
     // reset its doneAt (auto-archive's age) and, once the turn-end check settled it, sent a done
     // ping for a turn that ended before the restart.
     const wasDone = st.record?.doneAt != null && st.transcriptPath !== null;
-    this.#setStatus(st, wasDone ? 'done' : this.#activityStatus(st));
+    // Activity mode, no tool pending; then done or running (status module).
+    this.#apply(st, { kind: 'attached', active: this.#active(st), wasDone });
     if (st.transcriptPath) {
       const hooks = st.hookCount;
       await this.#ensureTail(st);
@@ -1349,10 +1346,8 @@ export class LiveSource implements SessionSource {
   /** Ended while the window lives on (claude exited to a shell); a SessionStart revives it. */
   #endInWindow(st: Live): void {
     this.#clearTimers(st, ['idle', 'capture', 'retry']);
-    st.mode = 'hooks';
-    this.#setStatus(st, 'ended');
-    st.shellEnded = true;
-    this.#clearPending(st);
+    // Ended and shellEnded, hooks mode, no tool pending (status module).
+    this.#apply(st, { kind: 'claude-exited' });
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -1393,13 +1388,15 @@ export class LiveSource implements SessionSource {
     for (const e of mine) this.#applyHook(st, e);
   }
 
-  /** The window is gone (or tmux is down): a Kage session is ended. */
-  #detach(st: Live): void {
+  /**
+   * The window is gone (or tmux is: `serverDown`, the watcher's down, reconcile): a Kage session
+   * is ended, with no tool pending (status module).
+   */
+  #detach(st: Live, serverDown = false): void {
     st.window = null;
     this.#clearTimers(st, ['emit', 'retire']);
-    this.#setStatus(st, 'ended');
+    this.#apply(st, { kind: 'window-gone', serverDown });
     st.gen++;
-    this.#clearPending(st);
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -1459,7 +1456,7 @@ export class LiveSource implements SessionSource {
         this.#unknownTimer = null;
         for (const st of [...this.#sessions.values()]) {
           if (!st.record) this.#removeSession(st);
-          else if (st.window) this.#detach(st);
+          else if (st.window) this.#detach(st, true);
         }
         break;
       case 'activity':
@@ -1519,8 +1516,9 @@ export class LiveSource implements SessionSource {
     }, wait);
   }
 
-  #activityStatus(st: Live): SessionStatus {
-    return this.#clock() - st.lastActivity < ACTIVE_MS ? 'running' : 'done';
+  /** The pane drew within the last 5 s. */
+  #active(st: Live): boolean {
+    return this.#clock() - st.lastActivity < ACTIVE_MS;
   }
 
   /**
@@ -2001,17 +1999,21 @@ export class LiveSource implements SessionSource {
   #rebuildFromTail(st: Live, wasDone = false): void {
     const tail = st.tail;
     if (!tail) return;
-    st.mode = 'hooks';
     st.now = tail.now();
     const q = tail.question();
     st.tailQuestionKey = questionKey(q);
+    // Hooks mode; needs-you, running, or as attached (R141 keeps a done session done).
+    this.#apply(st, {
+      kind: 'rebuilt',
+      question: q !== null,
+      turn: st.now !== null,
+      active: this.#active(st),
+      wasDone,
+    });
     if (q) {
-      this.#setStatus(st, 'needs-you');
       st.question = q;
       st.promptKind = 'ask';
-    } else if (st.now !== null) this.#setStatus(st, 'running');
-    // R141: done before the restart and no turn since in the transcript: still done.
-    else this.#setStatus(st, wasDone ? 'done' : this.#activityStatus(st));
+    }
     // A restart within 5 s of a lost Stop: running from recent activity, but the transcript's
     // turn has ended, so the pane decides as after a turn end (I2).
     if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st, 'reconcile');
@@ -2217,7 +2219,7 @@ export class LiveSource implements SessionSource {
       if (st.startup) {
         // A screen answered: the wait for the next one is a fresh one (its own 60 s of looks).
         st.startingSince = null;
-        const active = this.#activityStatus(st) === 'running';
+        const active = this.#active(st);
         this.#apply(st, { kind: 'startup-gone', active });
         st.question = null;
         this.#scheduleIdle(st);

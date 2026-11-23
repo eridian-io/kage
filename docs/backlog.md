@@ -143,7 +143,7 @@ Left out of hardening by its scope ruling (R126), or parked by its reviews. None
   - P11: `Output` reads `scrollHeight` on every render of the selected session. Scroll only when a line was added or the session changed.
 - **B78** Parked from the review of the restart fixes (eebfcb7, 3044e5f):
   - in the restart branch that keeps a done session done, a busy footer in the attach capture doesn't count as running, so a turn already in progress shows done until its first tool hook;
-  - two tests to add: a restarted done session whose transcript shows a question becomes needs-you, and one that shows a turn in progress becomes running;
+  - (done, transitions Task 5: the `rebuilt` rows in `live/status.test.ts` and two restart tests in `live-source.test.ts`) two tests to add: a restarted done session whose transcript shows a question becomes needs-you, and one that shows a turn in progress becomes running;
   - `doneAt` can be stale after a crash before the debounced state save.
 - **B79** Parked from the setup review (hardening Task 17): an error thrown, not returned, after the config is written skips showing the saved ntfy topic, so a saved topic may never be shown. Handle it like a returned failure.
 - **B80** (hardening Task 19, R150) A unit folder with a space can't be read from systemd's `UnitPath`, which is space-separated. Such a home gives a unit that doesn't load, which doctor shows.

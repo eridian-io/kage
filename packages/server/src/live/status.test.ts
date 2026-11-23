@@ -749,3 +749,193 @@ describe('step: the screen and activity (group 3)', () => {
     expect(before.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
   });
 });
+
+describe('step: windows and restarts (group 4)', () => {
+  const STATUSES = [null, 'running', 'needs-you', 'done', 'ended'] as const;
+  const busy = () => ({ pending: new Set(['toolu_1']), toolsDone: new Set(['toolu_0']) });
+  const causeFor = (catchingUp: boolean) => (catchingUp ? 'reconcile' : 'live');
+
+  it('attached: a record that was done stays done, whatever the pane drew (R141)', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        for (const active of [false, true]) {
+          const s = step(facts({ status, mode: 'hooks', catchingUp, ...busy() }), {
+            kind: 'attached',
+            active,
+            wasDone: true,
+          });
+          expect(s.facts.status).toBe('done');
+          expect(s.move).toEqual(
+            status === 'done' ? null : { from: status, to: 'done', cause: causeFor(catchingUp) },
+          );
+          expect(s.facts.mode).toBe('activity');
+          expect(s.facts.pending.size).toBe(0);
+          expect(s.facts.toolsDone.size).toBe(0);
+        }
+      }
+    }
+  });
+
+  it('attached: running when the pane drew in the last 5 s, else done', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        for (const active of [false, true]) {
+          const to = active ? 'running' : 'done';
+          const s = step(
+            facts({ status, catchingUp, shellEnded: status === 'ended', startup: true, ...busy() }),
+            { kind: 'attached', active, wasDone: false },
+          );
+          expect(s.facts.status).toBe(to);
+          expect(s.move).toEqual(
+            status === to ? null : { from: status, to, cause: causeFor(catchingUp) },
+          );
+          expect(s.facts.mode).toBe('activity');
+          expect(s.facts.pending.size).toBe(0);
+          expect(s.facts.toolsDone.size).toBe(0);
+          if (s.move) {
+            expect(s.facts.shellEnded).toBe(false);
+            expect(s.facts.startup).toBe(false);
+          }
+        }
+      }
+    }
+    // The resume and the first-prompt wait are the hooks' and P3F1's to end, not the attach's.
+    const r = { firstPromptPending: true, resuming: { sessionId: 's-1' } };
+    const kept = step(facts({ status: null, record: r }), {
+      kind: 'attached',
+      active: true,
+      wasDone: false,
+    });
+    expect(kept.facts.record).toEqual(r);
+  });
+
+  it('rebuilt: a question is needs-you and a turn in progress is running, also for a session that was done (B78)', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of ['running', 'needs-you', 'done'] as const) {
+        for (const wasDone of [false, true]) {
+          for (const active of [false, true]) {
+            const base = facts({ status, mode: 'activity', catchingUp, ...busy() });
+            const q = step(base, { kind: 'rebuilt', question: true, turn: true, active, wasDone });
+            expect(q.facts.status).toBe('needs-you');
+            expect(q.move).toEqual(
+              status === 'needs-you'
+                ? null
+                : { from: status, to: 'needs-you', cause: causeFor(catchingUp) },
+            );
+            expect(q.facts.mode).toBe('hooks');
+            // The pending tools stay: the transcript doesn't say which tool waits.
+            expect([...q.facts.pending]).toEqual(['toolu_1']);
+            const turn = step(base, {
+              kind: 'rebuilt',
+              question: false,
+              turn: true,
+              active,
+              wasDone,
+            });
+            expect(turn.facts.status).toBe('running');
+            expect(turn.facts.mode).toBe('hooks');
+            expect(turn.move).toEqual(
+              status === 'running'
+                ? null
+                : { from: status, to: 'running', cause: causeFor(catchingUp) },
+            );
+            // Neither: as attached (R141 keeps a done session done).
+            const neither = step(base, {
+              kind: 'rebuilt',
+              question: false,
+              turn: false,
+              active,
+              wasDone,
+            });
+            expect(neither.facts.status).toBe(wasDone || !active ? 'done' : 'running');
+            expect(neither.facts.mode).toBe('hooks');
+          }
+        }
+      }
+    }
+  });
+
+  it('claude-exited: ended, shellEnded, hooks mode, nothing pending', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const s = step(
+          facts({
+            status,
+            mode: 'activity',
+            catchingUp,
+            record: { firstPromptPending: true, resuming: { sessionId: 's-1' } },
+            ...busy(),
+          }),
+          { kind: 'claude-exited' },
+        );
+        expect(s.facts.status).toBe('ended');
+        expect(s.facts.shellEnded).toBe(true);
+        expect(s.facts.mode).toBe('hooks');
+        expect(s.facts.pending.size).toBe(0);
+        expect(s.facts.toolsDone.size).toBe(0);
+        if (status === 'ended') expect(s.move).toBeNull();
+        else {
+          expect(s.move).toEqual({ from: status, to: 'ended', cause: causeFor(catchingUp) });
+          // A move into ended ends the resume and the first-prompt wait (F4).
+          expect(s.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+        }
+      }
+    }
+  });
+
+  it('window-gone: ended, live; with the server down, reconcile', () => {
+    for (const serverDown of [false, true]) {
+      for (const status of STATUSES) {
+        const s = step(facts({ status, mode: 'activity', ...busy() }), {
+          kind: 'window-gone',
+          serverDown,
+        });
+        expect(s.facts.status).toBe('ended');
+        expect(s.facts.mode).toBe('hooks');
+        expect(s.facts.pending.size).toBe(0);
+        expect(s.facts.toolsDone.size).toBe(0);
+        expect(s.move).toEqual(
+          status === 'ended'
+            ? null
+            : { from: status, to: 'ended', cause: serverDown ? 'reconcile' : 'live' },
+        );
+      }
+    }
+    // A window gone while an attach catches up is reconcile too; and an ended shell window
+    // (claude exited, then the window closed) keeps its shellEnded, as before.
+    const catching = step(facts({ status: 'done', catchingUp: true }), {
+      kind: 'window-gone',
+      serverDown: false,
+    });
+    expect(catching.move?.cause).toBe('reconcile');
+    const shell = step(facts({ status: 'ended', shellEnded: true }), {
+      kind: 'window-gone',
+      serverDown: true,
+    });
+    expect(shell.move).toBeNull();
+    expect(shell.facts.shellEnded).toBe(true);
+  });
+
+  it('window and restart steps never mutate the facts they are given', () => {
+    const before = deepFreeze(
+      facts({
+        status: 'needs-you',
+        mode: 'activity',
+        startup: true,
+        record: { firstPromptPending: true, resuming: { sessionId: 's-1' } },
+        ...busy(),
+      }),
+    );
+    const observations: Observation[] = [
+      { kind: 'attached', active: true, wasDone: false },
+      { kind: 'rebuilt', question: false, turn: true, active: false, wasDone: true },
+      { kind: 'claude-exited' },
+      { kind: 'window-gone', serverDown: true },
+    ];
+    for (const obs of observations) expect(step(before, obs).facts).not.toBe(before);
+    expect(before.status).toBe('needs-you');
+    expect(before.mode).toBe('activity');
+    expect([...before.pending]).toEqual(['toolu_1']);
+    expect(before.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  });
+});

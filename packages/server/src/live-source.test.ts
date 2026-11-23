@@ -5542,3 +5542,99 @@ describe('LiveSource: the screen and activity through the status module (Task 4)
     await s.source.stop();
   });
 });
+
+describe('LiveSource: windows and restarts through the status module (Task 5)', () => {
+  const transitions = (events: SourceEvent[], id?: string): Transition[] =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && (!id || e.transition.id === id) ? [e.transition] : [],
+    );
+  const q: Question = { text: 'Which separator?', options: ['Dash', 'Underscore'] };
+
+  it('watcher down then up with a session on a question: every reattach transition is reconcile', async () => {
+    const s = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      tails: { [TRANSCRIPT]: { question: q, now: 'Asking a question' } },
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    s.events.length = 0;
+    s.watcher.emit({ type: 'down' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+    const moves = transitions(s.events, 'k-1');
+    expect(moves[0]).toMatchObject({ from: 'needs-you', to: 'ended' });
+    expect(moves.at(-1)).toMatchObject({ to: 'needs-you' });
+    expect(moves.map((t) => t.cause)).toEqual(moves.map(() => 'reconcile'));
+    await s.source.stop();
+  });
+
+  it('a window first listed while Kage watches attaches with cause live', async () => {
+    const s = setup();
+    await s.source.start();
+    await flush();
+    s.tmux.windows = [win()];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('ext-@1')?.status).toBe('done');
+    const moves = transitions(s.events, 'ext-@1');
+    expect(moves.map((t) => [t.from, t.to, t.cause])).toEqual([[null, 'done', 'live']]);
+    await s.source.stop();
+  });
+
+  it('a restarted done session whose transcript shows a question is needs-you (B78)', async () => {
+    const s = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT, doneAt: T0 - 10_000 })],
+      tails: { [TRANSCRIPT]: { question: q, now: 'Asking a question' } },
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+    expect(s.source.finishTarget('k-1')?.record?.doneAt).toBeNull();
+    expect(transitions(s.events, 'k-1').every((t) => t.cause === 'reconcile')).toBe(true);
+    await s.source.stop();
+  });
+
+  it('a restarted done session whose transcript shows a turn in progress is running (B78)', async () => {
+    const s = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT, doneAt: T0 - 10_000 })],
+      tails: {
+        [TRANSCRIPT]: {
+          now: 'Running npm test',
+          lines: [{ kind: 'tool', text: 'Bash', detail: 'npm test' }],
+        },
+      },
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Running npm test' });
+    expect(transitions(s.events, 'k-1').every((t) => t.cause === 'reconcile')).toBe(true);
+    await s.source.stop();
+  });
+
+  it('claude exiting to a shell ends the session in its window, live, and a window gone after it keeps it ended', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    s.events.length = 0;
+    s.tmux.windows = [kageWin({ command: 'bash' })];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.tmux.windows = [];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(transitions(s.events, 'k-1').map((t) => [t.from, t.to, t.cause])).toEqual([
+      ['running', 'ended', 'live'],
+    ]);
+    await s.source.stop();
+  });
+});

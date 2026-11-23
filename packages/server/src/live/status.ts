@@ -82,7 +82,18 @@ export type Observation =
   /** A prompt on screen at start, or in activity mode. */
   | { kind: 'prompt-shown' }
   /** R11's pane fallback: the prompt went away with no hook; `denial`: the denial line shows. */
-  | { kind: 'prompt-gone'; denial: boolean };
+  | { kind: 'prompt-gone'; denial: boolean }
+  /**
+   * §5.8a: a window linked to its session (start, the watcher's up, a new window, fg). `active`:
+   * the pane drew within the last 5 s; `wasDone`: the record was done before (R141).
+   */
+  | { kind: 'attached'; active: boolean; wasDone: boolean }
+  /** From the transcript at an attach: its open question, a turn in progress, else as attached. */
+  | { kind: 'rebuilt'; question: boolean; turn: boolean; active: boolean; wasDone: boolean }
+  /** R17: the pane is back at a shell, its window lives on. */
+  | { kind: 'claude-exited' }
+  /** The window is gone, or tmux is (`serverDown`: the watcher's down). */
+  | { kind: 'window-gone'; serverDown: boolean };
 
 /** What the first-prompt fallback's capture showed; `failed`: no capture, twice. */
 export type FirstPromptScreen = 'startup' | 'prompt' | 'busy' | 'idle' | 'failed';
@@ -126,6 +137,9 @@ export function causeOf(facts: StatusFacts, obs: Observation): Cause {
       return 'live';
     case 'turn-ended':
       return obs.armedBy;
+    // A dead server's end is Kage losing sight of the session, not something it watched happen.
+    case 'window-gone':
+      return obs.serverDown || facts.catchingUp ? 'reconcile' : 'live';
     default:
       return facts.catchingUp ? 'reconcile' : 'live';
   }
@@ -200,7 +214,21 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
     case 'prompt-gone':
       if (!promptGoes(facts)) return facts.status;
       return obs.denial ? 'done' : 'running';
+    // Windows and restarts (group 4).
+    case 'attached':
+      return attachedStatus(obs);
+    case 'rebuilt':
+      if (obs.question) return 'needs-you';
+      return obs.turn ? 'running' : attachedStatus(obs);
+    case 'claude-exited':
+    case 'window-gone':
+      return 'ended';
   }
+}
+
+/** R141: a record that was done stays done whatever the pane drew; else the 5 s rule. */
+function attachedStatus(obs: { active: boolean; wasDone: boolean }): SessionStatus {
+  return !obs.wasDone && obs.active ? 'running' : 'done';
 }
 
 /** Activity mode's 5 s rule applies to a running session with no startup screen. */
@@ -290,6 +318,15 @@ function observe(facts: StatusFacts, obs: Observation): StatusFacts {
         ...noTools(),
         record: facts.record && { firstPromptPending: false, resuming: null },
       };
+    case 'attached':
+      return { ...facts, mode: 'activity', ...noTools() };
+    case 'rebuilt':
+      return { ...facts, mode: 'hooks' };
+    case 'claude-exited':
+      return { ...facts, mode: 'hooks', shellEnded: true, ...noTools() };
+    // The mode of a session with no pane is never read; an attach resets it.
+    case 'window-gone':
+      return { ...facts, mode: 'hooks', ...noTools() };
   }
 }
 
@@ -341,13 +378,16 @@ function trackTools(facts: StatusFacts, e: HookEvent): Pick<StatusFacts, 'pendin
   }
 }
 
-/** A move: what any move resets, and what a move into ended ends (F4). */
+/**
+ * A move: what any move resets, and what a move into ended ends (F4). Only an ended session can
+ * be shellEnded, so a move keeps it only into ended, where claude-exited sets it.
+ */
 function moveTo(facts: StatusFacts, move: Move): StatusStep {
   const { to } = move;
   const next: StatusFacts = {
     ...facts,
     status: to,
-    shellEnded: false,
+    shellEnded: to === 'ended' && facts.shellEnded,
     startup: to === 'needs-you' ? facts.startup : false,
   };
   // Ended before any hook: no resume or first prompt is awaited any more.
