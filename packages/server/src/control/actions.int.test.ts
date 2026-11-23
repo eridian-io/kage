@@ -155,7 +155,10 @@ describe.runIf(hasTmux)('SessionControls (real tmux, scripted TUI)', () => {
         markAnswered: (id) => marks.push(`answered ${id}`),
         markReplying: () => {},
         markReplied: (id) => marks.push(`replied ${id}`),
-        markStopped: (id) => marks.push(`stopped ${id}`),
+        stopSession: async (id, close) => {
+          await close();
+          marks.push(`stopped ${id}`);
+        },
       },
     });
     const received = async (n: number) => {

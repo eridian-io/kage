@@ -5,7 +5,7 @@ import type { SessionStatus } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActionError, ActionLock } from '../control/actions.ts';
 import { UNPINNED } from '../git/exec.ts';
-import type { FinishTarget } from '../live-source.ts';
+import type { Close, FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
 import { FinishActions } from './actions.ts';
 
@@ -87,16 +87,40 @@ class FakeSource {
     const t = this.targets.get(id);
     return t ? { ...t, record: t.record ? { ...t.record } : null } : null;
   }
-  async setFlags(id: string, f: { pinned?: boolean; archived?: boolean }): Promise<void> {
+  /** Which source operation FinishActions called, and whether archive got a close (Task 9). */
+  calls: string[] = [];
+  #flags(id: string, f: { pinned?: boolean; archived?: boolean }): void {
     this.log.push(`flags ${id} ${JSON.stringify(f)}`);
     if (this.saveError) throw this.saveError;
     const t = this.targets.get(id);
     if (t?.record) t.record = { ...t.record, ...f };
   }
-  markStopped(id: string): void {
+  #stopped(id: string): void {
     this.log.push(`stopped ${id}`);
     const t = this.targets.get(id);
     if (t) t.status = 'ended';
+  }
+  async setPinned(id: string, pinned: boolean): Promise<void> {
+    this.#flags(id, { pinned });
+  }
+  /**
+   * Runs `close` first, as LiveSource does; a throw aborts with nothing logged. The log keeps
+   * its pre-Task 9 shape: `stopped` for a close that killed the window (the real source also
+   * ends a session whose window was gone already: live-source.test.ts covers that).
+   */
+  async archive(id: string, close: Close | null): Promise<void> {
+    this.calls.push(`archive ${id} ${close ? 'close' : 'null'}`);
+    if (close && (await close())) this.#stopped(id);
+    this.#flags(id, { archived: true });
+  }
+  async restore(id: string): Promise<void> {
+    this.calls.push(`restore ${id}`);
+    this.#flags(id, { archived: false });
+  }
+  async stopSession(id: string, close: Close): Promise<void> {
+    this.calls.push(`stopSession ${id}`);
+    await close();
+    this.#stopped(id);
   }
   async forget(id: string): Promise<void> {
     this.log.push(`forget ${id}`);
@@ -397,6 +421,46 @@ describe('FinishActions.archive: the live re-check right before the kill (Task 4
     const a = setup(target({ status: 'ended', windowId: null, paneId: null }));
     await a.finish.archive('k-1', true);
     expect(a.tmux.captures).toEqual([]);
+  });
+});
+
+describe('FinishActions: the source runs archive and restore whole (Task 9)', () => {
+  it('archive hands the kill to the source as close, after the still-idle check and the R70 skip', async () => {
+    const tmux = new FakeTmux();
+    const source = new FakeSource();
+    let open = true;
+    const order: string[] = [];
+    const finish = new FinishActions({ tmux, source, ...NO_DELETE, isTerminalOpen: () => open });
+    tmux.onCapture = () => order.push('capture');
+    // R70: an automatic archive with a terminal open never reaches the source.
+    await finish.archive('k-1', true, { auto: true });
+    expect(source.calls).toEqual([]);
+    expect(tmux.log).toEqual([]);
+    open = false;
+    const archive = source.archive.bind(source);
+    source.archive = async (id, close) => {
+      order.push(close ? 'source.archive close' : 'source.archive null');
+      expect(tmux.log).toEqual([]);
+      await archive(id, close);
+    };
+    await finish.archive('k-1', true, { auto: true });
+    expect(order).toEqual(['capture', 'capture', 'source.archive close']);
+    // The source's close is the owned-window kill, with the record's kage id.
+    expect(tmux.log).toEqual(['kill @2 k-1']);
+    expect(source.log).toEqual(['stopped k-1', 'flags k-1 {"archived":true}']);
+    // No window: the source gets no close, and nothing is captured.
+    const ended = setup(target({ status: 'ended', windowId: null, paneId: null }));
+    await ended.finish.archive('k-1', true);
+    expect(ended.source.calls).toEqual(['archive k-1 null']);
+  });
+
+  it('restore calls source.restore', async () => {
+    const { finish, source, tmux } = setup(
+      target({ status: 'ended', windowId: null, record: rec({ archived: true, archivedAt: 5 }) }),
+    );
+    await finish.archive('k-1', false);
+    expect(source.calls).toEqual(['restore k-1']);
+    expect(tmux.log).toEqual([]);
   });
 });
 
@@ -856,5 +920,24 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
     release?.();
     const e = await refusal(finish.remove('nope', { unpushed: 0, uncommitted: 0, ignored: 0 }));
     expect([e.status, e.message]).toEqual([404, 'No session with id nope.']);
+  });
+
+  it('delete stops through source.stop before its recount', async () => {
+    const { finish, log, source } = del();
+    await finish.remove('k-1', { unpushed: 1, uncommitted: 0, ignored: 0 });
+    expect(source.calls).toEqual(['stopSession k-1']);
+    const kill = log.indexOf('kill @2 k-1');
+    expect(log.slice(kill, kill + 3)).toEqual([
+      'kill @2 k-1',
+      'stopped k-1',
+      'git worktree list --porcelain',
+    ]);
+    // F14: a window gone already carries on; the source still ends the session.
+    const gone = del();
+    gone.tmux.held.clear();
+    await gone.finish.remove('k-1', { unpushed: 1, uncommitted: 0, ignored: 0 });
+    expect(gone.source.calls).toEqual(['stopSession k-1']);
+    expect(gone.log).toContain('stopped k-1');
+    expect(gone.log.at(-1)).toBe('forget k-1');
   });
 });

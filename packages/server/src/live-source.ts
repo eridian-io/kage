@@ -94,6 +94,12 @@ export interface AutoArchiveHost {
   autoCandidates(): AutoCandidate[];
 }
 
+/**
+ * Kills the window: true when killed, false when it was gone already; a throw aborts with nothing
+ * changed (Task 9).
+ */
+export type Close = () => Promise<boolean>;
+
 /** What FinishActions reads before pin, archive or restore. */
 export interface FinishTarget {
   id: string;
@@ -412,6 +418,12 @@ export class LiveSource implements SessionSource {
   #resyncing = false;
   #resyncSeq = 0;
   #early: HookEvent[] = [];
+  /**
+   * Task 9: sessions inside archive, restore or stopSession, from its first line to its last.
+   * No listing, `down` or lost claim touches them meanwhile, and their hooks wait in `#held`.
+   */
+  #finishing = new Set<string>();
+  #held = new Map<string, HookEvent[]>();
   #unknown: HookEvent[] = [];
   #unknownTimer: ReturnType<typeof setTimeout> | null = null;
   #off: (() => void)[] = [];
@@ -831,33 +843,20 @@ export class LiveSource implements SessionSource {
   }
 
   /**
-   * Sets a record's pinned and archived flags and saves at once (awaited; a failed save throws
-   * and leaves the flags as they were, with no event). Archiving stamps archivedAt and emits
-   * session.removed, then archive {count}; restoring clears archivedAt, stamps restoredAt (F2:
-   * auto-archive skips it until its next done) and emits session.updated, then archive {count}.
+   * Sets a record's pin and saves at once (awaited; a failed save throws and leaves it as it was,
+   * with no event). Unpinning stamps unpinnedAt (R69). The session's next frame shows it.
    */
-  async setFlags(id: string, f: { pinned?: boolean; archived?: boolean }): Promise<void> {
+  async setPinned(id: string, pinned: boolean): Promise<void> {
     // I4: an archived record usually has no session; its record is enough here.
     const st = this.#sessions.get(id);
     const r = this.#records.get(id);
-    if (!r || (st && st.record !== r)) return;
-    const before = { ...r };
-    const archiving = f.archived === true && !r.archived;
-    const restoring = f.archived === false && r.archived;
-    if (f.pinned !== undefined) r.pinned = f.pinned;
+    if (!r || (st && st.record !== r) || r.pinned === pinned) return;
+    const before = { pinned: r.pinned, unpinnedAt: r.unpinnedAt };
+    r.pinned = pinned;
     // R69: an unpinned session's age for auto-archive starts again now.
-    if (before.pinned && f.pinned === false) r.unpinnedAt = this.#now();
-    if (archiving) {
-      r.archived = true;
-      r.archivedAt = this.#now();
-    } else if (restoring) {
-      r.archived = false;
-      r.archivedAt = null;
-      r.restoredAt = this.#now();
-    }
-    if (r.pinned === before.pinned && !archiving && !restoring) return;
+    if (!pinned) r.unpinnedAt = this.#now();
     try {
-      await this.#d.store.save([...this.#records.values()].map((x) => ({ ...x })));
+      await this.#save();
     } catch (e) {
       Object.assign(r, before);
       throw e;
@@ -865,24 +864,77 @@ export class LiveSource implements SessionSource {
     this.#auto?.sync();
     if (!this.#running) return;
     const now = this.#sessions.get(id);
-    if (archiving) {
-      // R140: the board showed it when the archive began (st). The killed window's listing can
-      // land during the save above and drop the session already (R138), so `now` may be gone:
-      // the board still hears that it went, or the row stays and the archive shows no toast.
-      if (now || st) {
-        // Hidden from the board: the preview stops looking, and a restore sends it afresh.
-        this.#preview?.forget(id);
-        this.#emit({ type: 'session.removed', id });
+    if (now && now === st) this.#emitNow(now);
+  }
+
+  /**
+   * Archive as one operation (Task 9, R140). `close` (null: no window to close) runs first, with
+   * no await before it (R70); its throw aborts with nothing changed. Then the session is ended
+   * (`stopped`, act, unless it was ended already), archived and archivedAt are set and saved
+   * (awaited: a failed save puts the flags back and throws; the session stays, ended if it was
+   * killed, and no session.removed goes). Then exactly one session.removed, the preview
+   * forgets it, the session is dropped (I4), archive {count} goes and auto-archive re-syncs.
+   * No listing touches the session meanwhile (#finishing).
+   */
+  async archive(id: string, close: Close | null): Promise<void> {
+    const st = this.#sessions.get(id);
+    const r = this.#records.get(id);
+    if (!r || r.archived || (st && st.record !== r)) return;
+    await this.#finish(id, close, async () => {
+      const cur = this.#sessions.get(id);
+      if (cur) this.#stopped(cur);
+      r.archived = true;
+      r.archivedAt = this.#now();
+      try {
+        await this.#save();
+      } catch (e) {
+        r.archived = false;
+        r.archivedAt = null;
+        throw e;
       }
-      if (now) {
-        now.last = null;
-        // I4: an archived record keeps no session, tail or lines; a restore builds them again.
-        this.#dropSession(now);
+      if (this.#running) {
+        const now = this.#sessions.get(id);
+        if (now) {
+          // Hidden from the board: the preview stops looking, and a restore sends it afresh.
+          this.#emit({ type: 'session.removed', id });
+          this.#preview?.forget(id);
+          now.last = null;
+          // I4: an archived record keeps no session, tail or lines; a restore builds them again.
+          this.#dropSession(now);
+        }
+        this.#emit({ type: 'archive', count: this.archivedCount() });
       }
-      this.#emit({ type: 'archive', count: this.archivedCount() });
-      return;
-    }
-    if (restoring) {
+      this.#auto?.sync();
+    });
+  }
+
+  /**
+   * Restore as one operation (Task 9): archived and archivedAt cleared, restoredAt stamped (F2:
+   * auto-archive skips it until its next done) and saved (awaited; a failed save puts them back
+   * and throws, with no event). A fresh session goes back on the board as ended (`restored`, null
+   * → ended, act), with its frame, then archive {count}; its transcript is read after the
+   * operation. F11: an archived record whose session still exists (a stale listing, a failed
+   * kill) gets no transition, only its frame, then archive {count}.
+   */
+  async restore(id: string): Promise<void> {
+    const st = this.#sessions.get(id);
+    const r = this.#records.get(id);
+    if (!r?.archived || (st && st.record !== r)) return;
+    let fresh: Live | null = null;
+    await this.#finish(id, null, async () => {
+      const before = { archived: r.archived, archivedAt: r.archivedAt, restoredAt: r.restoredAt };
+      r.archived = false;
+      r.archivedAt = null;
+      r.restoredAt = this.#now();
+      try {
+        await this.#save();
+      } catch (e) {
+        Object.assign(r, before);
+        throw e;
+      }
+      this.#auto?.sync();
+      if (!this.#running) return;
+      const now = this.#sessions.get(id);
       if (now) {
         now.last = null;
         // F11: no transition here, so its frame carries no cause (Task 8).
@@ -892,16 +944,69 @@ export class LiveSource implements SessionSource {
         return;
       }
       // I4: the session is built, and its transcript read, now rather than at start.
-      const fresh = this.#fresh(id, r);
+      fresh = this.#fresh(id, r);
       this.#sessions.set(id, fresh);
       // A restore is Kage's act: back on the board as ended (null → ended).
       this.#apply(fresh, { kind: 'restored' });
       this.#emitNow(fresh);
       this.#emit({ type: 'archive', count: this.archivedCount() });
-      await this.#readLater(fresh);
-      return;
+    });
+    // F11: after the operation, so listings don't wait on a slow transcript read.
+    if (fresh) await this.#readLater(fresh);
+  }
+
+  /**
+   * Stop as one operation (Task 9, F1; the lifecycle stop is `stop()`): `close` kills the window
+   * (its throw aborts with nothing changed), then the session is ended (`stopped`, act). No
+   * listing touches the session meanwhile (#finishing); the closing re-list confirms the window
+   * gone.
+   */
+  async stopSession(id: string, close: Close): Promise<void> {
+    await this.#finish(id, close, async () => {
+      const st = this.#sessions.get(id);
+      if (st) this.#stopped(st);
+    });
+  }
+
+  /**
+   * One finishing operation on `id`, from its first line to its last: `close` is called at once
+   * (no await before it: R70), then `rest` runs. Meanwhile #reconcile, the watcher's `down` and
+   * the lost-claim path leave the session alone (F10), and its hooks wait. After it (thrown or
+   * not) the hooks that waited are applied to the session if it is still there (an archived one
+   * isn't: they move nothing), and a re-list catches up on what the listings skipped.
+   */
+  async #finish(id: string, close: Close | null, rest: () => Promise<void>): Promise<void> {
+    this.#finishing.add(id);
+    try {
+      const closing = close?.();
+      if (closing) await closing;
+      await rest();
+    } finally {
+      this.#finishing.delete(id);
+      const held = this.#held.get(id) ?? [];
+      this.#held.delete(id);
+      for (const e of held) {
+        const st = this.#sessions.get(id);
+        if (st && this.#running) this.#applyHook(st, e);
+      }
+      this.#recheckSoon(STOP_RECHECK_MS);
     }
-    if (now && now === st) this.#emitNow(now);
+  }
+
+  /**
+   * Kage closed the window: ended now (act), in hooks mode with nothing pending; its timers and
+   * tail wind down. The module moves only a session on the board and not ended.
+   */
+  #stopped(st: Live): void {
+    if (!this.#apply(st, { kind: 'stopped' })) return;
+    this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
+    this.#retireTailSoon(st);
+    this.#emitNow(st);
+  }
+
+  /** The records, saved at once (awaited). */
+  #save(): Promise<void> {
+    return this.#d.store.save([...this.#records.values()].map((x) => ({ ...x })));
   }
 
   /**
@@ -956,19 +1061,6 @@ export class LiveSource implements SessionSource {
     let n = 0;
     for (const r of this.#records.values()) if (r.archived) n++;
     return n;
-  }
-
-  /** Kage killed the window: ended now; the window-close listing confirms it. */
-  markStopped(id: string): void {
-    const st = this.#sessions.get(id);
-    if (!st) return;
-    // Ended, act, in hooks mode with nothing pending; the module moves only a session on the
-    // board and not ended.
-    if (!this.#apply(st, { kind: 'stopped' })) return;
-    this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
-    this.#retireTailSoon(st);
-    this.#emitNow(st);
-    this.#recheckSoon(STOP_RECHECK_MS);
   }
 
   // ------------------------------------------------------------ lifecycle
@@ -1198,6 +1290,8 @@ export class LiveSource implements SessionSource {
       const record = w.kageId ? this.#records.get(w.kageId) : undefined;
       const id = record ? record.kageId : `ext-${w.windowId}`;
       seen.add(id);
+      // Task 9: a session inside archive, restore or stop is left alone; its re-list catches up.
+      if (this.#finishing.has(id)) continue;
       let st = this.#sessions.get(id);
       if (!st) {
         st = this.#fresh(id, record ?? null);
@@ -1229,7 +1323,7 @@ export class LiveSource implements SessionSource {
       }
     }
     for (const st of [...this.#sessions.values()]) {
-      if (seen.has(st.id)) continue;
+      if (seen.has(st.id) || this.#finishing.has(st.id)) continue;
       if (!st.record) this.#removeSession(st);
       else if (st.window) {
         // Task 0: hooks that waited on this listing came from the window now gone (a failed
@@ -1248,7 +1342,8 @@ export class LiveSource implements SessionSource {
     // first-prompt wait), unless another listed window carries its id.
     for (const [id, pane] of lost) {
       const st = this.#sessions.get(id);
-      if (!st?.record || st.window || st.status === 'ended') continue;
+      // F10: the operation's own `stopped` ends a finishing session.
+      if (!st?.record || st.window || st.status === 'ended' || this.#finishing.has(id)) continue;
       // B34: the pane's hooks waiting on this listing are its own (a failed resume's SessionEnd).
       this.#takeQueued(st, pane);
       // TS keeps the narrowing from above; #applyHook may have ended it (resumeFailed).
@@ -1456,7 +1551,11 @@ export class LiveSource implements SessionSource {
         this.#ignoredPanes.clear();
         if (this.#unknownTimer) clearTimeout(this.#unknownTimer);
         this.#unknownTimer = null;
+        // …and so are the hooks waiting on a finishing operation.
+        this.#held.clear();
         for (const st of [...this.#sessions.values()]) {
+          // F10: a finishing session is the operation's; its closing re-list catches up.
+          if (this.#finishing.has(st.id)) continue;
           if (!st.record) this.#removeSession(st);
           else if (st.window) this.#detach(st, true);
         }
@@ -1677,6 +1776,13 @@ export class LiveSource implements SessionSource {
   }
 
   #applyHook(st: Live, e: HookEvent): void {
+    // Task 9: a session inside archive, restore or stop takes its hooks after the operation.
+    if (this.#finishing.has(st.id)) {
+      const held = this.#held.get(st.id);
+      if (held) held.push(e);
+      else this.#held.set(st.id, [e]);
+      return;
+    }
     // R152: a listing can show Kage's new window before its tag lands, as `ext-<windowId>`. Its
     // hooks are kept for a claim too while the window is young: claim() moves them to #unknown,
     // so the record's session gets them (a failed resume's SessionEnd above all).

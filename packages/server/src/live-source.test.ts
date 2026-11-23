@@ -2720,7 +2720,7 @@ describe('LiveSource: controls (phase 3 Task 7)', () => {
 
   it('markStopped → ended now, question cleared; a later listing without the window keeps it ended', async () => {
     const { source, tmux, watcher, updates } = await permission();
-    source.markStopped('k-1');
+    await source.stopSession('k-1', async () => true);
     expect(source.get('k-1')).toMatchObject({ status: 'ended' });
     expect(source.get('k-1')?.question).toBeUndefined();
     expect(updates('k-1').at(-1)?.status).toBe('ended');
@@ -2886,7 +2886,7 @@ describe('LiveSource: preview data (Task 8)', () => {
     hooks.fire(hook('SessionStart', '%2'));
     hooks.fire(hook('UserPromptSubmit', '%2'));
     hooks.fire(hook('UserPromptSubmit', '%2'));
-    source.markStopped('k-1');
+    await source.stopSession('k-1', async () => true);
     expect(preview.calls.filter((c) => c.startsWith('status'))).toHaveLength(2);
   });
 
@@ -3089,7 +3089,7 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     const { source, store, updates } = setup({ windows: [kageWin()], records: [rec()] });
     await source.start();
     const saves = store.saves.length;
-    await source.setFlags('k-1', { pinned: true });
+    await source.setPinned('k-1', true);
     expect(store.saves.length).toBe(saves + 1);
     expect(store.saves.at(-1)?.[0]?.pinned).toBe(true);
     expect(updates('k-1').at(-1)?.pinned).toBe(true);
@@ -3186,7 +3186,7 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     expect(source.list()).toEqual([]);
     expect(source.archivedCount()).toBe(1);
     events.length = 0;
-    await source.setFlags('k-1', { archived: false });
+    await source.restore('k-1');
     // Task 1: the restore's transition (null → ended, act) goes first, never on a stream.
     expect(events[0]).toMatchObject({
       type: 'session.transition',
@@ -3211,9 +3211,9 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
   it('archive then restore of the same session sends a fresh session.updated', async () => {
     const { source, updates } = setup({ records: [rec()] });
     await source.start();
-    await source.setFlags('k-1', { archived: true });
+    await source.archive('k-1', null);
     const n = updates('k-1').length;
-    await source.setFlags('k-1', { archived: false });
+    await source.restore('k-1');
     expect(updates('k-1').length).toBe(n + 1);
   });
 
@@ -3236,7 +3236,7 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     await source.start();
     store.fail = 1;
     events.length = 0;
-    await expect(source.setFlags('k-1', { archived: true })).rejects.toThrow('disk full');
+    await expect(source.archive('k-1', null)).rejects.toThrow('disk full');
     expect(events).toEqual([]);
     expect(source.finishTarget('k-1')?.record).toMatchObject({ archived: false, archivedAt: null });
     expect(source.list().map((s) => s.id)).toEqual(['k-1']);
@@ -3364,7 +3364,10 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
       { archived: false },
     ]) {
       auto.calls = [];
-      await source.setFlags('k-1', f);
+      // Task 9: setFlags became setPinned, archive and restore.
+      if (f.pinned !== undefined) await source.setPinned('k-1', f.pinned);
+      else if (f.archived) await source.archive('k-1', null);
+      else await source.restore('k-1');
       // Task 1 (F17): a restore's transition into ended touches the session too (touch syncs);
       // the restored-since rule (F2) keeps it from being a candidate.
       const want = f.archived === false ? ['sync', 'touch k-1'] : ['sync'];
@@ -3372,7 +3375,7 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     }
     // No change: no save, no sync.
     auto.calls = [];
-    await source.setFlags('k-1', { pinned: false });
+    await source.setPinned('k-1', false);
     expect(auto.calls).toEqual([]);
   });
 
@@ -3426,7 +3429,7 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
       records: [rec({ archived: true, archivedAt: T0 - 1000, doneAt: T0 - 30 * 86_400_000 })],
     });
     await source.start();
-    await source.setFlags('k-1', { archived: false });
+    await source.restore('k-1');
     expect(auto.host?.autoCandidates()).toEqual([]);
     vi.advanceTimersByTime(1000);
     hooks.fire(hook('UserPromptSubmit', '%2'));
@@ -3546,14 +3549,14 @@ describe('LiveSource: auto-archive fix round 1 (R69)', () => {
     await source.start();
     expect(auto.host?.autoCandidates()).toEqual([]);
     vi.advanceTimersByTime(1000);
-    await source.setFlags('k-1', { pinned: false });
+    await source.setPinned('k-1', false);
     expect(store.saves.at(-1)?.[0]).toMatchObject({ pinned: false, unpinnedAt: T0 + 1000 });
     expect(auto.host?.autoCandidates()[0]).toMatchObject({
       doneAt: T0 - 20 * DAY,
       ageFrom: T0 + 1000,
     });
     vi.advanceTimersByTime(1000);
-    await source.setFlags('k-1', { pinned: true });
+    await source.setPinned('k-1', true);
     expect(store.saves.at(-1)?.[0]).toMatchObject({ pinned: true, unpinnedAt: T0 + 1000 });
   });
 
@@ -3585,7 +3588,7 @@ describe('LiveSource: auto-archive fix round 1 (R69)', () => {
         }),
     });
     await source.start();
-    await source.setFlags('k-1', { pinned: false });
+    await source.setPinned('k-1', false);
     await vi.advanceTimersByTimeAsync(1000);
     expect(archived).toEqual([]);
     await vi.advanceTimersByTimeAsync(14 * DAY - 2000);
@@ -4736,7 +4739,7 @@ describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)
     await source.start();
     expect(tails).toHaveLength(0);
     events.length = 0;
-    await source.setFlags('k-1', { archived: false });
+    await source.restore('k-1');
     await flush();
     expect(tails).toHaveLength(1);
     expect(tails[0]?.stopped).toBe(true);
@@ -4768,11 +4771,11 @@ describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)
     await source.start();
     await flush();
     events.length = 0;
-    await source.setFlags('k-1', { archived: true });
+    await source.archive('k-1', null);
     expect(events.map((e) => e.type)).toEqual(['session.removed', 'archive']);
     expect(source.lines('k-1')).toEqual([]);
     expect(source.get('k-1')?.archived).toBe(true);
-    await source.setFlags('k-1', { archived: false });
+    await source.restore('k-1');
     await flush();
     expect(tails).toHaveLength(2);
     expect(source.lines('k-1')).toEqual(lines);
@@ -4794,7 +4797,7 @@ describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)
         tail: (p) => new TranscriptTail(p, { watch: false }),
       });
       await s.source.start();
-      await s.source.setFlags('k-1', { archived: false });
+      await s.source.restore('k-1');
       await vi.advanceTimersByTimeAsync(3000);
       expect(s.source.get('k-1')?.status).toBe('ended');
       expect(s.updates('k-1').map((u) => u.status)).not.toContain('done');
@@ -5812,7 +5815,7 @@ describe("LiveSource: Kage's acts through the status module (Task 6)", () => {
   it('a reply, then a stop: needs-you → running → ended, both act', async () => {
     const s = await permission();
     s.source.markReplied('k-1');
-    s.source.markStopped('k-1');
+    await s.source.stopSession('k-1', async () => true);
     expect(s.source.get('k-1')?.status).toBe('ended');
     expect(moves(s.events, 'k-1')).toEqual([
       ['needs-you', 'running', 'act'],
@@ -5967,7 +5970,7 @@ describe('LiveSource: the board takes cause (Task 8)', () => {
     s.hooks.fire(hook('Stop', '%2'));
     await flush();
     // Kage's own act: a pin is a frame, never a transition.
-    await s.source.setFlags('k-1', { pinned: true });
+    await s.source.setPinned('k-1', true);
     const fs = frames(s.events, 'k-1');
     expect(followsRule(fs)).toBe(true);
     expect(fs.map((f) => [f.status, f.cause ?? null])).toEqual([
@@ -6003,10 +6006,188 @@ describe('LiveSource: the board takes cause (Task 8)', () => {
       true,
     );
     // The restore sends the session afresh: a frame that carries no transition of its own.
-    await s.source.setFlags('k-1', { archived: false });
+    await s.source.restore('k-1');
     const fs = frames(s.events, 'k-1');
     expect(fs).toHaveLength(1);
     expect(fs[0]?.cause).toBeUndefined();
+    await s.source.stop();
+  });
+});
+
+describe('LiveSource: whole operations (Task 9)', () => {
+  /** k-1's transitions, its session.removed and the archive counts, in order. */
+  const story = (events: SourceEvent[]) =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && e.transition.id === 'k-1'
+        ? [`${e.transition.from} → ${e.transition.to} ${e.transition.cause}`]
+        : e.type === 'session.removed' && e.id === 'k-1'
+          ? ['removed']
+          : e.type === 'archive'
+            ? [`archive ${e.count}`]
+            : [],
+    );
+  const relist = async (s: ReturnType<typeof setup>) => {
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+  };
+  /** k-1 on the board with its window, settled (its turn-end re-list ran). */
+  async function onBoard(status: 'done' | 'running') {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    if (status === 'done') s.hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s.source.get('k-1')?.status).toBe(status);
+    s.events.length = 0;
+    return s;
+  }
+  /** A close that kills the window: it leaves tmux's listing. */
+  const kill = (s: ReturnType<typeof setup>, during?: () => Promise<void>) => async () => {
+    s.tmux.windows = [];
+    await during?.();
+    return true;
+  };
+
+  it('a listing during the kill and the save neither ends nor drops the session: one act transition, then one session.removed', async () => {
+    const s = await onBoard('done');
+    s.store.during = async () => {
+      s.store.during = null;
+      await relist(s);
+    };
+    await s.source.archive(
+      'k-1',
+      kill(s, () => relist(s)),
+    );
+    expect(story(s.events)).toEqual(['done → ended act', 'removed', 'archive 1']);
+    expect(s.source.list().map((x) => x.id)).not.toContain('k-1');
+    expect(s.source.get('k-1')).toMatchObject({ archived: true, status: 'ended' });
+    // The closing re-list catches up, and sends nothing more for it.
+    s.events.length = 0;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(story(s.events)).toEqual([]);
+    expect(s.events.filter((e) => e.type === 'session.updated')).toEqual([]);
+    await s.source.stop();
+  });
+
+  it('archive of an ended session sends no transition and one session.removed', async () => {
+    const s = setup({ records: [rec()] });
+    await s.source.start();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.events.length = 0;
+    await s.source.archive('k-1', null);
+    expect(story(s.events)).toEqual(['removed', 'archive 1']);
+    expect(s.store.saves.at(-1)?.[0]).toMatchObject({ archived: true, archivedAt: T0 });
+    await s.source.stop();
+  });
+
+  it('a SessionEnd from the killed Claude waits for the archive and moves nothing', async () => {
+    const s = await onBoard('done');
+    await s.source.archive(
+      'k-1',
+      kill(s, async () => {
+        s.hooks.fire(hook('SessionEnd', '%2'));
+        await flush();
+        // Waiting: still done, and nothing went.
+        expect(s.source.get('k-1')?.status).toBe('done');
+        expect(story(s.events)).toEqual([]);
+      }),
+    );
+    expect(story(s.events)).toEqual(['done → ended act', 'removed', 'archive 1']);
+    s.events.length = 0;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(s.events).toEqual([]);
+    await s.source.stop();
+  });
+
+  it('a close that throws changes nothing, sends nothing, and asks for a listing', async () => {
+    const s = await onBoard('done');
+    const lists = s.tmux.listCalls;
+    const saves = s.store.attempts.length;
+    await expect(
+      s.source.archive('k-1', async () => {
+        throw new Error('tmux died');
+      }),
+    ).rejects.toThrow('tmux died');
+    expect(s.events).toEqual([]);
+    expect(s.store.attempts.length).toBe(saves);
+    expect(s.source.get('k-1')).toMatchObject({ status: 'done', archived: false });
+    expect(s.source.list().map((x) => x.id)).toEqual(['k-1']);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(s.tmux.listCalls).toBe(lists + 1);
+    // Stop too.
+    await expect(
+      s.source.stopSession('k-1', async () => {
+        throw new Error('tmux died');
+      }),
+    ).rejects.toThrow('tmux died');
+    expect(s.events).toEqual([]);
+    expect(s.source.get('k-1')?.status).toBe('done');
+    await s.source.stop();
+  });
+
+  it('a failed save restores the flags and sends no session.removed; the killed session reads ended', async () => {
+    const s = await onBoard('done');
+    s.store.fail = 1;
+    await expect(s.source.archive('k-1', kill(s))).rejects.toThrow('disk full');
+    expect(story(s.events)).toEqual(['done → ended act']);
+    expect(s.source.finishTarget('k-1')?.record).toMatchObject({
+      archived: false,
+      archivedAt: null,
+    });
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.list().map((x) => x.id)).toEqual(['k-1']);
+    // The closing re-list finds the window gone: still on the board, ended, never removed.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(story(s.events)).toEqual(['done → ended act']);
+    expect(s.source.list().map((x) => x.id)).toEqual(['k-1']);
+    await s.source.stop();
+  });
+
+  it('restore sends one act transition null → ended, its frame, then archive {count}', async () => {
+    const s = setup({
+      records: [rec({ archived: true, archivedAt: T0 - 1000, doneAt: T0 - 2000 })],
+    });
+    await s.source.start();
+    s.events.length = 0;
+    await s.source.restore('k-1');
+    expect(s.events.map((e) => e.type)).toEqual([
+      'session.transition',
+      'session.updated',
+      'archive',
+    ]);
+    expect(s.events[0]).toMatchObject({
+      transition: { id: 'k-1', from: null, to: 'ended', cause: 'act' },
+    });
+    expect(s.events[1]).toMatchObject({
+      session: { id: 'k-1', status: 'ended', archived: false },
+      cause: 'act',
+    });
+    expect(s.events[2]).toEqual({ type: 'archive', count: 0 });
+    expect(s.store.saves.at(-1)?.[0]).toMatchObject({
+      archived: false,
+      archivedAt: null,
+      restoredAt: T0,
+    });
+    await s.source.stop();
+  });
+
+  it('stop sends one act transition to ended; a listing during it changes nothing until it ends', async () => {
+    const s = await onBoard('running');
+    let during: string | undefined;
+    await s.source.stopSession(
+      'k-1',
+      kill(s, async () => {
+        await relist(s);
+        during = s.source.get('k-1')?.status;
+      }),
+    );
+    expect(during).toBe('running');
+    expect(story(s.events)).toEqual(['running → ended act']);
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    // The closing re-list sees the window gone: no second transition.
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(story(s.events)).toEqual(['running → ended act']);
+    expect(s.source.target('k-1')).toMatchObject({ status: 'ended', windowId: null });
     await s.source.stop();
   });
 });

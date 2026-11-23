@@ -8,7 +8,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from
 import { ActionError } from '../control/actions.ts';
 import { branchCounts } from '../git/branch.ts';
 import { gitExec } from '../git/exec.ts';
-import type { FinishTarget } from '../live-source.ts';
+import type { Close, FinishTarget } from '../live-source.ts';
 import { type SessionRecord, StateStore } from '../state/store.ts';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
 import { testTmuxSocket } from '../tmux/test-sockets.ts';
@@ -64,8 +64,12 @@ class StoreSource {
       external: false,
     };
   }
-  async setFlags(): Promise<void> {}
-  markStopped(): void {
+  async setPinned(): Promise<void> {}
+  async archive(): Promise<void> {}
+  async restore(): Promise<void> {}
+  /** Task 9: delete's kill runs inside the source's stop, which then ends the session. */
+  async stopSession(_id: string, close: Close): Promise<void> {
+    await close();
     this.status = 'ended';
   }
   async forget(id: string): Promise<void> {

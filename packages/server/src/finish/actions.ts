@@ -10,7 +10,10 @@ import type { SessionRecord } from '../state/store.ts';
 import type { TmuxClient } from '../tmux/client.ts';
 
 export type FinishTmux = Pick<TmuxClient, 'killOwnedWindow' | 'windowKageId' | 'capturePane'>;
-export type FinishSource = Pick<LiveSource, 'finishTarget' | 'setFlags' | 'markStopped' | 'forget'>;
+export type FinishSource = Pick<
+  LiveSource,
+  'finishTarget' | 'setPinned' | 'archive' | 'restore' | 'stopSession' | 'forget'
+>;
 
 type Counts = { unpushed: number; uncommitted: number; ignored: number };
 
@@ -147,7 +150,9 @@ interface DeletePlan {
  * Pin, archive, restore and delete (spec §5.8). They need a record (external sessions are 403).
  * Archive and delete close a finished session's window through killOwnedWindow, which re-reads
  * `@kage_id` right before the kill; neither acts on a running or needs-you session. One action at
- * a time per session, on the lock shared with SessionControls and resume (F5, R68).
+ * a time per session, on the lock shared with SessionControls and resume (F5, R68). FinishActions
+ * keeps the policy (the checks, and when to archive automatically); LiveSource runs each archive,
+ * restore and stop whole, with the kill handed in as its `close` (Task 9).
  */
 export class FinishActions {
   readonly #tmux: FinishTmux;
@@ -167,7 +172,7 @@ export class FinishActions {
     return this.#locked(id, async () => {
       const t = this.#source.finishTarget(id);
       if (!t?.record) throw new ActionError(403, 'Kage only pins sessions it started.');
-      await this.#source.setFlags(id, { pinned });
+      await this.#source.setPinned(id, pinned);
     });
   }
 
@@ -182,19 +187,23 @@ export class FinishActions {
       if (!t || !record) throw new ActionError(403, 'Kage only archives sessions it started.');
       if (record.archived === archived) return;
       if (!archived) {
-        await this.#source.setFlags(id, { archived: false });
+        await this.#source.restore(id);
         return;
       }
       if (t.status === 'running' || t.status === 'needs-you') throw new ActionError(409, ACTIVE);
-      if (t.windowId !== null) {
+      const { windowId } = t;
+      if (windowId !== null) {
         await this.#stillIdle(id, t.paneId);
         // R70: inside the lock, after the capture's await and with none before the kill. The
         // auto-archiver's candidate re-read ran before that await, so a terminal opened
         // meanwhile is seen only here. Its close touches the session, which re-checks it.
         if (o.auto && this.#d.isTerminalOpen?.(id)) return;
-        if (await this.#close(t.windowId, record.kageId)) this.#source.markStopped(id);
       }
-      await this.#source.setFlags(id, { archived: true });
+      // Task 9: the source runs the archive whole, the kill first (no await before it: R70).
+      await this.#source.archive(
+        id,
+        windowId !== null ? () => this.#close(windowId, record.kageId) : null,
+      );
     });
   }
 
@@ -230,9 +239,11 @@ export class FinishActions {
         this.#d.findProject ?? ((name) => findProject(this.#d.projectsRoot, name, this.#d.git));
       const project = await find(record.project);
       if (project) await this.#check(id, record, project.path, seen);
-      if (t.windowId !== null) {
+      const { windowId } = t;
+      if (windowId !== null) {
         await this.#stillIdle(id, t.paneId, ACTIVE_DELETE);
-        if (await this.#close(t.windowId, record.kageId)) this.#source.markStopped(id);
+        // Task 9: the kill runs inside the source's stop; a window gone already carries on (F14).
+        await this.#source.stopSession(id, () => this.#close(windowId, record.kageId));
       }
       if (project) {
         const plan = await this.#check(id, record, project.path, seen);

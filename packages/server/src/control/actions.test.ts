@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import type { Close } from '../live-source.ts';
 import { parsePermissionPrompt } from '../pane/prompt.ts';
 import type { Key } from '../tmux/client.ts';
 import { ActionError, attachCommand, type ControlTarget, SessionControls } from './actions.ts';
@@ -108,7 +109,11 @@ class FakeSource {
   markReplied(id: string): void {
     this.marks.push(`replied ${id}`);
   }
-  markStopped(id: string): void {
+  /** Task 9: the source runs the close, then ends the session; a throw aborts with no mark. */
+  stops: string[] = [];
+  async stopSession(id: string, close: Close): Promise<void> {
+    this.stops.push(id);
+    await close();
     this.marks.push(`stopped ${id}`);
   }
 }
@@ -684,6 +689,28 @@ describe('SessionControls.stop', () => {
     const e = await refusal(controls.stop('k-1'));
     expect([e.status, e.message]).toEqual([409, 'This session has already ended.']);
     expect(source.marks).toEqual([]);
+  });
+
+  it('stop hands killOwnedWindow to source.stop; a window already gone is 409 with nothing changed', async () => {
+    const { tmux, source, controls } = setup(target());
+    let killsBefore = -1;
+    const run = source.stopSession.bind(source);
+    source.stopSession = async (id, close) => {
+      killsBefore = tmux.calls.filter((c) => c.op === 'kill').length;
+      await run(id, close);
+    };
+    await controls.stop('k-1');
+    // The 403 check ran before; the kill itself runs inside the source's operation.
+    expect(killsBefore).toBe(0);
+    expect(tmux.log()).toEqual(['kageId', 'kill @2']);
+    expect(source.stops).toEqual(['k-1']);
+    expect(source.marks).toEqual(['stopped k-1']);
+    const gone = setup(target());
+    gone.tmux.killResult = false;
+    const e = await refusal(gone.controls.stop('k-1'));
+    expect([e.status, e.message]).toEqual([409, 'This session has already ended.']);
+    expect(gone.source.stops).toEqual(['k-1']);
+    expect(gone.source.marks).toEqual([]);
   });
 
   it('a done session can be stopped (409 only once ended)', async () => {

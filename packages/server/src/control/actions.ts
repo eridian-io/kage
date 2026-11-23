@@ -64,7 +64,7 @@ export type ControlTmux = Pick<
 >;
 export type ControlSource = Pick<
   LiveSource,
-  'target' | 'markAnswered' | 'markReplying' | 'markReplied' | 'markStopped'
+  'target' | 'markAnswered' | 'markReplying' | 'markReplied' | 'stopSession'
 >;
 
 /** A word as a POSIX shell reads it: bare when safe, else single-quoted. */
@@ -276,11 +276,14 @@ export class SessionControls {
         throw e;
       }
       if (held !== kageId) throw new ActionError(403, "That window isn't Kage's any more.");
-      // killOwnedWindow re-reads the tag right before kill-window (Review Focus 3).
-      if (!(await this.#tmux.killOwnedWindow(windowId, kageId))) {
-        throw new ActionError(409, 'This session has already ended.');
-      }
-      this.#source.markStopped(id);
+      // Task 9: the source runs the stop whole, the kill as its close. killOwnedWindow re-reads
+      // the tag right before kill-window (Review Focus 3); a window gone already is 409 (F14).
+      await this.#source.stopSession(id, async () => {
+        if (!(await this.#tmux.killOwnedWindow(windowId, kageId))) {
+          throw new ActionError(409, 'This session has already ended.');
+        }
+        return true;
+      });
     });
   }
 

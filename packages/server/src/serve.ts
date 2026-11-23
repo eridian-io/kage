@@ -315,7 +315,8 @@ async function startLive(
         // A record's unpushed and uncommitted counts, refreshed with its files (spec §5.8).
         branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec, o.repo),
       }),
-    // Auto-archive on merge and after afterDays (spec §5.8), through the same archive action.
+    // Auto-archive on merge and after afterDays (spec §5.8), through the same archive action:
+    // FinishActions decides, and the source's archive moves the session as an act (Task 9).
     autoArchive: (host) =>
       new AutoArchiver({
         config: cfg.autoArchive,
