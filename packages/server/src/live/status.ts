@@ -1,4 +1,5 @@
-import type { Cause, SessionStatus, Transition } from '@kage/shared';
+import type { Cause, Question, SessionStatus, Transition } from '@kage/shared';
+import type { PromptKind } from '../control/keys.ts';
 import type { HookEvent } from '../hooks/event.ts';
 import { nextStatus } from '../hooks/status.ts';
 
@@ -17,8 +18,32 @@ export interface RecordFacts {
   resuming: { sessionId: string | null } | null;
 }
 
+/**
+ * The prompt a needs-you session shows (R9, R11, SessionControls). Only a needs-you session holds
+ * a question, a kind or promptSeen: a move out clears them (Task 6b). `askMulti` is kept, as it
+ * always was; it is read only beside a question.
+ */
+export interface PromptFacts {
+  question: Question | null;
+  /** What kind of prompt the question is (how SessionControls answers it). */
+  promptKind: PromptKind | null;
+  /** The pane has shown the prompt for this needs-you (gates R11's pane fallback). */
+  promptSeen: boolean;
+  /** The last AskUserQuestion's multiSelect per question text (whitespace collapsed). */
+  askMulti: ReadonlyMap<string, boolean>;
+}
+
+/**
+ * The prompt an observation read, taken only where its step ends in needs-you: `set` replaces
+ * those fields, then `fill` sets the ones still null.
+ */
+export interface PromptRead {
+  set?: Partial<PromptFacts>;
+  fill?: Partial<Pick<PromptFacts, 'question' | 'promptKind'>>;
+}
+
 /** The facts a session's status follows from. */
-export interface StatusFacts {
+export interface StatusFacts extends PromptFacts {
   /** null: not on the board yet. */
   status: SessionStatus | null;
   mode: 'activity' | 'hooks';
@@ -34,6 +59,8 @@ export interface StatusFacts {
   toolsDone: ReadonlySet<string>;
   /** null for an external session (decision 9). */
   record: RecordFacts | null;
+  /** A window is linked to the session (R101: a resume whose window opened isn't aborted). */
+  hasWindow: boolean;
 }
 
 /** M11: a pending tool whose hook had no `tool_use_id` (a PermissionRequest, a prompt on screen). */
@@ -53,11 +80,14 @@ export type Observation =
   /** The start places a session no window placed: ended. */
   | { kind: 'loaded' }
   /** A Claude Code hook for this session. Always live, also while an attach catches up (F3). */
-  | { kind: 'hook'; event: HookEvent }
+  | { kind: 'hook'; event: HookEvent; prompt?: PromptRead }
   /** R63: the resume found no conversation (see `resumeFails`). Always live (F3). */
   | { kind: 'resume-failed' }
-  /** A new open question in the transcript. */
-  | { kind: 'transcript-question' }
+  /**
+   * The transcript's open question: new, or one a needs-you session shows none for yet. While
+   * resuming it is the ended run's replay, and moves and sets nothing (Task 6b).
+   */
+  | { kind: 'transcript-question'; prompt?: PromptRead }
   /** "[Request interrupted…" or a user-rejected tool result: No or Esc fires no hook (R11). */
   | { kind: 'transcript-interrupt' }
   /** I2: the turn-end check's capture confirms the turn ended; the cause is the arming's. */
@@ -72,13 +102,13 @@ export type Observation =
    * P3F1's fallback, R57, R58: what the pane showed when no first prompt came; `at` as idle's.
    * Always live: a hook (SessionStart) armed it (F3).
    */
-  | { kind: 'first-prompt-check'; screen: FirstPromptScreen; at: number }
+  | { kind: 'first-prompt-check'; screen: FirstPromptScreen; at: number; prompt?: PromptRead }
   /** R9: a startup screen on the pane. */
-  | { kind: 'startup-shown' }
+  | { kind: 'startup-shown'; prompt?: PromptRead }
   /** A startup screen was answered; `active`: the pane drew within the last 5 s. */
   | { kind: 'startup-gone'; active: boolean }
   /** A prompt on screen at start, or in activity mode. */
-  | { kind: 'prompt-shown' }
+  | { kind: 'prompt-shown'; prompt?: PromptRead }
   /** R11's pane fallback: the prompt went away with no hook; `denial`: the denial line shows. */
   | { kind: 'prompt-gone'; denial: boolean }
   /**
@@ -87,7 +117,16 @@ export type Observation =
    */
   | { kind: 'attached'; active: boolean; wasDone: boolean }
   /** From the transcript at an attach: its open question, a turn in progress, else as attached. */
-  | { kind: 'rebuilt'; question: boolean; turn: boolean; active: boolean; wasDone: boolean }
+  | {
+      kind: 'rebuilt';
+      question: boolean;
+      turn: boolean;
+      active: boolean;
+      wasDone: boolean;
+      prompt?: PromptRead;
+    }
+  /** A prompt read after its move (a capture, the transcript): it sets the prompt, no move. */
+  | { kind: 'prompt-captured'; prompt: PromptRead }
   /** R17: the pane is back at a shell, its window lives on. */
   | { kind: 'claude-exited' }
   /** The window is gone, or tmux is (`serverDown`: the watcher's down). */
@@ -97,7 +136,7 @@ export type Observation =
   | { kind: 'launched' }
   /** B7: Kage opened a window resuming an ended record: running, resuming, nothing pending. */
   | { kind: 'resumed'; sessionId: string | null }
-  /** R101: the resume's window didn't open; a record still resuming is ended again. */
+  /** R101: the resume's window didn't open; a record still resuming, with no window, is ended again. */
   | { kind: 'resume-aborted' }
   /** Kage answered the prompt: needs-you → running. */
   | { kind: 'answered' }
@@ -170,9 +209,39 @@ export function causeOf(facts: StatusFacts, obs: Observation): Cause {
 export function step(facts: StatusFacts, obs: Observation): StatusStep {
   const to = target(facts, obs);
   const next = observe(facts, obs);
-  return to === null || to === facts.status
-    ? { facts: next, move: null }
-    : moveTo(next, { from: facts.status, to, cause: causeOf(facts, obs) });
+  const s =
+    to === null || to === facts.status
+      ? { facts: next, move: null }
+      : moveTo(next, { from: facts.status, to, cause: causeOf(facts, obs) });
+  const read = promptOf(facts, obs);
+  return read && s.facts.status === 'needs-you'
+    ? { ...s, facts: { ...s.facts, ...withPrompt(s.facts, read) } }
+    : s;
+}
+
+/** The prompt the observation read, if it is taken (Task 6b). */
+function promptOf(facts: StatusFacts, obs: Observation): PromptRead | null {
+  if (!('prompt' in obs) || !obs.prompt) return null;
+  return obs.kind === 'transcript-question' && replaying(facts) ? null : obs.prompt;
+}
+
+/** `set` replaces, then `fill` sets what is still null. */
+function withPrompt(facts: StatusFacts, read: PromptRead): PromptFacts {
+  const next: PromptFacts = {
+    question: facts.question,
+    promptKind: facts.promptKind,
+    promptSeen: facts.promptSeen,
+    askMulti: facts.askMulti,
+    ...read.set,
+  };
+  next.question ??= read.fill?.question ?? null;
+  next.promptKind ??= read.fill?.promptKind ?? null;
+  return next;
+}
+
+/** B7: resuming, the transcript replays the ended run; its open question is not a new one. */
+function replaying(facts: StatusFacts): boolean {
+  return facts.record?.resuming != null;
 }
 
 /**
@@ -197,7 +266,9 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
     // Off the board (null) the transcript places nothing, as with LiveSource's unplaced default
     // (ended): placing is the attach's.
     case 'transcript-question':
-      return onBoard(facts) ? 'needs-you' : facts.status;
+      return onBoard(facts) && !replaying(facts) ? 'needs-you' : facts.status;
+    case 'prompt-captured':
+      return facts.status;
     case 'transcript-interrupt':
       // B26: inside Kage's reply window it is taken for Kage's own Escape; LiveSource arms the
       // turn-end check (act) and the pane decides.
@@ -248,7 +319,7 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
     case 'resumed':
       return resumes(facts) ? 'running' : facts.status;
     case 'resume-aborted':
-      return onBoard(facts) && facts.record?.resuming ? 'ended' : facts.status;
+      return onBoard(facts) && facts.record?.resuming && !facts.hasWindow ? 'ended' : facts.status;
     case 'answered':
       return facts.status === 'needs-you' ? 'running' : facts.status;
     case 'replied':
@@ -305,6 +376,7 @@ function observe(facts: StatusFacts, obs: Observation): StatusFacts {
   switch (obs.kind) {
     case 'loaded':
     case 'transcript-question':
+    case 'prompt-captured':
     case 'activity':
     case 'resume-aborted':
     case 'answered':
@@ -441,7 +513,8 @@ function trackTools(facts: StatusFacts, e: HookEvent): Pick<StatusFacts, 'pendin
 }
 
 /**
- * A move: what any move resets, and what a move into ended ends (F4). Only an ended session can
+ * A move: what any move resets (the prompt too, out of needs-you), and what a move into ended
+ * ends (F4). Only an ended session can
  * be shellEnded, so a move keeps it only into ended, where claude-exited sets it.
  */
 function moveTo(facts: StatusFacts, move: Move): StatusStep {
@@ -452,6 +525,12 @@ function moveTo(facts: StatusFacts, move: Move): StatusStep {
     shellEnded: to === 'ended' && facts.shellEnded,
     startup: to === 'needs-you' ? facts.startup : false,
   };
+  // Only a needs-you session shows a prompt (Task 6b: this was #apply's).
+  if (to !== 'needs-you') {
+    next.question = null;
+    next.promptKind = null;
+    next.promptSeen = false;
+  }
   // Ended before any hook: no resume or first prompt is awaited any more.
   if (to === 'ended' && next.record) {
     next.record = { firstPromptPending: false, resuming: null };

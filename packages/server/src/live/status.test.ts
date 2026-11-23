@@ -1,3 +1,4 @@
+import type { Question } from '@kage/shared';
 import { describe, expect, it } from 'vitest';
 import { HOOK_EVENTS, type HookEvent, type HookEventName } from '../hooks/event.ts';
 import { nextStatus } from '../hooks/status.ts';
@@ -22,6 +23,11 @@ const facts = (over: Partial<StatusFacts> = {}): StatusFacts => ({
   pending: new Set(),
   toolsDone: new Set(),
   record: { firstPromptPending: false, resuming: null },
+  hasWindow: false,
+  question: null,
+  promptKind: null,
+  promptSeen: false,
+  askMulti: new Map(),
   ...over,
 });
 
@@ -1113,5 +1119,185 @@ describe('step: acts (group 5)', () => {
       expect([...before.pending]).toEqual(['toolu_1']);
       expect(before.record).toEqual(waiting());
     }
+  });
+});
+
+describe('step: the last rules from LiveSource (Task 6b, R155)', () => {
+  const STATUSES = [null, 'running', 'needs-you', 'done', 'ended'] as const;
+  const resuming = () => ({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  const Q: Question = { text: 'Which separator?', options: ['Dash', 'Underscore'] };
+  const OTHER: Question = { text: 'Add a test?', options: ['Yes', 'No'] };
+  const asked = (over: Partial<StatusFacts> = {}) =>
+    facts({ status: 'needs-you', question: Q, promptKind: 'ask', promptSeen: true, ...over });
+
+  it('resume-aborted moves only a session with no window (R101)', () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const windowed = step(facts({ status, hasWindow: true, record: resuming() }), {
+        kind: 'resume-aborted',
+      });
+      expect(windowed.move).toBeNull();
+      expect(windowed.facts.record).toEqual(resuming());
+      const none = step(facts({ status, hasWindow: false, record: resuming() }), {
+        kind: 'resume-aborted',
+      });
+      expect(none.move).toEqual({ from: status, to: 'ended', cause: 'act' });
+    }
+  });
+
+  it('transcript-question: while resuming, a replayed question moves nothing and sets nothing', () => {
+    const prompt = { fill: { question: Q, promptKind: 'ask' as const } };
+    for (const status of STATUSES) {
+      const s = step(facts({ status, record: resuming() }), {
+        kind: 'transcript-question',
+        prompt,
+      });
+      expect(s.move).toBeNull();
+      expect(s.facts.question).toBeNull();
+      expect(s.facts.promptKind).toBeNull();
+    }
+    // Not resuming: needs-you with the transcript's question.
+    const s = step(facts({ status: 'running' }), { kind: 'transcript-question', prompt });
+    expect(s.move).toEqual({ from: 'running', to: 'needs-you', cause: 'live' });
+    expect(s.facts).toMatchObject({ question: Q, promptKind: 'ask', promptSeen: false });
+    // It only fills: a question already shown stays.
+    const kept = step(asked({ promptKind: 'permission' }), {
+      kind: 'transcript-question',
+      prompt: { fill: { question: OTHER, promptKind: 'ask' } },
+    });
+    expect(kept.move).toBeNull();
+    expect(kept.facts).toMatchObject({ question: Q, promptKind: 'permission' });
+  });
+
+  it('a move into needs-you sets the prompt its observation carries', () => {
+    const shown = step(facts({ status: 'running', mode: 'activity' }), {
+      kind: 'prompt-shown',
+      prompt: { set: { question: Q, promptKind: 'permission', promptSeen: true } },
+    });
+    expect(shown.move?.to).toBe('needs-you');
+    expect(shown.facts).toMatchObject({ question: Q, promptKind: 'permission', promptSeen: true });
+    const startup: Question = { text: 'Trust this folder?', options: ['No', 'Yes'], startup: true };
+    const screen = step(facts({ status: 'running' }), {
+      kind: 'startup-shown',
+      prompt: { set: { question: startup, promptKind: 'trust' } },
+    });
+    expect(screen.facts).toMatchObject({ question: startup, promptKind: 'trust', startup: true });
+    const rebuilt = step(facts({ status: null }), {
+      kind: 'rebuilt',
+      question: true,
+      turn: false,
+      active: false,
+      wasDone: false,
+      prompt: { set: { question: Q, promptKind: 'ask' } },
+    });
+    expect(rebuilt.move).toEqual({ from: null, to: 'needs-you', cause: 'live' });
+    expect(rebuilt.facts).toMatchObject({ question: Q, promptKind: 'ask' });
+    const check = step(facts({ status: 'running', record: resuming() }), {
+      kind: 'first-prompt-check',
+      screen: 'prompt',
+      at: 1,
+      prompt: { set: { question: Q, promptKind: 'permission', promptSeen: true } },
+    });
+    expect(check.facts).toMatchObject({ question: Q, promptKind: 'permission', promptSeen: true });
+  });
+
+  it("a hook into needs-you sets its prompt: the AskUserQuestion's question, kind and multiSelect", () => {
+    const askMulti = new Map([['Which separator?', true]]);
+    const e = hookEvent('PreToolUse', { toolName: 'AskUserQuestion', toolUseId: 'toolu_1' });
+    const s = step(facts({ status: 'running' }), {
+      kind: 'hook',
+      event: e,
+      prompt: { set: { question: Q, promptKind: 'ask', askMulti } },
+    });
+    expect(s.move).toEqual({ from: 'running', to: 'needs-you', cause: 'live' });
+    expect(s.facts).toMatchObject({ question: Q, promptKind: 'ask' });
+    expect([...s.facts.askMulti]).toEqual([['Which separator?', true]]);
+    // No question in the input: the one shown stays, else the fill (the transcript's).
+    const fill = { set: { promptKind: 'ask' as const }, fill: { question: OTHER } };
+    expect(step(asked(), { kind: 'hook', event: e, prompt: fill }).facts.question).toBe(Q);
+    expect(step(facts(), { kind: 'hook', event: e, prompt: fill }).facts.question).toBe(OTHER);
+  });
+
+  it('a prompt is taken only where the step ends in needs-you', () => {
+    // A Stop with a prompt attached never sets it.
+    const s = step(facts({ status: 'running' }), {
+      kind: 'hook',
+      event: hookEvent('Stop'),
+      prompt: { set: { question: Q, promptKind: 'ask' } },
+    });
+    expect(s.facts.status).toBe('done');
+    expect(s.facts).toMatchObject({ question: null, promptKind: null });
+    // Off the board a screen places nothing and sets nothing.
+    const off = step(facts({ status: null }), {
+      kind: 'startup-shown',
+      prompt: { set: { question: Q, promptKind: 'trust' } },
+    });
+    expect(off.facts).toMatchObject({ status: null, question: null, promptKind: null });
+  });
+
+  it('any move out of needs-you clears the question, its kind and promptSeen; multiSelect stays', () => {
+    const askMulti = new Map([['Which separator?', true]]);
+    const out: Observation[] = [
+      { kind: 'answered' },
+      { kind: 'stopped' },
+      { kind: 'prompt-gone', denial: true },
+      { kind: 'hook', event: hookEvent('Stop') },
+      { kind: 'window-gone', serverDown: false },
+    ];
+    for (const obs of out) {
+      const s = step(asked({ askMulti }), obs);
+      expect(s.move?.from).toBe('needs-you');
+      expect(s.facts).toMatchObject({ question: null, promptKind: null, promptSeen: false });
+      expect(s.facts.askMulti).toBe(askMulti);
+    }
+    // Staying in needs-you keeps them.
+    const stay = step(asked(), { kind: 'hook', event: hookEvent('Notification') });
+    expect(stay.move).toBeNull();
+    expect(stay.facts).toMatchObject({ question: Q, promptKind: 'ask', promptSeen: true });
+  });
+
+  it('prompt-captured sets the prompt with no move, only on a needs-you session', () => {
+    const set = step(facts({ status: 'needs-you', promptKind: 'permission' }), {
+      kind: 'prompt-captured',
+      prompt: { set: { question: Q, promptKind: 'permission', promptSeen: true } },
+    });
+    expect(set.move).toBeNull();
+    expect(set.facts).toMatchObject({ question: Q, promptKind: 'permission', promptSeen: true });
+    // A fill leaves what is there, and fills only what is null.
+    const fill = step(asked({ promptKind: null, promptSeen: false }), {
+      kind: 'prompt-captured',
+      prompt: { set: { promptSeen: true }, fill: { question: OTHER, promptKind: 'permission' } },
+    });
+    expect(fill.facts).toMatchObject({ question: Q, promptKind: 'permission', promptSeen: true });
+    for (const status of STATUSES.filter((x) => x !== 'needs-you')) {
+      const s = step(facts({ status }), {
+        kind: 'prompt-captured',
+        prompt: { set: { question: Q, promptKind: 'permission', promptSeen: true } },
+      });
+      expect(s.move).toBeNull();
+      expect(s.facts).toMatchObject({
+        status,
+        question: null,
+        promptKind: null,
+        promptSeen: false,
+      });
+    }
+  });
+
+  it('prompt steps never mutate the facts they are given', () => {
+    const askMulti = new Map([['Which separator?', false]]);
+    const before = deepFreeze(asked({ askMulti }));
+    const observations: Observation[] = [
+      { kind: 'prompt-captured', prompt: { set: { question: OTHER, promptKind: 'permission' } } },
+      { kind: 'transcript-question', prompt: { fill: { question: OTHER } } },
+      { kind: 'answered' },
+      {
+        kind: 'hook',
+        event: hookEvent('PreToolUse', { toolName: 'AskUserQuestion' }),
+        prompt: { set: { question: OTHER, askMulti: new Map([['Add a test?', true]]) } },
+      },
+    ];
+    for (const obs of observations) expect(step(before, obs).facts).not.toBe(before);
+    expect(before).toMatchObject({ question: Q, promptKind: 'ask', promptSeen: true });
+    expect([...before.askMulti]).toEqual([['Which separator?', false]]);
   });
 });

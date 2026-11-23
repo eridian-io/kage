@@ -5723,3 +5723,117 @@ describe("LiveSource: Kage's acts through the status module (Task 6)", () => {
     await s.source.stop();
   });
 });
+
+describe('LiveSource: the last status rules in the module (Task 6b, R155)', () => {
+  const moves = (events: SourceEvent[], id: string) =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && e.transition.id === id
+        ? [[e.transition.from, e.transition.to, e.transition.cause]]
+        : [],
+    );
+  /** The question `source.get` shows at each transition into needs-you, read by the handler. */
+  function questionsAtNeedsYou(source: LiveSource): (Question | null)[] {
+    const seen: (Question | null)[] = [];
+    source.subscribe((e) => {
+      if (e.type === 'session.transition' && e.transition.to === 'needs-you') {
+        seen.push(source.get(e.transition.id)?.question ?? null);
+      }
+    });
+    return seen;
+  }
+
+  it('resumed on a session not on the board yet moves nothing and changes nothing (no drift)', async () => {
+    const s = setup({ records: [rec({ windowId: null, sessionId: 's-1' })] });
+    let open = () => {};
+    s.tmux.ensureSession = () =>
+      new Promise<void>((resolve) => {
+        open = resolve;
+      });
+    const started = s.source.start();
+    await flush();
+    // Inside start(): the record's session exists but no transition has placed it.
+    s.source.resumed('k-1', 's-1');
+    open();
+    await started;
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(moves(s.events, 'k-1')).toEqual([[null, 'ended', 'reconcile']]);
+    // The resume sent nothing: the session's first event is the transition that placed it.
+    expect(s.events.map((e) => e.type)).toEqual(['session.transition', 'session.updated']);
+    expect(s.tails).toHaveLength(0);
+    // On the board, the same resume moves it as ever.
+    s.source.resumed('k-1', 's-1');
+    expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+    await s.source.stop();
+  });
+
+  it('resumeAborted leaves a session whose window is listed alone (the module decides)', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec({ sessionId: 's-1' })] });
+    await s.source.start();
+    await flush();
+    s.hooks.fire(hook('SessionEnd', '%2'));
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    expect(s.source.get('k-1')?.status).toBe('running');
+    s.events.length = 0;
+    s.source.resumeAborted('k-1');
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(moves(s.events, 'k-1')).toEqual([]);
+    await s.source.stop();
+  });
+
+  it('a transition into needs-you from an AskUserQuestion hook already carries the question', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    const seen = questionsAtNeedsYou(s.source);
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(
+      hook('PreToolUse', '%2', {
+        toolName: 'AskUserQuestion',
+        toolInput: {
+          questions: [
+            {
+              question: 'Which separator should slug() use?',
+              header: 'Separator',
+              options: [{ label: 'Dash' }, { label: 'Underscore' }],
+              multiSelect: true,
+            },
+          ],
+        },
+      }),
+    );
+    expect(seen).toEqual([
+      { text: 'Which separator should slug() use?', options: ['Dash', 'Underscore'] },
+    ]);
+    expect(s.source.target('k-1')).toMatchObject({ promptKind: 'ask', multiSelect: true });
+    await s.source.stop();
+  });
+
+  it('a transition into needs-you from the transcript or a startup screen carries the question', async () => {
+    const q: Question = { text: 'Which separator?', options: ['Dash', 'Underscore'] };
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    const seen = questionsAtNeedsYou(s.source);
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    await flush();
+    s.tails[0]?.push([], { question: q, now: 'Asking a question' });
+    await vi.advanceTimersByTimeAsync(250);
+    expect(seen).toEqual([q]);
+    await s.source.stop();
+
+    const trust =
+      ' Accessing workspace:\n\n /home/dev/projects/shop\n\n Is this a project you created or one you trust?\n\n ❯ No, exit\n   Yes, I trust this folder\n\n Enter to confirm · Esc to cancel\n';
+    const t = setup({ windows: [kageWin()], records: [rec()] });
+    const atStartup = questionsAtNeedsYou(t.source);
+    t.tmux.setCapture('%2', trust);
+    await t.source.start();
+    expect(atStartup).toEqual([
+      {
+        text: 'Trust this folder?',
+        options: ['No, exit', 'Yes, I trust this folder'],
+        startup: true,
+      },
+    ]);
+    await t.source.stop();
+  });
+});

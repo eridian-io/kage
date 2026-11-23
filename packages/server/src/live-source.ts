@@ -29,6 +29,7 @@ import {
   type FirstPromptScreen,
   holdsFirstPrompt,
   type Observation,
+  type PromptRead,
   permissionCounts,
   resumeFails,
   type StatusFacts,
@@ -618,9 +619,10 @@ export class LiveSource implements SessionSource {
    */
   resumed(kageId: string, sessionId: string | null): void {
     const st = this.#sessions.get(kageId);
-    if (!st?.record || st.record.kageId !== kageId || st.status !== 'ended' || !this.#running) {
-      return;
-    }
+    if (!st?.record || !this.#running) return;
+    // Ended → running, act: resuming, the first-prompt wait on, nothing pending. The module
+    // decides whether it moves (an ended record on the board only); if not, nothing changes.
+    if (!this.#apply(st, { kind: 'resumed', sessionId })) return;
     this.#clearTimers(st, ['retire', 'firstPrompt']);
     st.startingSince = null;
     // A new claude in a new window: its startup screens are checked afresh (R9).
@@ -629,8 +631,6 @@ export class LiveSource implements SessionSource {
     st.idleSeen = false;
     st.lastActivity = this.#clock();
     st.launchedAt = this.#clock();
-    // Ended → running, act: resuming, the first-prompt wait on, nothing pending.
-    this.#apply(st, { kind: 'resumed', sessionId });
     st.now = STARTING;
     if (st.transcriptPath) void this.#ensureTail(st);
     this.#emitNow(st);
@@ -643,8 +643,9 @@ export class LiveSource implements SessionSource {
    */
   resumeAborted(kageId: string): void {
     const st = this.#sessions.get(kageId);
-    if (!st?.record || st.status === 'ended' || st.window || !st.resuming || !this.#running) return;
-    this.#apply(st, { kind: 'resume-aborted' });
+    if (!st?.record || !this.#running) return;
+    // The module moves only a record on the board, not ended, still resuming, with no window.
+    if (!this.#apply(st, { kind: 'resume-aborted' })) return;
     st.now = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -721,9 +722,10 @@ export class LiveSource implements SessionSource {
    */
   markAnswered(id: string): void {
     const st = this.#sessions.get(id);
-    if (st?.status !== 'needs-you' || !this.#running) return;
+    if (!st || !this.#running) return;
+    // The module moves only a needs-you session.
+    if (!this.#apply(st, { kind: 'answered' })) return;
     this.#clearTimers(st, ['retry', 'answered']);
-    this.#apply(st, { kind: 'answered' });
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -770,10 +772,12 @@ export class LiveSource implements SessionSource {
   /** Kage sent a reply: running. The replying window runs on: the interrupt may still land. */
   markReplied(id: string): void {
     const st = this.#sessions.get(id);
-    if (!st || st.status === 'ended') return;
-    this.#clearTimers(st, ['retry', 'answered']);
-    // Running, act, nothing pending (also when it was running already).
+    if (!st) return;
+    // Running, act, nothing pending (also when it was running already). The module leaves a
+    // session that is ended or off the board as it is; then nothing else changes either.
     this.#apply(st, { kind: 'replied' });
+    if (!st.placed || st.status !== 'running') return;
+    this.#clearTimers(st, ['retry', 'answered']);
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -953,10 +957,11 @@ export class LiveSource implements SessionSource {
   /** Kage killed the window: ended now; the window-close listing confirms it. */
   markStopped(id: string): void {
     const st = this.#sessions.get(id);
-    if (!st || st.status === 'ended') return;
+    if (!st) return;
+    // Ended, act, in hooks mode with nothing pending; the module moves only a session on the
+    // board and not ended.
+    if (!this.#apply(st, { kind: 'stopped' })) return;
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
-    // Ended, act, in hooks mode with nothing pending.
-    this.#apply(st, { kind: 'stopped' });
     this.#retireTailSoon(st);
     this.#emitNow(st);
     this.#recheckSoon(STOP_RECHECK_MS);
@@ -1344,7 +1349,6 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['idle', 'capture', 'retry']);
     // Ended and shellEnded, hooks mode, no tool pending (status module).
     this.#apply(st, { kind: 'claude-exited' });
-    st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
   }
@@ -1393,7 +1397,6 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['emit', 'retire']);
     this.#apply(st, { kind: 'window-gone', serverDown });
     st.gen++;
-    st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
     // R138: an archived record's session (a stale listing, a failed kill) goes with its window.
@@ -1707,25 +1710,18 @@ export class LiveSource implements SessionSource {
       }, FIRST_PROMPT_MS);
     }
     const before = st.status;
-    // F3: a hook is live, also while an attach catches up. Tools, mode and the waits follow too.
-    // TODO(Task 7): the transition goes out before the question and prompt kind below are set;
-    // fold them into the step before the notifier reads them off a transition.
-    this.#apply(st, { kind: 'hook', event: e });
+    // F3: a hook is live, also while an attach catches up. Tools, mode and the waits follow too,
+    // and the prompt it carries, so a transition into needs-you has its question (Task 6b).
+    const prompt = this.#hookPrompt(st, e);
+    this.#apply(st, prompt ? { kind: 'hook', event: e, prompt } : { kind: 'hook', event: e });
     const next = st.status;
     if (before === 'ended' && next !== 'ended') this.#clearTimers(st, ['retire']);
-    if (next === 'needs-you') {
-      if (e.event === 'PreToolUse' && e.toolName === 'AskUserQuestion') {
-        st.question =
-          questionFromToolInput(e.toolInput) ?? st.question ?? st.tail?.question() ?? null;
-        st.promptKind = 'ask';
-        st.askMulti = multiSelectByQuestion(e.toolInput);
-      } else if (
-        e.event === 'PermissionRequest' ||
-        (e.event === 'Notification' && counts && !st.question)
-      ) {
-        if (e.event === 'PermissionRequest') st.promptKind = 'permission';
-        void this.#capturePrompt(st, false);
-      }
+    // The pane's prompt is read after the move; prompt-captured sets it (#capturePrompt).
+    if (
+      next === 'needs-you' &&
+      (e.event === 'PermissionRequest' || (e.event === 'Notification' && counts && !st.question))
+    ) {
+      void this.#capturePrompt(st, false);
     }
     if (next === 'ended') this.#retireTailSoon(st);
     if (e.event === 'Stop' || e.event === 'SessionEnd') this.#recheckSoon(STOP_RECHECK_MS);
@@ -1737,6 +1733,21 @@ export class LiveSource implements SessionSource {
     } else if (e.event === 'Stop') this.#preview?.touch(st.id, 'turn-end');
     // A turn end checks the session for auto-archive, also when it was done already.
     if (e.event === 'Stop' && st.record) this.#auto?.touch(st.id);
+  }
+
+  /**
+   * The prompt a hook carries into needs-you: an AskUserQuestion's question (else the one shown,
+   * else the transcript's), its kind and multiSelect; a PermissionRequest's kind.
+   */
+  #hookPrompt(st: Live, e: HookEvent): PromptRead | undefined {
+    if (e.event === 'PreToolUse' && e.toolName === 'AskUserQuestion') {
+      const question = questionFromToolInput(e.toolInput);
+      const set = { promptKind: 'ask' as const, askMulti: multiSelectByQuestion(e.toolInput) };
+      if (question) return { set: { ...set, question } };
+      return st.question ? { set } : { set, fill: { question: st.tail?.question() ?? null } };
+    }
+    if (e.event === 'PermissionRequest') return { set: { promptKind: 'permission' } };
+    return undefined;
   }
 
   /**
@@ -1815,15 +1826,30 @@ export class LiveSource implements SessionSource {
     // Ends the wait (#apply runs its clean-up); a startup screen or a prompt is needs-you (with
     // an unnamed tool pending for the prompt), a busy footer stays running, anything else done.
     // A SessionStart's timer armed it: live, also while an attach catches up (F3).
-    this.#apply(st, { kind: 'first-prompt-check', screen: seen, at: this.#now() });
+    // The screen's question goes with the move (Task 6b).
+    let read: PromptRead | undefined;
     if (screen) {
-      st.question = { text: screen.text, options: screen.options, startup: true };
-      st.promptKind = screen.screen;
+      read = {
+        set: {
+          question: { text: screen.text, options: screen.options, startup: true },
+          promptKind: screen.screen,
+        },
+      };
     } else if (prompt && text !== null) {
-      st.question = prompt;
-      st.promptKind = numberedPromptKind(text) ?? 'permission';
-      st.promptSeen = true;
+      read = {
+        set: {
+          question: prompt,
+          promptKind: numberedPromptKind(text) ?? 'permission',
+          promptSeen: true,
+        },
+      };
     }
+    this.#apply(st, {
+      kind: 'first-prompt-check',
+      screen: seen,
+      at: this.#now(),
+      ...(read ? { prompt: read } : {}),
+    });
     this.#emitNow(st);
   }
 
@@ -1891,7 +1917,6 @@ export class LiveSource implements SessionSource {
           this.#armTurnEndCheck(st, 'act');
           return;
         }
-        st.question = null;
         st.now = tail.now();
         this.#emitNow(st);
       }),
@@ -1963,20 +1988,15 @@ export class LiveSource implements SessionSource {
     st.now = tail.now() ?? (st.firstPromptPending ? STARTING : null);
     const q = tail.question();
     const key = questionKey(q);
-    if (st.resuming) {
-      // A resume replays the old transcript before the new claude's first hook: an open
-      // question there belongs to the ended run. Remember it so it never shows (or pings).
+    // A resume replays the old transcript before the new claude's first hook: an open question
+    // there belongs to the ended run. Its key is remembered all the same, and the status module
+    // ignores it while resuming, so it never shows (or pings).
+    const prompt: PromptRead = { fill: { question: q, promptKind: 'ask' } };
+    if (key !== st.tailQuestionKey) {
       st.tailQuestionKey = key;
-    } else if (key !== st.tailQuestionKey) {
-      st.tailQuestionKey = key;
-      if (q && st.status !== 'ended') {
-        this.#apply(st, { kind: 'transcript-question' });
-        st.question ??= q;
-        st.promptKind ??= 'ask';
-      }
+      if (q && st.status !== 'ended') this.#apply(st, { kind: 'transcript-question', prompt });
     } else if (q && st.status === 'needs-you' && !st.question) {
-      st.question = q;
-      st.promptKind ??= 'ask';
+      this.#apply(st, { kind: 'transcript-question', prompt });
     }
     this.#emitThrottled(st);
   }
@@ -1995,11 +2015,8 @@ export class LiveSource implements SessionSource {
       turn: st.now !== null,
       active: this.#active(st),
       wasDone,
+      ...(q ? { prompt: { set: { question: q, promptKind: 'ask' as const } } } : {}),
     });
-    if (q) {
-      st.question = q;
-      st.promptKind = 'ask';
-    }
     // A restart within 5 s of a lost Stop: running from recent activity, but the transcript's
     // turn has ended, so the pane decides as after a turn end (I2).
     if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st, 'reconcile');
@@ -2192,9 +2209,15 @@ export class LiveSource implements SessionSource {
       const screen = parseStartupScreen(text);
       if (screen) {
         this.#clearTimers(st, ['startup']);
-        this.#apply(st, { kind: 'startup-shown' });
-        st.question = { text: screen.text, options: screen.options, startup: true };
-        st.promptKind = screen.screen;
+        this.#apply(st, {
+          kind: 'startup-shown',
+          prompt: {
+            set: {
+              question: { text: screen.text, options: screen.options, startup: true },
+              promptKind: screen.screen,
+            },
+          },
+        });
         this.#emitNow(st);
         return;
       }
@@ -2207,7 +2230,6 @@ export class LiveSource implements SessionSource {
         st.startingSince = null;
         const active = this.#active(st);
         this.#apply(st, { kind: 'startup-gone', active });
-        st.question = null;
         this.#scheduleIdle(st);
         this.#emitNow(st);
         return;
@@ -2216,9 +2238,13 @@ export class LiveSource implements SessionSource {
     const prompt = parsePermissionPrompt(text);
     if (st.status === 'needs-you') {
       if (prompt) {
-        st.promptSeen = true;
-        st.question ??= prompt;
-        st.promptKind ??= numberedPromptKind(text);
+        this.#apply(st, {
+          kind: 'prompt-captured',
+          prompt: {
+            set: { promptSeen: true },
+            fill: { question: prompt, promptKind: numberedPromptKind(text) },
+          },
+        });
         this.#emitNow(st);
       } else if (st.promptSeen && !showsPrompt(text) && !this.#replying(st)) {
         // R11 fallback: the prompt went away without a hook. No or Esc leaves Claude's denial
@@ -2234,11 +2260,13 @@ export class LiveSource implements SessionSource {
     // A prompt already on screen at start, or in a window without hooks.
     if (prompt && (initial || st.mode === 'activity')) {
       this.#clearTimers(st, ['idle']);
-      // Needs-you, with an unnamed tool pending for the prompt.
-      this.#apply(st, { kind: 'prompt-shown' });
-      st.question = prompt;
-      st.promptKind = numberedPromptKind(text);
-      st.promptSeen = true;
+      // Needs-you, with an unnamed tool pending for the prompt, and the prompt itself.
+      this.#apply(st, {
+        kind: 'prompt-shown',
+        prompt: {
+          set: { question: prompt, promptKind: numberedPromptKind(text), promptSeen: true },
+        },
+      });
       this.#emitNow(st);
     }
   }
@@ -2249,16 +2277,24 @@ export class LiveSource implements SessionSource {
     const text = await this.#capture(st);
     if (!this.#running || gen !== st.gen || st.status !== 'needs-you') return;
     const prompt = text === null ? null : parsePermissionPrompt(text);
+    // Read after the move: the prompt goes in through the module, with no move (Task 6b).
     if (prompt) {
-      st.question = prompt;
-      st.promptKind = numberedPromptKind(text as string) ?? 'permission';
-      st.promptSeen = true;
+      this.#apply(st, {
+        kind: 'prompt-captured',
+        prompt: {
+          set: {
+            question: prompt,
+            promptKind: numberedPromptKind(text as string) ?? 'permission',
+            promptSeen: true,
+          },
+        },
+      });
       this.#emitNow(st);
       return;
     }
     const fallback = st.tail?.question() ?? null;
     if (fallback && !st.question) {
-      st.question = fallback;
+      this.#apply(st, { kind: 'prompt-captured', prompt: { fill: { question: fallback } } });
       this.#emitNow(st);
     }
     if (!retried && !st.timers.retry && this.#running) {
@@ -2290,6 +2326,11 @@ export class LiveSource implements SessionSource {
       record: st.record
         ? { firstPromptPending: st.firstPromptPending, resuming: st.resuming }
         : null,
+      hasWindow: st.window !== null,
+      question: st.question,
+      promptKind: st.promptKind,
+      promptSeen: st.promptSeen,
+      askMulti: st.askMulti,
     };
   }
 
@@ -2315,6 +2356,11 @@ export class LiveSource implements SessionSource {
       st.firstPromptPending = facts.record.firstPromptPending;
       st.resuming = facts.record.resuming;
     }
+    // The prompt is written before the transition goes out, so its handlers see the question.
+    st.question = facts.question;
+    st.promptKind = facts.promptKind;
+    st.promptSeen = facts.promptSeen;
+    if (facts.askMulti !== st.askMulti) st.askMulti = new Map(facts.askMulti);
     if (before.record?.firstPromptPending && !facts.record?.firstPromptPending) {
       this.#firstPromptWaitEnded(st);
     }
@@ -2324,12 +2370,8 @@ export class LiveSource implements SessionSource {
     st.gen++;
     // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.
     st.tail?.setIdle(t.to !== 'running');
-    if (t.to !== 'needs-you') {
-      st.question = null;
-      st.promptKind = null;
-      st.promptSeen = false;
-      this.#clearTimers(st, ['retry']);
-    }
+    // The prompt itself was cleared by the step (moveTo); its capture retry goes here.
+    if (t.to !== 'needs-you') this.#clearTimers(st, ['retry']);
     this.#onTransition(st, t);
     return t;
   }
