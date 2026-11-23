@@ -292,8 +292,8 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 
 | Key | Default | Meaning |
 |---|---|---|
-| `name` | The PC's hostname, before the first dot | The name in the dashboard's host pill and in the address Kage prints |
-| `host` | `null` | The address to listen on. `null` uses your Tailscale IP (from `tailscale ip -4`). Kage only accepts a Tailscale or loopback address, or a name that resolves to one |
+| `name` | The PC's hostname, before the first dot | The name in the dashboard's host pill. It is only a label: Kage doesn't answer to it |
+| `host` | `null` | The address to listen on. `null` uses your Tailscale IP (from `tailscale ip -4`). Kage only accepts a Tailscale or loopback address, or a name that resolves to one. Kage answers to its Tailscale IP and MagicDNS names, and to the name you set here. A `.local` name or a single word here means trusting everyone on your local network |
 | `port` | `8080` | The port the dashboard listens on |
 | `projectsRoot` | `"~/projects"` | The folder that holds your git projects |
 | `tmuxSession` | `"kage"` | The tmux session Kage uses for agent windows |

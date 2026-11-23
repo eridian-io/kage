@@ -1,6 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { describe, expect, it } from 'vitest';
 import { type Auth, authCookieName, SessionStore } from '../auth.ts';
+import { BAD_ORIGIN, UNKNOWN_HOST } from '../security.ts';
 import { checkUpgrade, TERMINAL_PATH } from './upgrade.ts';
 
 const allowed = { hostNames: ['my-pc', '100.64.0.7'], port: 8080 };
@@ -57,31 +58,31 @@ describe('checkUpgrade', () => {
     ).toBe(true);
   });
 
-  it('a foreign Host → 403 Unknown host', () => {
+  it('a foreign Host → 403 with the unknown-host sentence', () => {
     expect(check('/api/sessions/k-1/terminal', good({ host: 'evil.example' }))).toEqual({
       ok: false,
       status: 403,
-      error: 'Unknown host',
+      error: UNKNOWN_HOST,
     });
     expect(check('/api/sessions/k-1/terminal', without('host'))).toMatchObject({ status: 403 });
   });
 
   it.each(['http://evil.example', 'http://my-pc:9999', 'https://my-pc:8080', 'null'])(
-    'Origin %s → 403 Bad origin',
+    'Origin %s → 403 with the bad-origin sentence',
     (origin) => {
       expect(check('/api/sessions/k-1/terminal', good({ origin }))).toEqual({
         ok: false,
         status: 403,
-        error: 'Bad origin',
+        error: BAD_ORIGIN,
       });
     },
   );
 
-  it('a missing Origin → 403 Bad origin', () => {
+  it('a missing Origin → 403 with the bad-origin sentence', () => {
     expect(check('/api/sessions/k-1/terminal', without('origin'))).toEqual({
       ok: false,
       status: 403,
-      error: 'Bad origin',
+      error: BAD_ORIGIN,
     });
   });
 
@@ -194,11 +195,11 @@ describe('checkUpgrade', () => {
     const all = good({ host: 'evil.example', origin: 'http://evil.example' });
     delete all['sec-websocket-protocol'];
     expect(check('/api/sessions/k-1/terminal', all, { token: TOKEN })).toMatchObject({
-      error: 'Unknown host',
+      error: UNKNOWN_HOST,
     });
     const noHostFault = { ...all, host: 'my-pc:8080' };
     expect(check('/api/sessions/k-1/terminal', noHostFault, { token: TOKEN })).toMatchObject({
-      error: 'Bad origin',
+      error: BAD_ORIGIN,
     });
     const cookieFault = { ...noHostFault, origin: 'http://my-pc:8080' };
     expect(check('/api/sessions/k-1/terminal', cookieFault, { token: TOKEN })).toMatchObject({

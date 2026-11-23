@@ -1,6 +1,13 @@
 import { Hono } from 'hono';
 import { describe, expect, it } from 'vitest';
-import { csrfGuard, hostAllowed, hostGuard, originAllowed } from './security.ts';
+import {
+  BAD_ORIGIN,
+  csrfGuard,
+  hostAllowed,
+  hostGuard,
+  originAllowed,
+  UNKNOWN_HOST,
+} from './security.ts';
 
 const allowed = { hostNames: ['my-pc', '100.64.0.7', 'fd7a:115c::1'], port: 8080 };
 
@@ -15,12 +22,12 @@ describe('hostGuard', () => {
   it.each(['evil.example', 'my-pc:9999'])('rejects %s', async (h) => {
     const r = await app.request('/', { headers: { Host: h } });
     expect(r.status).toBe(403);
-    expect(await r.text()).toBe('Unknown host');
+    expect(await r.text()).toBe(UNKNOWN_HOST);
   });
   it('rejects a missing Host', async () => {
     const r = await app.request('/', { headers: { Host: '' } });
     expect(r.status).toBe(403);
-    expect(await r.text()).toBe('Unknown host');
+    expect(await r.text()).toBe(UNKNOWN_HOST);
   });
 });
 
@@ -37,7 +44,9 @@ describe('csrfGuard', () => {
     expect((await send('POST', good)).status).toBe(200);
   });
   it('rejects POST with a foreign Origin', async () => {
-    expect((await send('POST', { ...good, Origin: 'http://evil.example' })).status).toBe(403);
+    const r = await send('POST', { ...good, Origin: 'http://evil.example' });
+    expect(r.status).toBe(403);
+    expect(await r.text()).toBe(BAD_ORIGIN);
   });
   it('rejects POST with a missing Origin', async () => {
     expect((await send('POST', { 'X-Kage': '1' })).status).toBe(403);
@@ -62,6 +71,10 @@ const HOSTS: [string | undefined, boolean][] = [
   ['MY-PC:8080', true],
   ['100.64.0.7:8080', true],
   ['[fd7a:115c::1]:8080', true],
+  ['[FD7A:115C:0::1]:8080', true],
+  ['my-pc.:8080', true],
+  ['my-pc..:8080', false],
+  ['fd7a:115c::1:8080', false],
   ['evil.example', false],
   ['my-pc:9999', false],
   ['my-pc:8080/x', false],
@@ -73,6 +86,7 @@ const ORIGINS: [string | undefined, boolean][] = [
   ['http://my-pc:8080', true],
   ['http://100.64.0.7:8080', true],
   ['http://[fd7a:115c::1]:8080', true],
+  ['http://MY-PC.:8080', true],
   ['http://my-pc', false],
   ['http://evil.example', false],
   ['http://my-pc:9999', false],
@@ -103,5 +117,32 @@ describe('hostAllowed and originAllowed agree with the middlewares', () => {
     const p80 = { hostNames: ['my-pc'], port: 80 };
     expect(originAllowed('http://my-pc', p80)).toBe(true);
     expect(originAllowed('http://my-pc:80', p80)).toBe(true);
+  });
+});
+
+describe('a rebinding name is refused, with what to set (security I2)', () => {
+  // The list a Tailscale bind builds now: the bound IP and the MagicDNS names, nothing else.
+  const list = { hostNames: ['100.64.0.9', 'studio.tail1.ts.net', 'studio'], port: 8080 };
+  const app = new Hono().use(hostGuard(list)).use(csrfGuard(list));
+  app.all('/', (c) => c.text('ok'));
+
+  it('Host: owners-macbook.local:8080 and Origin http://box:8080 are refused (403)', async () => {
+    const host = await app.request('/', { headers: { Host: 'owners-macbook.local:8080' } });
+    expect(host.status).toBe(403);
+    expect(await host.text()).toBe(UNKNOWN_HOST);
+    const origin = await app.request('/', {
+      method: 'POST',
+      headers: { Host: '100.64.0.9:8080', 'X-Kage': '1', Origin: 'http://box:8080' },
+    });
+    expect(origin.status).toBe(403);
+    expect(await origin.text()).toBe(BAD_ORIGIN);
+  });
+
+  it('the refusals are calm sentences that name "host" in the config file', () => {
+    for (const text of [UNKNOWN_HOST, BAD_ORIGIN]) {
+      expect(text).toMatch(/\.$/);
+      expect(text).toContain(`set "host" in Kage's config file`);
+      expect(text).not.toMatch(/!|^Error/);
+    }
   });
 });

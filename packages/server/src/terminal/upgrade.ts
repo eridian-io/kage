@@ -1,7 +1,7 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import { LIMITS, TERM_PROTOCOL } from '@kage/shared';
 import { type Auth, SIGN_IN, sessionOf } from '../auth.ts';
-import { type Allowed, hostAllowed, originAllowed } from '../security.ts';
+import { type Allowed, BAD_ORIGIN, hostAllowed, originAllowed, UNKNOWN_HOST } from '../security.ts';
 
 /** The terminal's path, matched on the raw (undecoded) path: one segment, the session id. */
 export const TERMINAL_PATH = /^\/api\/sessions\/([^/]{1,200})\/terminal$/;
@@ -71,8 +71,8 @@ export function checkUpgrade(
   if (req.method !== 'GET' || one(h.upgrade)?.toLowerCase() !== 'websocket') {
     return refuse(400, 'Open the terminal with a WebSocket.');
   }
-  if (!hostAllowed(one(h.host), o.allowed)) return refuse(403, 'Unknown host');
-  if (!originAllowed(one(h.origin), o.allowed)) return refuse(403, 'Bad origin');
+  if (!hostAllowed(one(h.host), o.allowed)) return refuse(403, UNKNOWN_HOST);
+  if (!originAllowed(one(h.origin), o.allowed)) return refuse(403, BAD_ORIGIN);
   const session = sessionOf(o.auth, one(h.cookie), o.peer);
   if (session === null) return refuse(401, SIGN_IN);
   const offered = (one(h['sec-websocket-protocol']) ?? '').split(',').map((p) => p.trim());

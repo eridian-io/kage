@@ -1,6 +1,6 @@
 import { existsSync, watch } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
-import { homedir, hostname } from 'node:os';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
@@ -445,7 +445,6 @@ async function startServer(
       unsafeListenAll: values['unsafe-listen-all'] === true,
       tailscaleIp: defaultTailscaleIp,
       tailscaleDnsName: () => tailscaleDnsName(),
-      hostname,
       configFile: displayPath(configPath(io.env), io.env.HOME || io.env.USERPROFILE || homedir()),
     });
   } catch (err) {
@@ -490,7 +489,7 @@ async function startServer(
     source = d;
     demoReset = () => d.reset();
   } else {
-    const pingHost = cfg.ntfyTopic !== '' ? linkHost(cfg, listen, hostname()) : null;
+    const pingHost = cfg.ntfyTopic !== '' ? linkHost(cfg, listen) : null;
     const live = await startLive(
       cfg,
       io,
@@ -620,7 +619,7 @@ async function startServer(
   checkSignal(io);
   // R53: without a token, anyone who can reach the address can start and approve tasks.
   if (!demo && cfg.token === '') io.err(NO_TOKEN);
-  const url = `http://${displayHost(cfg, listen.address, hostname())}:${cfg.port}`;
+  const url = `http://${displayHost(cfg, listen)}:${cfg.port}`;
   // GET /status on the hook socket (kage status, setup, doctor): no token, nothing secret.
   if (liveParts) {
     const live = liveParts.source;

@@ -5,12 +5,25 @@ export interface Allowed {
   port: number;
 }
 
-/** Parse a Host header or Origin into bracket-free lowercase hostname and port. */
+/**
+ * The body of a refused Host (hostGuard and the terminal upgrade): a name Kage doesn't trust.
+ * Only the bound IP, the MagicDNS names, an explicit `host` and, on loopback, `localhost` pass
+ * (security I2); any other name could be answered by a device on the local network.
+ */
+export const UNKNOWN_HOST = `Kage doesn't answer to this name. Open the address "kage status" shows, or set "host" in Kage's config file to this name.`;
+
+/** The body of a refused Origin (csrfGuard and the terminal upgrade). */
+export const BAD_ORIGIN = `Kage only takes requests from a page on its own address. Open the address "kage status" shows, or set "host" in Kage's config file to the name you use.`;
+
+/**
+ * Parse a Host header or Origin into bracket-free lowercase hostname and port. One trailing
+ * dot is dropped: `box.tail1.ts.net.` is the same DNS name as `box.tail1.ts.net`.
+ */
 function parseAuthority(value: string, scheme = 'http'): { hostname: string; port: string } | null {
   try {
     const u = new URL(`${scheme}://${value}`);
     if (u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
-    return { hostname: u.hostname.replace(/^\[|\]$/g, ''), port: u.port };
+    return { hostname: u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, ''), port: u.port };
   } catch {
     return null;
   }
@@ -18,7 +31,7 @@ function parseAuthority(value: string, scheme = 'http'): { hostname: string; por
 
 function normalizeName(name: string): string {
   const p = parseAuthority(name.includes(':') ? `[${name.replace(/^\[|\]$/g, '')}]` : name);
-  return p?.hostname ?? name.toLowerCase();
+  return p?.hostname ?? name.toLowerCase().replace(/\.$/, '');
 }
 
 type Matcher = (hostname: string, p: string, allowNoPort: boolean) => boolean;
@@ -55,7 +68,7 @@ export function originAllowed(origin: string | undefined, allowed: Allowed): boo
 export function hostGuard(allowed: Allowed): MiddlewareHandler {
   const ok = makeMatcher(allowed);
   return async (c, next) => {
-    if (!hostOk(c.req.header('Host'), ok)) return c.text('Unknown host', 403);
+    if (!hostOk(c.req.header('Host'), ok)) return c.text(UNKNOWN_HOST, 403);
     await next();
   };
 }
@@ -66,7 +79,7 @@ export function csrfGuard(allowed: Allowed): MiddlewareHandler {
     const method = c.req.method;
     if (method === 'GET' || method === 'HEAD') return next();
     if (c.req.header('X-Kage') !== '1') return c.text('Missing X-Kage header', 403);
-    if (!originOk(c.req.header('Origin'), ok)) return c.text('Bad origin', 403);
+    if (!originOk(c.req.header('Origin'), ok)) return c.text(BAD_ORIGIN, 403);
     await next();
   };
 }

@@ -4,6 +4,7 @@ import { LIMITS, type SessionStatus } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
 import { type Auth, authCookieName, SessionStore, SIGN_IN } from '../auth.ts';
+import { BAD_ORIGIN } from '../security.ts';
 import { BridgeError, type TermHandle, type TermSink } from './bridge.ts';
 import { TerminalServer } from './server.ts';
 
@@ -180,7 +181,7 @@ describe('TerminalServer: refusals before the upgrade', () => {
   it('a bad Origin is a plain HTTP 403 and bridge.open is never called', async () => {
     const { connect, bridge } = await setup();
     const c = connect(undefined, { origin: 'http://evil.example' });
-    expect(await c.refused).toEqual([403, 'Bad origin\n']);
+    expect(await c.refused).toEqual([403, `${BAD_ORIGIN}\n`]);
     expect(bridge.opens).toHaveLength(0);
   });
 

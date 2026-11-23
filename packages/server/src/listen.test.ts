@@ -3,31 +3,35 @@ import { describe, expect, it, vi } from 'vitest';
 import { DEFAULT_CONFIG } from './config.ts';
 import {
   displayHost,
+  hostNamesFor,
   ListenError,
   linkHost,
   resolveListenAddress,
-  shortHostname,
   tailscaleDnsName,
 } from './listen.ts';
-import { hostGuard } from './security.ts';
+import { csrfGuard, hostGuard } from './security.ts';
+
+// This machine's name as macOS gives it: a .local name anyone on the LAN can answer for (mDNS).
+vi.mock('node:os', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('node:os')>()),
+  hostname: () => 'Owners-MacBook.local',
+}));
 
 const base = (over: { unsafeListenAll?: boolean; ip?: string | null } = {}) => ({
   unsafeListenAll: over.unsafeListenAll ?? false,
   tailscaleIp: async () => (over.ip === undefined ? '100.64.0.9' : over.ip),
-  hostname: () => 'my-pc',
 });
 
 describe('resolveListenAddress', () => {
   it('uses cfg.host when set', async () => {
     const r = await resolveListenAddress({ ...DEFAULT_CONFIG, host: '100.64.0.7' }, base());
     expect(r.address).toBe('100.64.0.7');
-    expect(r.hostNames).toContain('100.64.0.7');
-    expect(r.hostNames).toContain('my-pc');
+    expect(r.hostNames).toEqual(['100.64.0.7']);
   });
   it('uses tailscale ip when no host', async () => {
     const r = await resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base());
     expect(r.address).toBe('100.64.0.9');
-    expect(r.hostNames).toEqual(expect.arrayContaining(['100.64.0.9', 'my-pc']));
+    expect(r.hostNames).toEqual(['100.64.0.9']);
   });
   it('throws when tailscale is not running', async () => {
     const p = resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base({ ip: null }));
@@ -85,9 +89,7 @@ describe('resolveListenAddress', () => {
       { ...base(), lookup },
     );
     expect(r.address).toBe('100.101.102.103');
-    expect(r.hostNames).toEqual(
-      expect.arrayContaining(['box.tail.ts.net', '100.101.102.103', 'my-pc']),
-    );
+    expect(r.hostNames).toEqual(['box.tail.ts.net', '100.101.102.103']);
   });
   it('refuses a name resolving outside Tailscale', async () => {
     const lookup = async () => [{ address: '10.0.0.5', family: 4 }];
@@ -100,65 +102,171 @@ describe('resolveListenAddress', () => {
   });
 });
 
-describe('host names people type', () => {
-  it('accepts the short hostname and cfg.name next to the full os.hostname()', async () => {
-    const r = await resolveListenAddress(
-      { ...DEFAULT_CONFIG, host: null, name: 'studio' },
-      { ...base(), hostname: () => 'Box.local' },
-    );
-    expect(r.hostNames).toEqual(
-      expect.arrayContaining(['100.64.0.9', 'Box.local', 'box', 'studio']),
-    );
-  });
-  it('lets the short name through the host guard', async () => {
-    const r = await resolveListenAddress(
-      { ...DEFAULT_CONFIG, host: null },
-      { ...base(), hostname: () => 'Box.local' },
-    );
-    const app = new Hono();
-    app.use('*', hostGuard({ hostNames: r.hostNames, port: 8080 }));
-    app.get('/', (c) => c.text('ok'));
-    const res = await app.request('/', { headers: { Host: 'box:8080' } });
-    expect(res.status).toBe(200);
-  });
-});
+/** A guarded app with this allow-list on port 8080: Host and Origin both checked. */
+function guarded(hostNames: string[]) {
+  const allowed = { hostNames, port: 8080 };
+  const app = new Hono().use(hostGuard(allowed)).use(csrfGuard(allowed));
+  app.all('/', (c) => c.text('ok'));
+  const host = async (h: string) => (await app.request('/', { headers: { Host: h } })).status;
+  // The Origin alone is under test: the Host is one the list holds.
+  const origin = async (name: string) =>
+    (
+      await app.request('/', {
+        method: 'POST',
+        headers: {
+          Host: `${hostNames[0]?.includes(':') ? `[${hostNames[0]}]` : hostNames[0]}:8080`,
+          'X-Kage': '1',
+          Origin: `http://${name}:8080`,
+        },
+      })
+    ).status;
+  return { host, origin };
+}
 
-describe('shortHostname', () => {
-  it.each([
-    ['Box.local', 'box'],
-    ['my-pc', 'my-pc'],
-    ['WORK.corp.example', 'work'],
-  ])('%s → %s', (full, short) => {
-    expect(shortHostname(full)).toBe(short);
+describe('the Host and Origin allow-list (security I2)', () => {
+  it('trusts the bound IP, the MagicDNS name and its first label, and an explicit host only', async () => {
+    // os.hostname() is "Owners-MacBook.local" here (the mock above); cfg.name is the pill only.
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null, name: 'box' },
+      { ...base(), tailscaleDnsName: async () => 'studio.tail1234.ts.net' },
+    );
+    expect(r.hostNames).toEqual(['studio.tail1234.ts.net', 'studio', '100.64.0.9']);
+    for (const name of ['owners-macbook.local', 'owners-macbook', 'box']) {
+      expect(r.hostNames).not.toContain(name);
+    }
+    const g = guarded(r.hostNames);
+    // A rebinding attempt: an mDNS (.local), LLMNR (single label) or os.hostname() name.
+    for (const name of ['owners-macbook.local', 'owners-macbook', 'box', 'localhost']) {
+      expect(await g.host(`${name}:8080`), name).toBe(403);
+      expect(await g.origin(name), name).toBe(403);
+    }
+    for (const name of ['studio.tail1234.ts.net', 'STUDIO', 'studio', '100.64.0.9']) {
+      expect(await g.host(`${name}:8080`), name).toBe(200);
+      expect(await g.origin(name), name).toBe(200);
+    }
+    // A trailing dot is the same name, and the port is still checked.
+    expect(await g.host('studio.tail1234.ts.net.:8080')).toBe(200);
+    expect(await g.origin('Studio.Tail1234.ts.net.')).toBe(200);
+    expect(await g.host('studio.tail1234.ts.net:9999')).toBe(403);
+  });
+
+  it('a loopback bind also trusts localhost; a Tailscale bind does not', async () => {
+    const v4 = await resolveListenAddress({ ...DEFAULT_CONFIG, host: '127.0.0.1' }, base());
+    expect(v4.hostNames).toEqual(['127.0.0.1', 'localhost']);
+    const g4 = guarded(v4.hostNames);
+    expect(await g4.host('localhost:8080')).toBe(200);
+    expect(await g4.origin('localhost')).toBe(200);
+    const v6 = await resolveListenAddress({ ...DEFAULT_CONFIG, host: '::1' }, base());
+    expect(v6.hostNames).toEqual(['::1', 'localhost']);
+    const g6 = guarded(v6.hostNames);
+    expect(await g6.host('[::1]:8080')).toBe(200);
+    expect(await g6.host('localhost:8080')).toBe(200);
+    expect(await g6.origin('[::1]')).toBe(200);
+    expect(await g6.origin('localhost')).toBe(200);
+    const ts = await resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base());
+    expect(ts.hostNames).not.toContain('localhost');
+    expect(await guarded(ts.hostNames).host('localhost:8080')).toBe(403);
+    expect(await guarded(ts.hostNames).origin('localhost')).toBe(403);
+  });
+
+  it('an IPv6 bind trusts its address however it is written, bracketed', async () => {
+    const r = await resolveListenAddress({ ...DEFAULT_CONFIG, host: 'fd7a:115c:a1e0::1' }, base());
+    expect(r.hostNames).toEqual(['fd7a:115c:a1e0::1']);
+    const g = guarded(r.hostNames);
+    expect(await g.host('[FD7A:115C:A1E0:0:0:0:0:1]:8080')).toBe(200);
+    expect(await g.host('[fd7a:115c:a1e0::1]:9999')).toBe(403);
+    expect(await g.host('localhost:8080')).toBe(403);
+    expect(await g.origin('[fd7a:115c:a1e0::1]')).toBe(200);
+    expect(await g.origin('localhost')).toBe(403);
+  });
+
+  it('a configured host name, even .local, is trusted', async () => {
+    const lookup = async () => [{ address: '100.64.0.9', family: 4 }];
+    for (const host of ['studio.local', 'box', 'Box.Tail1234.ts.net.']) {
+      const r = await resolveListenAddress({ ...DEFAULT_CONFIG, host }, { ...base(), lookup });
+      expect(r.hostNames).toEqual([host, '100.64.0.9']);
+      const g = guarded(r.hostNames);
+      const typed = host.replace(/\.$/, '').toLowerCase();
+      expect(await g.host(`${typed}:8080`), host).toBe(200);
+      expect(await g.origin(typed), host).toBe(200);
+    }
+  });
+
+  it('hostNamesFor: an all-interfaces bind trusts the configured host and the MagicDNS names', () => {
+    const cfg = { ...DEFAULT_CONFIG, host: '0.0.0.0', name: 'box' };
+    expect(hostNamesFor(cfg, '0.0.0.0', 'studio.tail1.ts.net')).toEqual([
+      'studio.tail1.ts.net',
+      'studio',
+    ]);
+    expect(hostNamesFor({ ...cfg, host: '' }, '', null)).toEqual([]);
+  });
+
+  it('--unsafe-listen-all also trusts the Tailscale IP when known (F11)', async () => {
+    const r = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '0.0.0.0' },
+      { ...base({ unsafeListenAll: true }), tailscaleDnsName: async () => 'studio.tail1.ts.net' },
+    );
+    expect(r.hostNames).toEqual(['studio.tail1.ts.net', 'studio', '100.64.0.9']);
+    expect(displayHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, r)).toBe('studio');
+    const noDns = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '0.0.0.0' },
+      base({ unsafeListenAll: true }),
+    );
+    expect(noDns.hostNames).toEqual(['100.64.0.9']);
+    expect(displayHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, noDns)).toBe('100.64.0.9');
+    const noTs = await resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: '0.0.0.0' },
+      base({ unsafeListenAll: true, ip: null }),
+    );
+    expect(noTs.hostNames).toEqual([]);
   });
 });
 
 describe('displayHost', () => {
   const cfg = (over: Partial<typeof DEFAULT_CONFIG>) => ({ ...DEFAULT_CONFIG, ...over });
+  const at = (address: string, dnsName: string | null = null) => ({ address, dnsName });
   it('prints the configured host name', () => {
-    expect(
-      displayHost(cfg({ host: 'box.tail.ts.net', name: 'box' }), '100.64.0.7', 'Box.local'),
-    ).toBe('box.tail.ts.net');
+    expect(displayHost(cfg({ host: 'box.tail.ts.net', name: 'box' }), at('100.64.0.7'))).toBe(
+      'box.tail.ts.net',
+    );
   });
-  it('prints cfg.name for a Tailscale bind, never the .local name', () => {
-    expect(displayHost(cfg({ host: null, name: 'studio' }), '100.64.0.9', 'Box.local')).toBe(
+  it('displayHost prints the MagicDNS first label, else the IP', () => {
+    expect(displayHost(cfg({ host: null, name: 'box' }), at('100.64.0.9', 'studio.t.ts.net'))).toBe(
       'studio',
     );
     expect(
-      displayHost(cfg({ host: '100.64.0.7', name: 'studio' }), '100.64.0.7', 'Box.local'),
+      displayHost(cfg({ host: '100.64.0.7', name: 'box' }), at('100.64.0.7', 'studio.t.ts.net')),
     ).toBe('studio');
+    expect(displayHost(cfg({ host: null, name: 'box' }), at('100.64.0.9'))).toBe('100.64.0.9');
     expect(
-      displayHost(cfg({ host: 'fd7a:115c:a1e0::1', name: 'studio' }), 'fd7a:115c:a1e0::1', 'x'),
-    ).toBe('studio');
+      displayHost(cfg({ host: 'fd7a:115c:a1e0::1', name: 'box' }), at('fd7a:115c:a1e0::1')),
+    ).toBe('[fd7a:115c:a1e0::1]');
   });
-  it('falls back to the short hostname when cfg.name is not a host name', () => {
-    expect(displayHost(cfg({ host: null, name: 'My Box' }), '100.64.0.9', 'Box.local')).toBe('box');
+  it('never prints cfg.name', () => {
+    expect(displayHost(cfg({ host: null, name: 'studio' }), at('100.64.0.9'))).toBe('100.64.0.9');
   });
   it('prints the IP for a loopback bind', () => {
-    expect(displayHost(cfg({ host: '127.0.0.1', name: 'studio' }), '127.0.0.1', 'Box.local')).toBe(
+    expect(displayHost(cfg({ host: '127.0.0.1', name: 'studio' }), at('127.0.0.1'))).toBe(
       '127.0.0.1',
     );
-    expect(displayHost(cfg({ host: '::1', name: 'studio' }), '::1', 'Box.local')).toBe('[::1]');
+    expect(displayHost(cfg({ host: '::1', name: 'studio' }), at('::1'))).toBe('[::1]');
+  });
+  it('what it prints always passes its own guard', async () => {
+    const cases: [Partial<typeof DEFAULT_CONFIG>, (() => Promise<string | null>) | undefined][] = [
+      [{ host: null, name: 'box' }, async () => 'studio.tail1.ts.net'],
+      [{ host: null, name: 'box' }, async () => null],
+      [{ host: '127.0.0.1', name: 'box' }, undefined],
+      [{ host: '::1', name: 'box' }, undefined],
+      [{ host: 'fd7a:115c:a1e0::1', name: 'box' }, async () => null],
+      [{ host: 'studio.local', name: 'box' }, undefined],
+    ];
+    const lookup = async () => [{ address: '100.64.0.9', family: 4 }];
+    for (const [over, dns] of cases) {
+      const c = cfg(over);
+      const r = await resolveListenAddress(c, { ...base(), lookup, tailscaleDnsName: dns });
+      const shown = displayHost(c, r);
+      expect(await guarded(r.hostNames).host(`${shown}:8080`), shown).toBe(200);
+    }
   });
 });
 
@@ -209,7 +317,7 @@ describe('MagicDNS name in hostNames (B1)', () => {
       { ...DEFAULT_CONFIG, host: null, name: 'my-pc' },
       { ...base(), tailscaleDnsName: async () => null },
     );
-    expect(r.hostNames).toEqual(['100.64.0.9', 'my-pc']);
+    expect(r.hostNames).toEqual(['100.64.0.9']);
   });
   it('dnsName is the tailscale status name when found, else null (ntfy links)', async () => {
     const found = await resolveListenAddress(
@@ -243,63 +351,29 @@ describe('MagicDNS name in hostNames (B1)', () => {
   });
 });
 
-describe('cfg.name as a Host (B12)', () => {
-  const names = async (name: string) =>
-    (await resolveListenAddress({ ...DEFAULT_CONFIG, host: null, name }, base())).hostNames;
-  it.each(['studio', 'my-box', 'box.tail1234.ts.net', 'Box.local', 'studio.local'])(
-    'accepts %s',
-    async (name) => {
-      expect(await names(name)).toContain(name);
-    },
-  );
-  it.each(['example.com', 'kage.example.ts.net.evil.com', 'my box', 'x.local.example', '.local'])(
-    'leaves out %s',
-    async (name) => {
-      expect(await names(name)).not.toContain(name);
-    },
-  );
-  it('"example.com" is not accepted as a Host', async () => {
-    const r = await resolveListenAddress(
-      { ...DEFAULT_CONFIG, host: null, name: 'example.com' },
-      base(),
-    );
-    const app = new Hono();
-    app.use('*', hostGuard({ hostNames: r.hostNames, port: 8080 }));
-    app.get('/', (c) => c.text('ok'));
-    const res = await app.request('/', { headers: { Host: 'example.com:8080' } });
-    expect(res.status).toBe(403);
-  });
-});
-
 describe('linkHost (ntfy click links)', () => {
   const listen = (dnsName: string | null) => ({ address: '100.64.0.9', dnsName });
   it('an explicitly configured host wins over the MagicDNS name', () => {
     const cfg = { ...DEFAULT_CONFIG, name: 'my-pc' };
-    expect(
-      linkHost({ ...cfg, host: 'kage.example.ts.net' }, listen('box.tail1.ts.net'), 'my-pc'),
-    ).toBe('kage.example.ts.net');
-    expect(linkHost({ ...cfg, host: '100.64.0.9' }, listen('box.tail1.ts.net'), 'my-pc')).toBe(
-      '100.64.0.9',
+    expect(linkHost({ ...cfg, host: 'kage.example.ts.net' }, listen('box.tail1.ts.net'))).toBe(
+      'kage.example.ts.net',
     );
+    expect(linkHost({ ...cfg, host: '100.64.0.9' }, listen('box.tail1.ts.net'))).toBe('100.64.0.9');
   });
   it('without a configured host: the MagicDNS name, else displayHost', () => {
     const cfg = { ...DEFAULT_CONFIG, name: 'my-pc', host: null };
-    expect(linkHost(cfg, listen('box.tail1.ts.net'), 'my-pc')).toBe('box.tail1.ts.net');
-    expect(linkHost(cfg, listen(null), 'my-pc')).toBe('my-pc');
-    expect(linkHost({ ...cfg, host: '  ' }, listen('box.tail1.ts.net'), 'my-pc')).toBe(
-      'box.tail1.ts.net',
-    );
+    expect(linkHost(cfg, listen('box.tail1.ts.net'))).toBe('box.tail1.ts.net');
+    expect(linkHost(cfg, listen(null))).toBe('100.64.0.9');
+    expect(linkHost({ ...cfg, host: '  ' }, listen('box.tail1.ts.net'))).toBe('box.tail1.ts.net');
   });
 });
 
 describe('linkHost: literals', () => {
   const listen = { address: '100.64.0.9', dnsName: 'box.tail1.ts.net' };
   it('brackets a configured IPv6 literal; an all-interfaces host falls back to the MagicDNS name', () => {
-    expect(linkHost({ ...DEFAULT_CONFIG, host: 'fd7a:115c:a1e0::5' }, listen, 'my-pc')).toBe(
+    expect(linkHost({ ...DEFAULT_CONFIG, host: 'fd7a:115c:a1e0::5' }, listen)).toBe(
       '[fd7a:115c:a1e0::5]',
     );
-    expect(linkHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, listen, 'my-pc')).toBe(
-      'box.tail1.ts.net',
-    );
+    expect(linkHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, listen)).toBe('box.tail1.ts.net');
   });
 });

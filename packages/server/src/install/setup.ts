@@ -10,11 +10,11 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { mkdir, readdir, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
-import { hostname, userInfo } from 'node:os';
+import { userInfo } from 'node:os';
 import { join, posix, resolve } from 'node:path';
 import { ConfigError, configFrom, configPath, DEFAULT_CONFIG, displayPath } from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
-import { ListenError, resolveListenAddress, shortHostname, tailscaleDnsName } from '../listen.ts';
+import { ListenError, resolveListenAddress, tailscaleDnsName } from '../listen.ts';
 import type { Io } from '../main.ts';
 import { type CheckDeps, formatChecks, requirementChecks } from './checks.ts';
 import { generateToken, readConfigObject, writeConfig } from './config-file.ts';
@@ -242,7 +242,7 @@ async function hostProblem(
   try {
     await resolveListenAddress(
       { ...DEFAULT_CONFIG, host: address },
-      { unsafeListenAll: false, tailscaleIp: async () => null, hostname: () => '' },
+      { unsafeListenAll: false, tailscaleIp: async () => null },
     );
     return null;
   } catch (err) {
@@ -432,7 +432,7 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   if (linger) await turnOnLinger(io, deps, m);
 
   // 5. Does it answer?
-  const code = await checkAnswers(io, deps, m, { host: host.value, short: host.short, port });
+  const code = await checkAnswers(io, deps, m, { host: host.value, at: host.at, port });
   if (code !== 0) return code;
   io.out(CLAUDE_LINE);
   return 0;
@@ -493,7 +493,7 @@ async function askHost(
   f: Flags,
   current: Record<string, unknown> | null,
   ask: Ask,
-): Promise<{ value: string | null; change: boolean; short: string | null } | undefined> {
+): Promise<{ value: string | null; change: boolean; at: string | null } | undefined> {
   const cur = typeof current?.host === 'string' && current.host.trim() !== '' ? current.host : null;
   let statusJson = '';
   const dns = await tailscaleDnsName(async (cmd, cmdArgs) => {
@@ -505,16 +505,19 @@ async function askHost(
   const own = ownTailscaleIps(statusJson);
   const short = dns?.split('.')[0] ?? null;
   const def = cur ?? short ?? 'the Tailscale address';
+  // Where Kage is when host is unset, for setup's "didn't answer" line (security I2: never
+  // os.hostname()): the MagicDNS short name, else this machine's Tailscale IP.
+  const at = short ?? own.find((ip) => isIP(ip) === 4) ?? own[0] ?? null;
   const lookup = deps.lookup ?? ((n: string) => dnsLookup(n, { all: true }));
   for (;;) {
     const answer = f.host ?? (await ask('Host name', def));
-    if (answer === def && cur !== null) return { value: cur, change: false, short };
+    if (answer === def && cur !== null) return { value: cur, change: false, at };
     if (answer === def || (short !== null && answer.toLowerCase() === short)) {
       // The Tailscale address: a configured host goes back to unset (null).
-      return { value: null, change: cur !== null || current?.host === '', short };
+      return { value: null, change: cur !== null || current?.host === '', at };
     }
     const problem = await hostProblem(answer, lookup, own);
-    if (problem === null) return { value: answer, change: answer !== cur, short };
+    if (problem === null) return { value: answer, change: answer !== cur, at };
     io.out(problem);
     if (f.host !== undefined || f.yes) return undefined;
     io.out('Press Enter for the Tailscale address, or type another name or IP.');
@@ -573,7 +576,7 @@ async function checkAnswers(
   io: Io,
   deps: SetupDeps,
   m: ServiceManager | null,
-  cfg: { host: string | null; short: string | null; port: number },
+  cfg: { host: string | null; at: string | null; port: number },
 ): Promise<number> {
   const socket = socketPath(deps.env, deps.platform);
   const deadline = Date.now() + (deps.waitMs ?? 15_000);
@@ -628,9 +631,13 @@ function portOf(url: string): number | null {
   }
 }
 
-/** Where Kage should be, for the "didn't answer" line: the host set, else the MagicDNS short name. */
-function expectedUrl(cfg: { host: string | null; short: string | null; port: number }): string {
-  let host = cfg.host?.trim() || cfg.short || shortHostname(hostname());
+/**
+ * Where Kage should be, for the "didn't answer" line: the host set, else the MagicDNS short
+ * name, else the Tailscale IP. Each passes Kage's Host guard; os.hostname() doesn't (security
+ * I2). With none of them Kage can't have started ("Tailscale isn't running", in the log).
+ */
+function expectedUrl(cfg: { host: string | null; at: string | null; port: number }): string {
+  let host = cfg.host?.trim() || cfg.at || '<Tailscale IP>';
   if (isIP(host) === 6) host = `[${host}]`;
   return `http://${host}:${cfg.port}`;
 }

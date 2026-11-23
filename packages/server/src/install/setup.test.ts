@@ -659,6 +659,27 @@ describe('kage setup: the service', () => {
     expect(poll.count()).toBeLessThanOrEqual(6);
   });
 
+  it('without a MagicDNS name the line names the Tailscale IP, never os.hostname() (security I2)', async () => {
+    const poll = slowServer();
+    const noDns = {
+      ...GOOD,
+      'tailscale status --json': {
+        stdout: JSON.stringify({
+          BackendState: 'Running',
+          Self: { TailscaleIPs: ['fd7a:115c:a1e0::9', '100.101.102.103'] },
+        }),
+      },
+    };
+    const h = harness({ waitMs: 1000, status: poll.status }, noDns);
+    const done = setupCommand(['--yes'], h.io, h.deps);
+    await poll.started;
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(await done).toBe(1);
+    expect(h.out.at(-1)).toBe(
+      "Kage didn't answer at http://100.101.102.103:8080. See: journalctl --user -u kage -e",
+    );
+  });
+
   it('launchd: the log file instead of journalctl', async () => {
     const poll = slowServer();
     const fm = fakeManager({ kind: 'launchd', name: 'launchd agent io.eridian.kage' });

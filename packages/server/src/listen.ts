@@ -9,14 +9,16 @@ export interface ListenAddress {
   hostNames: string[];
   /** The `tailscale status` MagicDNS name when it was asked for and found, else null (ntfy links). */
   dnsName: string | null;
+  /** For an all-interfaces bind only: this machine's Tailscale IP when known (F11), else null. */
+  tailscaleIp?: string | null;
 }
 
 export class ListenError extends Error {}
 
 export interface ListenOptions {
   unsafeListenAll: boolean;
+  /** `tailscale ip -4`: the address to bind when no host is set, and trusted on an all-interfaces bind. */
   tailscaleIp: () => Promise<string | null>;
-  hostname: () => string;
   /** The MagicDNS name (B1), asked only for a Tailscale or all-interfaces bind; null adds none. */
   tailscaleDnsName?: () => Promise<string | null>;
   /** Resolves a host name to addresses; defaults to dns.lookup(name, { all: true }). */
@@ -73,27 +75,66 @@ function isAllowedBind(p: Parsed): boolean {
   return p.n === 1n || isTailscale(p);
 }
 
-/** The machine name as people type it: before the first dot, lowercased ("Box.local" → "box"). */
-export function shortHostname(full: string): string {
-  return (full.split('.')[0] ?? '').toLowerCase();
-}
-
 const LABEL = /^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?$/;
 
+/** An IP literal for a URL's host: IPv6 bracketed, IPv4 as it is. */
+function urlHost(ip: string, p: Parsed): string {
+  const bare = ip.replace(/^\[|\]$/g, '');
+  return p.v === 6 ? `[${bare}]` : bare;
+}
+
+/** The MagicDNS short name: the first label of the MagicDNS name ("box.tail1.ts.net" → "box"). */
+function firstLabel(dnsName: string): string {
+  return dnsName.split('.')[0] ?? '';
+}
+
+function isLoopback(p: Parsed): boolean {
+  return p.v === 4 ? inV4(p.n, 0x7f000000, 8) : p.n === 1n;
+}
+
 /**
- * The host to print in "Kage is running at …": the configured host name if one was given;
- * else, for a Tailscale (or all-interfaces) bind, cfg.name when it is a usable host name,
- * otherwise the short hostname; else the IP (loopback and other addresses; IPv6 bracketed).
- * Never the full os.hostname(): "box.local" resolves via mDNS to the LAN address.
+ * The names the Host and Origin guards trust (security I2): an explicitly configured `host`
+ * (a name the user chose is trusted even when it is `.local` or one label), the MagicDNS name
+ * and its first label, the bound IP, and `localhost` on a loopback bind only (a browser resolves
+ * `localhost` itself, so nobody on the network can answer for it). Never `os.hostname()`, a
+ * `.local` name or a single label Kage picked itself: a device on the local network can answer
+ * for those over mDNS or LLMNR and rebind them. `cfg.name` is the host pill's label only.
  */
-export function displayHost(cfg: KageConfig, address: string, hostname: string): string {
+export function hostNamesFor(cfg: KageConfig, address: string, dnsName: string | null): string[] {
+  const names: string[] = [];
+  const configured = cfg.host?.trim() ?? '';
+  if (configured !== '') {
+    const p = parseIp(configured);
+    if (p === null) names.push(configured);
+    else if (p.n !== 0n) names.push(configured.replace(/^\[|\]$/g, ''));
+  }
+  if (dnsName) names.push(dnsName, firstLabel(dnsName));
+  const bound = parseIp(address);
+  if (bound !== null && bound.n !== 0n) {
+    names.push(address.replace(/^\[|\]$/g, ''));
+    if (isLoopback(bound)) names.push('localhost');
+  }
+  return [...new Set(names.filter((n) => n !== ''))];
+}
+
+type Listening = { address: string; dnsName: string | null; tailscaleIp?: string | null };
+
+/**
+ * The host to print in "Kage is running at …" (F11): the configured host name; else the
+ * MagicDNS first label; else the bound IP (IPv6 bracketed), or for an all-interfaces bind the
+ * Tailscale IP when known. Each is in hostNamesFor, so the printed address passes its own guard.
+ * Never cfg.name and never os.hostname().
+ */
+export function displayHost(cfg: KageConfig, listen: Listening): string {
   const configured = cfg.host?.trim() ?? '';
   if (configured !== '' && parseIp(configured) === null) return configured;
-  const p = parseIp(address);
-  if (p === null || p.n === 0n || isTailscale(p)) {
-    return LABEL.test(cfg.name) ? cfg.name : shortHostname(hostname);
+  if (listen.dnsName) return firstLabel(listen.dnsName);
+  const p = parseIp(listen.address);
+  if (p === null || p.n === 0n) {
+    const ts = listen.tailscaleIp ? parseIp(listen.tailscaleIp) : null;
+    return ts && listen.tailscaleIp ? urlHost(listen.tailscaleIp, ts) : listen.address;
   }
-  return p.v === 6 ? `[${address.replace(/^\[|\]$/g, '')}]` : address;
+  return urlHost(listen.address, p);
 }
 
 /**
@@ -101,33 +142,19 @@ export function displayHost(cfg: KageConfig, address: string, hostname: string):
  * literal bracketed), unless it is an all-interfaces address; else the MagicDNS name when
  * Tailscale gave one; else displayHost.
  */
-export function linkHost(
-  cfg: KageConfig,
-  listen: { address: string; dnsName: string | null },
-  hostname: string,
-): string {
+export function linkHost(cfg: KageConfig, listen: Listening): string {
   const configured = cfg.host?.trim() ?? '';
   if (configured !== '') {
     const p = parseIp(configured);
     if (p === null) return configured;
-    if (p.n !== 0n) return p.v === 6 ? `[${configured.replace(/^\[|\]$/g, '')}]` : configured;
+    if (p.n !== 0n) return urlHost(configured, p);
   }
-  return listen.dnsName ?? displayHost(cfg, listen.address, hostname);
+  return listen.dnsName ?? displayHost(cfg, listen);
 }
 
 /** True for a DNS name made of valid labels ("box", "box.tail1234.ts.net"). */
 function isHostName(name: string): boolean {
   return name.length <= 253 && name.split('.').every((l) => l.length <= 63 && LABEL.test(l));
-}
-
-/**
- * B12: cfg.name is trusted as a Host and Origin name only when no one else can own it in public
- * DNS: a single label, or a name under .ts.net (the tailnet) or .local (mDNS).
- */
-export function isSafeName(name: string): boolean {
-  const n = name.toLowerCase();
-  if (LABEL.test(n)) return true;
-  return (n.endsWith('.ts.net') || n.endsWith('.local')) && isHostName(n);
 }
 
 export type ExecText = (cmd: string, args: string[]) => Promise<string>;
@@ -176,7 +203,6 @@ export async function resolveListenAddress(
   cfg: KageConfig,
   opts: ListenOptions,
 ): Promise<ListenAddress> {
-  const names: string[] = [];
   let address: string;
   if (cfg.host !== null) {
     const configured = cfg.host.trim();
@@ -204,7 +230,6 @@ export async function resolveListenAddress(
       const p = parseIp(address);
       unspecified = p === null || p.n === 0n;
       allowedBind = p !== null && isAllowedBind(p);
-      names.push(configured);
     }
     if (!opts.unsafeListenAll) {
       if (unspecified) {
@@ -228,21 +253,18 @@ export async function resolveListenAddress(
     address = ip;
   }
   const bound = parseIp(address);
+  const allInterfaces = bound === null || bound.n === 0n;
   let dnsName: string | null = null;
-  if (opts.tailscaleDnsName && (bound === null || bound.n === 0n || isTailscale(bound))) {
-    const dns = await opts.tailscaleDnsName();
-    if (dns) {
-      names.push(dns);
-      dnsName = dns;
-    }
+  if (opts.tailscaleDnsName && (allInterfaces || isTailscale(bound))) {
+    dnsName = (await opts.tailscaleDnsName()) || null;
   }
-  const full = opts.hostname();
-  const hostNames = [
-    ...names,
-    address,
-    full,
-    shortHostname(full),
-    isSafeName(cfg.name) ? cfg.name : '',
-  ].filter((h) => h !== '');
-  return { address, hostNames: [...new Set(hostNames)], dnsName };
+  const hostNames = hostNamesFor(cfg, address, dnsName);
+  if (!allInterfaces) return { address, hostNames, dnsName };
+  // --unsafe-listen-all (F11): the bound address names nothing, so the Tailscale IP, when known,
+  // is trusted next to the configured host and the MagicDNS names.
+  const ip = await opts.tailscaleIp();
+  const ts = ip === null ? null : parseIp(ip);
+  const tailscaleIp = ip !== null && ts !== null && ts.n !== 0n ? ip : null;
+  if (tailscaleIp !== null && !hostNames.includes(tailscaleIp)) hostNames.push(tailscaleIp);
+  return { address, hostNames, dnsName, tailscaleIp };
 }

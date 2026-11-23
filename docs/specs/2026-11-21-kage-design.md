@@ -233,10 +233,10 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 | 4429 | Too many terminals | Too many terminals are open. Close one and try again. |
 | 4501 | Demo mode | Demo mode has no terminal. |
 
-  (amended 2026-11-22, phase 5): the sentences end in a full stop. **Exception:** the plain-text HTTP refusals of the upgrade, "Not found", "Unknown host" and "Bad origin", stay bare words, the same as the HTTP guards' own bodies ("Unknown host", "Bad origin", and the static files' "Not found"). A browser's WebSocket can't read them, and the board never shows them, so they are not copy. The JSON `/api/*` refusals do end in a full stop ("Not found.").
+  (amended 2026-11-22, phase 5): the sentences end in a full stop. **Exception:** the plain-text HTTP refusal of the upgrade "Not found" stays a bare word, the same as the static files' "Not found". A browser's WebSocket can't read it, and the board never shows it, so it is not copy. (amended 2026-11-23, hardening; security I2): a refused Host or Origin, on the upgrade and on the HTTP guards alike, is a whole sentence that says what to set (§5.10, §6.9), because someone who opens Kage under a name it doesn't trust reads it in the browser. The JSON `/api/*` refusals do end in a full stop ("Not found.").
 
   The browser reconnects after 1011 (after 1 s, then 3 s) and then gives up. Every other close ends the terminal and shows the reason, or "The terminal closed." when there is none.
-- **Any `Connection: Upgrade` request is handled by the terminal server**, which refuses every one that isn't a valid terminal upgrade, so no other path can be upgraded. The Host check compares names exactly, so a trailing-dot FQDN (`my-pc.tailXXXX.ts.net.`) is refused.
+- **Any `Connection: Upgrade` request is handled by the terminal server**, which refuses every one that isn't a valid terminal upgrade, so no other path can be upgraded. The Host check compares names case-insensitively, with the port. (amended 2026-11-23, hardening): one trailing dot is dropped on both sides, so the trailing-dot FQDN (`my-pc.tailXXXX.ts.net.`) is the same name as `my-pc.tailXXXX.ts.net` and passes.
 
 ### 5.7 Preview ports and changed files
 
@@ -282,7 +282,7 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 Two channels tell the developer that a session needs them: ntfy on the phone, and the board in a browser tab. Both say the same thing, and clicking either opens that session. (amended 2026-11-22, phase 5), as built:
 
 **ntfy** is opt-in: Kage sends nothing until `ntfyTopic` is set, and only in live mode.
-- **Request.** One JSON `POST` to `<ntfyServer>/` with `{topic, title, message, priority, click}`. The topic is only in the body, never in the URL, and the token is only in `Authorization: Bearer`. Priority is 4 for needs you and 3 for done. `click` is `http://<host>:<port>/#s=<id>`, where the host is `host` from the config when set, else the Tailscale MagicDNS name, else the machine's name.
+- **Request.** One JSON `POST` to `<ntfyServer>/` with `{topic, title, message, priority, click}`. The topic is only in the body, never in the URL, and the token is only in `Authorization: Bearer`. Priority is 4 for needs you and 3 for done. `click` is `http://<host>:<port>/#s=<id>`, where the host is `host` from the config when set, else the Tailscale MagicDNS name, else the machine's name. (amended 2026-11-23, hardening): the last fallback is the bound IP, never the machine's name, which Kage no longer trusts (§5.10).
 - **Payload (N2).** The title is "<project> needs you" or "<project> is done", and the message is the task text, each cut to one line of at most 100 characters with control, escape, bidi and format characters removed. A ping never carries the question, a command, the branch or a path. An external window has no task Kage knows: its ping is the fixed "Claude needs you" with "A Claude session needs you on <host>" (R93).
 - **When (N3).** A session that moves into needs you is pinged after a **3 s hold**, so a prompt answered at the board sends nothing, and only if it is still waiting. **One ping per session per 120 s** (the quiet period): a needs-you episode inside it is deferred to its end and then pinged if still waiting, so a question asked again reaches the phone (R94). With `ntfyOnDone`, a session that worked for at least **60 s** and then stopped while running is pinged "is done" after the same hold, never for an ended session (a stop is the user's own act, R84), never after a prompt the user answered No or Esc at the board (needs you → done), never for an external window, and never inside the quiet period. Over all sessions, **at most 10 pings in any 10 minutes**; the rest are dropped, and one log line says how many.
 - **At start.** Sessions already waiting when Kage starts are not pinged. A hook that arrives while the sessions load is a real change and is.
@@ -300,6 +300,16 @@ Two channels tell the developer that a session needs them: ntfy on the phone, an
 Kage can run commands on the machine, so the defaults are strict:
 - **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed.
 - **DNS rebinding:** reject requests whose `Host` header isn't the configured host name or IP.
+  - **The allow-list** (amended 2026-11-23, hardening; security I2, replaces B12). The `Host` guard, the `Origin` check and the terminal's upgrade trust only:
+    - the bound IP (an IPv6 literal written in brackets, `[fd7a:115c:a1e0::1]`);
+    - the MagicDNS name (`tailscale status`, for a Tailscale or all-interfaces bind) and its first label (`box.tail1234.ts.net` and `box`);
+    - `host` from the config when it is set: a name you chose there is trusted as written, even a `.local` name or a single label;
+    - `localhost`, on a loopback bind only (`127.0.0.0/8` or `::1`). A browser resolves `localhost` itself, so nobody on the network can answer for it.
+  - With `--unsafe-listen-all` the bound address names nothing, so the list is the configured host, the MagicDNS names and the Tailscale IP when it is known.
+  - Names are compared case-insensitively, with the port, and one trailing dot is dropped.
+  - **Not trusted:** `os.hostname()` and its short form, any other `.local` name or single label, and `name` from the config (the host pill's label only). On a café or office network a device can answer for those names over mDNS (`.local`) or LLMNR and NBT-NS (single labels, on Windows), point one at its own page, then rebind it to Kage's address and act as a page on Kage's origin. B12 reasoned only about public DNS. Setting `host` to such a name means trusting everyone on your local network.
+  - Kage prints `http://<configured host name, else the MagicDNS first label, else the bound IP>:<port>`, so the address it prints always passes its own guard. `kage setup`'s "didn't answer" line uses the configured host, else the MagicDNS first label, else the Tailscale IP.
+  - A refused `Host` or `Origin` gets 403 and a sentence that says what to set (§6.9).
 - **CSRF:** every POST and WebSocket needs the header `X-Kage: 1` and a matching `Origin`. As built (amended 2026-11-22, phase 4): a browser can't add `X-Kage` to a WebSocket, so the terminal's upgrade is checked **before it happens**, in this order: the path, `GET` with `Upgrade: websocket`, the `Host` (403), the **exact** `Origin` (`http://<allowed name>:<port>`; a missing one is refused, 403), a live login session from the same address when a token is set (401; amended 2026-11-23, hardening), the sub-protocol `kage.term.v1` (400) and the size in the query (400). A page on another origin can't open a terminal.
 - **Optional token** (as built, amended 2026-11-21, phase 3; sessions amended 2026-11-23, hardening): `token` in the config, at least 16 characters (a shorter one stops Kage at start). When set, every `/api/*` route and the terminal's upgrade need a live login session, except `GET /api/auth`, `POST /api/login` and `POST /api/logout`.
   - **Per-login sessions** (amended 2026-11-23, hardening; security I1, B20, B50). Each login gets a session of its own: an id of 32 random bytes (base64url) in the cookie `kage_auth_<port>`, for example `kage_auth_8080`, so a page on another port of the same host can't confuse it. The server keeps only the id's SHA-256, with the address that signed in, when the session began and when it was last seen. A presented id is hashed and compared with every session's hash in constant time. Neither the token nor a session id is logged or put in a URL.
@@ -367,7 +377,7 @@ Kage can run commands on the machine, so the defaults are strict:
 - `ntfyToken`: empty, or 1 to 128 letters, digits, `-` or `_`: an ntfy access token, sent as a bearer token. A server that needs one keeps the topic private.
 - `ntfyOnDone`: `false` by default. `true` adds the done ping of §5.9.
 
-`name` is the machine name shown in the host pill (default: the short host name). `host` is the address Kage listens on (default: the Tailscale IP). Projects are the git repositories directly inside `projectsRoot`. The New task picker defaults to the project used last and to that repo's default branch.
+`name` is the machine name shown in the host pill (default: the short host name). It is a label only: Kage doesn't answer to it as a host name (amended 2026-11-23, hardening; §5.10). `host` is the address Kage listens on (default: the Tailscale IP). Projects are the git repositories directly inside `projectsRoot`. The New task picker defaults to the project used last and to that repo's default branch.
 
 ### 5.12 HTTP API
 
@@ -590,7 +600,7 @@ Every new sentence a user can read, collected. A change here is a change in the 
 - **422 from git and tmux:** "git couldn't count the work on the branch: …", "git couldn't list the worktrees: …", "git couldn't read the branch: …", "git couldn't remove the worktree: …", "git couldn't delete the branch: …", "tmux couldn't read the window: …", "tmux couldn't close the window: …".
 - **Toasts:** "Archived <name> · worktree and branch kept"; "Deleted <name> · worktree and branch removed".
 - **Diff:** "Binary file, not shown."; "Symbolic link, not shown."; "N more lines in this file aren't shown."; "No changes yet."; the button "Try again"; and, for a bad `from`, "from must be a whole number."
-- **Terminal:** "Loading the terminal…"; "Couldn't load the terminal."; "Couldn't open the terminal."; "The terminal closed."; "That was too much at once."; the leave hint "Shift+Esc (or Ctrl+Shift+X) to leave"; the view-only line (§6.5); and the close reasons of §5.6. Plain HTTP refusals of the upgrade: "Open the terminal with a WebSocket.", "Unknown host", "Bad origin", "Kage's terminal speaks kage.term.v1.", "The terminal size is out of range."
+- **Terminal:** "Loading the terminal…"; "Couldn't load the terminal."; "Couldn't open the terminal."; "The terminal closed."; "That was too much at once."; the leave hint "Shift+Esc (or Ctrl+Shift+X) to leave"; the view-only line (§6.5); and the close reasons of §5.6. Plain HTTP refusals of the upgrade: "Open the terminal with a WebSocket.", "Kage's terminal speaks kage.term.v1.", "The terminal size is out of range." The refused Host and Origin are in §6.9 (amended 2026-11-23, hardening).
 - **Demo mode:** "Demo mode can't show diffs." for the diff; the other demo sentences are unchanged.
 
 ### 6.7 Copy added in phase 5 (amended 2026-11-22, phase 5)
@@ -664,6 +674,9 @@ The same rule as §6.6 and §6.7: every new sentence a user can read, and a chan
 The same rule as §6.6–§6.8: every new sentence a user can read, and a change here is a change in the code. `packages/web/src/spec-copy.test.ts` checks that each quoted sentence below is in the code or in `install.sh`. A sentence that holds straight double quotes is set in curly quotes. `<…>` stands for what the code fills in.
 
 - **Command palette:** "Sign out", in the general group while a token is set. It ends this browser's login and shows the login screen.
+- **Refused Host and Origin** (403, plain text; the HTTP guards and the terminal's upgrade; security I2). They replace the bare words of §5.6 and §6.6:
+  - a refused Host: “Kage doesn't answer to this name. Open the address "kage status" shows, or set "host" in Kage's config file to this name.”
+  - a refused or missing Origin: “Kage only takes requests from a page on its own address. Open the address "kage status" shows, or set "host" in Kage's config file to the name you use.”
 
 ## 7. Performance budgets
 

@@ -40,7 +40,7 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 ## Phase 2 or 4
 
 - **B7** (done, phase 4) The "ended" chip and the Resume footer (spec §6.5): sessions whose process exits need their own state and a way back in.
-- **B12** (done, phase 2) Only accept `name` from the config as a Host and Origin name when it's a single label or ends in `.ts.net` or `.local`: a public domain the owner doesn't control would let that domain pass the guards after DNS rebinding.
+- **B12** (done, phase 2) Only accept `name` from the config as a Host and Origin name when it's a single label or ends in `.ts.net` or `.local`: a public domain the owner doesn't control would let that domain pass the guards after DNS rebinding. (Superseded 2026-11-23, hardening, security I2: `name` is no longer trusted at all; see spec §5.10.)
 
 ## Phase 4
 
