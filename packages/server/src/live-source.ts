@@ -1223,14 +1223,19 @@ export class LiveSource implements SessionSource {
       if (this.#running) this.#emitNow(st);
       return;
     }
-    this.#setStatus(st, this.#activityStatus(st));
+    // R141: a session that was done when Kage stopped (its record's doneAt) isn't made running by
+    // a recent redraw alone; its transcript decides below. Else a restart blinked it running,
+    // reset its doneAt (auto-archive's age) and, once the turn-end check settled it, sent a done
+    // ping for a turn that ended before the restart.
+    const wasDone = st.record?.doneAt != null && st.transcriptPath !== null;
+    this.#setStatus(st, wasDone ? 'done' : this.#activityStatus(st));
     if (st.transcriptPath) {
       const hooks = st.hookCount;
       await this.#ensureTail(st);
       if (!this.#running || st.window !== w) return;
       // A resumed session's transcript is its last run's: until the first prompt, P3F1 decides.
       // A hook that landed during the await is fresher than the transcript (R101): it stands.
-      if (!st.firstPromptPending && st.hookCount === hooks) this.#rebuildFromTail(st);
+      if (!st.firstPromptPending && st.hookCount === hooks) this.#rebuildFromTail(st, wasDone);
     }
     this.#scheduleIdle(st);
     const gen = st.gen;
@@ -1893,7 +1898,7 @@ export class LiveSource implements SessionSource {
   }
 
   /** Status after a restart: the transcript's open question, a turn in progress, or activity. */
-  #rebuildFromTail(st: Live): void {
+  #rebuildFromTail(st: Live, wasDone = false): void {
     const tail = st.tail;
     if (!tail) return;
     st.mode = 'hooks';
@@ -1904,7 +1909,9 @@ export class LiveSource implements SessionSource {
       this.#setStatus(st, 'needs-you');
       st.question = q;
       st.promptKind = 'ask';
-    } else this.#setStatus(st, st.now !== null ? 'running' : this.#activityStatus(st));
+    } else if (st.now !== null) this.#setStatus(st, 'running');
+    // R141: done before the restart and no turn since in the transcript: still done.
+    else this.#setStatus(st, wasDone ? 'done' : this.#activityStatus(st));
     // A restart within 5 s of a lost Stop: running from recent activity, but the transcript's
     // turn has ended, so the pane decides as after a turn end (I2).
     if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st);

@@ -4938,6 +4938,43 @@ describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Ta
     await s.source.stop();
   });
 
+  it('a restart of a done session its pane redrew within 5 s stays done: no running blink, no done ping, doneAt kept (R141)', async () => {
+    const doneAt = T0 - 10_000;
+    let notifier: Notifier | null = null;
+    const s = setup({
+      // Done before the restart; the pane drew within the last 5 s; the transcript's turn ended.
+      windows: [kageWin({ activity: Math.floor(T0 / 1000) - 1 })],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT, doneAt })],
+      tails: { [TRANSCRIPT]: { now: null } },
+      onLoaded: () => notifier?.seeded(),
+    });
+    s.tmux.setCapture('%2', IDLE);
+    const pings: string[] = [];
+    notifier = new Notifier({
+      source: s.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      options: { ...NOTIFY_DEFAULTS, onDone: true, doneAfterMs: 1000 },
+      log: () => {},
+    });
+    notifier.listen();
+    await s.source.start();
+    await flush();
+    expect(s.updates('k-1').map((u) => u.status)).not.toContain('running');
+    expect(s.source.get('k-1')?.status).toBe('done');
+    await vi.advanceTimersByTimeAsync(8000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(pings).toEqual([]);
+    expect(s.source.finishTarget('k-1')?.record?.doneAt).toBe(doneAt);
+    notifier.stop();
+    await s.source.stop();
+  });
+
   it('a new turn in the transcript during the check keeps it running', async () => {
     const s = setup({ windows: [kageWin()], records: [rec()] });
     await s.source.start();
