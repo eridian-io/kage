@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
@@ -131,6 +131,38 @@ describe('kage status', () => {
     expect(o.out[1]).toBe(
       "Service: can't run here. systemd isn't running in this WSL distribution.",
     );
+  });
+
+  it('status says Access token: on or off', async () => {
+    const cfgDir = join(dir, '.config', 'kage');
+    mkdirSync(cfgDir, { recursive: true });
+    const write = (cfg: object) => writeFileSync(join(cfgDir, 'config.json'), JSON.stringify(cfg));
+    write({ token: 'invented-token-0123456789' });
+    const o = io();
+    expect(await statusCommand(o.io, deps(manager('active'), UP))).toBe(0);
+    expect(o.out).toEqual([
+      `Kage ${KAGE_VERSION}`,
+      'Service: running (systemd user unit kage.service)',
+      'Access token: on',
+      'Address: http://my-pc:8080',
+      'Sessions: 4 (1 needs you)',
+    ]);
+    expect(o.out.join('\n')).not.toContain('invented-token-0123456789');
+    // An old tokenless config: the service won't start, and status says the token is off.
+    write({ token: '' });
+    const p = io();
+    expect(await statusCommand(p.io, deps(manager('starting'), null))).toBe(1);
+    expect(p.out[2]).toBe('Access token: off');
+    expect(p.out.at(-1)).toBe('Run kage doctor to see why.');
+    write({ token: '', allowNoToken: true });
+    const q = io();
+    await statusCommand(q.io, deps(manager('active'), UP));
+    expect(q.out[2]).toBe('Access token: off');
+    // A config Kage can't read: no line (doctor says what's wrong).
+    write({ token: 'short' });
+    const r = io();
+    await statusCommand(r.io, deps(manager('active'), UP));
+    expect(r.out.some((l) => l.startsWith('Access token'))).toBe(false);
   });
 
   it('no service manager at all, or a state that cannot be read', async () => {

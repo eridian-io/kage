@@ -35,6 +35,7 @@ export type CheckId =
   | 'claude-login'
   | 'tailscale'
   | 'config'
+  | 'token'
   | 'projects'
   | 'service'
   | 'service-path'
@@ -319,7 +320,7 @@ async function tailscaleCheck(
 
 // --- this installation -----------------------------------------------------------------------
 
-/** config, projects, service, service-path, server, install-path. */
+/** config, token, projects, service, service-path, server, install-path. */
 export async function installChecks(d: CheckDeps): Promise<Check[]> {
   const checks: Check[] = [];
   const cfgFile = configPath(d.env);
@@ -341,8 +342,9 @@ export async function installChecks(d: CheckDeps): Promise<Check[]> {
   const cfgCheck = cfg === null ? null : await configCheck(cfg, cfgFile, cfgShown);
   if (cfgCheck !== null) checks.push(cfgCheck);
 
-  // Without a config file setup comes first, and it asks for the projects folder.
+  // Without a config file setup comes first, and it asks for the projects folder (and the token).
   if (cfg !== null && cfgCheck?.label !== NO_CONFIG) {
+    checks.push(tokenCheck(cfg));
     const shown = displayPath(cfg.projectsRoot, d.home);
     const isDir = await stat(cfg.projectsRoot).then(
       (s) => s.isDirectory(),
@@ -381,6 +383,18 @@ async function configCheck(cfg: KageConfig, file: string, shown: string): Promis
     return fail('config', `${shown} can be read by other users. Run chmod 600 ${shown}.`);
   }
   return ok('config', `Config at ${shown}`);
+}
+
+/**
+ * Security I3: live mode needs a token, or `allowNoToken` on purpose. An old `token: ""` config
+ * stops the service (serve refuses), so this says why and what to run. Never shows the token.
+ */
+function tokenCheck(cfg: KageConfig): Check {
+  if (cfg.token !== '') return ok('token', 'An access token is set.');
+  const fix = 'Run kage setup to set one.';
+  return cfg.allowNoToken
+    ? warn('token', 'No access token: anyone on your tailnet can start and approve tasks.', fix)
+    : fail('token', "No access token is set, so Kage won't start.", fix);
 }
 
 /** The first executable `name` in a PATH value's absolute folders; null if none. */

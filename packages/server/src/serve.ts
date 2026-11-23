@@ -53,7 +53,19 @@ import { parseTmuxVersion, TmuxClient, tmuxVersionOutput } from './tmux/client.t
 import { TmuxWatcher } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
 
-/** R53: live mode without a token, said once at startup. */
+/**
+ * Security I3: live mode without a token refuses to start unless `allowNoToken` or
+ * `--allow-no-token` says so. serve follows it with what to do and where (noTokenRefusal).
+ */
+export const NO_TOKEN_REFUSAL =
+  'No access token is set, so anyone who can reach Kage could run commands as you.';
+
+/** The refusal's whole line: the sentence above, then how to set a token or opt out. */
+function noTokenRefusal(configFile: string): string {
+  return `${NO_TOKEN_REFUSAL} Run kage setup to set one, or add "allowNoToken": true to ${configFile}.`;
+}
+
+/** R53: live mode without a token (allowed on purpose), said once at startup. */
 export const NO_TOKEN = 'No token set: anyone on your tailnet can start and approve tasks.';
 /** B15: a SIGINT or SIGTERM arrived before the server was up; what had started is stopped. */
 export const STOPPED = 'Stopped before Kage was ready.';
@@ -75,6 +87,11 @@ export function liveModeError(
   if (tooOld)
     return `tmux ${version} is too old. Install tmux 3.2 or newer, or run "kage serve --demo".`;
   return null;
+}
+
+/** The config file as the messages name it: ~/… under HOME. */
+function configShown(env: NodeJS.ProcessEnv): string {
+  return displayPath(configPath(env), env.HOME || env.USERPROFILE || homedir());
 }
 
 /** One line for stderr: the first line of an error's tmux stderr or message. */
@@ -366,13 +383,19 @@ export async function serveCommand(
   const underService = process.env.KAGE_SERVICE === '1' || io.env.KAGE_SERVICE === '1';
   serviceCleanEnv(process.env);
   if (io.env !== process.env) serviceCleanEnv(io.env);
-  let values: { demo?: boolean; 'unsafe-listen-all'?: boolean; port?: string };
+  let values: {
+    demo?: boolean;
+    'unsafe-listen-all'?: boolean;
+    'allow-no-token'?: boolean;
+    port?: string;
+  };
   try {
     ({ values } = parseArgs({
       args,
       options: {
         demo: { type: 'boolean' },
         'unsafe-listen-all': { type: 'boolean' },
+        'allow-no-token': { type: 'boolean' },
         port: { type: 'string' },
       },
       strict: true,
@@ -419,7 +442,7 @@ export async function serveCommand(
 /** serveCommand after the flags and the config: each started part pushes its cleanup. */
 async function startServer(
   cfg: KageConfig,
-  values: { demo?: boolean; 'unsafe-listen-all'?: boolean },
+  values: { demo?: boolean; 'unsafe-listen-all'?: boolean; 'allow-no-token'?: boolean },
   io: Io,
   cli: CliParts,
   cleanups: Cleanup[],
@@ -437,6 +460,12 @@ async function startServer(
       io.err(refusal);
       return 1;
     }
+    // Security I3: no token, no live mode, unless the user opted out on purpose. Nothing has
+    // started yet: no tmux, no socket, no listener.
+    if (cfg.token === '' && !cfg.allowNoToken && values['allow-no-token'] !== true) {
+      io.err(noTokenRefusal(configShown(io.env)));
+      return 1;
+    }
   }
 
   let listen: Awaited<ReturnType<typeof resolveListenAddress>>;
@@ -445,7 +474,7 @@ async function startServer(
       unsafeListenAll: values['unsafe-listen-all'] === true,
       tailscaleIp: defaultTailscaleIp,
       tailscaleDnsName: () => tailscaleDnsName(),
-      configFile: displayPath(configPath(io.env), io.env.HOME || io.env.USERPROFILE || homedir()),
+      configFile: configShown(io.env),
     });
   } catch (err) {
     if (err instanceof ListenError) {

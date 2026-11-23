@@ -61,7 +61,12 @@ beforeEach(() => {
   const cfg = join(cfgDir, 'config.json');
   writeFileSync(
     cfg,
-    JSON.stringify({ host: '127.0.0.1', port: PORT, projectsRoot: join(home, 'projects') }),
+    JSON.stringify({
+      host: '127.0.0.1',
+      port: PORT,
+      projectsRoot: join(home, 'projects'),
+      token: 'invented-token-0123456789',
+    }),
     { mode: 0o600 },
   );
   chmodSync(cfg, 0o600);

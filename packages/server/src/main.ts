@@ -20,8 +20,9 @@ export const USAGE = `Usage:
       Run it again to change a setting. --yes takes every default and asks nothing.
   kage status
       Show the service, Kage's address and how many sessions it has.
-  kage serve [--demo] [--unsafe-listen-all] [--port N]
+  kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]
       Run the board: live tmux sessions, or the demo sessions with --demo.
+      --allow-no-token runs live mode without an access token.
   kage hooks-path
       Write the Claude settings that send hook events to Kage, and print the file's path.
       Start Claude with: claude --settings "$(kage hooks-path)"

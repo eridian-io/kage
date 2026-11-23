@@ -164,6 +164,22 @@ describe('token', () => {
     }
     await expect(load(42)).rejects.toBeInstanceOf(ConfigError);
   });
+
+  it('allowNoToken must be true or false', async () => {
+    const load = async (allowNoToken: unknown) =>
+      loadConfig({ path: await write(JSON.stringify({ allowNoToken })), env: env() });
+    expect(DEFAULT_CONFIG.allowNoToken).toBe(false);
+    expect((await loadConfig({ path: join(dir, 'none.json'), env: env() })).allowNoToken).toBe(
+      false,
+    );
+    expect((await load(true)).allowNoToken).toBe(true);
+    expect((await load(false)).allowNoToken).toBe(false);
+    for (const bad of ['true', 1, null]) {
+      const err = await load(bad).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as Error).message).toBe('allowNoToken must be true or false');
+    }
+  });
 });
 
 describe('worktreeDir and branchPrefix', () => {

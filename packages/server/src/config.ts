@@ -25,6 +25,11 @@ export interface KageConfig {
   /** Ping when a session is done after a minute or more of work. */
   ntfyOnDone: boolean;
   token: string;
+  /**
+   * Live mode without a token, on purpose (security I3). Without it, or `--allow-no-token`, live
+   * mode refuses to start when `token` is empty. The demo needs neither.
+   */
+  allowNoToken: boolean;
 }
 
 export const DEFAULT_CONFIG: KageConfig = {
@@ -42,6 +47,7 @@ export const DEFAULT_CONFIG: KageConfig = {
   ntfyToken: '',
   ntfyOnDone: false,
   token: '',
+  allowNoToken: false,
 };
 
 export class ConfigError extends Error {}
@@ -261,6 +267,7 @@ export function configFrom(raw: Record<string, unknown>, env: NodeJS.ProcessEnv)
   if (raw.ntfyOnDone !== undefined) c.ntfyOnDone = bool(raw.ntfyOnDone, 'ntfyOnDone');
   checkNtfyTopicLength(c);
   if (raw.token !== undefined) c.token = token(raw.token, 'token');
+  if (raw.allowNoToken !== undefined) c.allowNoToken = bool(raw.allowNoToken, 'allowNoToken');
 
   if (env.KAGE_NAME) c.name = env.KAGE_NAME;
   if (env.KAGE_HOST) c.host = env.KAGE_HOST;

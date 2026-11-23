@@ -262,7 +262,12 @@ const SETTING_NAMES: Record<string, string> = {
   host: 'host name',
   port: 'port',
   token: 'access token',
+  // Turning the token on writes allowNoToken: false with it: one setting, said once.
+  allowNoToken: 'access token',
 };
+
+/** U20: said instead of "Saved the access token" when the token was turned off. */
+const TOKEN_OFF = 'Turned off the access token: anyone on your tailnet can open Kage.';
 
 function listWords(words: string[]): string {
   if (words.length <= 1) return words.join('');
@@ -363,6 +368,13 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   if (host.change) patch.host = host.value;
   if (current?.port !== port) patch.port = port;
   if (current?.token !== token) patch.token = token;
+  // Security I3: no token is an opt-out serve needs written down (allowNoToken); a token on
+  // clears an opt-out that was there.
+  if (!wantToken && current?.allowNoToken !== true) patch.allowNoToken = true;
+  if (wantToken && current?.allowNoToken !== undefined && current.allowNoToken !== false) {
+    patch.allowNoToken = false;
+  }
+  const turnedOff = !wantToken && ('token' in patch || 'allowNoToken' in patch);
   try {
     // A key setup didn't ask about may be wrong too; the service would only restart forever.
     configFrom({ ...(current ?? {}), ...patch }, deps.env);
@@ -387,14 +399,17 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     io.err(err instanceof ConfigError ? err.message : `Couldn't write ${shown}: ${firstLine(err)}`);
     return 1;
   }
-  const changed = Object.keys(patch).map((k) => SETTING_NAMES[k] ?? k);
-  io.out(
-    current !== null && changed.length === 0
-      ? `Your settings in ${shown} are already set.`
-      : current === null
-        ? `Saved your settings in ${shown}.`
-        : `Saved the ${listWords(changed)} in ${shown}.`,
-  );
+  const changed = [
+    ...new Set(
+      Object.keys(patch)
+        .filter((k) => !(turnedOff && (k === 'token' || k === 'allowNoToken')))
+        .map((k) => SETTING_NAMES[k] ?? k),
+    ),
+  ];
+  if (current === null) io.out(`Saved your settings in ${shown}.`);
+  else if (changed.length > 0) io.out(`Saved the ${listWords(changed)} in ${shown}.`);
+  else if (!turnedOff) io.out(`Your settings in ${shown} are already set.`);
+  if (turnedOff) io.out(TOKEN_OFF);
   if (generated) {
     io.out(`Your token: ${token}. Kage asks for it once per browser. It's saved in ${shown}.`);
   }

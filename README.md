@@ -183,7 +183,7 @@ The session appears on the board with live status and output. It turns amber whe
 
 The tmux session's first window only holds the session open, so the board hides it while it sits at a shell.
 
-To run Kage without the service, start it yourself with `kage serve` (add `KAGE_HOST=127.0.0.1` to stay on loopback) and open the address it prints.
+To run Kage without the service, start it yourself with `kage serve` (add `KAGE_HOST=127.0.0.1` to stay on loopback) and open the address it prints. Live mode needs an access token (`kage setup` sets one); without one it refuses to start unless you pass `--allow-no-token` or set `allowNoToken`.
 
 Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default; `kage serve` sets `KAGE_SOCKET` in the tmux session, so Claude in its windows finds the same socket. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
 
@@ -286,7 +286,8 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
   "ntfyServer": "https://ntfy.sh",
   "ntfyToken": "",
   "ntfyOnDone": false,
-  "token": ""
+  "token": "",
+  "allowNoToken": false
 }
 ```
 
@@ -304,7 +305,8 @@ Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` 
 | `ntfyServer` | `"https://ntfy.sh"` | The ntfy server (see Notifications) |
 | `ntfyToken` | `""` | Optional ntfy access token |
 | `ntfyOnDone` | `false` | Also ping when a long-running session is done |
-| `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in. Change the token to sign out every device. |
+| `token` | `""` | Optional access token, at least 16 characters. When set, the dashboard asks for it once and keeps you signed in with an `HttpOnly` cookie for 30 days; `""` means no sign-in, and then live mode starts only with `allowNoToken`. Change the token to sign out every device. |
+| `allowNoToken` | `false` | `true` lets live mode run without a token, so anyone who can reach Kage can run commands as you. Without it (or `kage serve --allow-no-token`) Kage refuses to start with no token. `kage setup` sets it when you answer no to the token |
 
 Live sessions use every key. Kage checks them all when it starts and stops with one line if a value is wrong. The pings need live mode: the demo sends none.
 

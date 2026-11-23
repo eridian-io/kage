@@ -534,6 +534,53 @@ describe('installChecks', () => {
     });
   });
 
+  describe('token (security I3)', () => {
+    it('a tokenless config without the opt-out fails doctor\'s token check with "Run kage setup to set one."', async () => {
+      writeConfig({ projectsRoot: dir, token: '' });
+      expect(one(await installChecks(deps(tableRun({}).run)), 'token')).toEqual({
+        id: 'token',
+        level: 'fail',
+        label: "No access token is set, so Kage won't start.",
+        fix: 'Run kage setup to set one.',
+      });
+      // An old config without the key at all reads the same.
+      writeConfig({ projectsRoot: dir });
+      expect(one(await installChecks(deps(tableRun({}).run)), 'token').level).toBe('fail');
+    });
+
+    it('allowNoToken: a warning with the same fix', async () => {
+      writeConfig({ projectsRoot: dir, token: '', allowNoToken: true });
+      expect(one(await installChecks(deps(tableRun({}).run)), 'token')).toEqual({
+        id: 'token',
+        level: 'warn',
+        label: 'No access token: anyone on your tailnet can start and approve tasks.',
+        fix: 'Run kage setup to set one.',
+      });
+    });
+
+    it('a token set: ok, and the token is never shown', async () => {
+      writeConfig({ projectsRoot: dir, token: 'invented-token-0123456789' });
+      const checks = await installChecks(deps(tableRun({}).run));
+      expect(one(checks, 'token')).toEqual({
+        id: 'token',
+        level: 'ok',
+        label: 'An access token is set.',
+        fix: null,
+      });
+      expect(JSON.stringify(checks)).not.toContain('invented-token-0123456789');
+    });
+
+    it('comes right after the config check; none without a config or with a broken one', async () => {
+      writeConfig({ projectsRoot: dir, token: 'invented-token-0123456789' });
+      const ids = (await installChecks(deps(tableRun({}).run))).map((c) => c.id);
+      expect(ids.indexOf('token')).toBe(ids.indexOf('config') + 1);
+      rmSync(join(cfgDir(), 'config.json'));
+      expect(byId(await installChecks(deps(tableRun({}).run)), 'token')).toEqual([]);
+      writeFileSync(join(cfgDir(), 'config.json'), '{');
+      expect(byId(await installChecks(deps(tableRun({}).run)), 'token')).toEqual([]);
+    });
+  });
+
   describe.runIf(!isWin)('file modes', () => {
     it('a config with a token readable by others fails', async () => {
       writeConfig({ projectsRoot: dir, token: 'invented-token-0123456789' }, 0o644);

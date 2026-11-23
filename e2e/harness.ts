@@ -263,15 +263,22 @@ export class LiveHarness {
         return;
       }
       // The config as serve will read it, however a spec wrote it: no topic without the fake (R85).
+      let config: Record<string, unknown>;
       try {
-        assertLocalNtfy(
-          JSON.parse(readFileSync(this.configPath(), 'utf8')) as Record<string, unknown>,
-        );
+        config = JSON.parse(readFileSync(this.configPath(), 'utf8')) as Record<string, unknown>;
+        assertLocalNtfy(config);
       } catch (err) {
         reject(err);
         return;
       }
-      const port = ['serve', '--port', String(this.port)];
+      // Security I3: live mode without a token starts only when told to, in every mode.
+      const tokenless = typeof config.token !== 'string' || config.token === '';
+      const port = [
+        'serve',
+        '--port',
+        String(this.port),
+        ...(tokenless ? ['--allow-no-token'] : []),
+      ];
       const sea = PERF_SEA as string;
       const [file, args, env] =
         mode === 'sea'

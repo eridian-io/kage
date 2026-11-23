@@ -3,7 +3,9 @@
  * socket, so `kage status`, setup's final check and `kage doctor` need neither the token nor the
  * network. `kage status` itself (Task 5) is at the end.
  */
+import { stat } from 'node:fs/promises';
 import { type ClientRequest, request } from 'node:http';
+import { ConfigError, configPath, loadConfig } from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
 import type { ServerStatus } from '../hooks/server.ts';
 import type { Io } from '../main.ts';
@@ -111,11 +113,38 @@ async function serviceWords(
   }
 }
 
-/** `kage status`: the version, the service, and the server's address and sessions. 0 when the server answers, else 1. */
+/**
+ * Whether the config holds an access token (security I3), never the token itself. null
+ * without a config file, or with one Kage can't read (doctor says what's wrong with it).
+ */
+async function tokenOn(env: NodeJS.ProcessEnv): Promise<boolean | null> {
+  const path = configPath(env);
+  if (
+    !(await stat(path).then(
+      () => true,
+      () => false,
+    ))
+  )
+    return null;
+  try {
+    return (await loadConfig({ env, path })).token !== '';
+  } catch (err) {
+    if (err instanceof ConfigError) return null;
+    throw err;
+  }
+}
+
+/**
+ * `kage status`: the version, the service, the access token, and the server's address and
+ * sessions. 0 when the server answers, else 1.
+ */
 export async function statusCommand(io: Io, deps: CheckDeps): Promise<number> {
   io.out(`Kage ${KAGE_VERSION}`);
   const service = await serviceWords(deps.manager);
   io.out(`Service: ${service.words}`);
+  // An old tokenless config stops the service, so this line says so even when nothing answers.
+  const token = await tokenOn(deps.env);
+  if (token !== null) io.out(token ? 'Access token: on' : 'Access token: off');
   const socket = socketPath(deps.env, deps.platform);
   const status = await deps.status(socket);
   if (status === null) {

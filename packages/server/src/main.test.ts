@@ -12,6 +12,7 @@ import { hookCommand } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
+import { NO_TOKEN_REFUSAL } from './serve.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
 import { testTmuxSocket } from './tmux/test-sockets.ts';
@@ -156,7 +157,8 @@ describe('kage serve: live-mode checks', () => {
     }
   });
 
-  it('--demo without a token prints no token warning (R53 is for live mode)', async () => {
+  it('the demo needs no token', async () => {
+    // No allowNoToken, no flag: the demo starts, with no refusal and no token warning (R53).
     const e = env({ KAGE_HOST: '127.0.0.1' });
     const p = port();
     writeConfig(e, { port: p });
@@ -226,6 +228,111 @@ describe('kage serve: live-mode checks', () => {
   });
 });
 
+describe('kage serve: no token, no live mode (security I3)', () => {
+  /** A fake tmux that records each call; the signal stops startup at the first one. */
+  const recorder = () => {
+    const ac = new AbortController();
+    const calls: string[] = [];
+    const tmuxExec: ExecFn = async (_cmd, args) => {
+      calls.push(args.join(' '));
+      ac.abort();
+      return { stdout: '', stderr: '' };
+    };
+    return { ac, calls, tmuxExec };
+  };
+
+  it('live mode with no token and no opt-out exits 1 with the refusal, before tmux starts', async () => {
+    const p = port();
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p) });
+    const cfg = join(e.XDG_CONFIG_HOME as string, 'kage', 'config.json');
+    for (const config of [null, { token: '' }, { token: '', allowNoToken: false }]) {
+      if (config) writeConfig(e, config);
+      out.length = 0;
+      err.length = 0;
+      const t = recorder();
+      const r = await main(['serve'], io(e, { dist: makeDist(), tmuxExec: t.tmuxExec }));
+      expect(r).toBe(1);
+      expect(err).toEqual([
+        `${NO_TOKEN_REFUSAL} Run kage setup to set one, or add "allowNoToken": true to ${cfg}.`,
+      ]);
+      expect(NO_TOKEN_REFUSAL).toBe(
+        'No access token is set, so anyone who can reach Kage could run commands as you.',
+      );
+      expect(out).toEqual([]);
+      expect(t.calls).toEqual([]);
+      if (!isWin) expect(existsSync(join(e.XDG_RUNTIME_DIR as string, 'kage.sock'))).toBe(false);
+    }
+    await expect(fetch(`http://127.0.0.1:${p}/`)).rejects.toThrow();
+  });
+
+  it('the refusal names the config file under HOME as ~/…', async () => {
+    const e = env();
+    delete e.XDG_CONFIG_HOME;
+    const t = recorder();
+    expect(await main(['serve'], io(e, { dist: makeDist(), tmuxExec: t.tmuxExec }))).toBe(1);
+    expect(err).toEqual([
+      `${NO_TOKEN_REFUSAL} Run kage setup to set one, or add "allowNoToken": true to ~/.config/kage/config.json.`,
+    ]);
+  });
+
+  it('allowNoToken: true, or --allow-no-token, starts with the warning', async () => {
+    // Past the refusal, startup reaches tmux (here stopped by the signal at its first call);
+    // the warning itself is printed once the server is up (the live test below).
+    for (const [args, config] of [
+      [['serve'], { token: '', allowNoToken: true }],
+      [['serve', '--allow-no-token'], {}],
+      [['serve', '--allow-no-token'], { allowNoToken: false }],
+    ] as const) {
+      const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()) });
+      writeConfig(e, config);
+      out.length = 0;
+      err.length = 0;
+      const t = recorder();
+      const r = await main(
+        [...args],
+        io(e, { dist: makeDist(), signal: t.ac.signal, tmuxExec: t.tmuxExec }),
+      );
+      expect(r).toBe(130);
+      expect(t.calls.length).toBeGreaterThan(0);
+      expect(err).toEqual(['Stopped before Kage was ready.']);
+    }
+  });
+
+  it('a token needs no opt-out; --allow-no-token in demo mode is accepted and changes nothing', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()) });
+    writeConfig(e, { token: 'a-secret-of-16-chars' });
+    const t = recorder();
+    const r = await main(
+      ['serve'],
+      io(e, { dist: makeDist(), signal: t.ac.signal, tmuxExec: t.tmuxExec }),
+    );
+    expect(r).toBe(130);
+    const p = port();
+    const d = env({ KAGE_HOST: '127.0.0.1' });
+    writeConfig(d, { port: p });
+    out.length = 0;
+    err.length = 0;
+    const demo = await main(
+      ['serve', '--demo', '--allow-no-token'],
+      io(d, { dist: makeDist(), tmuxVersion: null }),
+    );
+    expect(typeof demo).toBe('object');
+    try {
+      expect(err).toEqual([]);
+      expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
+    } finally {
+      await (demo as Running).stop();
+    }
+  });
+
+  it('the usage names the flag', () => {
+    expect(USAGE).toContain(
+      'kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]',
+    );
+    expect(USAGE).toContain('--allow-no-token runs live mode without an access token.');
+  });
+});
+
 describe('kage serve: startup interrupts and late errors (B15)', () => {
   it('a signal while startup waits on ensureSession unwinds, says so and returns 130', async () => {
     const p = port();
@@ -239,7 +346,10 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
       await new Promise((r) => setTimeout(r, 20));
       return { stdout: '', stderr: '' };
     };
-    const r = await main(['serve'], io(e, { dist: makeDist(), signal: ac.signal, tmuxExec }));
+    const r = await main(
+      ['serve', '--allow-no-token'],
+      io(e, { dist: makeDist(), signal: ac.signal, tmuxExec }),
+    );
     expect(r).toBe(130);
     expect(err).toEqual(['Stopped before Kage was ready.']);
     expect(out).toEqual([]);
@@ -512,7 +622,9 @@ describe('kage (no command, help, unknown)', () => {
   it('prints the usage for help, with the KAGE_SOCKET ownership rule', async () => {
     expect(await main(['--help'], io(env()))).toBe(0);
     const text = out.join('\n');
-    expect(text).toContain('kage serve [--demo] [--unsafe-listen-all] [--port N]');
+    expect(text).toContain(
+      'kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]',
+    );
     expect(text).toContain('kage hooks-path');
     expect(text).toContain('kage hook <Event>');
     expect(text).toContain('KAGE_SOCKET');
@@ -568,7 +680,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     const p = port();
     const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p), KAGE_TMUX_SOCKET: socket });
     const r = await main(
-      ['serve'],
+      ['serve', '--allow-no-token'],
       io(e, {
         dist: makeDist(),
         tmuxVersion: undefined,
@@ -580,7 +692,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     const sock = join(e.XDG_RUNTIME_DIR as string, 'kage.sock');
     try {
       expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
-      // R53: no token in live mode: one line says what that means.
+      // R53: no token in live mode (--allow-no-token): one line says what that means.
       expect(err).toEqual(['No token set: anyone on your tailnet can start and approve tasks.']);
       // ensureSession made the session; the hook socket and the settings file exist.
       expect(tmux('has-session', '-t', '=kage')).toBe('');
@@ -713,7 +825,8 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
           // No PATH: no claude to find unless KAGE_CLAUDE_BIN names one.
           ...(claude ? { KAGE_CLAUDE_BIN: claude } : {}),
         });
-        writeConfig(e, { projectsRoot: projects });
+        // The opt-out from the config this time (security I3).
+        writeConfig(e, { projectsRoot: projects, allowNoToken: true });
         out.length = 0;
         err.length = 0;
         const r = await main(['serve'], liveIo(e));
@@ -768,7 +881,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       KAGE_TMUX_SOCKET: socket,
       KAGE_SOCKET: join(blocker, 'kage.sock'),
     });
-    expect(await main(['serve'], liveIo(e))).toBe(1);
+    expect(await main(['serve', '--allow-no-token'], liveIo(e))).toBe(1);
     expect(err).toHaveLength(1);
     expect(err[0]).toMatch(/^Couldn't open the hook socket: /);
     expect(out).toEqual([]);
@@ -782,7 +895,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     await new Promise<void>((r) => taken.listen(p, '127.0.0.1', r));
     try {
       const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p), KAGE_TMUX_SOCKET: socket });
-      expect(await main(['serve'], liveIo(e))).toBe(1);
+      expect(await main(['serve', '--allow-no-token'], liveIo(e))).toBe(1);
       expect(err).toEqual([`Port ${p} is already in use.`]);
       expect(existsSync(join(e.XDG_RUNTIME_DIR as string, 'kage.sock'))).toBe(false);
     } finally {
@@ -880,7 +993,10 @@ describe('kage serve: the service environment (R105, F7)', () => {
       return { stdout: '', stderr: '' };
     };
     try {
-      const r = await main(['serve'], io(e, { dist: makeDist(), signal: ac.signal, tmuxExec }));
+      const r = await main(
+        ['serve', '--allow-no-token'],
+        io(e, { dist: makeDist(), signal: ac.signal, tmuxExec }),
+      );
       expect(r).toBe(130);
     } finally {
       for (const k of keys) {
@@ -913,7 +1029,7 @@ describe('kage serve: the service environment (R105, F7)', () => {
       return { stdout: '@0\n', stderr: '' };
     };
     const r = await main(
-      ['serve'],
+      ['serve', '--allow-no-token'],
       io(e, { dist: makeDist(), signal: ac.signal, tmuxExec, platform }),
     );
     expect(r).toBe(130);

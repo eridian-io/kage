@@ -555,6 +555,51 @@ describe('kage setup: the questions', () => {
     expect(await setupCommand([], g.io, g.deps)).toBe(0);
     expect(s.asked[3]).toBe('Set an access token? Anyone on your tailnet can reach Kage. [y/N]');
     expect(readCfg().token).toBe('');
+    // Nothing changed the second time: no "Turned off" line again.
+    expect(g.out).toContain('Your settings in ~/.config/kage/config.json are already set.');
+    expect(g.out.some((l) => l.startsWith('Turned off'))).toBe(false);
+  });
+
+  it('no to the token writes token "" and allowNoToken true, and says so', async () => {
+    mkdirSync(join(home, '.config', 'kage'), { recursive: true });
+    mkdirSync(join(home, 'projects'));
+    writeFileSync(cfgFile, JSON.stringify({ token: 'existing-token-0123456789abcdef' }));
+    const s = scripted(['', '', '', false]);
+    const h = harness({ prompt: s.p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    const cfg = readCfg();
+    expect(cfg.token).toBe('');
+    expect(cfg.allowNoToken).toBe(true);
+    expect(h.out).toContain('Turned off the access token: anyone on your tailnet can open Kage.');
+    // U20: not "Saved the access token" for a token that was turned off.
+    expect(h.out.some((l) => l.includes('Saved the access token'))).toBe(false);
+    expect(h.err).toEqual([]);
+  });
+
+  it('--no-token on a fresh home writes the opt-out too, with the settings line', async () => {
+    const h = harness();
+    expect(await setupCommand(['--yes', '--no-token'], h.io, h.deps)).toBe(0);
+    const cfg = readCfg();
+    expect(cfg.token).toBe('');
+    expect(cfg.allowNoToken).toBe(true);
+    expect(h.out).toContain('Saved your settings in ~/.config/kage/config.json.');
+    expect(h.out).toContain('Turned off the access token: anyone on your tailnet can open Kage.');
+  });
+
+  it('turning the token back on writes allowNoToken false', async () => {
+    mkdirSync(join(home, '.config', 'kage'), { recursive: true });
+    mkdirSync(join(home, 'projects'));
+    writeFileSync(
+      cfgFile,
+      JSON.stringify({ projectsRoot: '~/projects', port: 8080, token: '', allowNoToken: true }),
+    );
+    const h = harness();
+    expect(await setupCommand(['--yes', '--token'], h.io, h.deps)).toBe(0);
+    const cfg = readCfg();
+    expect(cfg.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(cfg.allowNoToken).toBe(false);
+    expect(h.out).toContain('Saved the access token in ~/.config/kage/config.json.');
+    expect(h.out.some((l) => l.startsWith('Turned off'))).toBe(false);
   });
 });
 

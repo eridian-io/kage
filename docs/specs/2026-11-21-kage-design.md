@@ -322,7 +322,8 @@ Kage can run commands on the machine, so the defaults are strict:
   - **Sign out** is in the command palette while a token is set (the snapshot carries `auth`). It ends this browser's session and shows the login screen. To sign out every device at once, restart Kage.
   - **Limiter.** 5 failed logins from one address block that address for 60 s (429). A global ceiling of 30 failures a minute blocks everyone, so one peer can't lock the others out one by one. Only failures count.
   - A 401 anywhere returns the board to the login screen.
-  - **Without a token**, live mode prints one line on stderr at startup: "No token set: anyone on your tailnet can start and approve tasks." The demo mode doesn't print it.
+  - **Without a token, no live mode** (amended 2026-11-23, hardening; security I3, R127). With `token` empty, live mode refuses to start, before tmux, the hook socket or the listener, and exits 1 with what to do (§6.9): run `kage setup` to set a token, or opt out on purpose with `"allowNoToken": true` in the config (§5.11) or `kage serve --allow-no-token`. Setup's "no" to the token question writes that opt-out. An old config with `"token": ""` and no opt-out stops until setup is run again; under systemd the refusal repeats every 5 s (F23), and `kage doctor` (a ✗ on its token line) and `kage status` ("Access token: off") say why. The demo needs no token.
+  - **With the opt-out**, live mode prints one line on stderr at startup: "No token set: anyone on your tailnet can start and approve tasks." Doctor shows it as a ! line. The demo mode doesn't print it.
 - **Outbound calls** (amended 2026-11-22, phase 6, F9). The running server makes one: the ntfy `POST` below. The commands make the others, each only when you run them:
   - `kage ping` posts one test ping to the same ntfy server (§5.9).
   - `kage update` downloads `VERSION`, `SHA256SUMS` and the program from the release (HTTPS; the program checked, §5.13). It runs only on request. Kage never checks for updates in the background.
@@ -365,9 +366,12 @@ Kage can run commands on the machine, so the defaults are strict:
   "ntfyServer": "https://ntfy.sh",
   "ntfyToken": "",
   "ntfyOnDone": false,
-  "token": ""
+  "token": "",
+  "allowNoToken": false
 }
 ```
+
+(amended 2026-11-23, hardening; security I3) `allowNoToken`: `false` by default, and must be `true` or `false`. With `token` empty, live mode starts only when it is `true` (or with `kage serve --allow-no-token`); see §5.10. `kage setup` writes `true` with `"token": ""` when you answer no to the token, and `false` when you turn a token back on. It has no effect while a token is set, and the demo ignores it.
 
 `worktreeDir` and `branchPrefix` are checked when the config loads (amended 2026-11-21, phase 3). `worktreeDir` is a relative folder name made of plain segments: no `..`, no `.git`, no leading `/`. `branchPrefix` is empty or looks like `kage/`: letters, digits, `.`, `_`, `-` and `/`, no segment starting with `-` or `.`, none ending in `.lock`. The environment variable `KAGE_CLAUDE_BIN` names the `claude` program for new tasks (a path, or a name on `PATH`).
 
@@ -629,7 +633,7 @@ The same rule as §6.6 and §6.7: every new sentence a user can read, and a chan
   - the config file: "<path> isn't valid JSON. Fix it or move it away, then run kage setup again."; "<path> must hold a JSON object. Fix it or move it away, then run kage setup again."; "<path> is a link to a file that isn't there. Fix it or move it away, then run kage setup again."; "Kage can't read <path> (<code>)."; "Config error: <message>" with "Fix <path>, then run kage setup again.";
   - the questions, each with its default in brackets: "Projects folder"; "Create <dir>?"; "Host name"; "Port"; "Set an access token? Anyone on your tailnet can reach Kage."; "Keep Kage running when you're logged out?"; "Please answer y or n.";
   - the answers: "<dir> isn't a folder."; "Kage needs a projects folder. Run kage setup again with one that exists."; "Kage can't find the address of <name>."; "<name> isn't a Tailscale or loopback address, so Kage won't listen there."; "<name> is another machine on your tailnet (<address>), not this one."; "Press Enter for the Tailscale address, or type another name or IP."; "The port must be a whole number from 1 to 65535.";
-  - the writes: "Couldn't create <dir>: <reason>"; "Created <dir>."; "Saved your settings in <path>."; "Saved the <settings> in <path>." (the settings joined with commas and "and"); "Your settings in <path> are already set."; "Couldn't write <path>: <reason>"; "Your token: <token>. Kage asks for it once per browser. It's saved in <path>.";
+  - the writes: "Couldn't create <dir>: <reason>"; "Created <dir>."; "Saved your settings in <path>."; "Saved the <settings> in <path>." (the settings joined with commas and "and"); "Your settings in <path> are already set."; "Couldn't write <path>: <reason>"; "Your token: <token>. Kage asks for it once per browser. It's saved in <path>."; when the token is turned off, the settings line no longer names the access token and §6.9's sentence says so instead (amended 2026-11-23, hardening; U20);
   - the service: "Installed the <service name>."; "Updated and restarted the <service name>."; "Couldn't install the <service name>: <reason>" with "Fix that, then run kage setup again."; "Start Kage with: kage serve";
   - linger: "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger"; or, when `loginctl` refuses, "Run this to allow it: sudo loginctl enable-linger <user>";
   - the last check: "Kage is running at <url>" (no full stop, as serve prints it, so the address copies cleanly); "Kage didn't answer at <url>. See: <log>"; "Kage is running, but <url> answers HTTP <code>. See: <log>"; "A Kage at <url> answers instead, not on port <port>. Another kage serve may be running: stop it, then run kage setup again."; "Kage is running, but <url> doesn't answer from here." with doctor's advice below;
@@ -677,6 +681,13 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
 - **Refused Host and Origin** (403, plain text; the HTTP guards and the terminal's upgrade; security I2). They replace the bare words of §5.6 and §6.6:
   - a refused Host: “Kage doesn't answer to this name. Open the address "kage status" shows, or set "host" in Kage's config file to this name.”
   - a refused or missing Origin: “Kage only takes requests from a page on its own address. Open the address "kage status" shows, or set "host" in Kage's config file to the name you use.”
+- **No token, no live mode** (security I3; §5.10):
+  - `kage serve` refuses live mode without a token or the opt-out, on one line: "No access token is set, so anyone who can reach Kage could run commands as you." followed by “Run kage setup to set one, or add "allowNoToken": true to <config path>.”;
+  - with the opt-out, the startup warning stays as it was: "No token set: anyone on your tailnet can start and approve tasks.";
+  - `kage doctor`, the token line after the config line: ✗ "No access token is set, so Kage won't start." with "Run kage setup to set one."; ! "No access token: anyone on your tailnet can start and approve tasks." with the same fix; ✓ "An access token is set.";
+  - `kage status`, after the Service line when a config file is there: "Access token: on" or "Access token: off";
+  - `kage setup`, turning the token off: "Turned off the access token: anyone on your tailnet can open Kage." It replaces `Saved the access token…` for that case (U20);
+  - usage, under `kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]`: "--allow-no-token runs live mode without an access token.".
 
 ## 7. Performance budgets
 
