@@ -143,6 +143,26 @@ async function quit(page: Page, id: string): Promise<void> {
   await expect(chip(page)).toHaveText('ended', { timeout: STATUS_MS });
 }
 
+/**
+ * U on the selected session. Claude's SessionEnd ends the session a moment before its window
+ * closes and Kage's next listing lets the window go; a U in between is refused ("This session
+ * already has a window.", 409; B86). Transitions Task 0 found that order behind R63's failures
+ * under load and on ubuntu-latest: then U is pressed again. A U that is taken shows no refusal.
+ */
+async function resume(page: Page): Promise<void> {
+  const refused = page.locator('.k-err', { hasText: 'already has a window' });
+  for (let i = 0; i < 20; i++) {
+    await page.keyboard.press('u');
+    try {
+      await expect(refused).toBeVisible({ timeout: 1000 });
+    } catch {
+      return;
+    }
+    await page.waitForTimeout(100);
+  }
+  throw new Error('U was refused for 20 s: Kage still lists the window');
+}
+
 /** The fake's session id for `task`, once its argv file is there. */
 async function claudeSession(task: string): Promise<string> {
   await expect.poll(() => h.fakeSessionFor(task), { timeout: STATUS_MS }).not.toBeNull();
@@ -348,7 +368,7 @@ test('U resumes an ended session with --resume and its session id, in a window t
 
   const chips = await recordChips(page);
   await blur(page);
-  await page.keyboard.press('u');
+  await resume(page);
   await expect(chip(page)).toHaveText('done', { timeout: RESUME_MS });
   const own = ownChips(await chips(), task);
   expect(own).toContain(`${task}: running`);
@@ -374,7 +394,7 @@ test("a resume Claude can't find (R63) ends the session again, says so, and keep
 
   const chips = await recordChips(page);
   await blur(page);
-  await page.keyboard.press('u');
+  await resume(page);
   // The resume ran: the line comes from the failed resume's SessionEnd.
   await expect(lines(page).last()).toHaveText(
     "Claude couldn't find this conversation, so the session wasn't resumed.",
