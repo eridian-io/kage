@@ -1028,3 +1028,11 @@ kbd {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
 }
+
+@media (max-width: 520px) {
+  .chip.live {
+    white-space: normal;
+    border-radius: 14px;
+    max-width: 100%;
+  }
+}
