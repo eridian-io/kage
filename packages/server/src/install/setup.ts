@@ -167,10 +167,11 @@ export async function suggestProjectsRoot(home: string): Promise<string> {
 }
 
 /**
- * The service's PATH (R110-8, F23): the absolute folders of the PATH setup runs with, where it
- * found tmux, git, claude and tailscale (Windows folders in WSL included, to match the
- * terminal), then node's folder in bundle mode and an absolute KAGE_CLAUDE_BIN's folder, each
- * once. Without a PATH, the system's usual folders.
+ * The service's PATH (R110-8, F23): every absolute folder of the PATH setup runs with, in its
+ * order (so tmux, git, claude and tailscale are found where the terminal finds them; Windows
+ * folders in WSL included), then node's folder in bundle mode and an absolute KAGE_CLAUDE_BIN's
+ * folder; each folder once, and relative entries dropped. Without a PATH, the system's usual
+ * folders.
  */
 export function servicePath(env: NodeJS.ProcessEnv, mode: RunMode): string {
   const dirs = (env.PATH || DEFAULT_PATH).split(':').filter((d) => posix.isAbsolute(d));
@@ -418,7 +419,10 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     // install says what's wrong, if anything is
   }
   try {
-    await m.install({ argv, env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode)) });
+    await m.install({
+      argv,
+      env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode), deps.env),
+    });
   } catch (err) {
     io.err(`Couldn't install the ${m.name}: ${firstLine(err)}`);
     io.err('Fix that, then run kage setup again.');

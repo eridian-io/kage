@@ -128,12 +128,40 @@ function inWsl(env: NodeJS.ProcessEnv): boolean {
 /** is-active's exits from a user manager that answered: 0 active, 3 not active, 4 no such unit. */
 const ANSWERED = new Set([0, 3, 4]);
 
+/**
+ * The folder the user manager reads user units from: `$XDG_CONFIG_HOME/systemd/user` in the
+ * manager's own environment, not the shell's. A shell that sets XDG_CONFIG_HOME (in .bashrc,
+ * say) doesn't change the manager's, so a unit written there would never load. So it is:
+ * - the XDG_CONFIG_HOME that `systemctl --user show-environment` prints, when it prints an
+ *   absolute one (a value systemd had to escape, `$'…'`, doesn't count);
+ * - else `~/.config/systemd/user`: the manager's default, also when it doesn't answer (setup
+ *   then installs nothing, and doctor and uninstall look where a unit would be).
+ */
+export async function systemdUnitDir(
+  run: ServiceDeps['run'],
+  home: string,
+  env: NodeJS.ProcessEnv,
+): Promise<string> {
+  const fallback = join(home, '.config', 'systemd', 'user');
+  const r = await run('systemctl', ['--user', 'show-environment'], { env, timeoutMs: 5000 });
+  if (r.missing || r.code !== 0) return fallback;
+  for (const line of r.stdout.split(/\r?\n/)) {
+    if (!line.startsWith('XDG_CONFIG_HOME=')) continue;
+    const value = line.slice('XDG_CONFIG_HOME='.length);
+    return value.startsWith('/') ? join(value, 'systemd', 'user') : fallback;
+  }
+  return fallback;
+}
+
+/**
+ * `d.unitDir` is where the unit goes (serviceManager passes systemdUnitDir's answer); without
+ * it, the user manager's default, `~/.config/systemd/user`.
+ */
 export function systemdManager(d: ServiceDeps): ServiceManager & {
   lingerEnabled(): Promise<boolean>;
   enableLinger(): Promise<boolean>;
 } {
-  const configHome = d.env.XDG_CONFIG_HOME || join(d.home, '.config');
-  const unitDir = join(configHome, 'systemd', 'user');
+  const unitDir = d.unitDir ?? join(d.home, '.config', 'systemd', 'user');
   const file = join(unitDir, SYSTEMD_UNIT);
   const wsl = d.wsl ?? (() => inWsl(d.env));
 

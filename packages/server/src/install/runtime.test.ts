@@ -129,6 +129,44 @@ describe('serviceEnv', () => {
       else process.env.KAGE_TEST_LEAK = before;
     }
   });
+
+  it("adds setup's folder settings, claude and tmux socket when set (R124), never a secret", () => {
+    const env: NodeJS.ProcessEnv = {
+      KAGE_CLAUDE_BIN: '/opt/claude/bin/claude',
+      CLAUDE_CONFIG_DIR: '/home/u/.claude-work',
+      XDG_CONFIG_HOME: '/home/u/conf',
+      XDG_STATE_HOME: '/home/u/state',
+      KAGE_TMUX_SOCKET: 'agents',
+      ANTHROPIC_API_KEY: 'sk-ant-invented',
+      HOME: '/home/u',
+      SHELL: '/bin/bash',
+      NODE_OPTIONS: '--inspect',
+    };
+    expect(serviceEnv({ kind: 'sea', exe: '/b/kage' }, '/usr/bin', env)).toEqual({
+      PATH: '/usr/bin',
+      MALLOC_ARENA_MAX: '2',
+      KAGE_SERVICE: '1',
+      KAGE_CLAUDE_BIN: '/opt/claude/bin/claude',
+      CLAUDE_CONFIG_DIR: '/home/u/.claude-work',
+      XDG_CONFIG_HOME: '/home/u/conf',
+      XDG_STATE_HOME: '/home/u/state',
+      KAGE_TMUX_SOCKET: 'agents',
+    });
+  });
+
+  it('leaves out unset, empty and relative values (a name on PATH, a relative folder)', () => {
+    const env: NodeJS.ProcessEnv = {
+      KAGE_CLAUDE_BIN: 'claude',
+      CLAUDE_CONFIG_DIR: '',
+      XDG_CONFIG_HOME: 'conf',
+      KAGE_TMUX_SOCKET: '',
+    };
+    expect(serviceEnv({ kind: 'sea', exe: '/b/kage' }, '/usr/bin', env)).toEqual({
+      PATH: '/usr/bin',
+      MALLOC_ARENA_MAX: '2',
+      KAGE_SERVICE: '1',
+    });
+  });
 });
 
 describe('serviceCleanEnv', () => {

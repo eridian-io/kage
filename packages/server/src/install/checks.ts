@@ -245,8 +245,20 @@ async function exists(path: string): Promise<boolean> {
   }
 }
 
-/** Existence only: the credentials file is never opened (R25, host-integration §7.6). */
+/**
+ * Existence only: the credentials file is never opened (R25, host-integration §7.6). An
+ * ANTHROPIC_API_KEY in this shell doesn't reach an installed service, which gets no secrets
+ * (R124), so then Claude in Kage's windows needs its own sign-in. The key is never read beyond
+ * "is it set", and never written anywhere.
+ */
 async function claudeLogin(d: CheckDeps): Promise<Check> {
+  if (d.env.ANTHROPIC_API_KEY && d.manager !== null && (await exists(d.manager.file))) {
+    return warn(
+      'claude-login',
+      "ANTHROPIC_API_KEY is set in this shell, but Kage's service doesn't get it.",
+      "Claude in Kage's windows needs its own sign-in. Run claude once and sign in.",
+    );
+  }
   if (d.platform === 'darwin') {
     return warn(
       'claude-login',

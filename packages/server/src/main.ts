@@ -149,7 +149,9 @@ async function checkDeps(io: Io): Promise<CheckDeps> {
   const home = io.env.HOME || homedir();
   const uid = process.getuid?.();
   const manager =
-    uid === undefined ? null : serviceManager(platform, { run: realRun, home, env: io.env, uid });
+    uid === undefined
+      ? null
+      : await serviceManager(platform, { run: realRun, home, env: io.env, uid });
   return {
     run: realRun,
     env: io.env,

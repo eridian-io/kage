@@ -1,12 +1,13 @@
 /**
  * The background service that keeps `kage serve` running: a systemd user unit on Linux and WSL,
- * a launchd agent on macOS (phase 6, Task 3). Both files hold only the command, the PATH captured
- * at setup and the R91 tuning; the token and the ntfy keys stay in config.json (0600). Nothing
- * here runs as root or calls sudo.
+ * a launchd agent on macOS (phase 6, Task 3). Both files hold only the command and what
+ * runtime.ts serviceEnv adds to the manager's environment (the PATH captured at setup, the R91
+ * tuning and the folder settings of R124); the token and the ntfy keys stay in config.json
+ * (0600). Nothing here runs as root or calls sudo.
  */
 import { launchdManager } from './launchd.ts';
 import type { Run } from './run.ts';
-import { systemdManager } from './systemd.ts';
+import { systemdManager, systemdUnitDir } from './systemd.ts';
 
 /** What the service runs: `serviceArgv(mode)` and `serviceEnv(mode, path)` from runtime.ts. */
 export interface ServiceSpec {
@@ -14,7 +15,10 @@ export interface ServiceSpec {
   env: Record<string, string>;
 }
 
-/** starting: systemd's activating, the restart loop while Tailscale has no address (R111). */
+/**
+ * starting: the restart loop while Tailscale has no address (R111): systemd's activating, and
+ * launchd's not running after a non-zero exit (KeepAlive starts it again).
+ */
 export type ServiceState = 'active' | 'starting' | 'inactive' | 'failed' | 'missing';
 
 export interface ServiceManager {
@@ -53,11 +57,22 @@ export interface ServiceDeps {
   sleep?: (ms: number) => Promise<void>;
   /** The clock for the bootstrap retries' overall cap (a test seam; by default Date.now). */
   now?: () => number;
+  /** systemd only: the folder the user manager reads units from (systemd.ts systemdUnitDir). */
+  unitDir?: string;
 }
 
-/** linux → systemd, darwin → launchd, anything else → null. */
-export function serviceManager(platform: NodeJS.Platform, d: ServiceDeps): ServiceManager | null {
-  if (platform === 'linux') return systemdManager(d);
+/**
+ * linux → systemd, darwin → launchd, anything else → null. On Linux it first asks the user
+ * manager where it reads units from (systemdUnitDir).
+ */
+export async function serviceManager(
+  platform: NodeJS.Platform,
+  d: ServiceDeps,
+): Promise<ServiceManager | null> {
+  if (platform === 'linux') {
+    const unitDir = d.unitDir ?? (await systemdUnitDir(d.run, d.home, d.env));
+    return systemdManager({ ...d, unitDir });
+  }
   if (platform === 'darwin') return launchdManager(d);
   return null;
 }

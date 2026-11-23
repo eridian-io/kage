@@ -9,7 +9,7 @@
  * - source: `node src/main.ts`, for development only.
  */
 import { realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
+import { delimiter, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { isSea } from 'node:sea';
 import { fileURLToPath } from 'node:url';
 
@@ -138,13 +138,37 @@ export function serviceArgv(m: RunMode): string[] {
 }
 
 /**
- * The service's whole environment: the PATH captured at setup, R91's arena limit, and
- * KAGE_SERVICE so serve can take the tuning back off before tmux starts Claude (R105). Nothing
- * else from the process environment; secrets stay in the config. The SEA's pool size is in its
- * execArgv, so NODE_OPTIONS isn't needed (host-integration §7.1).
+ * The folder settings setup carries from its own environment into the service's (R124), when
+ * set: where Claude and Kage keep their files. They count only when absolute (a relative one
+ * would mean another folder under the service).
  */
-export function serviceEnv(_m: RunMode, path: string): Record<string, string> {
-  return { PATH: path, MALLOC_ARENA_MAX: '2', KAGE_SERVICE: '1' };
+const CARRIED_FOLDERS = ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME'] as const;
+
+/**
+ * What the service adds to the user manager's environment: the PATH captured at setup, R91's
+ * arena limit, KAGE_SERVICE so serve can take the tuning back off before tmux starts Claude
+ * (R105), and from setup's environment (`env`) an absolute KAGE_CLAUDE_BIN, CLAUDE_CONFIG_DIR,
+ * XDG_CONFIG_HOME, XDG_STATE_HOME and KAGE_TMUX_SOCKET when set (R124), so the service reads
+ * the same config and state, and runs the same claude and tmux server, as setup and doctor did.
+ * Nothing else, and never a secret: the token and ntfy keys stay in the config, and an
+ * ANTHROPIC_API_KEY set only in the shell stays there (doctor says so). The SEA's pool size is
+ * in its execArgv, so NODE_OPTIONS isn't needed (host-integration §7.1). The unit and the plist
+ * quote each value and refuse one they can't hold (service-files.ts assertWritable).
+ */
+export function serviceEnv(
+  _m: RunMode,
+  path: string,
+  env: NodeJS.ProcessEnv = {},
+): Record<string, string> {
+  const out: Record<string, string> = { PATH: path, MALLOC_ARENA_MAX: '2', KAGE_SERVICE: '1' };
+  const claude = env.KAGE_CLAUDE_BIN ?? '';
+  if (posix.isAbsolute(claude)) out.KAGE_CLAUDE_BIN = claude;
+  for (const key of CARRIED_FOLDERS) {
+    const v = env[key] ?? '';
+    if (posix.isAbsolute(v)) out[key] = v;
+  }
+  if (env.KAGE_TMUX_SOCKET) out.KAGE_TMUX_SOCKET = env.KAGE_TMUX_SOCKET;
+  return out;
 }
 
 /** Under the service (KAGE_SERVICE=1): removes the tuning so the windows Kage starts don't inherit it. */

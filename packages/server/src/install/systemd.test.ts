@@ -23,6 +23,7 @@ import {
   SYSTEMD_UNIT,
   systemdManager,
   systemdQuote,
+  systemdUnitDir,
 } from './systemd.ts';
 
 const isWin = process.platform === 'win32';
@@ -162,6 +163,29 @@ describe('no secrets in the unit', () => {
       expect(unit).not.toContain(v);
     }
   });
+
+  it("R124: setup's folder settings go through the same quoting, and a control character is refused", () => {
+    const exe = '/home/u/.local/bin/kage';
+    const env = serviceEnv({ kind: 'sea', exe }, '/usr/bin', {
+      CLAUDE_CONFIG_DIR: '/home/u/my 100% "$claude"',
+      KAGE_TMUX_SOCKET: 'agents',
+      ANTHROPIC_API_KEY: 'sk-ant-invented',
+    });
+    const unit = renderUnit({ argv: [exe, 'serve'], env });
+    expect(unit).not.toContain('sk-ant-invented');
+    const line = unit.split('\n').find((l) => l.startsWith('Environment='));
+    expect(parseSystemdWords(line?.slice('Environment='.length) ?? '', 'env')).toEqual([
+      'PATH=/usr/bin',
+      'MALLOC_ARENA_MAX=2',
+      'KAGE_SERVICE=1',
+      'CLAUDE_CONFIG_DIR=/home/u/my 100% "$claude"',
+      'KAGE_TMUX_SOCKET=agents',
+    ]);
+    const bad = serviceEnv({ kind: 'sea', exe }, '/usr/bin', { XDG_STATE_HOME: '/home/u/a\nb' });
+    expect(() => renderUnit({ argv: [exe, 'serve'], env: bad })).toThrow(
+      "A service value can't hold a control character",
+    );
+  });
 });
 
 describe('systemdManager', () => {
@@ -172,9 +196,12 @@ describe('systemdManager', () => {
     expect(m.file).toBe(unitPath());
   });
 
-  it('XDG_CONFIG_HOME moves the unit folder', () => {
+  it("the shell's XDG_CONFIG_HOME doesn't move the unit folder; unitDir does (R124)", () => {
     const xdg = join(dir, 'xdg');
-    const m = systemdManager(deps(fakeRun().run, { env: { XDG_CONFIG_HOME: xdg } }));
+    expect(systemdManager(deps(fakeRun().run, { env: { XDG_CONFIG_HOME: xdg } })).file).toBe(
+      unitPath(),
+    );
+    const m = systemdManager(deps(fakeRun().run, { unitDir: join(xdg, 'systemd', 'user') }));
     expect(m.file).toBe(join(xdg, 'systemd', 'user', SYSTEMD_UNIT));
   });
 
@@ -521,17 +548,71 @@ describe('systemd fix round 2: the marker line, and read errors', () => {
 });
 
 describe('serviceManager', () => {
-  it('linux is systemd, darwin is launchd, anything else none', () => {
+  it('linux is systemd, darwin is launchd, anything else none', async () => {
     const d = deps(fakeRun().run);
-    expect(serviceManager('linux', d)?.kind).toBe('systemd');
-    expect(serviceManager('darwin', d)?.kind).toBe('launchd');
-    expect(serviceManager('win32', d)).toBeNull();
+    expect((await serviceManager('linux', d))?.kind).toBe('systemd');
+    expect((await serviceManager('darwin', d))?.kind).toBe('launchd');
+    expect(await serviceManager('win32', d)).toBeNull();
   });
 
-  it('the systemd manager offers linger through the shared interface (F6)', () => {
-    const m = serviceManager('linux', deps(fakeRun().run));
+  it('the systemd manager offers linger through the shared interface (F6)', async () => {
+    const m = await serviceManager('linux', deps(fakeRun().run));
     expect(typeof m?.lingerEnabled).toBe('function');
     expect(typeof m?.enableLinger).toBe('function');
-    expect(serviceManager('darwin', deps(fakeRun().run))?.enableLinger).toBeUndefined();
+    expect((await serviceManager('darwin', deps(fakeRun().run)))?.enableLinger).toBeUndefined();
+  });
+
+  it("on linux the unit goes where the user manager reads units (its XDG_CONFIG_HOME, not the shell's)", async () => {
+    const xdg = '/srv/manager-config';
+    const { run, calls } = fakeRun((_cmd, args) =>
+      args[1] === 'show-environment'
+        ? {
+            stdout: `HOME=${join(dir, 'home')}
+XDG_CONFIG_HOME=${xdg}
+LANG=C.UTF-8
+`,
+          }
+        : {},
+    );
+    const m = await serviceManager(
+      'linux',
+      deps(run, { env: { XDG_CONFIG_HOME: join(dir, 'shell-config') } }),
+    );
+    expect(m?.file).toBe(join(xdg, 'systemd', 'user', SYSTEMD_UNIT));
+    expect(calls).toEqual(['systemctl --user show-environment']);
+  });
+});
+
+describe('systemdUnitDir', () => {
+  const home = '/home/u';
+  const fallback = join(home, '.config', 'systemd', 'user');
+  const answer = (r: Partial<RunResult>) => fakeRun(() => r);
+
+  it("the manager's own XDG_CONFIG_HOME, when it prints an absolute one", async () => {
+    const { run, opts } = answer({ stdout: 'HOME=/home/u\nXDG_CONFIG_HOME=/srv/u/conf\n' });
+    expect(await systemdUnitDir(run, home, { XDG_CONFIG_HOME: '/shell/conf' })).toBe(
+      join('/srv/u/conf', 'systemd', 'user'),
+    );
+    expect(opts[0]?.timeoutMs).toBe(5000);
+  });
+
+  it('~/.config/systemd/user when the manager has none, even if the shell sets one', async () => {
+    const { run } = answer({ stdout: 'HOME=/home/u\nPATH=/usr/bin\n' });
+    expect(await systemdUnitDir(run, home, { XDG_CONFIG_HOME: '/shell/conf' })).toBe(fallback);
+  });
+
+  it('~/.config/systemd/user when the manager does not answer, or systemctl is missing', async () => {
+    const env = { XDG_CONFIG_HOME: '/shell/conf' };
+    const noBus = answer({ code: 1, stderr: 'Failed to connect to bus: No medium found' });
+    expect(await systemdUnitDir(noBus.run, home, env)).toBe(fallback);
+    const missing = answer({ code: -1, missing: true });
+    expect(await systemdUnitDir(missing.run, home, env)).toBe(fallback);
+  });
+
+  it('a relative or escaped value does not count', async () => {
+    for (const v of ['conf', "$'/a\\nb'"]) {
+      const { run } = answer({ stdout: `XDG_CONFIG_HOME=${v}\n` });
+      expect(await systemdUnitDir(run, home, {})).toBe(fallback);
+    }
   });
 });

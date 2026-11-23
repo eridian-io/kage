@@ -87,6 +87,8 @@ stop() {
 wants=$units/default.target.wants
 case $cmd in
   daemon-reload) exit 0 ;;
+  # A user manager's own environment: no XDG_CONFIG_HOME, so units live in ~/.config/systemd/user.
+  show-environment) printf 'HOME=%s\nXDG_RUNTIME_DIR=%s\n' "$HOME" "${XDG_RUNTIME_DIR:-}"; exit 0 ;;
   is-active)
     if running; then echo active; exit 0; fi
     echo inactive; exit 3 ;;

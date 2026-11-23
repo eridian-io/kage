@@ -1,6 +1,6 @@
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ServerStatus } from '../hooks/server.ts';
 import { writeHooksSettings } from '../hooks/settings.ts';
@@ -317,6 +317,28 @@ describe('requirementChecks', () => {
     expect(one(await requirementChecks(deps(tableRun(GOOD).run)), 'claude-login')).toMatchObject({
       level: 'ok',
     });
+  });
+
+  it("claude-login: an ANTHROPIC_API_KEY in the shell with a service installed warns it won't reach the service (R124)", async () => {
+    const unit = join(home, '.config', 'systemd', 'user', 'kage.service');
+    const manager = fakeManager('active', '/usr/bin', { file: unit });
+    const d = deps(tableRun(GOOD).run, { manager });
+    d.env.ANTHROPIC_API_KEY = 'sk-ant-invented-key';
+    // No service file yet (setup's own check): the key signs Claude in.
+    expect(one(await requirementChecks(d), 'claude-login').level).toBe('ok');
+    mkdirSync(dirname(unit), { recursive: true });
+    writeFileSync(unit, '# Written by kage setup\n');
+    for (const platform of ['linux', 'darwin'] as const) {
+      const c = one(await requirementChecks({ ...d, platform }), 'claude-login');
+      expect(c).toEqual({
+        id: 'claude-login',
+        level: 'warn',
+        label: "ANTHROPIC_API_KEY is set in this shell, but Kage's service doesn't get it.",
+        fix: "Claude in Kage's windows needs its own sign-in. Run claude once and sign in.",
+      });
+      expect(JSON.stringify(c)).not.toContain('sk-ant-invented-key');
+    }
+    expect(readFileSync(unit, 'utf8')).toBe('# Written by kage setup\n');
   });
 
   it('claude-login: CLAUDE_CONFIG_DIR, when set, is the only folder looked at', async () => {

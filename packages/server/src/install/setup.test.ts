@@ -278,7 +278,10 @@ describe('kage setup --yes on a fresh home', () => {
     expect(statSync(join(home, 'projects')).isDirectory()).toBe(true);
 
     expect(h.fm.installs).toEqual([
-      { argv: serviceArgv(BUNDLE), env: serviceEnv(BUNDLE, `${PATH}:/opt/node/bin`) },
+      {
+        argv: serviceArgv(BUNDLE),
+        env: serviceEnv(BUNDLE, `${PATH}:/opt/node/bin`, h.deps.env),
+      },
     ]);
     expect(h.settings).toHaveLength(1);
     expect(h.out.slice(-2)).toEqual(['Kage is running at http://box:8080', CLAUDE_LINE]);
@@ -308,6 +311,31 @@ describe('kage setup --yes on a fresh home', () => {
     await setupCommand(['--yes'], h.io, h.deps);
     const token = readCfg().token as string;
     expect(JSON.stringify(h.fm.installs)).not.toContain(token);
+  });
+
+  it("R124: the service gets setup's claude, folders and tmux socket, never an API key", async () => {
+    const h = harness();
+    Object.assign(h.deps.env, {
+      KAGE_CLAUDE_BIN: '/opt/claude/bin/claude',
+      CLAUDE_CONFIG_DIR: '/home/tester/.claude-work',
+      // A real folder: the config moves with it. (On Windows it isn't a POSIX absolute path.)
+      XDG_CONFIG_HOME: join(dir, 'conf'),
+      XDG_STATE_HOME: '/home/tester/state',
+      KAGE_TMUX_SOCKET: 'agents',
+      ANTHROPIC_API_KEY: 'sk-ant-invented-key',
+    });
+    cfgFile = join(dir, 'conf', 'kage', 'config.json');
+    const run = h.deps.run;
+    h.deps.run = (cmd, args, o) => run(cmd === '/opt/claude/bin/claude' ? 'claude' : cmd, args, o);
+    expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(0);
+    const env = h.fm.installs[0]?.env ?? {};
+    expect(env.KAGE_CLAUDE_BIN).toBe('/opt/claude/bin/claude');
+    expect(env.CLAUDE_CONFIG_DIR).toBe('/home/tester/.claude-work');
+    expect(env.XDG_STATE_HOME).toBe('/home/tester/state');
+    expect(env.KAGE_TMUX_SOCKET).toBe('agents');
+    if (!isWin) expect(env.XDG_CONFIG_HOME).toBe(join(dir, 'conf'));
+    expect(JSON.stringify(h.fm.installs)).not.toContain('sk-ant-invented-key');
+    expect(Object.keys(env).sort()).not.toContain('ANTHROPIC_API_KEY');
   });
 });
 
