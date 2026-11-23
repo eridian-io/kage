@@ -1829,6 +1829,21 @@ describe('LiveSource: final fix wave', () => {
     expect(source.list().map((s) => s.id)).toEqual(['k-1']);
   });
 
+  it('R22: a placeholder listed before its shell starts (tmux, or no command yet) keeps its tag', async () => {
+    // Under load, the first listing after new-session can see the pane's forked tmux child
+    // before it has exec'd the shell (seen on tmux 3.6a, GitHub's ubuntu-26.04 runner).
+    for (const command of ['tmux', '']) {
+      const { source, tmux } = setup({
+        windows: [win({ placeholder: true, command }), kageWin()],
+        records: [rec()],
+      });
+      await source.start();
+      expect(tmux.cleared).toEqual([]);
+      expect(source.list().map((s) => s.id)).toEqual(['k-1']);
+      await source.stop();
+    }
+  });
+
   it('R22: once the placeholder runs something else its tag is cleared and it shows', async () => {
     const { source, tmux, watcher } = setup({
       windows: [win({ placeholder: true, command: 'bash' })],

@@ -213,8 +213,14 @@ const SHELLS = new Set([
 ]);
 const atShell = (command: string): boolean =>
   SHELLS.has(command.startsWith('-') ? command.slice(1) : command);
-/** R22: ensureSession's placeholder window, hidden while it sits at a shell. */
-const hiddenPlaceholder = (w: TmuxWindow): boolean => w.placeholder && atShell(w.command);
+/**
+ * A pane whose shell hasn't started yet: tmux's forked child before its exec (`tmux`), or no
+ * foreground process to name. The first listing after new-session can see this under load.
+ */
+const starting = (command: string): boolean => command === 'tmux' || command === '';
+/** R22: ensureSession's placeholder window, hidden while it sits at (or is starting) a shell. */
+const hiddenPlaceholder = (w: TmuxWindow): boolean =>
+  w.placeholder && (atShell(w.command) || starting(w.command));
 
 /**
  * Pane fallback deltas: when `next` continues `prev` (the tail of `prev` is the head of `next`),
