@@ -57,7 +57,13 @@ export type Observation =
   /** A Claude Code hook for this session. Always live, also while an attach catches up (F3). */
   | { kind: 'hook'; event: HookEvent }
   /** R63: the resume found no conversation (see `resumeFails`). Always live (F3). */
-  | { kind: 'resume-failed' };
+  | { kind: 'resume-failed' }
+  /** A new open question in the transcript. */
+  | { kind: 'transcript-question' }
+  /** "[Request interrupted…" or a user-rejected tool result: No or Esc fires no hook (R11). */
+  | { kind: 'transcript-interrupt' }
+  /** I2: the turn-end check's capture confirms the turn ended; the cause is the arming's. */
+  | { kind: 'turn-ended'; armedBy: Cause };
 
 /** R63: resuming with an id, and a SessionEnd naming another. */
 export function resumeFails(facts: StatusFacts, e: HookEvent): boolean {
@@ -94,6 +100,8 @@ export function causeOf(facts: StatusFacts, obs: Observation): Cause {
     case 'hook':
     case 'resume-failed':
       return 'live';
+    case 'turn-ended':
+      return obs.armedBy;
     default:
       return facts.catchingUp ? 'reconcile' : 'live';
   }
@@ -103,13 +111,16 @@ export function causeOf(facts: StatusFacts, obs: Observation): Cause {
 export function step(facts: StatusFacts, obs: Observation): StatusStep {
   const to = target(facts, obs);
   const next = observe(facts, obs);
-  return to === facts.status
+  return to === null || to === facts.status
     ? { facts: next, move: null }
     : moveTo(next, { from: facts.status, to, cause: causeOf(facts, obs) });
 }
 
-/** The status the observation leads to; `facts.status` when it moves nothing (never null). */
-function target(facts: StatusFacts, obs: Observation): SessionStatus {
+/**
+ * The status the observation leads to; `facts.status` when it moves nothing (null too: still off
+ * the board).
+ */
+function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
   switch (obs.kind) {
     case 'set':
       return obs.to;
@@ -126,7 +137,27 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus {
     }
     case 'resume-failed':
       return 'ended';
+    // Off the board (null) the transcript places nothing, as with LiveSource's unplaced default
+    // (ended): placing is the attach's.
+    case 'transcript-question':
+      return onBoard(facts) ? 'needs-you' : facts.status;
+    case 'transcript-interrupt':
+      // B26: inside Kage's reply window it is taken for Kage's own Escape; LiveSource arms the
+      // turn-end check (act) and the pane decides.
+      return onBoard(facts) && !facts.replying ? 'done' : facts.status;
+    case 'turn-ended':
+      return endsTurn(facts) ? 'done' : facts.status;
   }
+}
+
+/** Placed and not ended. */
+function onBoard(facts: StatusFacts): boolean {
+  return facts.status !== null && facts.status !== 'ended';
+}
+
+/** I2: only a running hooks-mode session's turn end is confirmed into done. */
+function endsTurn(facts: StatusFacts): boolean {
+  return facts.mode === 'hooks' && facts.status === 'running';
 }
 
 /** What the observation sets, whether it moves the status or not. */
@@ -134,7 +165,13 @@ function observe(facts: StatusFacts, obs: Observation): StatusFacts {
   switch (obs.kind) {
     case 'set':
     case 'loaded':
+    case 'transcript-question':
       return { ...facts };
+    case 'transcript-interrupt':
+      // R11: No or Esc ends the tool, whatever the status; Kage's own Escape leaves it.
+      return facts.replying ? { ...facts } : { ...facts, ...noTools() };
+    case 'turn-ended':
+      return endsTurn(facts) ? { ...facts, ...noTools() } : { ...facts };
     case 'hook': {
       const e = obs.event;
       const endsWait =
@@ -155,11 +192,15 @@ function observe(facts: StatusFacts, obs: Observation): StatusFacts {
       return {
         ...facts,
         mode: 'hooks',
-        pending: new Set(),
-        toolsDone: new Set(),
+        ...noTools(),
         record: facts.record && { firstPromptPending: false, resuming: null },
       };
   }
+}
+
+/** No tool pending, and the early-PostToolUse notes gone with them. */
+function noTools(): Pick<StatusFacts, 'pending' | 'toolsDone'> {
+  return { pending: new Set(), toolsDone: new Set() };
 }
 
 /**

@@ -337,6 +337,31 @@ describe('step: hooks (group 1)', () => {
     }
   });
 
+  it("off the board with no tool pending, a hook that leaves the status as it is places it ended (F16's fallback)", () => {
+    const f = facts({ status: null });
+    // A permission Notification with nothing pending doesn't count (R12); a compaction keeps the
+    // status.
+    for (const obs of [
+      hookObs('Notification', { notification: 'permission' }),
+      hookObs('SessionStart', { source: 'compact' }),
+    ]) {
+      const s = step(f, obs);
+      expect(s.move).toEqual({ from: null, to: 'ended', cause: 'live' });
+      expect(s.facts.status).toBe('ended');
+    }
+  });
+
+  it('SessionStart(compact) leaves the status as it is (a compaction can run mid-turn)', () => {
+    for (const status of ['running', 'needs-you', 'done'] as const) {
+      const f = facts({ status, pending: new Set(['toolu_1']) });
+      const s = step(f, hookObs('SessionStart', { source: 'compact' }));
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(status);
+      // Nor does it end the tool that runs across it.
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+  });
+
   it('hook and resume-failed steps never mutate the facts they are given', () => {
     const before = deepFreeze(
       facts({
@@ -355,5 +380,106 @@ describe('step: hooks (group 1)', () => {
     expect([...before.pending]).toEqual(['toolu_1']);
     expect([...before.toolsDone]).toEqual(['toolu_0']);
     expect(before.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  });
+});
+
+describe('step: the transcript (group 2)', () => {
+  const STATUSES = [null, 'running', 'needs-you', 'done', 'ended'] as const;
+  const busy = () => ({ pending: new Set(['toolu_1']), toolsDone: new Set(['toolu_0']) });
+
+  it('an open question makes a session needs-you unless it is ended', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const f = facts({ status, catchingUp, ...busy() });
+        const s = step(f, { kind: 'transcript-question' });
+        // Off the board (null) the transcript places nothing (LiveSource's unplaced default is
+        // ended).
+        const to = status === 'ended' || status === null ? status : 'needs-you';
+        expect(s.facts.status).toBe(to);
+        expect(s.move).toEqual(
+          to === status ? null : { from: status, to, cause: catchingUp ? 'reconcile' : 'live' },
+        );
+        // The question leaves the pending tools as they are (the tool waits on it).
+        expect([...s.facts.pending]).toEqual(['toolu_1']);
+      }
+    }
+    // A startup screen's flag survives a move into needs-you.
+    expect(
+      step(facts({ status: 'running', startup: true }), { kind: 'transcript-question' }).facts
+        .startup,
+    ).toBe(true);
+  });
+
+  it("an interrupt is done unless ended, and inside Kage's reply window moves nothing (R11, B26)", () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const f = facts({ status, catchingUp, ...busy() });
+        const s = step(f, { kind: 'transcript-interrupt' });
+        const to = status === 'ended' || status === null ? status : 'done';
+        expect(s.facts.status).toBe(to);
+        expect(s.move).toEqual(
+          to === status ? null : { from: status, to, cause: catchingUp ? 'reconcile' : 'live' },
+        );
+        // R11: No or Esc ends the tool, whatever the status.
+        expect(s.facts.pending.size).toBe(0);
+        expect(s.facts.toolsDone.size).toBe(0);
+
+        // B26: inside the reply window it is taken for Kage's own Escape; the pane decides later.
+        const mine = step(facts({ status, replying: true, ...busy() }), {
+          kind: 'transcript-interrupt',
+        });
+        expect(mine.move).toBeNull();
+        expect(mine.facts.status).toBe(status);
+        expect([...mine.facts.pending]).toEqual(['toolu_1']);
+        expect([...mine.facts.toolsDone]).toEqual(['toolu_0']);
+      }
+    }
+  });
+
+  it.each(['live', 'act', 'reconcile'] as const)(
+    'a confirmed turn end is done with the cause that armed it: %s',
+    (armedBy) => {
+      for (const catchingUp of [false, true]) {
+        const f = facts({ status: 'running', mode: 'hooks', catchingUp, ...busy() });
+        const obs: Observation = { kind: 'turn-ended', armedBy };
+        expect(causeOf(f, obs)).toBe(armedBy);
+        const s = step(f, obs);
+        expect(s.move).toEqual({ from: 'running', to: 'done', cause: armedBy });
+        expect(s.facts.status).toBe('done');
+        expect(s.facts.pending.size).toBe(0);
+        expect(s.facts.toolsDone.size).toBe(0);
+      }
+    },
+  );
+
+  it('a turn end confirmed on a session no longer running, or in activity mode, moves nothing', () => {
+    const cases: Partial<StatusFacts>[] = [
+      ...STATUSES.filter((s) => s !== 'running').map((status) => ({ status })),
+      { status: 'running', mode: 'activity' },
+    ];
+    for (const over of cases) {
+      const f = facts({ ...over, ...busy() });
+      const s = step(f, { kind: 'turn-ended', armedBy: 'live' });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(f.status);
+      expect(s.facts.mode).toBe(f.mode);
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+      expect([...s.facts.toolsDone]).toEqual(['toolu_0']);
+    }
+  });
+
+  it('transcript steps never mutate the facts they are given', () => {
+    const before = deepFreeze(
+      facts({ status: 'running', record: { firstPromptPending: true, resuming: null }, ...busy() }),
+    );
+    const observations: Observation[] = [
+      { kind: 'transcript-question' },
+      { kind: 'transcript-interrupt' },
+      { kind: 'turn-ended', armedBy: 'act' },
+    ];
+    for (const obs of observations) expect(step(before, obs).facts).not.toBe(before);
+    expect(before.status).toBe('running');
+    expect([...before.pending]).toEqual(['toolu_1']);
+    expect([...before.toolsDone]).toEqual(['toolu_0']);
   });
 });

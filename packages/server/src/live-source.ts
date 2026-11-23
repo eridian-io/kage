@@ -347,6 +347,8 @@ interface Live extends SessionView {
   capturing: boolean;
   captureAgain: boolean;
   timers: Partial<Record<TimerName, ReturnType<typeof setTimeout>>>;
+  /** I2: the cause that armed the `turnEnd` timer (F19), kept and cleared with it. */
+  turnEndCause: Cause | null;
 }
 
 /**
@@ -1092,6 +1094,7 @@ export class LiveSource implements SessionSource {
       capturing: false,
       captureAgain: false,
       timers: {},
+      turnEndCause: null,
     };
   }
 
@@ -1894,20 +1897,23 @@ export class LiveSource implements SessionSource {
         if (st.tail !== tail) return;
         // Kage's reply at a prompt starts with Escape, whose interrupt record lands after it.
         // B26: a real Esc meanwhile looks the same, so the pane decides a moment later.
-        if (this.#replying(st)) {
-          this.#armTurnEndCheck(st);
+        // There the status module moves nothing, and the check is armed as Kage's act
+        // (decision 10).
+        const mine = this.#replying(st);
+        // R11: No or Esc fires no hook; the transcript shows it: done unless ended, no tool
+        // pending.
+        this.#apply(st, { kind: 'transcript-interrupt' });
+        if (mine) {
+          this.#armTurnEndCheck(st, 'act');
           return;
         }
-        // R11: No or Esc fires no hook; the transcript shows it.
-        if (st.status !== 'ended') this.#setStatus(st, 'done');
         st.question = null;
-        this.#clearPending(st);
         st.now = tail.now();
         this.#emitNow(st);
       }),
       tail.onTurnEnd(() => {
         if (st.tail !== tail) return;
-        this.#armTurnEndCheck(st);
+        this.#armTurnEndCheck(st, st.catchingUp ? 'reconcile' : 'live');
       }),
     ];
     this.#emitLines(st, [], true);
@@ -1920,25 +1926,30 @@ export class LiveSource implements SessionSource {
    * I2: the transcript says the turn ended (or B26: an interrupt taken for Kage's own Escape)
    * while a hooks-mode session is running. Its Stop may be lost (`kage hook` gives up after
    * 1.5 s), and nothing else would move it, so one check looks at the pane TURN_END_CHECK_MS
-   * later. Any hook cancels it. One timer per session, armed only then.
+   * later. Any hook cancels it. One timer per session, armed only then. `armedBy` is the
+   * transition's cause should the check confirm it (I2): live from the transcript (reconcile
+   * while catching up), act from Kage's Escape, reconcile from a restart. A later arming
+   * replaces the timer and its cause (F19).
    */
-  #armTurnEndCheck(st: Live): void {
+  #armTurnEndCheck(st: Live, armedBy: Cause): void {
     if (!this.#running || st.mode !== 'hooks' || st.status !== 'running') return;
     this.#clearTimers(st, ['turnEnd']);
     const gen = st.gen;
     const hooks = st.hookCount;
+    st.turnEndCause = armedBy;
     st.timers.turnEnd = setTimeout(() => {
       delete st.timers.turnEnd;
-      void this.#turnEndCheck(st, gen, hooks);
+      st.turnEndCause = null;
+      void this.#turnEndCheck(st, gen, hooks, armedBy);
     }, TURN_END_CHECK_MS);
   }
 
   /**
-   * Done, through #setStatus (doneAt, the done ping and auto-archive follow), only when the pane
+   * Done, through #apply (doneAt, the done ping and auto-archive follow), only when the pane
    * agrees: no busy footer ("esc to interrupt": a tool or a turn still runs) and no prompt or
    * startup screen. A failed capture, a status change or a hook meanwhile leaves it as it is.
    */
-  async #turnEndCheck(st: Live, gen: number, hooks: number): Promise<void> {
+  async #turnEndCheck(st: Live, gen: number, hooks: number, armedBy: Cause): Promise<void> {
     const still = () =>
       this.#running &&
       this.#sessions.get(st.id) === st &&
@@ -1952,8 +1963,8 @@ export class LiveSource implements SessionSource {
     const text = await this.#capture(st);
     if (!still() || text === null || BUSY_FOOTER.test(text) || showsPrompt(text)) return;
     this.#clearTimers(st, ['idle']);
-    this.#clearPending(st);
-    this.#setStatus(st, 'done');
+    // Running in hooks mode (still()): done with the arming's cause, no tool pending.
+    this.#apply(st, { kind: 'turn-ended', armedBy });
     st.now = st.tail?.now() ?? null;
     this.#emitNow(st);
     // As at a Stop: the files and ports refresh.
@@ -1971,7 +1982,7 @@ export class LiveSource implements SessionSource {
     } else if (key !== st.tailQuestionKey) {
       st.tailQuestionKey = key;
       if (q && st.status !== 'ended') {
-        if (st.status !== 'needs-you') this.#setStatus(st, 'needs-you');
+        this.#apply(st, { kind: 'transcript-question' });
         st.question ??= q;
         st.promptKind ??= 'ask';
       }
@@ -1999,7 +2010,7 @@ export class LiveSource implements SessionSource {
     else this.#setStatus(st, wasDone ? 'done' : this.#activityStatus(st));
     // A restart within 5 s of a lost Stop: running from recent activity, but the transcript's
     // turn has ended, so the pane decides as after a turn end (I2).
-    if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st);
+    if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st, 'reconcile');
   }
 
   /** An ended session from the state file: read its transcript once for its last lines. */
@@ -2378,6 +2389,7 @@ export class LiveSource implements SessionSource {
       const t = st.timers[name];
       if (t) clearTimeout(t);
       delete st.timers[name];
+      if (name === 'turnEnd') st.turnEndCause = null;
     }
   }
 

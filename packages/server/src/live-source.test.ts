@@ -5352,3 +5352,108 @@ describe('LiveSource: hooks through the status module (Task 2)', () => {
     expect(source.get('k-1')?.status).toBe('needs-you');
   });
 });
+
+describe('LiveSource: hooks through the status module, review carries (Task 2)', () => {
+  it("a resumed session's first hook with a new transcript holding an open question shows that question (resuming clears before #link)", async () => {
+    const NEW = '/home/dev/.claude/projects/-home-dev-projects-shop/s-2.jsonl';
+    const q = { text: 'Which separator should slug() use?', options: ['Dash', 'Underscore'] };
+    const s = setup({
+      records: [rec({ windowId: '@2', sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      // No gate: the new tail's start emits at once, inside the hook's #link.
+      tails: {
+        [TRANSCRIPT]: { lines: [{ kind: 'say', text: 'Fixed the total.' }] },
+        [NEW]: { lines: [{ kind: 'say', text: 'One question first.' }], question: q },
+      },
+    });
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    s.tmux.setCapture('%7', ['', RULE, '❯ ', RULE, ''].join('\n'));
+    s.source.claim('k-1', '@7', '%7');
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    // The new Claude's first hook (an idle Notification leaves the status as it is) names a new
+    // transcript: its open question is this run's, not the resume's replay.
+    s.hooks.fire(hook('Notification', '%7', { notification: 'idle', transcriptPath: NEW }));
+    await flush();
+    expect(s.source.get('k-1')).toMatchObject({ status: 'needs-you', question: q });
+    await s.source.stop();
+  });
+});
+
+describe('LiveSource: the transcript through the status module (Task 3)', () => {
+  const IDLE = ['● Fixed the total.', '', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+  const transitions = (events: SourceEvent[], id?: string): Transition[] =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && (!id || e.transition.id === id) ? [e.transition] : [],
+    );
+
+  it("Kage's own Escape, then an idle pane: done with cause act", async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    s.source.markReplying('k-1');
+    s.source.markReplied('k-1');
+    s.tmux.setCapture('%2', IDLE);
+    await vi.advanceTimersByTimeAsync(1000);
+    s.events.length = 0;
+    // The interrupt lands inside the reply window: taken for Kage's Escape, so the check is act's.
+    s.tails[0]?.interrupt();
+    expect(transitions(s.events, 'k-1')).toEqual([]);
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(transitions(s.events, 'k-1').map((t) => [t.from, t.to, t.cause])).toEqual([
+      ['running', 'done', 'act'],
+    ]);
+    await s.source.stop();
+  });
+
+  it('a lost Stop confirmed by the pane is done with cause live', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PostToolUse', '%2'));
+    await flush();
+    s.tmux.setCapture('%2', IDLE);
+    s.events.length = 0;
+    s.tails[0]?.push([{ kind: 'say', text: 'Fixed the total.' }], { now: null });
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(transitions(s.events, 'k-1').map((t) => [t.from, t.to, t.cause])).toEqual([
+      ['running', 'done', 'live'],
+    ]);
+    await s.source.stop();
+  });
+
+  it('a restart within 5 s of a lost Stop settles to done with cause reconcile', async () => {
+    const s = setup({
+      // Claude drew within the last 5 s, and the transcript's turn ended (now is null).
+      windows: [kageWin({ activity: Math.floor(T0 / 1000) - 1 })],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      tails: { [TRANSCRIPT]: { now: null } },
+    });
+    s.tmux.setCapture('%2', IDLE);
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(transitions(s.events, 'k-1').map((t) => [t.from, t.to, t.cause])).toEqual([
+      [null, 'running', 'reconcile'],
+      ['running', 'done', 'reconcile'],
+    ]);
+    await s.source.stop();
+  });
+});
