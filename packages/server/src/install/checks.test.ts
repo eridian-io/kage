@@ -989,6 +989,34 @@ describe('installChecks', () => {
       ]);
     });
 
+    it("the bundle's hooks name kage-hook.mjs (performance P2): that is the file judged", async () => {
+      const dist = join(dir, 'pnpm', 'kage@0.7.0', 'dist');
+      const script = fakeTool(dist, 'kage.mjs');
+      const light = fakeTool(dist, 'kage-hook.mjs');
+      const d = deps(tableRun({}).run);
+      await writeHooksSettings(
+        stateDir(d.env),
+        hookArgv({ kind: 'bundle', node: '/usr/bin/node', script }),
+      );
+      expect(byId(await installChecks(d), 'install-path')).toEqual([
+        {
+          id: 'install-path',
+          level: 'warn',
+          label: `Claude's hooks run ${light}, which may not stay there.`,
+          fix: 'Install Kage with its install script, so the hooks name a path that lasts.',
+        },
+      ]);
+      rmSync(light);
+      expect(byId(await installChecks(d), 'install-path')).toEqual([
+        {
+          id: 'install-path',
+          level: 'warn',
+          label: `Claude's hooks run ${light}, which isn't there anymore.`,
+          fix: 'Restart Kage so it writes them again: run kage serve, or kage setup for the service.',
+        },
+      ]);
+    });
+
     it('the hooks settings file naming a program that is gone warns', async () => {
       const exe = join(dir, "it's gone", 'kage');
       const d = deps(tableRun({}).run);

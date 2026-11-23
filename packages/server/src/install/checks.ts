@@ -621,7 +621,8 @@ function shellWords(command: string): string[] {
 
 /**
  * The Kage program the hooks settings file (Kage's own, in its state folder) runs: the SEA, or
- * the script after `node --no-warnings`. null when there is no such file yet.
+ * the script after `node --no-warnings`: for the bundle, `kage-hook.mjs` beside `kage.mjs`
+ * (hardening Task 13), or `kage.mjs` from an older build. null when there is no such file yet.
  */
 async function hookProgram(env: NodeJS.ProcessEnv): Promise<string | null> {
   let text: string;

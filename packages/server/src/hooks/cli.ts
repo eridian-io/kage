@@ -1,4 +1,4 @@
-import { request } from 'node:http';
+import { connect } from 'node:net';
 import { homedir, userInfo } from 'node:os';
 import { posix } from 'node:path';
 import type { Readable } from 'node:stream';
@@ -43,25 +43,54 @@ function safeUser(): string | null {
   }
 }
 
-/** `POST /hook` over the socket with node:http. */
-export const httpPost: PostFn = (socket, body, signal) =>
+/** How much of the answer netPost reads looking for the status line before giving up. */
+const MAX_STATUS_LINE = 4096;
+const STATUS_LINE = /^HTTP\/1\.[01] \d{3}(?: |$)/;
+
+/**
+ * `POST /hook` over the socket, written by hand on node:net (performance P2: `node:http` alone
+ * costs `kage hook` about 22 ms to load). One request per connection: the head and the body go
+ * in a single write, with the body's length in bytes and `Connection: close`. It resolves on
+ * the answer's status line (the server answers after it took the event), then closes. It
+ * rejects on a socket error, a close or 4 KB before a status line, anything else in its place,
+ * or the abort. It doesn't half-close: the server closes after its answer (`Connection: close`).
+ */
+export const netPost: PostFn = (socket, body, signal) =>
   new Promise<void>((resolve, reject) => {
-    const req = request(
-      {
-        socketPath: socket,
-        path: '/hook',
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) },
-        signal,
-      },
-      (res) => {
-        res.on('error', reject);
-        res.on('end', resolve);
-        res.resume();
-      },
-    );
-    req.on('error', reject);
-    req.end(body);
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const payload = Buffer.from(body, 'utf8');
+    const head =
+      'POST /hook HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\n' +
+      `Content-Length: ${payload.length}\r\nConnection: close\r\n\r\n`;
+    const conn = connect(socket);
+    let seen: Buffer = Buffer.alloc(0);
+    let settled = false;
+    const done = (err?: unknown) => {
+      if (settled) return;
+      settled = true;
+      signal.removeEventListener('abort', onAbort);
+      conn.destroy();
+      if (err === undefined) resolve();
+      else reject(err);
+    };
+    const onAbort = () => done(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+    conn.on('error', (err) => done(err));
+    conn.on('close', () => done(new Error('The hook socket closed before an answer.')));
+    conn.on('data', (chunk: Buffer) => {
+      seen = seen.length === 0 ? chunk : Buffer.concat([seen, chunk]);
+      const eol = seen.indexOf('\r\n');
+      if (eol < 0) {
+        if (seen.length > MAX_STATUS_LINE) done(new Error('No status line from the hook socket.'));
+        return;
+      }
+      const line = seen.subarray(0, eol).toString('latin1');
+      done(STATUS_LINE.test(line) ? undefined : new Error('Not an HTTP answer.'));
+    });
+    conn.write(Buffer.concat([Buffer.from(head, 'latin1'), payload]));
   });
 
 /** Reads stdin to the end; null if it errors or passes MAX_STDIN. */
@@ -133,7 +162,7 @@ export async function runHookCli(
   });
   const work = (async () => {
     try {
-      await deliver(event, { stdin: io.stdin, env: io.env, post: io.post ?? httpPost }, ac.signal);
+      await deliver(event, { stdin: io.stdin, env: io.env, post: io.post ?? netPost }, ac.signal);
     } catch {
       // the server may be down; Claude must not notice
     }

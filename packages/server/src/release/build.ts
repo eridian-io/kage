@@ -41,7 +41,7 @@ import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs as parseCli, promisify } from 'node:util';
 import { gzip } from 'node:zlib';
 import { dirFiles, PRECOMPRESSED, SEA_MANIFEST } from '../assets.ts';
-import { bundleSeaEntry, bundleServer, packageVersion } from '../bundle.ts';
+import { bundleHook, bundleSeaEntry, bundleServer, packageVersion } from '../bundle.ts';
 import {
   assetName,
   hostTarget,
@@ -226,6 +226,7 @@ export async function stageNpm(o: NpmOptions): Promise<string> {
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
   await bundleServer(join(dir, 'kage.mjs'), { version: o.version });
+  await bundleHook(join(dir, 'kage-hook.mjs'));
   for (const [path, src] of board) {
     const to = join(dir, 'web', ...path.slice(1).split('/'));
     await mkdir(dirname(to), { recursive: true });
@@ -241,7 +242,7 @@ export async function stageNpm(o: NpmOptions): Promise<string> {
     repository: { type: 'git', url: 'git+https://github.com/eridian-io/kage.git' },
     bin: { kage: 'kage.mjs' },
     engines: { node: '>=24.2' },
-    files: ['kage.mjs', 'web/'],
+    files: ['kage.mjs', 'kage-hook.mjs', 'web/'],
   };
   await writeFile(join(dir, 'package.json'), `${JSON.stringify(pkg, null, 2)}\n`);
 

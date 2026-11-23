@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { SERVER_ENV } from './env.ts';
-import { BUNDLE, ROOT, SHIPPED_ENV, SHIPPED_FLAGS } from './harness.ts';
+import { BUNDLE, HOOK_BUNDLE, ROOT, SHIPPED_ENV, SHIPPED_FLAGS } from './harness.ts';
 
 /**
  * The shipped server (ruling R91): the one-file bundle `pnpm build` writes, run with the shipped
@@ -46,29 +46,34 @@ test.describe('the server bundle', () => {
     }
   });
 
-  test('kage hook from the bundle exits 0 and prints nothing (no Kage listening)', async () => {
-    const dir = mkdtempSync(join(tmpdir(), 'kage-bundle-'));
-    try {
-      const r = await new Promise<{ code: number | null; out: string }>((resolve, reject) => {
-        const c = spawn(process.execPath, ['--no-warnings', BUNDLE, 'hook', 'PostToolUse'], {
-          cwd: ROOT,
-          env: { ...process.env, KAGE_SOCKET: join(dir, 'kage.sock'), TMUX_PANE: '%1' },
-          stdio: ['pipe', 'pipe', 'pipe'],
+  for (const [name, file] of [
+    ['kage.mjs', BUNDLE],
+    ['kage-hook.mjs', HOOK_BUNDLE],
+  ] as const) {
+    test(`kage hook from ${name} exits 0 and prints nothing (no Kage listening)`, async () => {
+      const dir = mkdtempSync(join(tmpdir(), 'kage-bundle-'));
+      try {
+        const r = await new Promise<{ code: number | null; out: string }>((resolve, reject) => {
+          const c = spawn(process.execPath, ['--no-warnings', file, 'hook', 'PostToolUse'], {
+            cwd: ROOT,
+            env: { ...process.env, KAGE_SOCKET: join(dir, 'kage.sock'), TMUX_PANE: '%1' },
+            stdio: ['pipe', 'pipe', 'pipe'],
+          });
+          let out = '';
+          c.stdout.on('data', (d: Buffer) => {
+            out += d.toString();
+          });
+          c.stderr.on('data', (d: Buffer) => {
+            out += d.toString();
+          });
+          c.once('error', reject);
+          c.once('exit', (code) => resolve({ code, out }));
+          c.stdin.end(JSON.stringify({ session_id: 's-1', hook_event_name: 'PostToolUse' }));
         });
-        let out = '';
-        c.stdout.on('data', (d: Buffer) => {
-          out += d.toString();
-        });
-        c.stderr.on('data', (d: Buffer) => {
-          out += d.toString();
-        });
-        c.once('error', reject);
-        c.once('exit', (code) => resolve({ code, out }));
-        c.stdin.end(JSON.stringify({ session_id: 's-1', hook_event_name: 'PostToolUse' }));
-      });
-      expect(r).toEqual({ code: 0, out: '' });
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
-  });
+        expect(r).toEqual({ code: 0, out: '' });
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    });
+  }
 });

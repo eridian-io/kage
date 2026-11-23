@@ -4,6 +4,8 @@
  * `kage serve` about 39 MB. Phase 6 ships this file (or a single executable built from it), run
  * as `node --v8-pool-size=1 kage.mjs` with MALLOC_ARENA_MAX=2.
  *
+ * The hook entry `kage-hook.mjs` is built beside it (bundleHook).
+ *
  * Run: `node packages/server/src/bundle.ts` (part of `pnpm build`).
  */
 import { readFileSync } from 'node:fs';
@@ -12,6 +14,9 @@ import * as esbuild from 'esbuild';
 
 /** Where the build puts it: beside src, so `<dir>/../../web/dist` finds the board (boardFor). */
 export const BUNDLE = join(import.meta.dirname, '..', 'dist', 'kage.mjs');
+
+/** The light `kage hook` (performance P2), beside the bundle: hookArgv names it when it is there. */
+export const HOOK_BUNDLE = join(import.meta.dirname, '..', 'dist', 'kage-hook.mjs');
 
 /** packages/server/package.json's version: `kage --version` in both bundles. */
 export function packageVersion(): string {
@@ -72,4 +77,29 @@ export async function bundleSeaEntry(outfile: string, o: BundleOptions = {}): Pr
   });
 }
 
-if (import.meta.main) await bundleServer();
+/**
+ * The hook entry's build: hooks/hook-main.ts and what it imports (hooks/cli.ts), one ESM file of
+ * a few KB that loads only node:net, node:os and node:path. Exported for its test's metafile.
+ */
+export function hookBuildOptions(outfile: string): esbuild.BuildOptions {
+  return {
+    bundle: true,
+    platform: 'node',
+    target: 'node24',
+    format: 'esm',
+    entryPoints: [join(import.meta.dirname, 'hooks', 'hook-main.ts')],
+    outfile,
+    legalComments: 'none',
+    logLevel: 'warning',
+  };
+}
+
+/** Builds dist/kage-hook.mjs (part of `pnpm build`; stageNpm ships it next to kage.mjs). */
+export async function bundleHook(outfile: string = HOOK_BUNDLE): Promise<void> {
+  await esbuild.build(hookBuildOptions(outfile));
+}
+
+if (import.meta.main) {
+  await bundleServer();
+  await bundleHook();
+}

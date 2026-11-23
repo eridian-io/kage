@@ -114,13 +114,27 @@ export function runMode(probe?: { isSea: boolean; execPath: string; entry: strin
     : { kind: 'bundle', node, script };
 }
 
+/** The light hook entry's file name, beside the bundle (bundle.ts HOOK_BUNDLE, stageNpm). */
+export const HOOK_ENTRY = 'kage-hook.mjs';
+
 /**
  * The command Claude runs for each hook (before `hook <Event>`). `--no-warnings` keeps Node's
  * experimental-feature notices off stderr: a hook must print nothing. The SEA's own config turns
- * its warning off.
+ * its warning off. The bundle names the light entry beside it (performance P2: about 30 ms
+ * against 75), or itself when that file is missing (an older build); `exists` is a test seam.
+ * The SEA is one file, and the sources run main.ts.
  */
-export function hookArgv(m: RunMode): string[] {
-  return m.kind === 'sea' ? [m.exe] : [m.node, '--no-warnings', m.script];
+export function hookArgv(m: RunMode, exists: (p: string) => boolean = isFile): string[] {
+  switch (m.kind) {
+    case 'sea':
+      return [m.exe];
+    case 'bundle': {
+      const light = join(dirname(m.script), HOOK_ENTRY);
+      return [m.node, '--no-warnings', exists(light) ? light : m.script];
+    }
+    case 'source':
+      return [m.node, '--no-warnings', m.script];
+  }
 }
 
 /** The service's command line (R91: one V8 pool thread; the SEA has it in its execArgv). */

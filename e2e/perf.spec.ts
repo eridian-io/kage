@@ -11,6 +11,7 @@ import {
   BUNDLE,
   blur,
   chip,
+  HOOK_BUNDLE,
   hasTmux,
   LiveHarness,
   PERF_SEA,
@@ -29,7 +30,8 @@ import {
  * - time to a usable board: the `kage:board` mark, fresh context, tailnet LAN emulation, median
  *   of 5 against live mode with 10 sessions;
  * - hook to screen: the test's clock before the hook's socket write to a MutationObserver's
- *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time is an annotation;
+ *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time from the bundle's
+ *   hook entry (kage-hook.mjs, hardening Task 13), median of 10, at most 45 ms;
  * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc), on
  *   the shipped bundle with its flags (R91); the dev run from the sources is an annotation; with
  *   KAGE_PERF_SEA=<gunzipped kage>, the single executable too (Task 6), plus its `kage hook` wall
@@ -418,8 +420,9 @@ test.describe('live budgets', () => {
         return median(walls);
       };
       const seaMs = await wall(sea, []);
-      const bundleMs = await wall(process.execPath, ['--no-warnings', BUNDLE]);
-      const note = `kage hook wall time, median of 10: SEA ${seaMs.toFixed(1)} ms, bundle ${bundleMs.toFixed(1)} ms (reported, not asserted)`;
+      const bundleMs = await wall(process.execPath, ['--no-warnings', HOOK_BUNDLE]);
+      const fullMs = await wall(process.execPath, ['--no-warnings', BUNDLE]);
+      const note = `kage hook wall time, median of 10: SEA ${seaMs.toFixed(1)} ms, bundle (kage-hook.mjs) ${bundleMs.toFixed(1)} ms, whole kage.mjs ${fullMs.toFixed(1)} ms (SEA reported, not asserted)`;
       console.log(note);
       test.info().annotations.push({ type: 'budget (not asserted)', description: note });
     } finally {
@@ -542,7 +545,9 @@ test.describe('live budgets', () => {
     }
   });
 
-  test('hook to screen: p95 of 40 status changes; kage hook wall time noted', async ({ page }) => {
+  test('hook to screen: p95 of 40 status changes; kage hook wall time from the bundle', async ({
+    page,
+  }) => {
     test.setTimeout(90_000);
     await freeIdle();
     const cwd = dirOf('projects/demo');
@@ -594,26 +599,31 @@ test.describe('live budgets', () => {
         unit: 'ms',
       });
 
-      // `kage hook`'s own wall time, spawn to exit: reported, not asserted (phase 6's single
-      // executable owns it; ruling PF5, F5).
+      // `kage hook`'s own wall time, spawn to exit, as the bundle's hooks run it: the light entry
+      // beside kage.mjs (hardening Task 13, performance P2). The first run warms the page cache;
+      // ten are kept.
+      expect(existsSync(HOOK_BUNDLE), 'Needs the hook entry (corepack pnpm build)').toBe(true);
       const walls: number[] = [];
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 11; i++) {
         const t = performance.now();
         await new Promise<void>((resolve, reject) => {
-          const c = spawn(
-            process.execPath,
-            ['--no-warnings', 'packages/server/src/main.ts', 'hook', 'PostToolUse'],
-            { cwd: ROOT, env: { ...h.env, TMUX_PANE: pane }, stdio: ['pipe', 'ignore', 'ignore'] },
-          );
+          const c = spawn(process.execPath, ['--no-warnings', HOOK_BUNDLE, 'hook', 'PostToolUse'], {
+            cwd: ROOT,
+            env: { ...h.env, TMUX_PANE: pane },
+            stdio: ['pipe', 'ignore', 'ignore'],
+          });
           c.once('error', reject);
           c.once('exit', () => resolve());
           c.stdin.end(JSON.stringify(body('PostToolUse', tool)));
         });
-        walls.push(performance.now() - t);
+        if (i > 0) walls.push(performance.now() - t);
       }
-      const note = `kage hook wall time: median of 10 = ${median(walls).toFixed(0)} ms (limit 300 ms; reported, not asserted)`;
-      console.log(note);
-      test.info().annotations.push({ type: 'budget (not asserted)', description: note });
+      recordBudget({
+        name: 'kage hook wall time (bundle, median of 10)',
+        value: median(walls),
+        limit: 45,
+        unit: 'ms',
+      });
     } finally {
       await closePanes([pane]);
     }

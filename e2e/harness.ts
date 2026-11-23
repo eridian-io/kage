@@ -36,6 +36,8 @@ export const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
  * these flags and this environment. The perf project measures it; the other specs run the sources.
  */
 export const BUNDLE = join(ROOT, 'packages/server/dist/kage.mjs');
+/** The light `kage hook` the bundle's hooks run (hardening Task 13). */
+export const HOOK_BUNDLE = join(ROOT, 'packages/server/dist/kage-hook.mjs');
 export const SHIPPED_FLAGS = ['--v8-pool-size=1'];
 export const SHIPPED_ENV = { MALLOC_ARENA_MAX: '2' };
 /**

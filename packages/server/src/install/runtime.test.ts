@@ -74,8 +74,50 @@ describe('hookArgv', () => {
     ]);
   });
 
+  it('hookArgv names kage-hook.mjs beside kage.mjs, and the bundle when it is missing', () => {
+    const script = join('/g', 'kage', 'dist', 'kage.mjs');
+    const light = join('/g', 'kage', 'dist', 'kage-hook.mjs');
+    const asked: string[] = [];
+    const bundle = { kind: 'bundle', node: '/n', script } as const;
+    const exists = (p: string) => {
+      asked.push(p);
+      return p === light;
+    };
+    expect(hookArgv(bundle, exists)).toEqual(['/n', '--no-warnings', light]);
+    expect(asked).toEqual([light]);
+    expect(hookArgv(bundle, () => false)).toEqual(['/n', '--no-warnings', script]);
+    // The SEA and the sources never look for it.
+    const never = () => {
+      throw new Error('not asked');
+    };
+    expect(hookArgv({ kind: 'sea', exe: '/b/kage' }, never)).toEqual(['/b/kage']);
+    expect(hookArgv({ kind: 'source', node: '/n', script: '/m.ts' }, never)).toEqual([
+      '/n',
+      '--no-warnings',
+      '/m.ts',
+    ]);
+  });
+
+  it('by default, hookArgv looks for a regular file beside the bundle', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kage-hookargv-'));
+    try {
+      const script = join(dir, 'kage.mjs');
+      const light = join(dir, 'kage-hook.mjs');
+      writeFileSync(script, '');
+      const bundle = { kind: 'bundle', node: '/n', script } as const;
+      expect(hookArgv(bundle)).toEqual(['/n', '--no-warnings', script]);
+      mkdirSync(light);
+      expect(hookArgv(bundle)).toEqual(['/n', '--no-warnings', script]);
+      rmSync(light, { recursive: true });
+      writeFileSync(light, '');
+      expect(hookArgv(bundle)).toEqual(['/n', '--no-warnings', light]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('the bundle and the source keep --no-warnings', () => {
-    expect(hookArgv({ kind: 'bundle', node: '/n', script: '/k.mjs' })).toEqual([
+    expect(hookArgv({ kind: 'bundle', node: '/n', script: '/k.mjs' }, () => false)).toEqual([
       '/n',
       '--no-warnings',
       '/k.mjs',

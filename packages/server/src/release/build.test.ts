@@ -1,6 +1,14 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { get } from 'node:http';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
@@ -372,11 +380,23 @@ describe.runIf(process.platform !== 'win32')('stageNpm (npm offline, F13)', () =
       repository: { type: 'git', url: 'git+https://github.com/eridian-io/kage.git' },
       bin: { kage: 'kage.mjs' },
       engines: { node: '>=24.2' },
-      files: ['kage.mjs', 'web/'],
+      files: ['kage.mjs', 'kage-hook.mjs', 'web/'],
     });
   });
 
-  it('npm pack --dry-run lists only kage.mjs, web/, package.json, README.md and LICENSE', async () => {
+  it('the npm package ships kage-hook.mjs', async () => {
+    const dir = join(out, 'npm');
+    expect(statSync(join(dir, 'kage-hook.mjs')).size).toBeLessThan(8 * 1024);
+    // The installed bundle's hooks run the light entry beside it.
+    const env = kageEnv();
+    const r = await runProgram(process.execPath, [join(dir, 'kage.mjs'), 'hooks-path'], env);
+    expect(r.code).toBe(0);
+    const settings = readFileSync(r.stdout.trim(), 'utf8');
+    expect(settings).toContain(`'${join(dir, 'kage-hook.mjs')}' 'hook' 'Stop'`);
+    expect(settings).not.toContain(`'${join(dir, 'kage.mjs')}'`);
+  });
+
+  it('npm pack --dry-run lists only kage.mjs, kage-hook.mjs, web/, package.json, README.md and LICENSE', async () => {
     const { stdout } = await run('npm', ['pack', '--dry-run', '--json', '--offline'], {
       cwd: join(out, 'npm'),
       env: npmEnv(),
@@ -387,6 +407,7 @@ describe.runIf(process.platform !== 'win32')('stageNpm (npm offline, F13)', () =
     expect(files?.sort()).toEqual([
       'LICENSE',
       'README.md',
+      'kage-hook.mjs',
       'kage.mjs',
       'package.json',
       'web/app-TESTHASH1.js',
