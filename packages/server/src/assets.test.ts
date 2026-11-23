@@ -175,6 +175,15 @@ describe('precompressed sidecars (packages/web/build.ts writeCompressed)', () =>
     expect([...map.keys()].sort()).toEqual(['/', ...Object.keys(FILES)].sort());
   });
 
+  it('only a .br or .gz suffix marks a sidecar: /xbr and /fonts/agz are served', async () => {
+    writeCompressedBoard(root);
+    writeFileSync(join(root, 'xbr'), 'a file whose name ends in br');
+    writeFileSync(join(root, 'fonts', 'agz'), 'a file whose name ends in gz');
+    const map = await loadAssets(root, encode);
+    expect(new TextDecoder().decode(map.get('/xbr')?.body)).toBe('a file whose name ends in br');
+    expect(map.has('/fonts/agz')).toBe(true);
+  });
+
   it('the SEA board reads the same sidecars', async () => {
     const paths = writeCompressedBoard(root);
     const fromDir = await loadAssets(root, never);

@@ -99,6 +99,15 @@ describe('boardMap', () => {
       '/index.html',
     ]);
   });
+
+  it('only a .br or .gz suffix marks a sidecar: /xbr and /fonts/agz ship', async () => {
+    const web = fakeBoard();
+    writeFileSync(join(web, 'xbr'), 'not a sidecar');
+    writeFileSync(join(web, 'fonts', 'agz'), 'not a sidecar either');
+    const keys = [...(await boardMap(web)).keys()];
+    expect(keys).toContain('/xbr');
+    expect(keys).toContain('/fonts/agz');
+  });
 });
 
 /** A temp HOME, XDG dirs and KAGE_SOCKET for every kage a test runs (F12). */

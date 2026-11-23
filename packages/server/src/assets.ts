@@ -39,7 +39,7 @@ const RAW = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
  * { "/<path>": "<the body's hash, as in the ETag>" }, with <file>.br and <file>.gz beside each.
  */
 export const PRECOMPRESSED = 'precompressed.json';
-const SIDECAR = /.(br|gz)$/;
+const SIDECAR = /\.(br|gz)$/;
 
 /** The build's manifest, or an empty one when it is missing or not a map of strings. */
 async function readManifest(board: BoardFiles, paths: string[]): Promise<Map<string, string>> {

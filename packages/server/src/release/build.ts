@@ -109,7 +109,7 @@ export async function boardMap(web: string): Promise<Map<string, string>> {
   } catch {
     // No manifest (a watch build): no sidecars.
   }
-  const sidecar = /.(br|gz)$/;
+  const sidecar = /\.(br|gz)$/;
   const paths = (await dirFiles(web).list())
     .filter((p) => !sidecar.test(p) || named.has(p.replace(sidecar, '')))
     .sort();
