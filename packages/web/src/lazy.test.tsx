@@ -99,6 +99,43 @@ describe('lazyChunk', () => {
   });
 });
 
+describe('background loads (R143)', () => {
+  it('a background load that fails never reloads: it rejects quietly, and the next user open retries and reloads', async () => {
+    const { load, tries } = flaky(99);
+    const c = lazyChunk('b1', load);
+    await expect(c.load({ reload: false })).rejects.toThrow('chunk 404');
+    expect(tries).toEqual([0, 1, 2]);
+    expect(reloads).toBe(0);
+    expect(sessionStorage.getItem('kage-reloaded:b1')).toBeNull();
+    // The user opens it: a fresh import under new numbers, then the one reload.
+    void c.load();
+    await vi.waitFor(() => expect(reloads).toBe(1));
+    expect(tries).toEqual([0, 1, 2, 3, 4, 5]);
+  });
+
+  it('a background load that gets it serves the next user open at once', async () => {
+    const c = lazyChunk('b2', flaky(1).load);
+    const m = await c.load({ reload: false });
+    expect(c.loaded()).toBe(m);
+    expect(await c.load()).toBe(m);
+    expect(reloads).toBe(0);
+  });
+
+  it('a user open that joins a pending background load still reloads if it fails, once', async () => {
+    const { load, tries } = flaky(99);
+    const c = lazyChunk('b3', load);
+    const bg = c.load({ reload: false });
+    bg.catch(() => {});
+    void c.load();
+    void c.load();
+    await expect(bg).rejects.toThrow('chunk 404');
+    await vi.waitFor(() => expect(reloads).toBe(1));
+    expect(tries).toEqual([0, 1, 2]);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(reloads).toBe(1);
+  });
+});
+
 describe('chunkUrl', () => {
   it('is the kage-<name> meta plus ?r=<retry>, or null outside a build', () => {
     expect(chunkUrl('newtask', 1)).toBeNull();

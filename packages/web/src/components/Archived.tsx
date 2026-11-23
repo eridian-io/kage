@@ -1,6 +1,4 @@
 import { useEffect, useState } from 'preact/hooks';
-import { NO_ANSWER } from '../api.ts';
-import { couldnt } from '../copy.ts';
 import { chunkUrl, lazyChunk } from '../lazy.tsx';
 import { archivedCount, archiveOpen } from '../store.ts';
 
@@ -19,7 +17,8 @@ export const archivedChunk = lazyChunk<ListModule>('archived', (retry) => {
 
 /**
  * The list once its chunk is in. Until then, the list's empty box, as the list itself shows before
- * its first answer, so the open looks the same either way; a chunk that won't load says so there.
+ * its first answer, so the open looks the same either way; a chunk that won't load says so there,
+ * and closing and opening it again tries again.
  */
 function List({ count }: { count: number }) {
   const [m, setM] = useState(archivedChunk.loaded);
@@ -44,7 +43,7 @@ function List({ count }: { count: number }) {
     <div id={LIST_ID}>
       {failed && (
         <div class="k-err k-arc-err" role="alert">
-          {couldnt('load the archive', NO_ANSWER)}
+          Couldn't load the archive. Close and open it again.
         </div>
       )}
     </div>

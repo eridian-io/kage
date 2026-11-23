@@ -123,6 +123,55 @@ describe('New task, loaded on demand', () => {
     }
   });
 
+  it('background loads never reload the page (R143): a failed prefetch and notify stay quiet, and the next snapshot retries notify', async () => {
+    let notifyImports = 0;
+    vi.doMock('./NewTask.tsx', () => {
+      throw new Error('404');
+    });
+    vi.doMock('../notify.ts', () => {
+      notifyImports++;
+      throw new Error('404');
+    });
+    vi.resetModules();
+    const lazy = await import('../lazy.tsx');
+    const store = await import('../store.ts');
+    const reload = vi.spyOn(lazy.lazyPage, 'reload').mockImplementation(() => {});
+    const idle: (() => void)[] = [];
+    const w = Object.assign(Object.create(window) as Window, {
+      requestIdleCallback: (cb: () => void) => idle.push(cb),
+      cancelIdleCallback: () => {},
+    });
+    const stop = lazy.installLazy(w);
+    const snap = (streamId: string) =>
+      store.applyEvent({
+        type: 'snapshot',
+        auth: false,
+        host: 'my-pc',
+        streamId,
+        projectsRoot: '/p',
+        archived: 0,
+        sessions: demoSessions(NOW),
+      });
+    try {
+      snap('s');
+      idle[0]?.();
+      await expect(lazy.newTaskChunk.load({ reload: false })).rejects.toThrow();
+      await expect(lazy.notifyChunk.load({ reload: false })).rejects.toThrow();
+      await new Promise((r) => setTimeout(r, 10));
+      expect(reload).not.toHaveBeenCalled();
+      expect(sessionStorage.length).toBe(0);
+      const before = notifyImports;
+      snap('s2');
+      await vi.waitFor(() => expect(notifyImports).toBeGreaterThan(before));
+      await new Promise((r) => setTimeout(r, 10));
+      expect(reload).not.toHaveBeenCalled();
+    } finally {
+      stop();
+      vi.doUnmock('./NewTask.tsx');
+      vi.doUnmock('../notify.ts');
+    }
+  });
+
   it('a chunk that still fails after the reload says so in place, and Esc closes it', async () => {
     vi.doMock('./NewTask.tsx', () => {
       throw new Error('404');

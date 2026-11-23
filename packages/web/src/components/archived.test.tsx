@@ -278,3 +278,43 @@ describe('the archived list', () => {
     expect(board).toMatch(/\.k-restore:hover[^{]*\{[^}]*var\(--lime\)/);
   });
 });
+
+describe('the archived list chunk', () => {
+  it('a chunk that still fails after the reload says how to retry, and closing and opening tries again', async () => {
+    let fail = true;
+    vi.doMock('./ArchivedList.tsx', async (importOriginal) => {
+      if (fail) throw new Error('404');
+      return importOriginal();
+    });
+    sessionStorage.setItem('kage-reloaded:archived', '1');
+    try {
+      vi.resetModules();
+      const { Board: FreshBoard } = await import('../main.tsx');
+      const store = await import('../store.ts');
+      store.applyEvent({
+        type: 'snapshot',
+        auth: false,
+        host: 'my-pc',
+        streamId: 's',
+        projectsRoot: '/p',
+        archived: 2,
+        sessions: demoSessions(NOW),
+      });
+      const { container } = render(<FreshBoard />);
+      fireEvent.click(toggle(container) as HTMLButtonElement);
+      await waitFor(() =>
+        expect(container.querySelector('.k-arc-err')?.textContent).toBe(
+          "Couldn't load the archive. Close and open it again.",
+        ),
+      );
+      fail = false;
+      fireEvent.click(toggle(container) as HTMLButtonElement);
+      fireEvent.click(toggle(container) as HTMLButtonElement);
+      await waitFor(() => expect(rows(container)).toHaveLength(2));
+      expect(container.querySelector('.k-arc-err')).toBeNull();
+    } finally {
+      sessionStorage.clear();
+      vi.doUnmock('./ArchivedList.tsx');
+    }
+  });
+});

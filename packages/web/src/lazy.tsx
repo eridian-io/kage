@@ -4,14 +4,14 @@
  * generalised: one import at a time, a failure forgotten, and a retry under a new URL (the
  * chunk's `<meta name="kage-<name>">` plus `?r=<n>`), since a browser keeps a failed module fetch.
  *
- * F2: a chunk that still fails after its retries reloads the page, once (a sessionStorage guard
- * per chunk against loops). That is the way out of a version skew: after `kage update` an open
- * board's old `<name>-<hash>.js` is gone from the server. The login screen stays in the first
- * load for the same reason, so it has no host here.
+ * F2: a chunk the user opened that still fails after its retries reloads the page, once (a
+ * sessionStorage guard per chunk against loops); a background load never reloads (R143). That is
+ * the way out of a version skew: after `kage update` an open board's old `<name>-<hash>.js` is
+ * gone from the server. The login screen stays in the first load for the same reason.
  */
 import { effect } from '@preact/signals';
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { hadSnapshot, newTaskOpen } from './store.ts';
+import { hadSnapshot, newTaskOpen, onApplied } from './store.ts';
 
 /** Retries after the first attempt, each under a new `?r=`, before the page reloads. */
 const RETRIES = 2;
@@ -61,15 +61,20 @@ function guard(name: string, set: boolean): boolean {
  * One lazy chunk: `load()` imports it once (two calls share one import), `loaded()` is the module
  * once it is in, else null, for a synchronous first render. `load(retry)` is the import: retry 0
  * is the plain one, a later one goes through `chunkUrl`.
+ *
+ * Only a view the user opened may reload the page (R143): a background load (the idle prefetch,
+ * notify at the first snapshot) passes `{ reload: false }` and fails quietly; the next open tries
+ * again. A user's load that joins a background one still reloads if it fails.
  */
 export function lazyChunk<M>(
   name: string,
   load: (retry: number) => Promise<M>,
-): { load(): Promise<M>; loaded(): M | null } {
+): { load(opts?: { reload?: boolean }): Promise<M>; loaded(): M | null } {
   let mod: M | null = null;
   let pending: Promise<M> | null = null;
   /** Failed imports so far: the next one asks under `?r=<failures>`, a URL never tried. */
   let failures = 0;
+  let reloading = false;
   const attempt = async (): Promise<M> => {
     for (let tries = 0; ; tries++) {
       try {
@@ -79,21 +84,26 @@ export function lazyChunk<M>(
         return m;
       } catch (e) {
         failures++;
-        if (tries < RETRIES) continue;
-        // The page goes away: the load never settles, so nothing shows an error first.
-        if (!guard(name, true)) throw e;
-        lazyPage.reload();
-        return new Promise<M>(() => {});
+        if (tries >= RETRIES) throw e;
       }
     }
   };
+  /** The page goes away: the load never settles, so nothing shows an error first. */
+  const never = () => new Promise<M>(() => {});
   return {
-    load() {
+    load({ reload = true } = {}) {
       pending ??= attempt().catch((e: unknown) => {
         pending = null;
         throw e;
       });
-      return pending;
+      if (!reload) return pending;
+      return pending.catch((e: unknown) => {
+        if (reloading) return never();
+        if (!guard(name, true)) throw e;
+        reloading = true;
+        lazyPage.reload();
+        return never();
+      });
     },
     loaded: () => mod,
   };
@@ -188,22 +198,37 @@ export function installLazy(w: Window = window): () => void {
   let stopped = false;
   let stopNotify: (() => void) | null = null;
   let cancelIdle: (() => void) | null = null;
+  let offRetry: (() => void) | null = null;
+  // Background loads (R143): a failure never reloads the page.
+  const loadNotify = () => {
+    notifyChunk.load({ reload: false }).then(
+      (m) => {
+        if (!stopped && stopNotify === null) stopNotify = m.installNotify(w);
+      },
+      () => {
+        // ntfy still pings; the title keeps its plain name until the next snapshot tries again.
+        if (stopped) return;
+        offRetry = onApplied((e) => {
+          if (e.type !== 'snapshot') return;
+          offRetry?.();
+          offRetry = null;
+          loadNotify();
+        });
+      },
+    );
+  };
   const stopWatch = effect(() => {
     if (started || !hadSnapshot.value) return;
     started = true;
-    notifyChunk.load().then(
-      (m) => {
-        if (!stopped) stopNotify = m.installNotify(w);
-      },
-      () => {}, // ntfy still pings; the title just keeps its plain name
-    );
+    loadNotify();
     cancelIdle = later(w, () => {
       cancelIdle = null;
-      newTaskChunk.load().catch(() => {}); // N tries again, and says so if it can't
+      newTaskChunk.load({ reload: false }).catch(() => {}); // N tries again, and says so if it can't
     });
   });
   return () => {
     stopped = true;
+    offRetry?.();
     stopWatch();
     cancelIdle?.();
     stopNotify?.();
