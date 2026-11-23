@@ -4,7 +4,8 @@
 # (the container's own state, never the host's), and dev installs Kage with the real install.sh
 # from a local fake release and starts a task through the board's API (the fake claude). Then
 # `docker restart`: within 30 s the user unit is active again, the board answers, and the task
-# shows as ended (its tmux window didn't survive the restart).
+# shows as ended (its tmux window didn't survive the restart), and a login cookie taken just
+# before it gets 401: logins live in memory, so a restart signs every browser out (R127).
 # Before that (R122): systemctl --user restart, stop and start kage.service each keep the tmux
 # server (in its own kage-tmux-*.scope) and the task's window, and the board still lists the
 # task. After it, kage uninstall --yes keeps the tmux session, as it says.
@@ -26,6 +27,8 @@ set -euo pipefail
 PORT=4397
 BOARD=http://127.0.0.1:$PORT
 DEMO=/home/dev/projects/demo
+# A cookie jar that lasts across docker restart (/tmp is a tmpfs; the home folder isn't).
+OLD_LOGIN=/home/dev/kage-check-login.jar
 
 stage() { echo; echo "== $*"; }
 fail() { echo "FAILED: $*" >&2; exit 1; }
@@ -63,6 +66,11 @@ board_login() {
     "$HOME/.config/kage/config.json")
   curl -fsS -c "$1" -o /dev/null -X POST -H 'X-Kage: 1' -H "Origin: $BOARD" \
     -H 'Content-Type: application/json' --data "{\"token\":\"$token\"}" "$BOARD/api/login"
+}
+
+# The HTTP status of GET /api/auth with the cookie jar $1: 204 signed in, 401 not.
+auth_status() {
+  curl -sS -o /dev/null -w '%{http_code}' -b "$1" "$BOARD/api/auth"
 }
 
 # The statuses of the board's sessions (from its first event), one per line.
@@ -169,6 +177,11 @@ survive() {
       echo "after stop: the same tmux server ($server), windows $windows"
     fi
   done
+
+  stage 'a login just before docker restart'
+  board_login "$OLD_LOGIN"
+  [ "$(auth_status "$OLD_LOGIN")" = 204 ] || fail "a fresh login's cookie isn't signed in"
+  echo 'the cookie is signed in (GET /api/auth: 204)'
 }
 
 # The service is back: the unit is active and the board answers.
@@ -181,6 +194,13 @@ after() {
   "$HOME/my bin/kage" status
   "$HOME/my bin/kage" status | grep -qx 'Service: running (systemd user unit kage.service)' ||
     fail 'kage status does not see the service running'
+
+  stage 'logins are lost at a restart (R127): the cookie from before it gets 401'
+  local code
+  code=$(auth_status "$OLD_LOGIN")
+  [ "$code" = 401 ] || fail "the cookie from before docker restart answered HTTP $code, not 401"
+  echo 'the old cookie is signed out (GET /api/auth: 401)'
+  rm -f "$OLD_LOGIN"
   local statuses=
   for _ in $(seq 60); do
     statuses=$(board_statuses | tr '\n' ' ')
