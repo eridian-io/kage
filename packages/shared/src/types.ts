@@ -1,4 +1,17 @@
 export type SessionStatus = 'needs-you' | 'running' | 'done' | 'ended';
+/**
+ * Why a transition happened: live (Claude just did something), reconcile (Kage catching up after
+ * a restart, a reattach or a relist), or act (the owner or Kage itself did something on purpose).
+ */
+export type Cause = 'live' | 'reconcile' | 'act';
+/** `from` is null when the session wasn't on the board: a launch, a first listing, the start, a restore. `at` is epoch ms. */
+export interface Transition {
+  id: string;
+  from: SessionStatus | null;
+  to: SessionStatus;
+  cause: Cause;
+  at: number;
+}
 export type LineKind = 'say' | 'tool' | 'add' | 'del' | 'out' | 'think';
 /** `detail` is the tool argument. */
 export interface DisplayLine {

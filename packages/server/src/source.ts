@@ -1,4 +1,4 @@
-import type { DisplayLine, FileChange, Port, Session } from '@kage/shared';
+import type { DisplayLine, FileChange, Port, Session, Transition } from '@kage/shared';
 
 export class NotFoundError extends Error {}
 
@@ -13,7 +13,9 @@ export type SourceEvent =
   | { type: 'session.ports'; id: string; ports: Port[] }
   | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number; note?: string }
   /** The number of archived sessions changed. */
-  | { type: 'archive'; count: number };
+  | { type: 'archive'; count: number }
+  /** A session's status moved (live/status.ts): for the server's own consumers, never a stream. */
+  | { type: 'session.transition'; transition: Transition };
 
 export interface SessionSource {
   /** Excludes archived sessions. Each session's `lines` is []. */

@@ -1,7 +1,13 @@
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { type DisplayLine, LIMITS, type Question, type Session } from '@kage/shared';
+import {
+  type DisplayLine,
+  LIMITS,
+  type Question,
+  type Session,
+  type Transition,
+} from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { FinishActions } from './finish/actions.ts';
 import { AutoArchiver } from './finish/auto-archive.ts';
@@ -572,8 +578,10 @@ describe('LiveSource: windows and records', () => {
     tmux.windows.push(win({ windowId: '@4', paneId: '%4', name: 'logs' }));
     watcher.emit({ type: 'windows-changed' });
     await flush();
-    expect(events).toHaveLength(1);
-    expect(events[0]).toMatchObject({
+    // Task 1: its placement's session.transition (never on a stream) goes before the frame.
+    const shown = events.filter((e) => e.type !== 'session.transition');
+    expect(shown).toHaveLength(1);
+    expect(shown[0]).toMatchObject({
       type: 'session.updated',
       session: { id: 'ext-@4', task: 'logs' },
     });
@@ -3181,6 +3189,12 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     expect(source.archivedCount()).toBe(1);
     events.length = 0;
     await source.setFlags('k-1', { archived: false });
+    // Task 1: the restore's transition (null → ended, act) goes first, never on a stream.
+    expect(events[0]).toMatchObject({
+      type: 'session.transition',
+      transition: { id: 'k-1', from: null, to: 'ended', cause: 'act' },
+    });
+    events.shift();
     expect(events.map((e) => e.type)).toEqual(['session.updated', 'archive']);
     expect(events[0]).toMatchObject({
       type: 'session.updated',
@@ -3353,7 +3367,10 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     ]) {
       auto.calls = [];
       await source.setFlags('k-1', f);
-      expect(auto.calls, JSON.stringify(f)).toEqual(['sync']);
+      // Task 1 (F17): a restore's transition into ended touches the session too (touch syncs);
+      // the restored-since rule (F2) keeps it from being a candidate.
+      const want = f.archived === false ? ['sync', 'touch k-1'] : ['sync'];
+      expect(auto.calls, JSON.stringify(f)).toEqual(want);
     }
     // No change: no save, no sync.
     auto.calls = [];
@@ -4664,7 +4681,13 @@ describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)
     expect(tails).toHaveLength(1);
     expect(tails[0]?.stopped).toBe(true);
     expect(source.lines('k-1')).toEqual(lines);
-    expect(events.map((e) => e.type)).toEqual(['session.updated', 'archive', 'session.lines']);
+    // Task 1: the restore's session.transition goes first, never on a stream.
+    expect(events.map((e) => e.type)).toEqual([
+      'session.transition',
+      'session.updated',
+      'archive',
+      'session.lines',
+    ]);
     expect(lineEvents('k-1').at(-1)).toEqual({
       type: 'session.lines',
       id: 'k-1',
@@ -5175,5 +5198,119 @@ describe('LiveSource: Task 9 round (R138)', () => {
     expect(source.get('k-1')).toMatchObject({ archived: true, status: 'ended' });
     expect(source.archivedList().map((s) => s.id)).toEqual(['k-1']);
     await source.stop();
+  });
+});
+
+describe('LiveSource: transitions (Task 1)', () => {
+  const transitions = (events: SourceEvent[], id?: string): Transition[] =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && (!id || e.transition.id === id) ? [e.transition] : [],
+    );
+
+  it('every status change emits one session.transition with from, to, cause and at', async () => {
+    const { source, watcher, updates, events } = setup({ windows: [win()] });
+    await source.start();
+    expect(transitions(events)).toEqual([
+      { id: 'ext-@1', from: null, to: 'done', cause: 'reconcile', at: T0 },
+    ]);
+    events.length = 0;
+    await vi.advanceTimersByTimeAsync(1000);
+    watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(5001);
+    expect(updates('ext-@1').map((s) => s.status)).toEqual(['running', 'done']);
+    expect(transitions(events)).toEqual([
+      { id: 'ext-@1', from: 'done', to: 'running', cause: 'live', at: T0 + 1000 },
+      { id: 'ext-@1', from: 'running', to: 'done', cause: 'live', at: T0 + 6000 },
+    ]);
+    // Each transition goes out before the frame that shows it.
+    const kinds = events.flatMap((e) =>
+      e.type === 'session.transition' || e.type === 'session.updated' ? [e.type] : [],
+    );
+    expect(kinds).toEqual([
+      'session.transition',
+      'session.updated',
+      'session.transition',
+      'session.updated',
+    ]);
+  });
+
+  it('the start places each session once: a windowless record goes null → ended, reconcile', async () => {
+    const { source, events } = setup({
+      windows: [win()],
+      records: [rec(), rec({ kageId: 'k-2', windowId: '@9', doneAt: T0 - 5000 })],
+    });
+    await source.start();
+    expect(transitions(events, 'k-1')).toEqual([
+      { id: 'k-1', from: null, to: 'ended', cause: 'reconcile', at: T0 },
+    ]);
+    expect(transitions(events, 'k-2')).toEqual([
+      { id: 'k-2', from: null, to: 'ended', cause: 'reconcile', at: T0 },
+    ]);
+    expect(transitions(events, 'ext-@1')).toEqual([
+      { id: 'ext-@1', from: null, to: 'done', cause: 'reconcile', at: T0 },
+    ]);
+    expect(transitions(events)).toHaveLength(3);
+  });
+
+  it('doneAt comes from the transition into done or ended and clears on running or needs-you', async () => {
+    const { source, hooks, store, events } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    const doneAt = () => store.saves.at(-1)?.[0]?.doneAt ?? null;
+    const last = () => transitions(events, 'k-1').at(-1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()).toMatchObject({ to: 'done' });
+    expect(doneAt()).toBe(last()?.at);
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()).toMatchObject({ from: 'done', to: 'running', cause: 'live' });
+    expect(doneAt()).toBeNull();
+    hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()).toMatchObject({ from: 'running', to: 'done', cause: 'live', at: T0 + 2000 });
+    expect(doneAt()).toBe(T0 + 2000);
+    hooks.fire(hook('PreToolUse', '%2', { toolName: 'AskUserQuestion' }));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()).toMatchObject({ from: 'done', to: 'needs-you' });
+    expect(doneAt()).toBeNull();
+    hooks.fire(hook('SessionEnd', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(last()).toMatchObject({ from: 'needs-you', to: 'ended', at: T0 + 4000 });
+    expect(doneAt()).toBe(T0 + 4000);
+  });
+
+  it("an attach at start or after the watcher's up catches up; one while Kage watches doesn't", async () => {
+    const { source, tmux, watcher, events } = setup({ windows: [win()] });
+    await source.start();
+    expect(transitions(events, 'ext-@1')).toEqual([
+      { id: 'ext-@1', from: null, to: 'done', cause: 'reconcile', at: T0 },
+    ]);
+    // A window first listed while Kage watches: live.
+    tmux.windows = [win(), win({ windowId: '@3', paneId: '%3' })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(transitions(events, 'ext-@3')).toEqual([
+      { id: 'ext-@3', from: null, to: 'done', cause: 'live', at: T0 },
+    ]);
+    // tmux goes down and comes back: the up's re-list catches up.
+    watcher.emit({ type: 'down' });
+    events.length = 0;
+    watcher.emit({ type: 'up' });
+    await flush();
+    expect(transitions(events).map((t) => [t.id, t.from, t.to, t.cause])).toEqual([
+      ['ext-@1', null, 'done', 'reconcile'],
+      ['ext-@3', null, 'done', 'reconcile'],
+    ]);
+    // Once that re-list is over, a new window is live again.
+    events.length = 0;
+    tmux.windows = [
+      win(),
+      win({ windowId: '@3', paneId: '%3' }),
+      win({ windowId: '@4', paneId: '%4' }),
+    ];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(transitions(events).map((t) => [t.id, t.from, t.to, t.cause])).toEqual([
+      ['ext-@4', null, 'done', 'live'],
+    ]);
   });
 });

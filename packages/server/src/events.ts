@@ -162,6 +162,8 @@ export class EventHub {
   private ensureSubscribed(): void {
     // Each event is serialised and encoded once, for every stream it goes to (P9).
     this.unsubscribe ??= this.source.subscribe((e) => {
+      // A transition is for the server's own consumers; the board learns of it from its frame.
+      if (e.type === 'session.transition') return;
       if (e.type === 'session.lines') {
         const bytes = encode({ ...e, reset: e.reset ?? false });
         for (const c of [...this.clients.values()]) if (c.viewing === e.id) this.send(c, bytes);

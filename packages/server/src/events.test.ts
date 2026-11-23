@@ -168,6 +168,22 @@ describe('EventHub', () => {
     await b.cancel();
     hub.close();
   });
+  it('session.transition never goes out on a stream', async () => {
+    const source = new StubSource();
+    const hub = new EventHub(source, 'h', '/p');
+    const a = hub.stream().getReader();
+    await read(a);
+    source.emit({
+      type: 'session.transition',
+      transition: { id: 'x', from: 'running', to: 'done', cause: 'live', at: 1 },
+    });
+    source.emit({ type: 'archive', count: 1 });
+    // The next frame on the stream is the archive: the transition never went out.
+    expect(await read(a)).toBe('event: archive\ndata: {"type":"archive","count":1}\n\n');
+    await a.cancel();
+    hub.close();
+  });
+
   it('fans out to every client', async () => {
     const source = new DemoSource(1);
     const hub = new EventHub(source, 'h', '/p');

@@ -1,10 +1,12 @@
 import { join } from 'node:path';
 import {
   type ArchivedSession,
+  type Cause,
   type DisplayLine,
   LIMITS,
   type Session,
   type SessionStatus,
+  type Transition,
 } from '@kage/shared';
 import type { ControlTarget } from './control/actions.ts';
 import type { PromptKind } from './control/keys.ts';
@@ -24,6 +26,7 @@ import {
   toSession,
   viewChange,
 } from './live/session-view.ts';
+import { type Observation, type StatusFacts, step } from './live/status.ts';
 import {
   numberedPromptKind,
   paneLines,
@@ -254,6 +257,17 @@ type TimerName =
   | 'turnEnd';
 
 interface Live extends SessionView {
+  /**
+   * The session is on the board: a transition placed it. Until then `status` is #fresh's 'ended'
+   * and the status module sees null (the first transition's `from`).
+   */
+  placed: boolean;
+  /**
+   * An attach at start or after the watcher's up is under way: what it learns is reconcile (F3).
+   * `catchUp` is that attach's token, so an overlapping attach doesn't clear it early.
+   */
+  catchingUp: boolean;
+  catchUp: object | null;
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
   mode: 'activity' | 'hooks';
   /** The question is a startup screen (R9). */
@@ -383,6 +397,12 @@ export class LiveSource implements SessionSource {
   #listSeq = 0;
   #running = false;
   #ready = false;
+  /**
+   * From the watcher's `up` until the re-list it starts has finished: an attach meanwhile is
+   * catching up. `#resyncSeq` names the latest `up`, so an earlier one's re-list doesn't end it.
+   */
+  #resyncing = false;
+  #resyncSeq = 0;
   #early: HookEvent[] = [];
   #unknown: HookEvent[] = [];
   #unknownTimer: ReturnType<typeof setTimeout> | null = null;
@@ -534,15 +554,17 @@ export class LiveSource implements SessionSource {
       throw e;
     }
     const st = this.#fresh(r.kageId, r);
-    st.status = 'running';
     st.now = STARTING;
     st.firstPromptPending = true;
     st.startingSince = null;
     st.lastActivity = this.#clock();
     st.launchedAt = this.#clock();
+    // F17: on the map before its first transition (null → running, act).
     this.#sessions.set(r.kageId, st);
+    this.#setStatus(st, 'running', 'act');
     this.#emitNow(st);
-    this.#auto?.sync();
+    // While ready, its transition (from off the board) re-synced auto-archive already.
+    if (!this.#ready) this.#auto?.sync();
   }
 
   /**
@@ -606,7 +628,7 @@ export class LiveSource implements SessionSource {
     this.#clearPending(st);
     st.lastActivity = this.#clock();
     st.launchedAt = this.#clock();
-    this.#setStatus(st, 'running');
+    this.#setStatus(st, 'running', 'act');
     st.now = STARTING;
     if (st.transcriptPath) void this.#ensureTail(st);
     this.#emitNow(st);
@@ -620,7 +642,7 @@ export class LiveSource implements SessionSource {
   resumeAborted(kageId: string): void {
     const st = this.#sessions.get(kageId);
     if (!st?.record || st.status === 'ended' || st.window || !st.resuming || !this.#running) return;
-    this.#setStatus(st, 'ended');
+    this.#setStatus(st, 'ended', 'act');
     st.now = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -699,7 +721,7 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(id);
     if (st?.status !== 'needs-you' || !this.#running) return;
     this.#clearTimers(st, ['retry', 'answered']);
-    this.#setStatus(st, 'running');
+    this.#setStatus(st, 'running', 'act');
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -749,7 +771,7 @@ export class LiveSource implements SessionSource {
     if (!st || st.status === 'ended') return;
     this.#clearTimers(st, ['retry', 'answered']);
     this.#clearPending(st);
-    this.#setStatus(st, 'running');
+    this.#setStatus(st, 'running', 'act');
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
     this.#emitNow(st);
@@ -862,7 +884,8 @@ export class LiveSource implements SessionSource {
       // I4: the session is built, and its transcript read, now rather than at start.
       const fresh = this.#fresh(id, r);
       this.#sessions.set(id, fresh);
-      this.#trackDone(fresh);
+      // A restore is Kage's act: back on the board as ended (null → ended).
+      this.#setStatus(fresh, 'ended', 'act');
       this.#emitNow(fresh);
       this.#emit({ type: 'archive', count: this.archivedCount() });
       await this.#readLater(fresh);
@@ -931,7 +954,7 @@ export class LiveSource implements SessionSource {
     if (!st || st.status === 'ended') return;
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
     st.mode = 'hooks';
-    this.#setStatus(st, 'ended');
+    this.#setStatus(st, 'ended', 'act');
     this.#clearPending(st);
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -963,8 +986,9 @@ export class LiveSource implements SessionSource {
     } catch {}
     if (!this.#running) return;
     await this.#reconcile(listing.windows, listing.seq);
-    // A record saved before phase 4 that is done or ended now gets the load time as its doneAt.
-    for (const st of this.#sessions.values()) this.#trackDone(st);
+    // Each session no window placed goes on the board as ended (null → ended, reconcile); a
+    // record saved before phase 4 thereby gets the load time as its doneAt.
+    for (const st of this.#sessions.values()) if (!st.placed) this.#apply(st, { kind: 'loaded' });
     for (const st of this.#sessions.values()) this.#emitNow(st);
     try {
       this.#d.onLoaded?.();
@@ -989,6 +1013,7 @@ export class LiveSource implements SessionSource {
     if (!this.#running) return;
     this.#running = false;
     this.#ready = false;
+    this.#resyncing = false;
     for (const off of this.#off) off();
     this.#off = [];
     this.#d.watcher.stop();
@@ -1028,6 +1053,9 @@ export class LiveSource implements SessionSource {
       statusSince: t,
       question: null,
       now: null,
+      placed: false,
+      catchingUp: false,
+      catchUp: null,
       mode: 'activity',
       startup: false,
       promptKind: null,
@@ -1228,6 +1256,23 @@ export class LiveSource implements SessionSource {
 
   /** Links a session to its window and works out its status (restart rebuild, §5.8a). */
   async #attach(st: Live, w: TmuxWindow): Promise<void> {
+    // F3: an attach at start or after the watcher's up catches up (reconcile); one while Kage
+    // watches doesn't. This attach's token: an overlapping one takes over, and only the latest
+    // clears it.
+    const token = {};
+    st.catchUp = token;
+    st.catchingUp = !this.#ready || this.#resyncing;
+    try {
+      await this.#attachWindow(st, w);
+    } finally {
+      if (st.catchUp === token) {
+        st.catchUp = null;
+        st.catchingUp = false;
+      }
+    }
+  }
+
+  async #attachWindow(st: Live, w: TmuxWindow): Promise<void> {
     st.window = w;
     st.gen++;
     this.#clearTimers(st, ['retire']);
@@ -1375,10 +1420,16 @@ export class LiveSource implements SessionSource {
   #onWatch(e: WatchEvent): void {
     if (!this.#running || !this.#ready) return;
     switch (e.type) {
-      case 'up':
+      case 'up': {
         this.#attached = true;
-        void this.#relist();
+        // What this re-list's attaches learn is Kage catching up after a reattach (reconcile).
+        const seq = ++this.#resyncSeq;
+        this.#resyncing = true;
+        void this.#relist().finally(() => {
+          if (this.#resyncSeq === seq) this.#resyncing = false;
+        });
         break;
+      }
       case 'windows-changed':
         void this.#relist();
         break;
@@ -1717,7 +1768,8 @@ export class LiveSource implements SessionSource {
         void this.#firstPromptFallback(st);
       }, FIRST_PROMPT_MS);
     }
-    this.#setStatus(st, next);
+    // F3: a hook is live, also while an attach catches up.
+    this.#setStatus(st, next, 'live');
     if (before === 'ended' && next !== 'ended') this.#clearTimers(st, ['retire']);
     if (next === 'needs-you') {
       if (e.event === 'PreToolUse' && e.toolName === 'AskUserQuestion') {
@@ -1755,7 +1807,7 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
     st.mode = 'hooks';
     this.#clearPending(st);
-    this.#setStatus(st, 'ended');
+    this.#setStatus(st, 'ended', 'live');
     const line: DisplayLine = { kind: 'out', text: RESUME_FAILED };
     st.lines = [...(st.tail ? st.tail.lines() : st.lines), line].slice(-MAX_LINES);
     this.#stopTail(st);
@@ -1772,6 +1824,11 @@ export class LiveSource implements SessionSource {
   #endFirstPromptWait(st: Live): void {
     st.firstPromptPending = false;
     st.resuming = null;
+    this.#firstPromptWaitEnded(st);
+  }
+
+  /** The first-prompt wait's side effects once it ended (here, or in #apply's move into ended). */
+  #firstPromptWaitEnded(st: Live): void {
     this.#clearTimers(st, ['firstPrompt']);
     if (st.now === STARTING) st.now = st.tail?.now() ?? null;
   }
@@ -2267,49 +2324,99 @@ export class LiveSource implements SessionSource {
     return st.replying;
   }
 
-  #setStatus(st: Live, status: SessionStatus): void {
-    if (status === st.status) return;
-    const wasFinished = st.status === 'done' || st.status === 'ended';
-    st.status = status;
-    st.shellEnded = false;
-    st.statusSince = this.#now();
-    st.gen++;
-    // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.
-    st.tail?.setIdle(status !== 'running');
-    // Ended (SessionEnd, the window gone, claude back at a shell, a kill) before any hook: no
-    // resume or first prompt is awaited any more.
-    if (status === 'ended') {
-      st.resuming = null;
-      if (st.firstPromptPending) this.#endFirstPromptWait(st);
-    }
-    this.#trackDone(st);
-    if (status !== 'needs-you') {
-      st.question = null;
-      st.promptKind = null;
-      st.promptSeen = false;
-      st.startup = false;
-      this.#clearTimers(st, ['retry']);
-    }
-    if (this.#ready) this.#preview?.statusChanged(st.id);
-    // Auto-archive: a move into done or ended checks the session; leaving them re-syncs.
-    if (this.#ready && st.record) {
-      if (status === 'done' || status === 'ended') this.#auto?.touch(st.id);
-      else if (wasFinished) this.#auto?.sync();
-    }
+  /**
+   * Migration shim (Task 6 deletes it): a call site not moved to its own observation yet. The
+   * cause defaults to reconcile while an attach catches up, else live; Kage's acts pass 'act'.
+   */
+  #setStatus(st: Live, status: SessionStatus, cause?: Cause): void {
+    this.#apply(st, {
+      kind: 'set',
+      to: status,
+      cause: cause ?? (st.catchingUp ? 'reconcile' : 'live'),
+    });
+  }
+
+  /** The facts the status module reads off a session. */
+  #factsOf(st: Live): StatusFacts {
+    return {
+      status: st.placed ? st.status : null,
+      mode: st.mode,
+      startup: st.startup,
+      shellEnded: st.shellEnded,
+      replying: st.replying,
+      catchingUp: st.catchingUp,
+      pending: st.pending,
+      toolsDone: st.toolsDone,
+      record: st.record
+        ? { firstPromptPending: st.firstPromptPending, resuming: st.resuming }
+        : null,
+    };
   }
 
   /**
-   * A record's doneAt: set on its move into done or ended (kept from done to ended), cleared on
-   * running or needs you; saved with the debounced save.
+   * The one door for status (ADR 0001): the only writer of `st.status`. The status module's
+   * facts are written back on every step, move or not (F4); then the side effects follow from
+   * what changed: the first-prompt wait's end, and on a move statusSince, gen, the tail's idle
+   * poll, the needs-you clean-up and #onTransition.
    */
-  #trackDone(st: Live): void {
+  #apply(st: Live, obs: Observation): Transition | null {
+    const before = this.#factsOf(st);
+    const { facts, move } = step(before, obs);
+    if (facts.status !== null) st.status = facts.status;
+    st.placed = facts.status !== null;
+    st.mode = facts.mode;
+    st.startup = facts.startup;
+    st.shellEnded = facts.shellEnded;
+    st.replying = facts.replying;
+    if (facts.pending !== st.pending) st.pending = new Set(facts.pending);
+    if (facts.toolsDone !== st.toolsDone) st.toolsDone = new Set(facts.toolsDone);
+    if (facts.record) {
+      st.firstPromptPending = facts.record.firstPromptPending;
+      st.resuming = facts.record.resuming;
+    }
+    if (before.record?.firstPromptPending && !facts.record?.firstPromptPending) {
+      this.#firstPromptWaitEnded(st);
+    }
+    if (!move) return null;
+    const t: Transition = { id: st.id, ...move, at: this.#now() };
+    st.statusSince = t.at;
+    st.gen++;
+    // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.
+    st.tail?.setIdle(t.to !== 'running');
+    if (t.to !== 'needs-you') {
+      st.question = null;
+      st.promptKind = null;
+      st.promptSeen = false;
+      this.#clearTimers(st, ['retry']);
+    }
+    this.#onTransition(st, t);
+    return t;
+  }
+
+  /**
+   * What follows a transition: a record's doneAt (set on its move into done or ended, kept from
+   * done to ended, cleared on running or needs-you; saved with the debounced save), the preview
+   * and auto-archive while ready (a move into done or ended checks the session; leaving them, or
+   * a first placement, re-syncs), then the transition event.
+   */
+  #onTransition(st: Live, t: Transition): void {
     const r = st.record;
-    if (!r) return;
-    const finished = st.status === 'done' || st.status === 'ended';
-    if (finished && r.doneAt === null) r.doneAt = this.#now();
-    else if (!finished && r.doneAt !== null) r.doneAt = null;
-    else return;
-    this.#saveSoon();
+    const finished = t.to === 'done' || t.to === 'ended';
+    if (r && finished && r.doneAt === null) {
+      r.doneAt = t.at;
+      this.#saveSoon();
+    } else if (r && !finished && r.doneAt !== null) {
+      r.doneAt = null;
+      this.#saveSoon();
+    }
+    if (this.#ready) {
+      this.#preview?.statusChanged(st.id);
+      if (r) {
+        if (finished) this.#auto?.touch(st.id);
+        else if (t.from === null || t.from === 'done' || t.from === 'ended') this.#auto?.sync();
+      }
+    }
+    this.#emit({ type: 'session.transition', transition: t });
   }
 
   #clearTimers(st: Live, names?: TimerName[]): void {
