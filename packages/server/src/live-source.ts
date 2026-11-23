@@ -822,11 +822,16 @@ export class LiveSource implements SessionSource {
     if (!this.#running) return;
     const now = this.#sessions.get(id);
     if (archiving) {
-      if (now) {
+      // R140: the board showed it when the archive began (st). The killed window's listing can
+      // land during the save above and drop the session already (R138), so `now` may be gone:
+      // the board still hears that it went, or the row stays and the archive shows no toast.
+      if (now || st) {
         // Hidden from the board: the preview stops looking, and a restore sends it afresh.
-        now.last = null;
         this.#preview?.forget(id);
         this.#emit({ type: 'session.removed', id });
+      }
+      if (now) {
+        now.last = null;
         // I4: an archived record keeps no session, tail or lines; a restore builds them again.
         this.#dropSession(now);
       }

@@ -146,6 +146,8 @@ class FakeStore implements StateStoreLike {
   attempts: number[] = [];
   /** This many saves fail before they succeed again. */
   fail = 0;
+  /** Runs inside each save, before it lands (a slow, fsynced disk). */
+  during: (() => Promise<void>) | null = null;
   constructor(records: SessionRecord[]) {
     this.records = records;
   }
@@ -154,6 +156,7 @@ class FakeStore implements StateStoreLike {
   }
   async save(records: SessionRecord[]): Promise<void> {
     this.attempts.push(Date.now());
+    await this.during?.();
     if (this.fail > 0) {
       this.fail--;
       throw new Error('disk full');
@@ -3070,6 +3073,42 @@ describe('LiveSource: pin, archive and restore (phase 4 Task 4)', () => {
     expect(store.saves.at(-1)?.[0]?.pinned).toBe(true);
     expect(updates('k-1').at(-1)?.pinned).toBe(true);
     expect(source.finishTarget('k-1')?.record?.pinned).toBe(true);
+  });
+
+  it("archive: the board still hears session.removed when the killed window's listing lands during the save (R140)", async () => {
+    const { source, tmux, hooks, events, store, watcher } = setup({
+      windows: [kageWin()],
+      records: [rec()],
+    });
+    await source.start();
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('done');
+    const finish = new FinishActions({
+      tmux: killer(tmux, []),
+      source,
+      git: async () => ({ stdout: '', stderr: '' }),
+      projectsRoot: '/p',
+      worktreeDir: '.worktrees',
+      branchPrefix: 'kage/',
+      counts: async () => ({ unpushed: 0, uncommitted: 0, ignored: 0 }),
+      publish: () => {},
+    });
+    // The state file's save is slow; meanwhile tmux reports the killed window gone.
+    store.during = async () => {
+      store.during = null;
+      watcher.emit({ type: 'windows-changed' });
+      await flush();
+    };
+    events.length = 0;
+    await finish.archive('k-1', true);
+    const tail = events.filter((e) => e.type === 'session.removed' || e.type === 'archive');
+    expect(tail).toEqual([
+      { type: 'session.removed', id: 'k-1' },
+      { type: 'archive', count: 1 },
+    ]);
+    expect(source.list().map((s) => s.id)).not.toContain('k-1');
+    await source.stop();
   });
 
   it('archive of a done session with a live window: kill with the record kage id, session.removed, then archive {count: 1}', async () => {
