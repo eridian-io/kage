@@ -1,20 +1,14 @@
 #!/bin/sh
-# The Kage installer: https://github.com/eridian-io/kage
-#
-#   curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | sh
+# The Kage installer (https://github.com/eridian-io/kage). Setup flags go after "sh -s --":
 #   curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | sh -s -- --yes
 #
-# What it does, in order, and nothing else:
-#   1. picks the build for this machine: Linux or macOS, x64 or arm64;
-#   2. downloads it and SHA256SUMS from the latest stable release, over HTTPS only;
-#   3. checks the build's sha256 against SHA256SUMS, and stops if they differ;
-#   4. puts it at ~/.local/bin/kage (or $KAGE_INSTALL_DIR/kage) in one rename;
-#   5. if that folder isn't on PATH, adds one export line to your shell's start-up file;
-#   6. runs "kage setup" in your terminal (arguments after "sh -s --" go to it). Setup asks
-#      before it changes anything. KAGE_NO_SETUP=1 skips this step.
-# It runs as your own user and refuses root. KAGE_RELEASE_BASE names another release folder:
-# https, or plain http on 127.x or localhost only (for tests).
-#
+# It picks the build for this machine (Linux or macOS, x64 or arm64), downloads it and
+# SHA256SUMS from the latest stable release over HTTPS only, stops unless the sha256 matches,
+# renames it into ~/.local/bin/kage (or $KAGE_INSTALL_DIR/kage) in one step, adds that folder
+# to PATH in your shell's start-up file if needed (KAGE_NO_MODIFY_PATH=1 only prints the line),
+# then runs "kage setup" in your terminal, which asks before it changes anything
+# (KAGE_NO_SETUP=1 skips it). It refuses root. KAGE_RELEASE_BASE names another release
+# folder: https, or plain http on 127.x or localhost only (for tests).
 # Everything happens inside main, called on the last line, so a download cut short runs nothing.
 
 set -eu
@@ -23,33 +17,34 @@ say() { printf '%s\n' "$*"; }
 die() { printf '%s\n' "$*" >&2; exit 1; }
 have() { command -v "$1" >/dev/null 2>&1; }
 
-# The sha256 of a file, as lowercase hex.
-sha() {
-  if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{ print $1 }'
-}
+sha() { if have sha256sum; then sha256sum "$1"; else shasum -a 256 "$1"; fi | awk '{print $1}'; }
 
-# True for localhost or a 127.x address (the host part of a URL, port removed).
+# True for http://localhost or http://127.x with an optional all-digit port, and nothing else
+# (no user@ part, no other host).
 loopback() {
-  case $1 in
-    localhost) return 0 ;;
-    *[!0-9.]*) return 1 ;;
-    127.*) return 0 ;;
-  esac
+  h=${1#http://} && h=${h%%/*}
+  case $h in *@*) return 1 ;; esac
+  case $h in *:*) case ${h##*:} in '' | *[!0-9]*) return 1 ;; esac ;; esac
+  h=${h%:*}
+  case $h in localhost) return 0 ;; *[!0-9.]*) return 1 ;; 127.*) return 0 ;; esac
   return 1
 }
 
 # Download $1 to $2. Redirects must stay on HTTPS (GitHub serves files from another host).
 fetch() {
-  curl -fsSL --proto "$proto" --proto-redir '=https' --tlsv1.2 -o "$2" "$1" ||
+  curl -fsSLg --proto "$proto" --proto-redir '=https' --tlsv1.2 -o "$2" "$1" ||
     die "Couldn't download $1. Nothing was installed."
 }
 
-# R114: add the PATH line to one start-up file, once. Doctor names the same files (path-rc.ts).
+# R114: add the PATH line to one start-up file, once. Doctor names the same files (path-rc.ts),
+# and kage uninstall finds the marker line to say what to remove.
 add_path() {
   if [ -f "$1" ] && grep -qxF "$line" "$1"; then
-    say "$1 already adds $dir to your PATH."
+    say "$1 already adds $dir to your PATH." && fresh=1
+  elif [ "${KAGE_NO_MODIFY_PATH:-}" = 1 ]; then
+    say "To add $dir to your PATH, add this line to $1: $line"
   elif printf '\n# Added by the Kage installer.\n%s\n' "$line" 2>/dev/null >>"$1"; then
-    say "Added $dir to your PATH in $1."
+    say "Added $dir to your PATH in $1." && fresh=1
   else
     say "Couldn't change $1. Add this line to it: $line"
   fi
@@ -61,6 +56,8 @@ main() {
 
   os=$(uname -s)
   arch=$(uname -m)
+  # A shell under Rosetta on Apple silicon says x86_64; the arm64 build is the right one.
+  [ "$os" != Darwin ] || [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" != 1 ] || arch=arm64
   case $os in
     Linux) target=linux ;;
     Darwin) target=darwin ;;
@@ -85,22 +82,29 @@ main() {
   proto='=https'
   case $base in
     https://*) ;;
-    http://*)
-      host=${base#http://}
-      host=${host%%/*}
-      loopback "${host%:*}" || die 'KAGE_RELEASE_BASE must be an https URL.'
-      proto='=http' ;;
+    http://*) loopback "$base" || die 'KAGE_RELEASE_BASE must be an https URL.'; proto='=http' ;;
     *) die 'KAGE_RELEASE_BASE must be an https URL.' ;;
   esac
 
+  # The folder goes into a PATH line in double quotes, so it must not need escaping there.
   dir=${KAGE_INSTALL_DIR:-$HOME/.local/bin}
-  case $dir in /*) ;; *) dir=$(pwd)/$dir ;; esac
-  dir=${dir%/}
-  new=$dir/.kage-new.$$
+  case $dir in
+    \~) dir=$HOME ;;
+    \~/*) dir=$HOME/${dir#\~/} ;;
+    \~*) die 'Give KAGE_INSTALL_DIR as a full path.' ;;
+    /*) ;;
+    *) dir=$(pwd)/$dir ;;
+  esac
+  case $dir in *[\"\$\`\\:]* | *'
+'*) die "The install folder can't contain a quote, \$, a backtick, a backslash, a colon or a line break." ;;
+  esac
+  while [ "${dir%/}" != "$dir" ]; do dir=${dir%/}; done
+  [ -n "$dir" ] || die "Kage can't be installed into /."
+  [ ! -d "$dir/kage" ] || die "$dir/kage is a folder. Move it away, then run the installer again."
 
   tmp=$(mktemp -d)
-  trap 'rm -rf "$tmp"; rm -f "$new"' EXIT
-  trap 'exit 130' INT TERM
+  trap 'rm -rf "$tmp"; [ -z "${new:-}" ] || rm -f "$new"' EXIT
+  trap 'exit 130' HUP INT TERM
 
   fetch "$base/SHA256SUMS" "$tmp/SHA256SUMS"
   fetch "$base/$asset" "$tmp/$asset"
@@ -111,14 +115,16 @@ main() {
     die "Checksum check failed for $asset. Nothing was installed."
   fi
 
-  # Unpack next to the old program, then rename over it: same file system, so one atomic step.
-  # A regular file at a path that lasts, because Claude's hooks name it (R110-5).
+  # Unpack beside the old program and rename over it (one atomic step), as a regular file at a
+  # path that lasts, because Claude's hooks name it (R110-5).
   mkdir -p "$dir"
+  new=$(mktemp "$dir/.kage-new.XXXXXX")
   gunzip -c "$tmp/$asset" >"$new"
   chmod 755 "$new"
   mv -f "$new" "$dir/kage"
   rm -rf "$tmp" # exec below skips the EXIT trap
 
+  fresh=
   case :$PATH: in
     *:"$dir":*) ;;
     *)
@@ -127,15 +133,11 @@ main() {
         */zsh | zsh) add_path "${ZDOTDIR:-$HOME}/.zshrc" ;;
         */bash | bash)
           add_path "$HOME/.bashrc"
-          if [ -f "$HOME/.bash_profile" ]; then
-            add_path "$HOME/.bash_profile"
-          else
-            add_path "$HOME/.profile"
-          fi ;;
+          if [ -f "$HOME/.bash_profile" ]; then add_path "$HOME/.bash_profile"; else add_path "$HOME/.profile"; fi ;;
         *) add_path "$HOME/.profile" ;;
-      esac
-      say 'Open a new terminal to run kage by name.' ;;
+      esac ;;
   esac
+  [ -z "$fresh" ] || say 'Open a new terminal to run kage by name.'
 
   if [ "${KAGE_NO_SETUP:-}" != 1 ] && (: </dev/tty) 2>/dev/null; then
     say "Installed $dir/kage."

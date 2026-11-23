@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -11,13 +11,13 @@ import {
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer, type Server } from 'node:http';
+import { createServer, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { pathRcFiles } from './path-rc.ts';
+import { markedPathLines, PATH_MARKER, pathRcFiles } from './path-rc.ts';
 
 /**
  * install.sh (phase 6, Task 8), run for real by `sh` against a release server on 127.0.0.1, with
@@ -48,6 +48,18 @@ describe('install.sh, read as text', () => {
     expect(TEXT.trimEnd().split('\n').length).toBeLessThan(150);
   });
 
+  it('writes the marker kage uninstall looks for (R120)', () => {
+    expect(TEXT).toContain(`'\\n${PATH_MARKER}\\n%s\\n'`);
+  });
+
+  it.runIf(existsSync(join(ROOT, '.git')))('is mode 100755 in the git index', () => {
+    const entry = execFileSync('git', ['ls-files', '-s', 'install.sh'], {
+      cwd: ROOT,
+      encoding: 'utf8',
+    });
+    expect(entry.split(' ')[0]).toBe('100755');
+  });
+
   it('does everything inside main, called on the last line', () => {
     const lines = TEXT.trimEnd().split('\n');
     expect(lines.at(-1)).toBe('main "$@"');
@@ -55,7 +67,13 @@ describe('install.sh, read as text', () => {
   });
 });
 
-type Release = { sums?: string | null; asset?: Buffer | null; cut?: 'length' | 'chunked' };
+type Release = {
+  sums?: string | null;
+  asset?: Buffer | null;
+  cut?: 'length' | 'chunked';
+  /** Never answer the file's request (until the test ends). */
+  hang?: boolean;
+};
 interface Result {
   code: number | null;
   out: string;
@@ -73,6 +91,7 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
   let fake: string;
   let bin: string;
   let log: string;
+  let hanging: ServerResponse[] = [];
 
   beforeAll(async () => {
     server = createServer((req, res) => {
@@ -88,7 +107,9 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
               ? null
               : (release.asset ?? GZ)
             : null;
-      if (body === null) {
+      if (name === ASSET && release.hang) {
+        hanging.push(res);
+      } else if (body === null) {
         res.writeHead(404).end('not found');
       } else if (name === ASSET && release.cut === 'length') {
         // Says the whole length, sends half, hangs up: curl itself fails.
@@ -125,8 +146,11 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     };
     tool('uname', 'case $1 in -m) echo "$FAKE_ARCH" ;; *) echo "$FAKE_OS" ;; esac');
     tool('id', 'echo "$FAKE_UID"');
+    tool('sysctl', 'echo "$FAKE_TRANSLATED"');
   });
   afterEach(() => {
+    for (const res of hanging) res.socket?.destroy();
+    hanging = [];
     rmSync(dir, { recursive: true, force: true });
   });
 
@@ -150,7 +174,11 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     };
   }
 
-  /** Runs `<shell> <script> args…` with no tty (setsid, stdin /dev/null), or inside `script`. */
+  /**
+   * Runs `<shell> <script> args…` with no tty (setsid, stdin /dev/null), or inside `script`.
+   * With `stdin`, the script text is piped in instead: `<shell> -s -- args…`, the documented
+   * `curl … | sh -s -- --yes` (under `script`, through `cat file |`, so stdin is still a pipe).
+   */
   function run(
     o: {
       shell?: string;
@@ -158,24 +186,37 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
       args?: string[];
       env?: Record<string, string>;
       tty?: boolean;
+      stdin?: string;
+      onStart?: (p: ChildProcess) => void;
     } = {},
   ): Promise<Result> {
     const shell = o.shell ?? '/bin/sh';
-    const argv = [shell, o.script ?? SCRIPT, ...(o.args ?? [])];
+    const piped = o.stdin !== undefined;
+    const argv = piped
+      ? [shell, '-s', '--', ...(o.args ?? [])]
+      : [shell, o.script ?? SCRIPT, ...(o.args ?? [])];
     const q = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-    const [cmd, ...args] = o.tty ? ['script', '-qec', argv.map(q).join(' '), '/dev/null'] : argv;
+    let line = argv.map(q).join(' ');
+    if (piped && o.tty) {
+      const file = join(dir, 'piped.sh');
+      writeFileSync(file, o.stdin as string);
+      line = `cat ${q(file)} | ${line}`;
+    }
+    const [cmd, ...args] = o.tty ? ['script', '-qec', line, '/dev/null'] : argv;
     return new Promise((resolve, reject) => {
       const p = spawn(cmd as string, args, {
         env: o.env ?? env(),
         detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
+        stdio: [piped && !o.tty ? 'pipe' : 'ignore', 'pipe', 'pipe'],
       });
+      o.onStart?.(p);
+      if (piped && !o.tty) p.stdin?.end(o.stdin);
       let out = '';
       let err = '';
-      p.stdout.on('data', (b) => {
+      p.stdout?.on('data', (b) => {
         out += b;
       });
-      p.stderr.on('data', (b) => {
+      p.stderr?.on('data', (b) => {
         err += b;
       });
       p.on('error', reject);
@@ -189,6 +230,16 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     ...(existsSync(bin) ? readdirSync(bin).filter((f) => f !== 'kage') : []),
   ];
 
+  const hasScript = existsSync('/usr/bin/script') || existsSync('/bin/script');
+  /** Cut points: 12 spread over the script, the start of the last line, and inside it (`mai`). */
+  const cuts = () => {
+    const end = TEXT.lastIndexOf('main "$@"');
+    return [
+      ...Array.from({ length: 12 }, (_, i) => Math.floor((end * (i + 1)) / 13)),
+      end,
+      end + 3,
+    ];
+  };
   const shells = ['/bin/dash', '/bin/bash'].filter((s) => existsSync(s));
   it('dash and bash are both here to run it', () => {
     expect(shells.length).toBe(2);
@@ -210,9 +261,35 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
       expect(hits).toEqual(['/rel/SHA256SUMS', `/rel/${ASSET}`]);
       expect(leftovers()).toEqual([]);
     });
+
+    it('piped (sh -s -- --yes) with no tty: installs and says how to finish', async () => {
+      const r = await run({ shell, stdin: TEXT, args: ['--yes'] });
+      expect(r.err).toBe('');
+      expect(r.code).toBe(0);
+      expect(readFileSync(installed())).toEqual(KAGE);
+      expect(r.out).toContain(`Installed ${bin}/kage. Run "kage setup" in a terminal to finish.`);
+      expect(existsSync(log)).toBe(false);
+    });
+
+    it.runIf(hasScript)(
+      'piped with a tty: the arguments reach setup, with the terminal as its stdin',
+      async () => {
+        const r = await run({ shell, stdin: TEXT, args: ['--yes', '--port', '4397'], tty: true });
+        expect(r.code).toBe(0);
+        expect(readFileSync(log, 'utf8')).toBe('setup --yes --port 4397\ntty\n');
+        expect(leftovers()).toEqual([]);
+      },
+    );
+
+    it('piped and cut short anywhere before the last line: runs nothing', async () => {
+      for (const at of cuts()) {
+        const r = await run({ shell, stdin: TEXT.slice(0, at) });
+        expect(hits, `cut at ${at}: ${r.err}`).toEqual([]);
+        expect(existsSync(bin), `cut at ${at}`).toBe(false);
+      }
+    }, 30_000);
   });
 
-  const hasScript = existsSync('/usr/bin/script') || existsSync('/bin/script');
   it('with a tty, runs kage setup with the arguments on the terminal', async () => {
     if (!hasScript) {
       // No script(1) to make a tty with: the no-tty path is all there is to see.
@@ -299,8 +376,12 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     ['Linux', 'aarch64', 'kage-linux-arm64.gz'],
     ['Darwin', 'arm64', 'kage-darwin-arm64.gz'],
     ['Darwin', 'x86_64', 'kage-darwin-x64.gz'],
+    ['Darwin', 'x86_64 under Rosetta', 'kage-darwin-arm64.gz'],
+    ['Linux', 'x86_64 (sysctl says 1, ignored)', 'kage-linux-x64.gz'],
   ])('%s %s downloads %s', async (os, arch, name) => {
-    await run({ env: env({ FAKE_OS: os, FAKE_ARCH: arch }) });
+    const translated = arch.includes('Rosetta') || arch.includes('ignored') ? '1' : '0';
+    const a = arch.split(' ')[0] as string;
+    await run({ env: env({ FAKE_OS: os, FAKE_ARCH: a, FAKE_TRANSLATED: translated }) });
     expect(hits.at(-1)).toBe(`/rel/${name}`);
   });
 
@@ -308,6 +389,10 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     'http://127.0.0.1.example.com/rel',
     'http://user@127.0.0.1:9/rel',
     'http://example.com/rel',
+    'http://127.0.0.1:80@evil.example/rel',
+    'http://localhost:1@evil.example/rel',
+    'http://127.0.0.1?@evil.example/rel',
+    'http://127.0.0.1:/rel',
     'ftp://127.0.0.1/rel',
   ])('KAGE_RELEASE_BASE=%s is refused: https only, http only on loopback', async (b) => {
     const r = await run({ env: env({ KAGE_RELEASE_BASE: b }) });
@@ -321,14 +406,77 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
     expect(r.err).toBe('Install curl, gunzip, sha256sum, then run the installer again.\n');
   });
 
+  it.each(['HUP', 'INT', 'TERM'] as const)(
+    'SIG%s during the download: exits, keeps the old kage, leaves nothing behind',
+    async (sig) => {
+      release = { hang: true };
+      mkdirSync(bin);
+      writeFileSync(installed(), 'old kage');
+      let child: ChildProcess | undefined;
+      const done = run({
+        onStart: (p) => {
+          child = p;
+        },
+      });
+      for (let i = 0; i < 200 && !hits.includes(`/rel/${ASSET}`); i++) {
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      expect(hits).toContain(`/rel/${ASSET}`);
+      process.kill(-(child?.pid as number), `SIG${sig}`);
+      const r = await done;
+      expect(r.code).not.toBe(0);
+      expect(readFileSync(installed(), 'utf8')).toBe('old kage');
+      expect(leftovers()).toEqual([]);
+    },
+  );
+
+  it.each([['a"b'], ['a$b'], ['a`b'], ['a\\b'], ['a:b'], ['a\nb']])(
+    'an install folder named %j is refused before any download',
+    async (name) => {
+      const r = await run({ env: env({ KAGE_INSTALL_DIR: join(dir, name) }) });
+      expect(r.code).toBe(1);
+      expect(r.err).toBe(
+        "The install folder can't contain a quote, $, a backtick, a backslash, a colon or a line break.\n",
+      );
+      expect(hits).toEqual([]);
+    },
+  );
+
+  it.each([
+    ['/', "Kage can't be installed into /."],
+    ['//', "Kage can't be installed into /."],
+    ['~someone/bin', 'Give KAGE_INSTALL_DIR as a full path.'],
+  ])('KAGE_INSTALL_DIR=%s is refused', async (d, msg) => {
+    const r = await run({ env: env({ KAGE_INSTALL_DIR: d }) });
+    expect(r.code).toBe(1);
+    expect(r.err).toBe(`${msg}\n`);
+    expect(hits).toEqual([]);
+  });
+
+  it('a folder where kage goes is refused, and left as it is', async () => {
+    mkdirSync(join(bin, 'kage'), { recursive: true });
+    const r = await run();
+    expect(r.code).toBe(1);
+    expect(r.err).toBe(`${bin}/kage is a folder. Move it away, then run the installer again.\n`);
+    expect(lstatSync(join(bin, 'kage')).isDirectory()).toBe(true);
+    expect(hits).toEqual([]);
+  });
+
+  it.each([
+    ['~', (home) => home],
+    ['~/k bin/', (home) => join(home, 'k bin')],
+  ] as [string, (h: string) => string][])(
+    'KAGE_INSTALL_DIR=%s expands the ~ to HOME',
+    async (d, where) => {
+      const r = await run({ env: env({ KAGE_INSTALL_DIR: d }) });
+      expect(r.code).toBe(0);
+      expect(readFileSync(join(where(home), 'kage'))).toEqual(KAGE);
+      expect(r.out).toContain(`Installed ${where(home)}/kage.`);
+    },
+  );
+
   it('a truncated script runs nothing: cut anywhere before the last line', async () => {
-    const end = TEXT.lastIndexOf('main "$@"');
-    const cuts = [
-      ...Array.from({ length: 12 }, (_, i) => Math.floor((end * (i + 1)) / 13)),
-      end,
-      end + 3,
-    ];
-    for (const at of cuts) {
+    for (const at of cuts()) {
       const part = join(dir, 'part.sh');
       writeFileSync(part, TEXT.slice(0, at));
       const r = await run({ script: part });
@@ -356,6 +504,47 @@ describe.runIf(!isWindows)('install.sh, run against a local release', () => {
       expect(count(join(home, '.bashrc'))).toBe(1);
       expect(count(join(home, '.profile'))).toBe(1);
     });
+
+    it('the line sits under the marker kage uninstall finds (R120)', async () => {
+      await run({ env: env({ SHELL: '/bin/zsh' }) });
+      expect(markedPathLines(readFileSync(join(home, '.zshrc'), 'utf8'))).toEqual([[2, 3]]);
+    });
+
+    it('KAGE_NO_MODIFY_PATH=1 prints the line and changes no file (R120)', async () => {
+      const r = await run({ env: env({ SHELL: '/bin/bash', KAGE_NO_MODIFY_PATH: '1' }) });
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(
+        `To add ${bin} to your PATH, add this line to ${home}/.bashrc: ${LINE()}\n`,
+      );
+      expect(r.out).toContain(
+        `To add ${bin} to your PATH, add this line to ${home}/.profile: ${LINE()}\n`,
+      );
+      expect(r.out).not.toContain('Open a new terminal');
+      expect(readdirSync(home)).toEqual([]);
+    });
+
+    it("a start-up file it can't write: prints the line, still installs and exits 0", async () => {
+      mkdirSync(join(home, '.profile')); // even root can't append to a folder
+      const r = await run();
+      expect(r.code).toBe(0);
+      expect(r.out).toContain(`Couldn't change ${home}/.profile. Add this line to it: ${LINE()}\n`);
+      expect(r.out).not.toContain('Open a new terminal');
+      expect(readFileSync(installed())).toEqual(KAGE);
+    });
+
+    it.runIf(process.getuid?.() !== 0)(
+      'a read-only start-up file (as non-root): prints the line, leaves the file as it was',
+      async () => {
+        writeFileSync(join(home, '.profile'), '# mine\n');
+        chmodSync(join(home, '.profile'), 0o444);
+        const r = await run();
+        expect(r.code).toBe(0);
+        expect(r.out).toContain(
+          `Couldn't change ${home}/.profile. Add this line to it: ${LINE()}\n`,
+        );
+        expect(readFileSync(join(home, '.profile'), 'utf8')).toBe('# mine\n');
+      },
+    );
 
     it('a folder already on PATH changes no file', async () => {
       const r = await run({

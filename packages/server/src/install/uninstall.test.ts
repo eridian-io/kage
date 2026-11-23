@@ -197,6 +197,30 @@ describe('kage uninstall', () => {
     },
   );
 
+  it("R120: names the installer's PATH lines in every start-up file and never edits one", async () => {
+    const zdot = join(home, 'zdot');
+    mkdirSync(zdot);
+    const line = `export PATH="${join(home, '.local', 'bin')}:$PATH"`;
+    const bashrc = `# mine\nalias ll='ls -l'\n\n# Added by the Kage installer.\n${line}\n`;
+    const profile = `\n# Added by the Kage installer.\n${line}\n`;
+    const zshrc =
+      '# Added by the Kage installer.\n# a marker with no PATH line below is not ours\n';
+    writeFileSync(join(home, '.bashrc'), bashrc);
+    writeFileSync(join(home, '.profile'), profile);
+    writeFileSync(join(zdot, '.zshrc'), zshrc);
+    const o = io();
+    expect(await uninstallCommand(['--yes'], o.io, deps({ env: { ...env, ZDOTDIR: zdot } }))).toBe(
+      0,
+    );
+    expect(o.out.filter((l) => l.includes('PATH'))).toEqual([
+      'Kept: lines 4-5 of ~/.bashrc, which the installer added for your PATH. Remove them by hand if you like.',
+      'Kept: lines 2-3 of ~/.profile, which the installer added for your PATH. Remove them by hand if you like.',
+    ]);
+    expect(readFileSync(join(home, '.bashrc'), 'utf8')).toBe(bashrc);
+    expect(readFileSync(join(home, '.profile'), 'utf8')).toBe(profile);
+    expect(readFileSync(join(zdot, '.zshrc'), 'utf8')).toBe(zshrc);
+  });
+
   it('also removes the program an update kept as kage.previous', async () => {
     writeFileSync(`${exe}.previous`, 'older kage');
     const o = io();

@@ -4,13 +4,14 @@
  * tmux session "kage": nothing here runs git or tmux, and the user's windows keep running.
  * Linger is left as it is (other programs may need it); uninstall says how to turn it off.
  */
-import { lstat, realpath, rm } from 'node:fs/promises';
+import { lstat, readFile, realpath, rm } from 'node:fs/promises';
 import { basename, dirname, join } from 'node:path';
 import { configPath, displayPath } from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
 import { SETTINGS_FILE } from '../hooks/settings.ts';
 import type { Io } from '../main.ts';
 import { stateDir } from '../state/store.ts';
+import { markedPathLines, rcCandidates } from './path-rc.ts';
 import { isStopped, type Prompter } from './prompt.ts';
 import type { RunMode } from './runtime.ts';
 import type { ServiceManager } from './service.ts';
@@ -161,6 +162,16 @@ export async function uninstallCommand(
   for (const r of removed) io.out(`Removed: ${r}.`);
   for (const n of notes) (n.startsWith("Couldn't") ? io.err : io.out)(n);
   io.out(KEPT_WORK);
+  // R120: the installer's PATH lines stay; uninstall never edits a shell start-up file, it says
+  // where they are.
+  for (const file of rcCandidates(deps.home, deps.env.ZDOTDIR)) {
+    const text = await readFile(file, 'utf8').catch(() => '');
+    for (const [a, b] of markedPathLines(text)) {
+      io.out(
+        `Kept: lines ${a}-${b} of ${shown(file)}, which the installer added for your PATH. Remove them by hand if you like.`,
+      );
+    }
+  }
   if (!purge) {
     io.out(`Kept: ${shown(cfgFile)} and ${shown(state)} (kage uninstall --purge removes them).`);
   }

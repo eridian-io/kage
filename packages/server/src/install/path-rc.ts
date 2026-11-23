@@ -46,3 +46,33 @@ export function pathAdvice(dir: string, files: string[]): string {
     files.length === 1 ? `echo ${line} >> ${files[0]}` : `echo ${line} | tee -a ${files.join(' ')}`;
   return `Add ${dir} to your PATH: ${add}`;
 }
+
+/** The comment install.sh writes on the line above the PATH line (R120: uninstall finds it). */
+export const PATH_MARKER = '# Added by the Kage installer.';
+
+/** Every file install.sh may have written to, whatever the shell is now. */
+export function rcCandidates(home: string, zdotdir?: string): string[] {
+  const files = [
+    posix.join(zdotdir || home, '.zshrc'),
+    posix.join(home, '.zshrc'),
+    posix.join(home, '.bashrc'),
+    posix.join(home, '.bash_profile'),
+    posix.join(home, '.profile'),
+  ];
+  return [...new Set(files)];
+}
+
+/**
+ * The 1-based line numbers of each marker line in a start-up file's text that has install.sh's
+ * PATH line right below it: `[marker, line]` pairs.
+ */
+export function markedPathLines(text: string): [number, number][] {
+  const lines = text.split(/\r?\n/);
+  const found: [number, number][] = [];
+  lines.forEach((l, i) => {
+    if (l === PATH_MARKER && /^export PATH=".*:\$PATH"$/.test(lines[i + 1] ?? '')) {
+      found.push([i + 1, i + 2]);
+    }
+  });
+  return found;
+}

@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { pathAdvice, pathLine, pathRcFiles } from './path-rc.ts';
+import {
+  markedPathLines,
+  PATH_MARKER,
+  pathAdvice,
+  pathLine,
+  pathRcFiles,
+  rcCandidates,
+} from './path-rc.ts';
 
 describe('pathRcFiles (R114)', () => {
   const base = { home: '/home/u', hasBashProfile: false };
@@ -26,6 +33,35 @@ describe('pathRcFiles (R114)', () => {
     for (const shell of ['/usr/bin/fish', '/bin/sh', '/bin/dash', '', undefined]) {
       expect(pathRcFiles({ ...base, shell })).toEqual(['/home/u/.profile']);
     }
+  });
+
+  it('R120: every candidate file, and the marked lines in one', () => {
+    expect(rcCandidates('/home/u')).toEqual([
+      '/home/u/.zshrc',
+      '/home/u/.bashrc',
+      '/home/u/.bash_profile',
+      '/home/u/.profile',
+    ]);
+    expect(rcCandidates('/home/u', '/z')[0]).toBe('/z/.zshrc');
+    expect(rcCandidates('/home/u', '/z')).toHaveLength(5);
+    const text = [
+      'a',
+      PATH_MARKER,
+      pathLine('/d'),
+      PATH_MARKER,
+      'echo not ours',
+      '',
+      PATH_MARKER,
+      pathLine('/e'),
+    ].join('\n');
+    expect(markedPathLines(text)).toEqual([
+      [2, 3],
+      [7, 8],
+    ]);
+    expect(markedPathLines(text.replaceAll('\n', '\r\n'))).toEqual([
+      [2, 3],
+      [7, 8],
+    ]);
   });
 
   it('the line and the advice', () => {
