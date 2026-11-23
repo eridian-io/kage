@@ -6,6 +6,7 @@
  * `Authorization: Bearer`. Neither, nor the server URL, is ever logged, thrown or returned:
  * failures are named by `redact`, which returns a fixed word, an HTTP status or an error code.
  */
+import { randomBytes } from 'node:crypto';
 import { LIMITS } from '@kage/shared';
 import { plainLine } from '../text/bounds.ts';
 
@@ -138,8 +139,6 @@ type Outcome =
   | { kind: 'ok' }
   | { kind: 'final'; status: number }
   | { kind: 'retry'; err: unknown; waitMs: number | null }
-  /** M8: the try timed out after the request went out; ntfy may have delivered it. */
-  | { kind: 'timeout'; err: unknown }
   | { kind: 'closed' };
 
 export class NtfyClient {
@@ -192,6 +191,11 @@ export class NtfyClient {
       return false;
     }
     const body = publishBody(this.#config, p);
+    // M8, R139: every try of this ping carries one random sequence id, so a retry after a try
+    // that timed out but was delivered replaces that notification instead of adding a copy
+    // (ntfy 2.16.0+; older servers ignore the header). Random: nothing of the session, the
+    // topic or the token.
+    const sequenceId = randomBytes(16).toString('base64url');
     let last: unknown;
     let retryAfter: number | null = null;
     for (let i = 0; i <= NTFY.backoffMs.length; i++) {
@@ -206,14 +210,9 @@ export class NtfyClient {
         }
         if (this.#closed.signal.aborted || !stillWanted()) return false;
       }
-      const out = await this.#try(body);
+      const out = await this.#try(body, sequenceId);
       if (out.kind === 'ok') return true;
       if (out.kind === 'closed') return false;
-      if (out.kind === 'timeout') {
-        // M8: never tried again, so a slow ntfy that delivers anyway doesn't get a copy.
-        this.#say(`ntfy: couldn't send a ping (${redact(out.err)}).`);
-        return false;
-      }
       if (out.kind === 'final') {
         const hint = out.status === 401 || out.status === 403 ? ' Check ntfyToken.' : '';
         this.#say(`ntfy: the server refused the ping (HTTP ${out.status}).${hint}`);
@@ -227,13 +226,16 @@ export class NtfyClient {
   }
 
   /** One POST with its own timeout; the response body is discarded unread. */
-  async #try(body: string): Promise<Outcome> {
+  async #try(body: string, sequenceId: string): Promise<Outcome> {
     const timeout = new AbortController();
     const timer = setTimeout(
       () => timeout.abort(new DOMException('The ntfy request timed out.', 'TimeoutError')),
       NTFY.timeoutMs,
     );
-    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'X-Sequence-ID': sequenceId,
+    };
     if (this.#config.token !== '') headers.Authorization = `Bearer ${this.#config.token}`;
     try {
       const res = await this.#fetch(`${this.#config.server}/`, {
@@ -252,8 +254,6 @@ export class NtfyClient {
       return { kind: 'final', status: res.status };
     } catch (err) {
       if (this.#closed.signal.aborted) return { kind: 'closed' };
-      // Kage can't see when the request's bytes left, so a timeout counts as sent (M8).
-      if (timeout.signal.aborted) return { kind: 'timeout', err: timeout.signal.reason ?? err };
       return { kind: 'retry', err, waitMs: null };
     } finally {
       clearTimeout(timer);

@@ -414,7 +414,7 @@ describe('ControlClient timeouts (reliability M6)', () => {
       await vi.advanceTimersByTimeAsync(4999);
       expect((proc as FakeProc | null)?.killed).toBe(false);
       await vi.advanceTimersByTimeAsync(1);
-      expect(await up).toBe("tmux didn't answer within 5 s.");
+      expect(await up).toBe("tmux didn't answer in time.");
       expect((proc as FakeProc | null)?.killed).toBe(true);
       expect(exits).toBe(1);
       await expect(c.run(['set-option -w -u -t @2 window-size'])).rejects.toThrow('tmux stopped.');
@@ -449,7 +449,7 @@ describe('ControlClient timeouts (reliability M6)', () => {
       const first = s.client.run(['set-option -w -u -t @2 window-size']).catch((e: Error) => e);
       const second = s.client.run(['set-option -w -u -t @7 window-size']).catch((e: Error) => e);
       await vi.advanceTimersByTimeAsync(5000);
-      expect(((await first) as Error).message).toBe("tmux didn't answer within 5 s.");
+      expect(((await first) as Error).message).toBe("tmux didn't answer in time.");
       expect(((await second) as Error).message).toBe('tmux stopped.');
       expect(s.proc.killed).toBe(true);
       expect(exits).toBe(1);
@@ -458,6 +458,98 @@ describe('ControlClient timeouts (reliability M6)', () => {
       await expect(s.client.run(['set-option -w -u -t @2 window-size'])).rejects.toThrow(
         'tmux stopped.',
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  /** A client attached under fake timers, with its fake tmux and an exit count. */
+  async function upUnderFakeTimers() {
+    const procs: FakeProc[] = [];
+    const state = { exits: 0 };
+    const client = new ControlClient({
+      target: { socket: null },
+      session: 'kage',
+      spawn: (() => {
+        const q = new FakeProc();
+        procs.push(q);
+        return q;
+      }) as never,
+      onLine: () => {},
+      onExit: () => state.exits++,
+    });
+    const up = client.start();
+    procs[0]?.say('%begin 1 1 0\n%end 1 1 0\n');
+    await vi.advanceTimersByTimeAsync(0);
+    await up;
+    return { client, proc: procs[0] as FakeProc, state };
+  }
+
+  it('R139: a run whose answer keeps streaming bytes outlives 5 s, up to the 15 s cap', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, proc, state } = await upUnderFakeTimers();
+      const res = client.run(['capture-pane -p -e -N -S -1000 -t %3']).catch((e: Error) => e);
+      proc.say('%begin 1 2 1\n');
+      // A big capture under load: a row every 2 s, never 5 s of silence.
+      for (let t = 0; t < 7; t++) {
+        await vi.advanceTimersByTimeAsync(2000);
+        proc.say(`row ${t}\n`);
+      }
+      expect(proc.killed).toBe(false);
+      await vi.advanceTimersByTimeAsync(1000); // 15 s at the head
+      expect(((await res) as Error).message).toBe("tmux didn't answer in time.");
+      expect(proc.killed).toBe(true);
+      expect(state.exits).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('R139: bytes reset the idle timer; a streamed answer that ends in time resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, proc } = await upUnderFakeTimers();
+      const res = client.run(['capture-pane -p -e -N -S -1000 -t %3']);
+      await vi.advanceTimersByTimeAsync(4000);
+      proc.say('%begin 1 2 1\nrow\n');
+      await vi.advanceTimersByTimeAsync(4000);
+      proc.say('%end 1 2 1\n');
+      await vi.advanceTimersByTimeAsync(0);
+      expect((await res).map((rows) => rows.map(String))).toEqual([['row']]);
+      expect(proc.killed).toBe(false);
+      // Nothing waits: no timer is left.
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(proc.killed).toBe(false);
+      client.close();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("R139: a run's cap starts when it reaches the head, not when it was queued", async () => {
+    vi.useFakeTimers();
+    try {
+      const { client, proc } = await upUnderFakeTimers();
+      const first = client.run(['capture-pane -p -e -N -S -1000 -t %3']);
+      const second = client.run(['set-option -w -u -t @2 window-size']).catch((e: Error) => e);
+      proc.say('%begin 1 2 1\n');
+      for (let t = 0; t < 6; t++) {
+        await vi.advanceTimersByTimeAsync(2000);
+        proc.say('row\n');
+      }
+      proc.say('%end 1 2 1\n'); // 12 s: the first is answered, the second reaches the head
+      await vi.advanceTimersByTimeAsync(0);
+      await first;
+      for (let t = 0; t < 6; t++) {
+        await vi.advanceTimersByTimeAsync(2000);
+        proc.say('%output %3 x\n'); // bytes, but not its answer
+      }
+      // 24 s since it was queued, 12 s at the head: still waiting.
+      expect(proc.killed).toBe(false);
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(((await second) as Error).message).toBe("tmux didn't answer in time.");
+      expect(proc.killed).toBe(true);
     } finally {
       vi.useRealTimers();
     }

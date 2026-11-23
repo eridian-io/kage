@@ -270,8 +270,25 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
   });
 
   it('capturePane returns text printed in the pane', async () => {
-    const w = (await client.listWindows()).find((x) => x.name === 'second');
-    const pane = w?.paneId as string;
+    // R139: a window of its own with a plain `sh` (no start-up files), which says when it is
+    // ready. Keys typed into a login shell still reading its rc under load were eaten by it
+    // ("-bash: eval: … syntax error"), so the keys wait for the ready marker.
+    const pane = tmux(
+      'new-window',
+      '-d',
+      '-t',
+      'kage',
+      '-n',
+      'capture',
+      '-P',
+      '-F',
+      '#{pane_id}',
+      'env -u ENV sh -c "echo kage-ready; exec sh"',
+    ).trim();
+    const ready = await until(async () =>
+      (await client.capturePane(pane, 50)).includes('kage-ready') ? true : undefined,
+    );
+    expect(ready).toBe(true);
     tmux('send-keys', '-t', pane, 'echo kage-marker-$((6*7))', 'Enter');
     let text = '';
     for (let i = 0; i < 150 && !text.includes('kage-marker-42'); i++) {

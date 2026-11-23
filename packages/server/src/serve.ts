@@ -28,6 +28,7 @@ import { gitCommonDir, gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
+import { SettingsWriteError } from './hooks/settings.ts';
 import { KAGE_VERSION, runMode, serviceCleanEnv, tmuxServerScope } from './install/runtime.ts';
 import {
   defaultTailscaleIp,
@@ -267,8 +268,12 @@ async function startLive(
     settingsPath = await cli.writeSettings(io.env);
   } catch (err) {
     // M5: a full disk under the service's restart loop must not keep Kage down when the file
-    // there already says exactly what it would write.
-    const current = await cli.currentSettings(io.env).catch(() => null);
+    // there already says exactly what it would write. Only the write or rename (R139): a folder
+    // Kage couldn't make or tighten stops it as before.
+    const current =
+      err instanceof SettingsWriteError
+        ? await cli.currentSettings(io.env).catch(() => null)
+        : null;
     if (current === null) {
       throw new StartError(`Couldn't write the Claude settings file: ${oneLine(err)}`);
     }

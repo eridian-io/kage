@@ -30,6 +30,11 @@ const NEEDS: Ping = {
   click: 'http://box.tail1.ts.net:8080/#s=s1',
 };
 
+/** 16 random bytes in base64url: ntfy's sequence id for every try of one ping (M8, R139). */
+const SEQ = /^[A-Za-z0-9_-]{22}$/;
+const seqOf = (init: RequestInit): string =>
+  (init.headers as Record<string, string>)['X-Sequence-ID'] ?? '';
+
 interface Call {
   url: string;
   init: RequestInit;
@@ -167,7 +172,10 @@ describe('NtfyClient.send', () => {
     expect(call.url).not.toContain(CFG.topic);
     expect(call.init.method).toBe('POST');
     expect(call.init.redirect).toBe('manual');
-    expect(call.init.headers).toEqual({ 'Content-Type': 'application/json' });
+    expect(call.init.headers).toEqual({
+      'Content-Type': 'application/json',
+      'X-Sequence-ID': expect.stringMatching(SEQ),
+    });
     expect(call.init.body).toBe(publishBody(CFG, NEEDS));
     expect(call.init.signal).toBeInstanceOf(AbortSignal);
     expect(lines).toEqual([]);
@@ -180,6 +188,7 @@ describe('NtfyClient.send', () => {
     const call = f.calls[0] as Call;
     expect(call.init.headers).toEqual({
       'Content-Type': 'application/json',
+      'X-Sequence-ID': expect.stringMatching(SEQ),
       Authorization: 'Bearer tk_abcdefghijklmnop',
     });
     expect(call.url).not.toContain('tk_');
@@ -267,7 +276,7 @@ describe('NtfyClient.send', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 
-  it('a hang → aborted at 5,000 ms, not tried again (M8), false with one line', async () => {
+  it('a hang → aborted at 5,000 ms on each try, then false after 4 tries', async () => {
     vi.useFakeTimers();
     let tries = 0;
     const aborts: number[] = [];
@@ -284,40 +293,51 @@ describe('NtfyClient.send', () => {
     expect(aborts).toEqual([]);
     await vi.advanceTimersByTimeAsync(1);
     expect(aborts).toEqual([5000]);
-    await vi.advanceTimersByTimeAsync(60_000);
+    await vi.advanceTimersByTimeAsync(2000 + 5000 + 8000 + 5000 + 30000 + 5000);
     expect(await done).toBe(false);
-    expect(tries).toBe(1);
+    expect(tries).toBe(4);
+    expect(aborts).toEqual([5000, 12_000, 25_000, 60_000]);
     expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('a ping that timed out after sending is not tried again', async () => {
-    // M8: a slow ntfy that answers after 6 s still delivered the ping; a retry would be a copy.
+  it('every try of one ping carries the same X-Sequence-ID; another ping gets another (M8, R139)', async () => {
+    // A try that timed out may still have been delivered: its retry, with the same id, replaces
+    // that notification on ntfy 2.16.0+ instead of adding a copy.
+    const f = recording([status(503), status(503), status(200)]);
+    const { c } = client({ fetch: f.fetch });
+    expect(await c.send(NEEDS)).toBe(true);
+    expect(await c.send({ ...NEEDS, title: 'demo is done', priority: 3 })).toBe(true);
+    expect(f.calls).toHaveLength(4);
+    const ids = f.calls.map((x) => seqOf(x.init));
+    for (const id of ids) expect(id).toMatch(SEQ);
+    expect(new Set(ids.slice(0, 3)).size).toBe(1);
+    expect(ids[3]).not.toBe(ids[0]);
+    // Header only: the JSON body is unchanged, and the id is nothing of the topic or the token.
+    expect(f.calls[0]?.init.body).toBe(publishBody(CFG, NEEDS));
+    expect(ids[0]).not.toContain(CFG.topic);
+  });
+
+  it('a try that times out is tried again with the same id, after checking it is still wanted', async () => {
     vi.useFakeTimers();
-    const calls: number[] = [];
-    const fetch: FetchFn = (_url, init) => {
-      calls.push(Date.now());
-      // Like fetch: the answer would come at 6 s, but the abort at 5 s rejects first.
-      return new Promise((resolve, reject) => {
-        const t = setTimeout(() => resolve(new Response('ok')), 6000);
-        const signal = init.signal as AbortSignal;
-        signal.addEventListener(
-          'abort',
-          () => {
-            clearTimeout(t);
-            reject(signal.reason);
-          },
-          { once: true },
-        );
-      });
+    const ids: string[] = [];
+    let n = 0;
+    const fetch: FetchFn = (url, init) => {
+      ids.push(seqOf(init));
+      n++;
+      return n === 1 ? hanging(url, init) : Promise.resolve(new Response('ok'));
     };
-    const lines: string[] = [];
-    const c = new NtfyClient({ config: CFG, fetch, log: (l) => lines.push(l) });
-    const done = c.send(NEEDS);
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(await done).toBe(false);
-    expect(calls).toHaveLength(1);
-    expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
+    let asked = 0;
+    const c = new NtfyClient({ config: CFG, fetch, log: () => {} });
+    const done = c.send(NEEDS, () => {
+      asked++;
+      return true;
+    });
+    await vi.advanceTimersByTimeAsync(5000 + 2000);
+    expect(await done).toBe(true);
+    expect(ids).toHaveLength(2);
+    expect(ids[1]).toBe(ids[0]);
+    expect(asked).toBeGreaterThanOrEqual(1);
   });
 
   it('a network error before an answer is still tried again', async () => {

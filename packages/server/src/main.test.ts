@@ -8,7 +8,7 @@ import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { HOOK_EVENTS } from './hooks/event.ts';
-import { hookCommand } from './hooks/settings.ts';
+import { hookCommand, SettingsWriteError } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
@@ -410,7 +410,7 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
 
 describe('kage serve: the Claude settings file (reliability M5)', () => {
   /** Live startup up to the settings file, against a fake tmux and a private hook socket. */
-  async function serveWithFailingWrite(current: string | null) {
+  async function serveWithFailingWrite(current: string | null, step: 'write' | 'mkdir' = 'write') {
     const e = env({
       KAGE_HOST: '127.0.0.1',
       KAGE_PORT: String(await port()),
@@ -428,7 +428,8 @@ describe('kage serve: the Claude settings file (reliability M5)', () => {
         writeSettings: async () => {
           // The signal stops startup right after this step, so the test needs no tmux watcher.
           ac.abort();
-          throw new Error('ENOSPC: no space left on device, write');
+          if (step === 'mkdir') throw new Error('EACCES: permission denied, mkdir');
+          throw new SettingsWriteError(new Error('ENOSPC: no space left on device, write'));
         },
         currentSettings: async () => current,
       },
@@ -442,6 +443,14 @@ describe('kage serve: the Claude settings file (reliability M5)', () => {
     expect(err).toEqual([
       "kage: couldn't rewrite the Claude settings file (ENOSPC: no space left on device, write), but the one there is current.",
       'Stopped before Kage was ready.',
+    ]);
+  });
+
+  it('R139: a failed mkdir or chmod stops serve even when the file there is current', async () => {
+    const r = await serveWithFailingWrite('/state/kage/claude-settings.json', 'mkdir');
+    expect(r).toBe(1);
+    expect(err).toEqual([
+      "Couldn't write the Claude settings file: EACCES: permission denied, mkdir",
     ]);
   });
 

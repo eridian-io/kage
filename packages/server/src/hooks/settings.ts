@@ -41,9 +41,22 @@ function settingsText(command: readonly string[]): string {
 }
 
 /**
+ * The write or the rename of the settings file failed (a full disk), after its folder was made
+ * and checked. Only this failure lets serve go on with a file that is already current (M5, R139);
+ * a failed mkdir or chmod stops it. The message is the cause's.
+ */
+export class SettingsWriteError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause });
+    this.name = 'SettingsWriteError';
+  }
+}
+
+/**
  * Writes a Claude settings file that registers Kage's hooks and nothing else, for
  * `claude --settings <file>`. Returns the file path. The directory is 0700 (an existing one of
- * ours that is looser is tightened) and the file 0600. A failed write leaves no temp file (M5).
+ * ours that is looser is tightened) and the file 0600. A failed write leaves no temp file and
+ * throws SettingsWriteError (M5).
  */
 export async function writeHooksSettings(dir: string, command: string[]): Promise<string> {
   if (command.length === 0) throw new Error('writeHooksSettings: command is empty');
@@ -57,7 +70,7 @@ export async function writeHooksSettings(dir: string, command: string[]): Promis
     await rename(tmp, path);
   } catch (err) {
     await rm(tmp, { force: true }).catch(() => {});
-    throw err;
+    throw new SettingsWriteError(err);
   }
   return path;
 }

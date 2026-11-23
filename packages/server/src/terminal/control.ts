@@ -153,6 +153,8 @@ interface Entry {
   attach?: boolean;
   /** A fire-and-forget line: its answer doesn't pause reading. */
   quiet?: boolean;
+  /** A run(): watched by the idle timeout while queued and by the cap once at the head (M6). */
+  run?: boolean;
   resolve: (v: Buffer[][]) => void;
   reject: (e: Error & { rows?: Buffer[] }) => void;
 }
@@ -173,9 +175,16 @@ const KILL_AFTER_MS = 2000;
 
 const stopped = (): Error => new Error('tmux stopped.');
 
-/** M6: how long the attach and each command may take, as every other tmux call (tmux/client.ts). */
+/** M6: how long the attach may take, as every other tmux call (tmux/client.ts). */
 export const ANSWER_TIMEOUT_MS = 5000;
-const timedOut = (): Error => new Error("tmux didn't answer within 5 s.");
+/**
+ * M6, R139: a run() fails when tmux sends no byte at all for this long while one waits (a big
+ * capture keeps streaming rows, so it isn't cut off)…
+ */
+export const RUN_IDLE_MS = 5000;
+/** …or when one has been at the head of the queue this long, bytes or not. */
+export const RUN_CAP_MS = 15_000;
+const timedOut = (): Error => new Error("tmux didn't answer in time.");
 
 /**
  * One tmux control-mode client (`tmux -C attach`) that writes commands and reads their answers.
@@ -196,6 +205,12 @@ export class ControlClient {
   readonly #queue: Entry[] = [];
   #block: Block | null = null;
   #killTimer: NodeJS.Timeout | null = null;
+  /** M6: the idle timer while a run waits, and when tmux last sent a byte (monotonic ms). */
+  #idleTimer: NodeJS.Timeout | null = null;
+  #lastByteAt = 0;
+  /** M6: the cap timer of the run at the head of the queue. */
+  #capTimer: NodeJS.Timeout | null = null;
+  #capFor: Entry | null = null;
 
   constructor(o: {
     target: TmuxTarget;
@@ -252,25 +267,71 @@ export class ControlClient {
     }
     if (this.#state !== 'up' || !this.#proc) return Promise.reject(stopped());
     return new Promise((resolve, reject) => {
-      this.#queue.push(
-        this.#timed({ blocks: cmds.length, countFor, results: [], resolve, reject }),
-      );
+      this.#queue.push({ blocks: cmds.length, countFor, results: [], run: true, resolve, reject });
+      this.#watch();
       this.#proc?.stdin?.write(`${line}\n`);
     });
   }
 
   /**
-   * M6: the entry settles within ANSWER_TIMEOUT_MS. A timeout rejects it, then kills tmux and
-   * reports the exit: every later answer would be matched to the wrong command.
+   * M6, R139: re-arms the run timers after the queue changed. While any run waits, 5 s with no
+   * byte from tmux fails the first one; the run at the head fails after 15 s there (its cap
+   * starts when it reaches the head, not when it was queued). A failure kills tmux and reports
+   * the exit, since every later answer would be matched to the wrong command; the bridge then
+   * closes every terminal on this shared client.
+   */
+  #watch(): void {
+    const up = this.#state === 'up';
+    if (!up || !this.#queue.some((e) => e.run)) {
+      if (this.#idleTimer) clearTimeout(this.#idleTimer);
+      this.#idleTimer = null;
+    } else if (!this.#idleTimer) {
+      this.#lastByteAt = performance.now();
+      this.#armIdle(RUN_IDLE_MS);
+    }
+    const head = up ? this.#queue[0] : undefined;
+    if (head?.run) {
+      if (this.#capFor === head) return;
+      if (this.#capTimer) clearTimeout(this.#capTimer);
+      this.#capFor = head;
+      this.#capTimer = setTimeout(() => this.#timeout(head), RUN_CAP_MS);
+      this.#capTimer.unref?.();
+    } else {
+      if (this.#capTimer) clearTimeout(this.#capTimer);
+      this.#capTimer = null;
+      this.#capFor = null;
+    }
+  }
+
+  #armIdle(ms: number): void {
+    this.#idleTimer = setTimeout(() => {
+      this.#idleTimer = null;
+      const quiet = performance.now() - this.#lastByteAt;
+      if (quiet < RUN_IDLE_MS) {
+        this.#armIdle(RUN_IDLE_MS - quiet);
+        return;
+      }
+      const first = this.#queue.find((e) => e.run);
+      if (first) this.#timeout(first);
+    }, ms);
+    this.#idleTimer.unref?.();
+  }
+
+  /** Rejects `e` with the timeout, then kills tmux and reports the exit (#broken). */
+  #timeout(e: Entry): void {
+    const i = this.#queue.indexOf(e);
+    if (i < 0) return;
+    this.#queue.splice(i, 1);
+    e.reject(timedOut());
+    this.#broken();
+  }
+
+  /**
+   * M6: the attach settles within ANSWER_TIMEOUT_MS. A timeout rejects it, then kills tmux and
+   * reports the exit.
    */
   #timed(e: Entry): Entry {
-    const timer = setTimeout(() => {
-      const i = this.#queue.indexOf(e);
-      if (i < 0) return;
-      this.#queue.splice(i, 1);
-      e.reject(timedOut());
-      this.#broken();
-    }, ANSWER_TIMEOUT_MS);
+    const timer = setTimeout(() => this.#timeout(e), ANSWER_TIMEOUT_MS);
     timer.unref?.();
     const { resolve, reject } = e;
     e.resolve = (v) => {
@@ -329,6 +390,7 @@ export class ControlClient {
     this.#state = 'done';
     this.#block = null;
     for (const e of this.#queue.splice(0)) e.reject(stopped());
+    this.#watch();
   }
 
   #ended(proc: WatchedProcess): void {
@@ -342,6 +404,7 @@ export class ControlClient {
   }
 
   #data(chunk: Buffer): void {
+    this.#lastByteAt = performance.now();
     this.#rest = this.#rest.length === 0 ? chunk : Buffer.concat([this.#rest, chunk]);
     if (this.#rest.length > MAX_PENDING) {
       this.#broken();
@@ -434,6 +497,7 @@ export class ControlClient {
     if (!e) return;
     if (error) {
       this.#queue.shift();
+      this.#watch();
       const text = b.rows.map((r) => r.toString('utf8')).join('\n') || 'tmux refused the command';
       e.reject(Object.assign(new Error(text), { rows: b.rows }));
       if (!e.quiet) this.#pause();
@@ -442,6 +506,7 @@ export class ControlClient {
     e.results.push(b.rows);
     if (e.results.length < e.blocks) return;
     this.#queue.shift();
+    this.#watch();
     e.resolve(e.results);
     if (!e.quiet) this.#pause();
   }

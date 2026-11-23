@@ -54,7 +54,11 @@ describe('NtfyClient against the fake ntfy server', () => {
     });
     expect(got?.headers['content-type']).toBe('application/json');
     expect(got?.headers.authorization).toBe('Bearer tk_int_abcdefghijklmnop');
+    expect(got?.headers['x-sequence-id']).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(lines).toEqual([]);
+    // Another ping, another id.
+    expect(await c.send(PING)).toBe(true);
+    expect(f.received[1]?.headers['x-sequence-id']).not.toBe(got?.headers['x-sequence-id']);
     c.close();
   });
 
@@ -95,7 +99,7 @@ describe('NtfyClient against the fake ntfy server', () => {
     expect(lines).toEqual(['ntfy: the server refused the ping (HTTP 302).']);
   });
 
-  it('a server that hangs is cut off at the timeout, and the ping is not sent again (M8)', async () => {
+  it('a server that hangs is cut off at the timeout on every try, each with the same X-Sequence-ID', async () => {
     const f = await fake({ hang: true });
     vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
     const lines: string[] = [];
@@ -105,13 +109,17 @@ describe('NtfyClient against the fake ntfy server', () => {
       sleep: async () => {},
     });
     const done = c.send(PING);
-    // wait (in real time) until the request has reached the fake, then let the timeout fire
-    while (f.received.length < 1) await new Promise((r) => setImmediate(r));
-    await vi.advanceTimersByTimeAsync(NTFY.timeoutMs);
+    for (let i = 1; i <= 4; i++) {
+      // wait (in real time) until the request has reached the fake, then let the timeout fire
+      while (f.received.length < i) await new Promise((r) => setImmediate(r));
+      await vi.advanceTimersByTimeAsync(NTFY.timeoutMs);
+    }
     expect(await done).toBe(false);
-    // The ping reached the server, which may still deliver it: no second copy.
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(f.received).toHaveLength(1);
+    expect(f.received).toHaveLength(4);
+    // M8, R139: a hung try may still be delivered; the same id makes a retry replace it.
+    const ids = f.received.map((r) => r.headers['x-sequence-id']);
+    expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{22}$/);
+    expect(new Set(ids).size).toBe(1);
     expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
   });
 });

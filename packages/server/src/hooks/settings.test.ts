@@ -17,6 +17,7 @@ import {
   currentHooksSettings,
   hookCommand,
   SETTINGS_FILE,
+  SettingsWriteError,
   shellQuote,
   writeHooksSettings,
 } from './settings.ts';
@@ -138,8 +139,16 @@ describe('writeHooksSettings', () => {
     // M5: the rename fails (a folder holds the name), as a full disk fails the write; either way
     // the temp file goes, so the service's restart loop doesn't leave one every 5 s.
     mkdirSync(join(dir, SETTINGS_FILE, 'x'), { recursive: true });
-    await expect(writeHooksSettings(dir, COMMAND)).rejects.toThrow();
+    await expect(writeHooksSettings(dir, COMMAND)).rejects.toBeInstanceOf(SettingsWriteError);
     expect(readdirSync(dir).filter((n) => n.endsWith('.tmp'))).toEqual([]);
+  });
+
+  it('R139: a folder it cannot make is a plain error, not SettingsWriteError (serve stops)', async () => {
+    const file = join(dir, 'a-file');
+    writeFileSync(file, 'x');
+    const e = await writeHooksSettings(join(file, 'kage'), COMMAND).catch((x: unknown) => x);
+    expect(e).toBeInstanceOf(Error);
+    expect(e).not.toBeInstanceOf(SettingsWriteError);
   });
 
   it('currentHooksSettings: the path when the file holds exactly what a write would, else null', async () => {
