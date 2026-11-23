@@ -2,21 +2,25 @@ import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { homedir, tmpdir } from 'node:os';
+import { join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { gunzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { assetName, npmTarball, TARGETS } from '../install/targets.ts';
 import {
+  assertSafeOut,
   buildSea,
+  cleanRelease,
   hostTarget,
+  isReleaseName,
   npmEnv,
   parseArgs,
   REPO,
   releaseNode,
   seaConfig,
   stageNpm,
+  USAGE,
   writeSums,
   writeVersion,
 } from './build.ts';
@@ -188,7 +192,13 @@ describe('the CLI arguments', () => {
       out: 'dist/release',
       mode: 'all',
       version: undefined,
+      node: undefined,
+      help: false,
     });
+    expect(parseArgs(['--out', 'o', '--sea-only', '--node', '/opt/node/bin/node']).node).toBe(
+      '/opt/node/bin/node',
+    );
+    expect(parseArgs(['--help']).help).toBe(true);
     expect(parseArgs(['--out', 'o', '--sea-only']).mode).toBe('sea-only');
     expect(parseArgs(['--out', 'o', '--no-sea']).mode).toBe('no-sea');
     expect(parseArgs(['--out', 'o', '--version-override', '0.0.1-test.2']).version).toBe(
@@ -199,12 +209,70 @@ describe('the CLI arguments', () => {
   it('refuses --sea-only with --no-sea, unknown flags and a version that is not semver', () => {
     expect(() => parseArgs(['--out', 'o', '--sea-only', '--no-sea'])).toThrow();
     expect(() => parseArgs(['--out', 'o', '--publish'])).toThrow();
+    expect(() => parseArgs(['--out', 'o', '--no-sea', '--node', 'n'])).toThrow(/--node/);
     expect(() => parseArgs(['--out', 'o', '--version-override', 'v1.2'])).toThrow(/version/);
     expect(() => parseArgs(['--out', 'o', '--version-override', '1.2.3; rm'])).toThrow(/version/);
   });
 
   it('the release Node is .node-version', () => {
     expect(releaseNode()).toBe(readFileSync(join(REPO, '.node-version'), 'utf8').trim());
+  });
+
+  it('--help says the local Node is trusted as it is, and what --node is for', () => {
+    expect(USAGE).toContain('trusted as it is');
+    expect(USAGE).toContain('SHASUMS256.txt');
+    expect(USAGE).toContain(`Node ${releaseNode()}`);
+  });
+});
+
+describe('the release folder (R118)', () => {
+  const home = resolve(tmpdir(), 'kage-fake-home');
+  const repo = resolve(home, 'src', 'kage');
+  const safe = (out: string) => assertSafeOut(out, { home, repo });
+
+  it('refuses a file-system root, the home folder, the repository and what holds it', () => {
+    expect(() => safe(parse(process.cwd()).root)).toThrow(/Refusing/);
+    expect(() => safe(home)).toThrow(/Refusing/);
+    expect(() => safe(`${home}/.`)).toThrow(/Refusing/);
+    expect(() => safe(repo)).toThrow(/Refusing/);
+    expect(() => safe(join(repo, '..'))).toThrow(/Refusing/);
+    expect(() => safe(join(home, 'src'))).toThrow(/Refusing/);
+  });
+
+  it('accepts a folder of its own, inside the repository or elsewhere', () => {
+    expect(safe(join(repo, 'dist', 'release'))).toBe(join(repo, 'dist', 'release'));
+    expect(safe(join(home, 'kage-release'))).toBe(join(home, 'kage-release'));
+    expect(safe(join(home, 'src', 'kage-other'))).toBe(join(home, 'src', 'kage-other'));
+  });
+
+  it('the real defaults refuse the real repository and home folder', () => {
+    expect(() => assertSafeOut(REPO)).toThrow(/Refusing/);
+    expect(() => assertSafeOut(homedir())).toThrow(/Refusing/);
+    expect(assertSafeOut(join(REPO, 'dist', 'release'))).toBe(join(REPO, 'dist', 'release'));
+  });
+
+  it('cleaning removes only the release files and npm/, nothing else', async () => {
+    const dir = temp('kage-clean-');
+    const keep = ['notes.txt', 'kage-linux-x64', 'kage-windows-x64.gz', 'other.tgz', 'VERSION.bak'];
+    const gone = [
+      ...TARGETS.map(assetName),
+      'eridian-io-kage-0.0.1.tgz',
+      'eridian-io-kage-1.0.0-rc.1.tgz',
+      'VERSION',
+      'SHA256SUMS',
+    ];
+    for (const n of [...keep, ...gone]) writeFileSync(join(dir, n), n);
+    mkdirSync(join(dir, 'npm', 'web'), { recursive: true });
+    writeFileSync(join(dir, 'npm', 'web', 'index.html'), 'x');
+    mkdirSync(join(dir, 'mine'));
+    await cleanRelease(dir);
+    expect(readdirSync(dir).sort()).toEqual([...keep, 'mine'].sort());
+    for (const n of gone) expect(isReleaseName(n)).toBe(true);
+    for (const n of keep) expect(isReleaseName(n)).toBe(false);
+  });
+
+  it('cleaning a folder that does not exist is fine', async () => {
+    await expect(cleanRelease(join(temp('kage-clean-'), 'nope'))).resolves.toBeUndefined();
   });
 });
 

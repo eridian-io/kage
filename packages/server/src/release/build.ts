@@ -4,7 +4,12 @@
  * more to stage the npm package and checksum the lot (`--no-sea`); `pnpm release:local` runs it
  * whole for this machine. It never publishes anything (R107): the only npm command is `npm pack`.
  *
- *   node packages/server/src/release/build.ts --out <dir> [--sea-only | --no-sea] [--version-override <v>]
+ *   node packages/server/src/release/build.ts --out <dir> [--sea-only | --no-sea] [--node <path>]
+ *     [--version-override <v>]   (--help for the details)
+ *
+ * Node integrity: the workflow passes `--node`, a Node it fetched from nodejs.org and checked
+ * against SHASUMS256.txt and its signature (.github/node-release-keys.asc). `pnpm release:local`
+ * uses the Node running it, trusted as it is.
  *
  * The single executable (host-integration §7.1 to §7.3, R110): esbuild's CommonJS entry, a blob
  * from `node --experimental-sea-config` with the code cache made here (so each target builds on
@@ -19,9 +24,19 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, copyFile, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  chmod,
+  copyFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readdir,
+  readFile,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs as parseCli, promisify } from 'node:util';
 import { gzip } from 'node:zlib';
@@ -266,11 +281,30 @@ export async function writeSums(dir: string, files: string[]): Promise<string> {
   return file;
 }
 
+export const USAGE = `Usage: node packages/server/src/release/build.ts --out <dir> [--sea-only | --no-sea]
+         [--node <path>] [--version-override <version>]
+
+  (default)     The single executable for this machine, the npm package, VERSION and SHA256SUMS.
+  --sea-only    Only the single executable (each release runner).
+  --no-sea      The four executables are in <dir> already: the npm package, VERSION, SHA256SUMS.
+  --node        The Node binary to build the executable from (Node ${releaseNode()}, .node-version).
+                The release workflow passes one it fetched from nodejs.org and checked against
+                the signed SHASUMS256.txt. Without it (pnpm release:local), the Node running
+                this script is used and trusted as it is: nothing downloads or checks it.
+  --version-override  The version to build (for the install check only).
+
+Before it writes, <dir> loses only the release's own files (kage-<target>.gz,
+eridian-io-kage-*.tgz, VERSION, SHA256SUMS) and its npm/ folder. It refuses /, your home folder,
+the repository and any folder that holds the repository.`;
+
 export interface Args {
   out: string;
   /** all: SEA + npm + VERSION + SUMS; sea-only: the SEA; no-sea: the SEAs are in out already. */
   mode: 'all' | 'sea-only' | 'no-sea';
   version: string | undefined;
+  /** The Node binary for the SEA (default: this process's). */
+  node: string | undefined;
+  help: boolean;
 }
 
 export function parseArgs(argv: string[]): Args {
@@ -280,44 +314,120 @@ export function parseArgs(argv: string[]): Args {
       out: { type: 'string' },
       'sea-only': { type: 'boolean' },
       'no-sea': { type: 'boolean' },
+      node: { type: 'string' },
       'version-override': { type: 'string' },
+      help: { type: 'boolean', short: 'h' },
     },
     strict: true,
     allowPositionals: false,
   });
-  if (!values.out) throw new Error('Usage: build.ts --out <dir> [--sea-only | --no-sea]');
+  const help = values.help === true;
+  if (!values.out && !help) throw new Error('--out <dir> is required. Try --help.');
   if (values['sea-only'] && values['no-sea']) throw new Error('--sea-only or --no-sea, not both.');
+  if (values['no-sea'] && values.node)
+    throw new Error('--node builds an executable; --no-sea does not.');
   const v = values['version-override'];
   if (v !== undefined && !VERSION_RE.test(v)) throw new Error(`Not a release version: ${v}`);
   return {
-    out: values.out,
+    out: values.out ?? '',
     mode: values['sea-only'] ? 'sea-only' : values['no-sea'] ? 'no-sea' : 'all',
     version: v,
+    node: values.node,
+    help,
   };
+}
+
+/** True when `a` is `b` or a folder that holds `b`. */
+function holds(a: string, b: string): boolean {
+  const r = relative(a, b);
+  return r === '' || (!r.startsWith('..') && !isAbsolute(r));
+}
+
+/**
+ * Refuses a release folder whose cleaning could hurt: a file-system root, the home folder, the
+ * repository or any folder that holds it. `out` is resolved first.
+ */
+export function assertSafeOut(out: string, o: { home?: string; repo?: string } = {}): string {
+  const dir = resolve(out);
+  // Windows paths compare without case; elsewhere they are exact.
+  const fold = (x: string) => (process.platform === 'win32' ? x.toLowerCase() : x);
+  const d = fold(dir);
+  if (
+    dirname(dir) === dir ||
+    d === fold(resolve(o.home ?? homedir())) ||
+    holds(d, fold(resolve(o.repo ?? REPO)))
+  ) {
+    throw new Error(
+      `Refusing to build into ${dir}: choose a folder of its own, such as dist/release.`,
+    );
+  }
+  return dir;
+}
+
+/** A release file build.ts writes, by name. */
+export function isReleaseName(name: string): boolean {
+  return (
+    TARGETS.some((t) => assetName(t) === name) ||
+    /^eridian-io-kage-.+\.tgz$/.test(name) ||
+    name === VERSION_FILE ||
+    name === SUMS_FILE
+  );
+}
+
+/** Removes the release's own files and npm/ from `dir`, nothing else. */
+export async function cleanRelease(dir: string): Promise<void> {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw err;
+  }
+  for (const n of names) {
+    if (isReleaseName(n)) await rm(join(dir, n), { force: true });
+  }
+  await rm(join(dir, 'npm'), { recursive: true, force: true });
+}
+
+/** `node --version` of a Node binary, without the v. */
+async function versionOf(node: string): Promise<string> {
+  const { stdout } = await exec(node, ['--version'], { env: childEnv() });
+  // The first line only: a program that isn't Node may print a page.
+  const [first = ''] = stdout.trim().split(/\r?\n/);
+  return first.replace(/^v/, '');
 }
 
 export async function main(argv: string[]): Promise<void> {
   const a = parseArgs(argv);
+  if (a.help) {
+    console.log(USAGE);
+    return;
+  }
   const version = a.version ?? packageVersion();
   if (!VERSION_RE.test(version)) throw new Error(`Not a release version: ${version}`);
-  const out = resolve(a.out);
-  if (a.mode !== 'no-sea' && process.version !== `v${releaseNode()}`) {
-    throw new Error(
-      `Build the single executable with Node ${releaseNode()} (.node-version); this is ${process.version}.`,
-    );
+  const out = assertSafeOut(a.out);
+  const node = a.node === undefined ? undefined : resolve(a.node);
+  if (a.mode !== 'no-sea') {
+    const v = node === undefined ? process.version.slice(1) : await versionOf(node);
+    if (v !== releaseNode()) {
+      throw new Error(
+        `Build the single executable with Node ${releaseNode()} (.node-version); this is ${v}.`,
+      );
+    }
   }
+  const sea = () => buildSea({ out, version, ...(node === undefined ? {} : { node }) });
 
   if (a.mode === 'sea-only') {
-    console.log(await buildSea({ out, version }));
+    console.log(await sea());
     return;
   }
   let seas: string[];
   if (a.mode === 'all') {
-    // A fresh folder, so SHA256SUMS never covers a stale file.
-    await rm(out, { recursive: true, force: true });
-    seas = [await buildSea({ out, version })];
+    // Only the release's own files go, so SHA256SUMS never covers a stale one.
+    await cleanRelease(out);
+    seas = [await sea()];
   } else {
-    // The workflow's publish job: every target's SEA came from its own runner.
+    // The workflow's stage job: every target's SEA came from its own runner.
     const missing = TARGETS.map(assetName).filter((n) => !existsSync(join(out, n)));
     if (missing.length > 0) throw new Error(`Missing in ${out}: ${missing.join(', ')}`);
     seas = TARGETS.map((t) => join(out, assetName(t)));

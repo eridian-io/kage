@@ -1,19 +1,26 @@
-# The release (phase 6, Task 6). Written, never run by an agent (R107): the owner pushes a v* tag.
+# The release (phase 6, Task 6, hardened in R118). Written, never run by an agent (R107): the
+# owner pushes a v* tag.
 #
-# - build: one single executable per target, each on its own runner, because the SEA's code
-#   cache has to be made on the architecture that runs it (docs/specs/host-integration.md §7.3).
-#   Each is smoke-tested and uploaded as a workflow artifact.
-# - publish: only for a pushed v* tag, never for workflow_dispatch (F5). It stages the npm package,
-#   writes VERSION and SHA256SUMS, attests every file, creates the GitHub release and publishes to
-#   npm through trusted publishing (OIDC; no token is stored anywhere).
+# - build (unprivileged): one single executable per target, each on its own runner, because the
+#   SEA's code cache has to be made on the architecture that runs it (host-integration §7.3). The
+#   Node it is built from is the release Node for that target, fetched from nodejs.org and checked
+#   against SHASUMS256.txt, whose signature is checked against the Node release keys committed in
+#   .github/node-release-keys.asc. Each executable is smoke-tested and uploaded.
+# - stage (unprivileged): the npm package, VERSION and SHA256SUMS over all six files, uploaded as
+#   one artifact.
+# - publish (privileged; a pushed v* tag only, never workflow_dispatch, F5): installs and builds
+#   nothing. It downloads the staged files, checks them against SHA256SUMS, attests them, creates
+#   the GitHub release and publishes the npm tarball through trusted publishing (OIDC; no token
+#   is stored anywhere). A version with a "-" is a pre-release: npm tag "next", --prerelease.
 #
-# Actions are pinned by commit SHA, at releases at least two weeks old.
+# Actions are pinned by commit SHA, at releases at least two weeks old. Values a pusher controls
+# (the ref name) reach run: steps only through env:.
 name: Release
 
 on:
   push:
     tags: ['v*']
-  # Builds and smoke-tests the four executables; publishes nothing.
+  # Builds, smoke-tests and stages; publishes nothing.
   workflow_dispatch:
 
 permissions:
@@ -45,14 +52,43 @@ jobs:
           persist-credentials: false
       # Corepack first, so setup-node finds pnpm (the version pinned in packageManager) for its cache.
       - run: corepack enable
+      # The Node that runs the build tools (esbuild, postject). The executable is made from the
+      # verified Node fetched below, not from this one.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Fetch the release Node and verify it (signature, then checksum)
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          ver="$(cat .node-version)"
+          case "$TARGET" in
+            linux-*) ext=tar.xz ;;
+            darwin-*) ext=tar.gz ;;
+            *) echo "Unknown target $TARGET"; exit 1 ;;
+          esac
+          name="node-v$ver-$TARGET"
+          dir="$RUNNER_TEMP/release-node"
+          mkdir -p "$dir"
+          cd "$dir"
+          base="https://nodejs.org/dist/v$ver"
+          for f in SHASUMS256.txt SHASUMS256.txt.sig "$name.$ext"; do
+            curl -fsSL --proto '=https' --tlsv1.2 -o "$f" "$base/$f"
+          done
+          gpg --batch --yes --dearmor -o keyring.gpg "$GITHUB_WORKSPACE/.github/node-release-keys.asc"
+          gpgv --keyring "$dir/keyring.gpg" SHASUMS256.txt.sig SHASUMS256.txt
+          grep -E "^[0-9a-f]{64}  $name\.$ext\$" SHASUMS256.txt > want.sum
+          [ "$(wc -l < want.sum)" -eq 1 ] || { echo "No single checksum for $name.$ext"; exit 1; }
+          shasum -a 256 -c want.sum
+          tar -xf "$name.$ext"
+          echo "RELEASE_NODE=$dir/$name/bin/node" >> "$GITHUB_ENV"
       - name: Build the single executable
-        run: node packages/server/src/release/build.ts --out dist/release --sea-only
+        run: node packages/server/src/release/build.ts --out dist/release --sea-only --node "$RELEASE_NODE"
       - name: Smoke-test it
         shell: bash
         env:
@@ -73,9 +109,15 @@ jobs:
           [ "$got" = "$want" ] || { echo "kage --version printed '$got', expected '$want'"; exit 1; }
           "$box/kage" hook Stop </dev/null >"$box/out" 2>"$box/err"
           [ ! -s "$box/out" ] && [ ! -s "$box/err" ] || { echo "kage hook printed output"; cat "$box/out" "$box/err"; exit 1; }
-          # Doctor runs; on a runner some checks fail (no tmux, Claude or Tailscale), which is exit 1.
-          set +e; "$box/kage" doctor; code=$?; set -e
+          # Doctor runs to the end: some checks fail on a runner (no tmux, Claude or Tailscale),
+          # which is exit 1. A crash (other codes, a stack trace, no closing line) fails the step.
+          set +e; "$box/kage" doctor >"$box/out" 2>"$box/err"; code=$?; set -e
+          cat "$box/out" "$box/err"
           [ "$code" -le 1 ] || { echo "kage doctor exited $code"; exit 1; }
+          if grep -q '^    at ' "$box/err" "$box/out"; then echo "kage doctor printed a stack trace"; exit 1; fi
+          [ "$(head -n 1 "$box/out")" = "Kage $want" ] || { echo "kage doctor's first line isn't 'Kage $want'"; exit 1; }
+          tail -n 1 "$box/out" | grep -qE '^(Fix the ✗ lines, then run kage doctor again\.|Kage can run\. The ! lines are worth a look\.|Everything looks good\.)$' \
+            || { echo "kage doctor didn't print its closing line"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: kage-${{ matrix.target }}
@@ -83,17 +125,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  publish:
+  stage:
     needs: build
-    # A pushed v* tag only (F5): workflow_dispatch never reaches this job.
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    permissions:
-      contents: write
-      id-token: write
-      attestations: write
-    environment: release
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -103,7 +138,8 @@ jobs:
         with:
           node-version-file: .node-version
           cache: pnpm
-      - name: The tag is v<package version>
+      - name: A tag is v<package version>
+        if: github.ref_type == 'tag'
         env:
           TAG: ${{ github.ref_name }}
         run: |
@@ -121,15 +157,72 @@ jobs:
           node packages/server/src/release/build.ts --out dist/release --no-sea
           rm -rf dist/release/npm
           cd dist/release && sha256sum -c SHA256SUMS && ls -l
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release
+          path: dist/release/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: stage
+    # A pushed v* tag only (F5): workflow_dispatch never reaches this job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    environment: release
+    steps:
+      # Only .node-version, for npm's Node; no repository code runs in this job.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: .node-version
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release
+          path: dist/release
+      - name: Verify the staged files and the tag
+        shell: bash
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cd dist/release
+          sha256sum -c SHA256SUMS
+          # Exactly the files SHA256SUMS covers, plus itself: nothing unlisted gets published.
+          diff <(ls -1 | grep -vx SHA256SUMS | sort) <(sed 's/^[0-9a-f]\{64\}  //' SHA256SUMS | sort)
+          version="$(cat VERSION)"
+          [ "$TAG" = "v$version" ] || { echo "Tag $TAG is not v$version (VERSION)"; exit 1; }
+          [ -f "eridian-io-kage-$version.tgz" ] || { echo "No eridian-io-kage-$version.tgz"; exit 1; }
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
         with:
           subject-path: dist/release/*
       - name: Create the GitHub release
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.ref_name }}
-        run: gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes dist/release/*
+        run: |
+          set -euo pipefail
+          pre=()
+          case "$TAG" in *-*) pre=(--prerelease) ;; esac
+          gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes "${pre[@]}" dist/release/*
       - name: Publish to npm (trusted publishing, with provenance)
+        shell: bash
         env:
           TAG: ${{ github.ref_name }}
-        run: npm publish "dist/release/eridian-io-kage-${TAG#v}.tgz" --provenance --access public
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          dist=()
+          case "$version" in *-*) dist=(--tag next) ;; esac
+          npm publish "dist/release/eridian-io-kage-$version.tgz" --provenance --access public "${dist[@]}"
