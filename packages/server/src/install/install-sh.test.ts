@@ -470,7 +470,11 @@ describe.runIf(!isWindows)('install.sh, run against a local release', { timeout:
       try {
         await Promise.race([asked, tooLong]);
       } catch (e) {
-        process.kill(-(child?.pid as number), 'SIGKILL');
+        try {
+          process.kill(-(child?.pid as number), 'SIGKILL');
+        } catch {
+          // already gone (ESRCH): the timeout below is the error worth seeing
+        }
         throw e;
       } finally {
         clearTimeout(timer);

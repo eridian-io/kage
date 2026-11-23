@@ -5,16 +5,22 @@
 # from a local fake release and starts a task through the board's API (the fake claude). Then
 # `docker restart`: within 30 s the user unit is active again, the board answers, and the task
 # shows as ended (its tmux window didn't survive the restart).
+# Before that (R122): systemctl --user restart, stop and start kage.service each keep the tmux
+# server (in its own kage-tmux-*.scope) and the task's window, and the board still lists the
+# task. After it, kage uninstall --yes keeps the tmux session, as it says.
 #
 # No --privileged and no added capability. systemd needs a writable cgroup tree, which Docker
 # gives an unprivileged container only through the host's (the Docker VM's) cgroup namespace:
 #   --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
 #   --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec,mode=1777
-# (--cgroupns=private, read-only or with that volume, stops systemd at "Failed to allocate
-# manager object".) Only the files git tracks are copied in. Needs Docker. Prints
+# (--cgroupns=private alone stops systemd 257 at "Failed to create /init.scope control group:
+# Read-only file system"; with that volume added, at "Failed to create /init.scope control
+# group: No such file or directory".) The container gets at most 3 GB of memory, the whole run
+# at most 30 minutes. Only the files git tracks are copied in. Needs Docker. Prints
 # "== reboot check passed", or stops at the first broken stage.
 #
-# The same file runs the stages inside: --prepare (root), --install, --back and --after (dev).
+# The same file runs the stages inside: --prepare (root), --install, --survive, --back and
+# --after (dev).
 set -euo pipefail
 
 PORT=4397
@@ -122,6 +128,49 @@ install_kage() {
   board_statuses
 }
 
+# The tmux server of the session kage, and the cgroup it lives in.
+tmux_server() { tmux display -p -t kage '#{pid}'; }
+
+# R122: the tmux server runs in a scope of its own, outside kage.service.
+in_own_scope() {
+  local cg
+  cg=$(cat "/proc/$(tmux_server)/cgroup")
+  echo "tmux server $(tmux_server): $cg"
+  case $cg in */kage-tmux-*.scope) ;; *) fail "the tmux server isn't in a kage-tmux scope: $cg" ;; esac
+}
+
+# The board lists exactly one session, and it hasn't ended.
+task_listed() {
+  local statuses
+  statuses=$(board_statuses | tr '\n' ' ')
+  [ -n "$statuses" ] && [ "$statuses" = "$(echo "$statuses" | cut -d' ' -f1) " ] &&
+    [ "$statuses" != 'ended ' ]
+}
+
+# R122: restart, stop and start of kage.service keep the tmux server and the task's window.
+survive() {
+  in_own_scope
+  local server windows
+  server=$(tmux_server)
+  windows=$(tmux list-windows -t kage -F '#{window_id}' | tr '\n' ' ')
+  echo "windows: $windows"
+  for step in restart stop start; do
+    stage "systemctl --user $step kage.service keeps tmux (R122)"
+    systemctl --user "$step" kage.service
+    if [ "$step" != stop ]; then until_ok 30 back || fail "kage.service didn't come back after $step"; fi
+    tmux has-session -t kage || fail "after $step, the tmux session kage is gone"
+    [ "$(tmux_server)" = "$server" ] || fail "after $step, the tmux server is a new one"
+    [ "$(tmux list-windows -t kage -F '#{window_id}' | tr '\n' ' ')" = "$windows" ] ||
+      fail "after $step, the windows changed: $(tmux list-windows -t kage -F '#{window_id}' | tr '\n' ' ')"
+    if [ "$step" != stop ]; then
+      until_ok 15 task_listed || fail "after $step, the board doesn't list the task: $(board_statuses | tr '\n' ' ')"
+      echo "after $step: the same tmux server ($server), windows $windows, the task shows as $(board_statuses | tr '\n' ' ')"
+    else
+      echo "after stop: the same tmux server ($server), windows $windows"
+    fi
+  done
+}
+
 # The service is back: the unit is active and the board answers.
 back() {
   [ "$(systemctl --user is-active kage.service 2>/dev/null)" = active ] &&
@@ -140,11 +189,23 @@ after() {
   done
   [ "$statuses" = 'ended ' ] || fail "the task doesn't show as ended: $statuses"
   echo "the task shows as: $statuses"
+
+  stage 'the service started tmux at boot in its own scope; kage uninstall --yes keeps it'
+  in_own_scope
+  local out
+  out=$("$HOME/my bin/kage" uninstall --yes 2>&1) || { echo "$out"; fail 'kage uninstall failed'; }
+  echo "$out"
+  grep -qF 'Kept: your projects, their worktrees and branches, and the tmux session "kage" with its windows.' <<<"$out" ||
+    fail 'uninstall did not say it kept the tmux session'
+  tmux has-session -t kage || fail 'kage uninstall took the tmux session kage along'
+  ! systemctl --user is-active -q kage.service || fail 'kage.service still runs after uninstall'
+  echo 'the tmux session kage outlived kage uninstall'
 }
 
 case ${1:-} in
   --prepare) prepare; exit ;;
   --install) install_kage; exit ;;
+  --survive) survive; exit ;;
   --back) back; exit ;;
   --after) after; exit ;;
 esac
@@ -152,17 +213,25 @@ esac
 # Git Bash would rewrite the container paths below into Windows paths.
 export MSYS_NO_PATHCONV=1 MSYS2_ARG_CONV_EXCL='*'
 
+# The whole run gets at most 30 minutes; a TERM from timeout still runs the EXIT trap below.
+if [ -z "${KAGE_CHECK_TIMED:-}" ]; then KAGE_CHECK_TIMED=1 exec timeout 1800 bash "$0" "$@"; fi
+trap 'exit 143' TERM INT
+
 cd "$(dirname "$0")/.."
 node_version=$(tr -d ' \r\n' <.node-version)
 image=kage-reboot:node-$node_version
 name=kage-reboot-check-$$
 # shellcheck disable=SC2054 # the commas are tmpfs options
-flags=(--cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
+flags=(--memory 3g --cgroupns=host -v /sys/fs/cgroup:/sys/fs/cgroup:rw
   --tmpfs /run --tmpfs /run/lock --tmpfs /tmp:exec,mode=1777)
 as_dev=(-u dev -w /work -e HOME=/home/dev -e USER=dev -e LOGNAME=dev -e SHELL=/bin/bash
   -e TERM=xterm -e XDG_RUNTIME_DIR=/run/user/1000
   -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus
   -e PATH=/home/dev/.npm-global/bin:/opt/fakes:/usr/local/bin:/usr/bin:/bin)
+
+# F17: one install, reboot or linux check at a time (they share one VM's memory).
+running=$(docker ps --format '{{.Names}} {{.Image}}' | grep -E ' kage-(test|install|reboot):' || true)
+[ -z "$running" ] || { echo "Another Kage check is running; wait for it to end: $running" >&2; exit 1; }
 
 echo "== building $image"
 docker build --quiet --build-arg "NODE_VERSION=$node_version" --tag "$image" - <Dockerfile.reboot >/dev/null
@@ -179,6 +248,7 @@ git ls-files -z | tar --null -T - -c -f - |
   docker exec -i "$name" bash -c 'mkdir -p /work && tar -x --no-same-owner -f - -C /work'
 docker exec "$name" bash /work/scripts/test-reboot.sh --prepare
 docker exec "${as_dev[@]}" "$name" bash /work/scripts/test-reboot.sh --install
+docker exec "${as_dev[@]}" "$name" bash /work/scripts/test-reboot.sh --survive
 
 stage 'docker restart: the service must be back within 30 s'
 start=$SECONDS

@@ -104,6 +104,10 @@ as_dev() {
   has "$out" "Installed $kage." || fail 'install.sh did not say where it installed'
   has "$out" "Added $bin to your PATH in $HOME/.bashrc." || fail 'no PATH line in ~/.bashrc'
   has "$out" 'Kage is running at http://127.0.0.1:4397' || fail 'setup did not see Kage answer'
+  # R116(2): --yes takes the linger default, says so, and says how to undo it.
+  has "$out" "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger" ||
+    fail 'setup did not say it turned linger on'
+  grep -qx 'loginctl enable-linger' "$fakes/calls" || fail 'setup did not run loginctl enable-linger'
   # As a new terminal would have it.
   export PATH="$bin:$PATH"
 
@@ -145,9 +149,11 @@ as_dev() {
   tmux new-window -t kage -c "$demo/.worktrees/x" "exec claude --settings '$(kage hooks-path)' --permission-mode default"
   until_ok 15 sessions 1 || fail 'kage status never showed Sessions: 1'
   "$kage" status
+  # Sessions: 1 can show before the Stop hook has run, so each hook is waited for.
+  until_ok 15 grep -qx 'SessionStart: exit 0 output \[\]' "$fake_log.hooks" ||
+    fail 'the SessionStart hook did not run cleanly'
+  until_ok 15 grep -qx 'Stop: exit 0 output \[\]' "$fake_log.hooks" || fail 'the Stop hook did not run cleanly'
   cat "$fake_log.hooks"
-  grep -qx 'SessionStart: exit 0 output \[\]' "$fake_log.hooks" || fail 'the SessionStart hook did not run cleanly'
-  grep -qx 'Stop: exit 0 output \[\]' "$fake_log.hooks" || fail 'the Stop hook did not run cleanly'
   ! grep -q '^MALLOC_ARENA_MAX=' "$fake_log" || fail 'claude inherited MALLOC_ARENA_MAX'
   ! grep -q '^NODE_OPTIONS=' "$fake_log" || fail 'claude inherited NODE_OPTIONS'
   ! grep -q '^KAGE_SERVICE=' "$fake_log" || fail 'claude inherited KAGE_SERVICE'
@@ -203,10 +209,12 @@ as_dev() {
   out=${out//$'\r'/}
   echo "$out"
   has "$out" 'Kage is running at http://127.0.0.1:4397' || fail 'the second setup did not see Kage answer'
+  pid=$(running_pid)
   out=$("$kage" uninstall --yes --purge 2>&1) || { echo "$out"; fail 'kage uninstall --purge failed'; }
   echo "$out"
   [ ! -e "$kage" ] || fail 'the program is still there'
   [ ! -e "$unit" ] || fail 'the unit is still there'
+  ! kill -0 "$pid" 2>/dev/null || fail 'the service still runs after --purge'
   [ ! -e "$HOME/.config/kage" ] || fail 'the config folder is still there'
   [ ! -e "$state" ] || fail 'the state folder is still there'
   [ -d "$demo/.worktrees/x" ] || fail 'the projects did not survive --purge'
@@ -228,12 +236,17 @@ cd "$(dirname "$0")/.."
 node_version=$(tr -d ' \r\n' <.node-version)
 image=kage-install:node-$node_version
 
+# F17: one install, reboot or linux check at a time (they share one VM's memory).
+running=$(docker ps --format '{{.Names}} {{.Image}}' | grep -E ' kage-(test|install|reboot):' || true)
+[ -z "$running" ] || { echo "Another Kage check is running; wait for it to end: $running" >&2; exit 1; }
+
 echo "== building $image"
 # No build context: the Dockerfile needs no files from here.
 docker build --quiet --build-arg "NODE_VERSION=$node_version" --tag "$image" - <Dockerfile.install >/dev/null
 
 echo "== copying $(git ls-files | wc -l | tr -d ' ') tracked files into a fresh container"
-git ls-files -z | tar --null -T - -c -f - | docker run --rm -i --init "$image" bash -c '
+# At most 30 minutes and 3 GB of memory.
+git ls-files -z | tar --null -T - -c -f - | timeout 1800 docker run --rm -i --init --memory 3g "$image" bash -c '
   set -euo pipefail
   mkdir -p /work && tar -x --no-same-owner -f - -C /work
   exec bash /work/scripts/test-install.sh --in-container

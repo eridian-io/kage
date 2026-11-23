@@ -23,8 +23,14 @@ const root = resolve(folder);
 const installSh = join(dirname(fileURLToPath(import.meta.url)), '..', 'install.sh');
 
 const server = createServer(async (req, res) => {
-  const path = new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-  const name = decodeURIComponent(path.slice(1));
+  let name;
+  try {
+    name = decodeURIComponent(new URL(req.url ?? '/', 'http://127.0.0.1').pathname.slice(1));
+  } catch {
+    // A malformed URL or escape: not a file of ours.
+    res.writeHead(404).end('not found\n');
+    return;
+  }
   // One plain file name: no folders, no dot files, nothing outside the folder.
   const ok = (req.method === 'GET' || req.method === 'HEAD') && /^[\w.+-]+$/.test(name);
   if (!ok || name.startsWith('.') || basename(name) !== name) {
