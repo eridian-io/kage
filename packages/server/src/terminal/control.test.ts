@@ -209,6 +209,7 @@ describe('ControlClient', () => {
     const { c, calls } = await started();
     expect(calls[0]).toEqual([
       'tmux',
+      '-u',
       '-f',
       '/dev/null',
       '-L',

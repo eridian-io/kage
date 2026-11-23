@@ -54,7 +54,7 @@ describe('TmuxClient.listWindows (list-panes, B14)', () => {
   it('lists every pane of the session with list-panes -s and picks one per window', async () => {
     const seen: string[][] = [];
     const c = client(async (_cmd, args) => {
-      seen.push(args.slice(2));
+      seen.push(args.slice(3));
       return {
         stdout: `${paneLine('%1', 'bash', '1')}\n${paneLine('%2', 'bash', '0')}\n`,
         stderr: '',
@@ -67,11 +67,11 @@ describe('TmuxClient.listWindows (list-panes, B14)', () => {
   });
 });
 
-/** A fake tmux that answers each subcommand and records the argument arrays (after -L sock). */
+/** A fake tmux that answers each subcommand and records the argument arrays (after -u -L sock). */
 function scripted(answers: Record<string, string | Error> = {}) {
   const seen: string[][] = [];
   const exec: ExecFn = async (_cmd, args) => {
-    const a = args.slice(2);
+    const a = args.slice(3);
     seen.push(a);
     const answer = answers[a[0] as string];
     if (answer instanceof Error) throw answer;
@@ -463,7 +463,7 @@ describe('TmuxClient.ensureSession placeholder (R22)', () => {
   it('tags the first window of a session it creates with @kage_placeholder', async () => {
     const seen: string[][] = [];
     const c = client(async (_cmd, args) => {
-      seen.push(args.slice(2));
+      seen.push(args.slice(3));
       if (args.includes('has-session')) throw fail("can't find session: kage");
       if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
       return { stdout: '', stderr: '' };
@@ -480,7 +480,7 @@ describe('TmuxClient.ensureSession placeholder (R22)', () => {
     const seen: string[][] = [];
     const c = client(
       async (_cmd, args) => {
-        seen.push(args.slice(2));
+        seen.push(args.slice(3));
         if (args.includes('has-session')) throw fail("can't find session: kage");
         if (args.includes('new-session')) return { stdout: '@7\n', stderr: '' };
         return { stdout: '', stderr: '' };
@@ -530,7 +530,7 @@ describe('TmuxClient.ensureSession placeholder (R22)', () => {
   it('does not tag anything when the session exists', async () => {
     const seen: string[][] = [];
     const c = client(async (_cmd, args) => {
-      seen.push(args.slice(2));
+      seen.push(args.slice(3));
       return { stdout: '', stderr: '' };
     });
     await c.ensureSession();
@@ -540,7 +540,7 @@ describe('TmuxClient.ensureSession placeholder (R22)', () => {
   it('clearPlaceholder unsets the option on that window', async () => {
     const seen: string[][] = [];
     const c = client(async (_cmd, args) => {
-      seen.push(args.slice(2));
+      seen.push(args.slice(3));
       return { stdout: '', stderr: '' };
     });
     await c.clearPlaceholder('@7');
@@ -552,7 +552,7 @@ describe('TmuxClient.setEnvironment', () => {
   it('sets a session environment variable as separate arguments', async () => {
     const seen: string[][] = [];
     const c = client(async (_cmd, args) => {
-      seen.push(args.slice(2));
+      seen.push(args.slice(3));
       return { stdout: '', stderr: '' };
     });
     await c.setEnvironment('KAGE_SOCKET', "/run/user/1000/it's kage.sock");
@@ -577,11 +577,11 @@ describe('configFile', () => {
     await c.capturePane('%1', 5);
     await c.setKageId('@1', 'x');
     expect(seen.length).toBe(4);
-    for (const a of seen) expect(a.slice(0, 4)).toEqual(['-f', '/dev/null', '-L', 'sock']);
+    for (const a of seen) expect(a.slice(0, 5)).toEqual(['-u', '-f', '/dev/null', '-L', 'sock']);
   });
 
   it('omits -f when unset', () => {
-    expect(tmuxArgs({ socket: null }, ['x'])).toEqual(['x']);
+    expect(tmuxArgs({ socket: null }, ['x'])).toEqual(['-u', 'x']);
   });
 });
 

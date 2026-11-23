@@ -51,8 +51,14 @@ export interface TmuxTarget {
   configFile?: string;
 }
 
+/**
+ * Every tmux call Kage makes. `-u` first: without a UTF-8 locale (a service has no LANG unless
+ * the system sets one, and launchd sets none), tmux 3.4 and 3.5 write each tab of a `-F` format
+ * as `_`, and Kage would parse no window at all (found by pnpm test:install).
+ */
 export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
   return [
+    '-u',
     ...(t.configFile ? ['-f', t.configFile] : []),
     ...(t.socket ? ['-L', t.socket] : []),
     ...args,

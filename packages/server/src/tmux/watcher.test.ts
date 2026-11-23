@@ -40,7 +40,7 @@ describe('TmuxWatcher', () => {
   it('attaches in control mode, with -L when a socket is set', () => {
     const { w, calls } = setup();
     w.start();
-    expect(calls[0]).toEqual({ cmd: 'tmux', args: ['-C', 'attach', '-t', '=kage'] });
+    expect(calls[0]).toEqual({ cmd: 'tmux', args: ['-u', '-C', 'attach', '-t', '=kage'] });
     w.stop();
     const spawn = ((cmd: string, args: string[]) => {
       calls.push({ cmd, args });
@@ -48,7 +48,7 @@ describe('TmuxWatcher', () => {
     }) as never;
     const w2 = new TmuxWatcher({ session: 's', socket: 'sock', spawn });
     w2.start();
-    expect(calls[1]?.args).toEqual(['-L', 'sock', '-C', 'attach', '-t', '=s']);
+    expect(calls[1]?.args).toEqual(['-u', '-L', 'sock', '-C', 'attach', '-t', '=s']);
     w2.stop();
   });
 
@@ -228,7 +228,7 @@ describe('TmuxWatcher', () => {
     }) as never;
     const w = new TmuxWatcher({ session: 's', socket: 'k', configFile: '/dev/null', spawn });
     w.start();
-    expect(calls[0]).toEqual(['-f', '/dev/null', '-L', 'k', '-C', 'attach', '-t', '=s']);
+    expect(calls[0]).toEqual(['-u', '-f', '/dev/null', '-L', 'k', '-C', 'attach', '-t', '=s']);
     w.stop();
   });
 

@@ -50,6 +50,25 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
     expect((await client.listWindows())[0]?.placeholder).toBe(false);
   });
 
+  it('lists the windows without a UTF-8 locale, as a service runs (tmux -u)', async () => {
+    // Without -u, tmux writes each tab of the -F format as "_" here and no line parses.
+    const keys = ['LANG', 'LC_ALL', 'LC_CTYPE'] as const;
+    const saved = keys.map((k) => process.env[k]);
+    for (const k of keys) delete process.env[k];
+    process.env.LC_ALL = 'C';
+    try {
+      const windows = await client.listWindows();
+      expect(windows.length).toBe(1);
+      expect(windows[0]?.windowId).toMatch(/^@\d+$/);
+    } finally {
+      keys.forEach((k, i) => {
+        const v = saved[i];
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      });
+    }
+  });
+
   it.runIf(process.platform === 'linux')(
     "the first window's shell gets the session env (new-session -e KAGE_SOCKET)",
     async () => {
