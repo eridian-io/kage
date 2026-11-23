@@ -634,3 +634,58 @@ describe('TranscriptTail: idle tails (hardening Task 9, P7)', () => {
     expect(await got2).toEqual([{ kind: 'say', text: 'c' }]);
   });
 });
+
+describe('TranscriptTail: Task 9 round (R138)', () => {
+  /** An fs.watch that never reports anything. */
+  const deafWatch = (() =>
+    Object.assign(new EventEmitter(), { close() {} })) as unknown as typeof watch;
+
+  it('poke() looks at the file once: an idle tail sees an append its watcher missed', async () => {
+    fakeIntervals();
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, say('a'));
+    const t = tail(path, { watch: deafWatch });
+    t.setIdle(true);
+    await t.start();
+    expect(vi.getTimerCount()).toBe(0);
+    const got = next(t);
+    appendFileSync(path, say('b'));
+    t.poke();
+    expect(await got).toEqual([{ kind: 'say', text: 'b' }]);
+    expect(vi.getTimerCount()).toBe(0);
+    t.stop();
+    t.poke();
+    await wait(50);
+    expect(t.lines()).toHaveLength(2);
+  });
+
+  it('an idle tail gives its read buffer back and makes a new one at the next read', async () => {
+    fakeIntervals();
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, say('a'));
+    const alloc = vi.spyOn(Buffer, 'allocUnsafe');
+    try {
+      const t = tail(path, { watch: deafWatch, chunkSize: 4096 });
+      const reads = () => alloc.mock.calls.filter(([n]) => n === 4096).length;
+      await t.start();
+      expect(reads()).toBe(1);
+      // Running: one buffer, reused.
+      let got = next(t);
+      appendFileSync(path, say('b'));
+      t.poke();
+      await got;
+      expect(reads()).toBe(1);
+      // Idle: released, so each read makes one and gives it back.
+      t.setIdle(true);
+      for (const text of ['c', 'd']) {
+        got = next(t);
+        appendFileSync(path, say(text));
+        t.poke();
+        await got;
+      }
+      expect(reads()).toBe(3);
+    } finally {
+      alloc.mockRestore();
+    }
+  });
+});

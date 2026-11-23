@@ -78,7 +78,7 @@ export class TranscriptTail {
   #idle = false;
   /** A watcher reported an error once: watchers aren't trusted alone after that. */
   #watchFailed = false;
-  /** One read buffer per tail, made at the first read and reused (P7). */
+  /** One read buffer per tail, made at a read and reused; released while idle (P7, R138). */
   #buf: Buffer | null = null;
 
   // Read position and decoding state.
@@ -130,8 +130,18 @@ export class TranscriptTail {
    */
   setIdle(idle: boolean): void {
     this.#idle = idle;
+    // R138: an idle tail holds no read buffer; the next read makes one (a read under way keeps its own).
+    if (idle) this.#buf = null;
     // Only while following the file; a missing file keeps its own poll.
     if (this.#running && this.#watching === 'file') this.#setTimer(this.#followMs());
+  }
+
+  /**
+   * R138: one look at the file now (a size check, and a read if it grew), for a caller that saw
+   * the session's pane move. An idle tail then doesn't rely on fs.watch alone. No timer.
+   */
+  poke(): void {
+    if (this.#running) void this.#check();
   }
 
   lines(): DisplayLine[] {
@@ -290,6 +300,8 @@ export class TranscriptTail {
     } catch {
       // A read error leaves the offset where it got to; the next check carries on.
     }
+    // R138: an idle tail gives its buffer back after each read.
+    if (this.#idle) this.#buf = null;
     if (this.#running) this.#emit(added);
   }
 

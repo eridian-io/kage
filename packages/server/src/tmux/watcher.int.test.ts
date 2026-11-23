@@ -55,6 +55,7 @@ const quietTail: TailLike = {
   start: async () => {},
   stop: () => {},
   setIdle: () => {},
+  poke: () => {},
   lines: () => [],
   question: () => null,
   now: () => null,

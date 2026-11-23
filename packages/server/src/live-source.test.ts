@@ -215,6 +215,11 @@ class FakeTail implements TailLike {
   }
   /** Every setIdle call, in order (Task 9: a tail that isn't running doesn't poll). */
   idleCalls: boolean[] = [];
+  /** poke() calls (R138: pane activity on a session that isn't running). */
+  pokes = 0;
+  poke(): void {
+    this.pokes++;
+  }
   setIdle(idle: boolean): void {
     this.idleCalls.push(idle);
   }
@@ -537,6 +542,8 @@ describe('LiveSource: windows and records', () => {
       tails: { [TRANSCRIPT]: { lines } },
     });
     await source.start();
+    // I4: the read runs after start, in the background.
+    await flush();
     expect(source.get('k-1')?.status).toBe('ended');
     expect(source.lines('k-1')).toEqual(lines);
     // One read, then no tail is left running for an ended session.
@@ -4888,5 +4895,49 @@ describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Ta
     await flush();
     expect(s.source.get('k-1')?.status).toBe('running');
     await s.source.stop();
+  });
+});
+
+describe('LiveSource: Task 9 round (R138)', () => {
+  it("pane activity pokes a non-running session's tail once; a running one's not at all", async () => {
+    const { source, hooks, watcher, tails } = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+    });
+    await source.start();
+    hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    const t = tails.find((x) => x.path === TRANSCRIPT) as FakeTail;
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await flush();
+    expect(t.pokes).toBe(0);
+    hooks.fire(hook('Stop', '%2'));
+    await flush();
+    watcher.emit({ type: 'activity', paneId: '%2' });
+    await flush();
+    expect(t.pokes).toBe(1);
+    await source.stop();
+  });
+
+  it("an archived record's session goes with its window (a stale listing or a failed kill)", async () => {
+    const { source, watcher, tmux, tails } = setup({
+      windows: [kageWin()],
+      records: [
+        rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT, archived: true, archivedAt: T0 - 5 }),
+      ],
+    });
+    await source.start();
+    await flush();
+    expect(tails).toHaveLength(1);
+    expect(tails[0]?.stopped).toBe(false);
+    tmux.windows = [];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    // Dropped at once: no 2.5 s retire wait, no lines kept.
+    expect(tails[0]?.stopped).toBe(true);
+    expect(source.lines('k-1')).toEqual([]);
+    expect(source.get('k-1')).toMatchObject({ archived: true, status: 'ended' });
+    expect(source.archivedList().map((s) => s.id)).toEqual(['k-1']);
+    await source.stop();
   });
 });

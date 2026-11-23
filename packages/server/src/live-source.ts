@@ -53,7 +53,16 @@ export type HookServerLike = Pick<HookServer, 'on'>;
 export type StateStoreLike = Pick<StateStore, 'load' | 'save'>;
 export type TailLike = Pick<
   TranscriptTail,
-  'start' | 'stop' | 'setIdle' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt' | 'onTurnEnd'
+  | 'start'
+  | 'stop'
+  | 'setIdle'
+  | 'poke'
+  | 'lines'
+  | 'question'
+  | 'now'
+  | 'on'
+  | 'onInterrupt'
+  | 'onTurnEnd'
 >;
 
 /** What LiveSource tells the preview tracker. */
@@ -1162,6 +1171,8 @@ export class LiveSource implements SessionSource {
       if (seen.has(st.id)) continue;
       if (!st.record) this.#removeSession(st);
       else if (st.window) this.#detach(st);
+      // R138: an archived record keeps no session without a window.
+      else if (st.record.archived) this.#dropSession(st);
     }
     // A launched or resumed window that died before any listing showed it: the session was
     // never attached, so nothing above ends it. Ended now (which also ends the resume and the
@@ -1295,6 +1306,8 @@ export class LiveSource implements SessionSource {
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
+    // R138: an archived record's session (a stale listing, a failed kill) goes with its window.
+    if (st.record?.archived) this.#dropSession(st);
   }
 
   #removeSession(st: Live): void {
@@ -1359,6 +1372,9 @@ export class LiveSource implements SessionSource {
       return;
     }
     st.lastActivity = this.#clock();
+    // R138: an idle tail (the session isn't running) takes one size check: a turn the hooks
+    // haven't announced yet doesn't wait on fs.watch alone.
+    if (st.status !== 'running') st.tail?.poke();
     if (st.mode === 'activity' && !st.startup) {
       this.#setStatus(st, 'running');
       this.#scheduleIdle(st);
