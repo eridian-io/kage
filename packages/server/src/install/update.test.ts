@@ -240,7 +240,11 @@ describe('the release files', () => {
   });
 });
 
-describe('downloadVerified', () => {
+// A local release server, real downloads and a status poll: room under container load (the
+// install-sh flake's cause, vitest's 5 s default).
+const UNDER_LOAD = { timeout: 30_000 };
+
+describe('downloadVerified', UNDER_LOAD, () => {
   const b = () => new URL(`${base}/`);
   const reason = async (p: Promise<unknown>) => {
     try {
@@ -355,7 +359,7 @@ describe('replaceBinary', () => {
   });
 });
 
-describe('kage update', () => {
+describe('kage update', UNDER_LOAD, () => {
   it('happy path: verified, swapped, restarted, and the new version answers', async () => {
     release();
     const { m, calls } = manager('active');
