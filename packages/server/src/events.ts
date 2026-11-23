@@ -7,11 +7,19 @@ interface Client {
   viewing: string | null;
   /** The login session that opened it (its key), or null with no token. */
   owner: string | null;
+  /** The TCP peer that opened it (normalised), for the per-address cap. */
+  peer: string;
   controller: ReadableStreamDefaultController<Uint8Array>;
   timer: ReturnType<typeof setInterval>;
 }
 
 const encoder = new TextEncoder();
+
+/**
+ * Open event streams one address may hold (security M3); GET /api/events answers 429 past it.
+ * Each holds a snapshot's worth of queue and a heartbeat timer.
+ */
+export const MAX_STREAMS_PER_PEER = 16;
 
 export const frame = (e: ServerEvent): string => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
 
@@ -46,8 +54,18 @@ export class EventHub {
     return this.clients.size;
   }
 
-  /** A new stream; `owner` is the login session that opened it (dropOwner closes it). */
-  stream(owner: string | null = null): ReadableStream<Uint8Array> {
+  /** The streams open from `peer` (GET /api/events refuses one past MAX_STREAMS_PER_PEER). */
+  streamsFrom(peer: string): number {
+    let n = 0;
+    for (const c of this.clients.values()) if (c.peer === peer) n++;
+    return n;
+  }
+
+  /**
+   * A new stream; `owner` is the login session that opened it (dropOwner closes it), `peer` the
+   * address it came from (streamsFrom counts it).
+   */
+  stream(owner: string | null = null, peer = 'unknown'): ReadableStream<Uint8Array> {
     let client: Client | undefined;
     return new ReadableStream<Uint8Array>({
       start: (controller) => {
@@ -55,6 +73,7 @@ export class EventHub {
           streamId: crypto.randomUUID(),
           viewing: null,
           owner,
+          peer,
           controller,
           timer: setInterval(() => this.send(c, ': hb\n\n'), this.heartbeatMs),
         };

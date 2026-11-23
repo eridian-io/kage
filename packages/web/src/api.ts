@@ -13,6 +13,7 @@ import {
   selectStarted,
   stopPending,
   stopSent,
+  toast,
 } from './store.ts';
 
 export const NO_ANSWER = "Kage didn't answer.";
@@ -76,16 +77,22 @@ export function authStatus(): Promise<number> {
 
 /**
  * Signs this browser out: the server ends this login's session (its stream and terminals close)
- * and clears the cookie. The login screen shows even if the request fails.
+ * and clears the cookie. Only a 204 shows the login screen: offline, or on any other answer, the
+ * session may live on, so the board stays and the toast says so.
  */
 export async function logout(): Promise<void> {
+  let status = 0;
   try {
-    await fetch('/api/logout', { method: 'POST', headers: HEADERS });
+    status = (await fetch('/api/logout', { method: 'POST', headers: HEADERS })).status;
   } catch {
-    // Offline: the login screen still shows; signing in again replaces the stream.
+    // Offline: status stays 0.
   }
-  authRequired.value = true;
+  if (status === 204) authRequired.value = true;
+  else toast.value = { kind: 'note', text: SIGN_OUT_FAILED };
 }
+
+/** The toast after a sign-out that didn't reach the server or wasn't accepted. */
+export const SIGN_OUT_FAILED = "Couldn't sign out; try again.";
 
 export async function login(token: string): Promise<'ok' | 'wrong' | 'limited' | 'error'> {
   try {

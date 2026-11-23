@@ -1,3 +1,4 @@
+import { execFile } from 'node:child_process';
 import {
   appendFileSync,
   type FSWatcher,
@@ -158,6 +159,42 @@ describe('TranscriptTail', () => {
     writeFileSync(path, say('hello'));
     expect(await got).toEqual([{ kind: 'say', text: 'hello' }]);
   });
+
+  it('a path not ending in .jsonl is treated as missing', async () => {
+    const path = join(dir, 's.json');
+    writeFileSync(path, say('not a transcript'));
+    const t = tail(path);
+    await t.start();
+    expect(t.lines()).toEqual([]);
+    appendFileSync(path, say('still not'));
+    await wait(1200);
+    expect(t.lines()).toEqual([]);
+  });
+
+  // security M1: a FIFO opened without O_NONBLOCK would park a libuv pool thread until a writer came.
+  it.runIf(process.platform !== 'win32')(
+    'a FIFO named like a transcript is treated as missing and blocks nothing',
+    async () => {
+      const path = join(dir, 'fifo.jsonl');
+      await new Promise<void>((resolve, reject) =>
+        execFile('mkfifo', [path], (err) => (err ? reject(err) : resolve())),
+      );
+      const t = tail(path);
+      await t.start();
+      expect(t.lines()).toEqual([]);
+      // Kage's other fs work still runs: the pool isn't held by an open on the FIFO.
+      const other = join(dir, 'other.jsonl');
+      writeFileSync(other, say('fine'));
+      const ok = tail(other);
+      await ok.start();
+      expect(ok.lines()).toEqual([{ kind: 'say', text: 'fine' }]);
+      // A regular file swapped in where the FIFO was is read like any transcript.
+      rmSync(path);
+      const got = next(t);
+      writeFileSync(path, say('real'));
+      expect(await got).toEqual([{ kind: 'say', text: 'real' }]);
+    },
+  );
 
   it('picks up a file whose parent directory does not exist yet', async () => {
     const sub = join(dir, 'projects', '-home-dev');

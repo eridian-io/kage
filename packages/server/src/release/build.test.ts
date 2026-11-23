@@ -218,6 +218,14 @@ describe('the CLI arguments', () => {
     expect(releaseNode()).toBe(readFileSync(join(REPO, '.node-version'), 'utf8').trim());
   });
 
+  it('the release workflow restores no cache (security M5: cache poisoning)', () => {
+    const yml = readFileSync(join(REPO, '.github', 'workflows', 'release.yml'), 'utf8');
+    // F26: a YAML `cache:` key at any indent, not the word in a comment.
+    expect(yml).not.toMatch(/^\s*cache:/m);
+    expect(yml).not.toMatch(/^\s*-?\s*uses:\s*actions\/cache\b/m);
+    expect(yml).not.toMatch(/for its cache/);
+  });
+
   it('--help says the local Node is trusted as it is, and what --node is for', () => {
     expect(USAGE).toContain('trusted as it is');
     expect(USAGE).toContain('SHASUMS256.txt');

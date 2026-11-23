@@ -15,6 +15,7 @@ import {
   select,
   selectedId,
   stopSent,
+  toast,
   tokenSet,
 } from '../store.ts';
 import { type Command, commands, textOf } from './commands.ts';
@@ -232,12 +233,23 @@ describe('commands: general', () => {
       '/api/logout',
       expect.objectContaining({ method: 'POST', headers: { 'X-Kage': '1' } }),
     );
-    // A failed request still leaves the board on the login screen: the cookie may be gone.
     authRequired.value = false;
-    fetchMock.mockRejectedValueOnce(new TypeError('offline'));
-    find('Sign out').run();
-    await vi.waitFor(() => expect(authRequired.value).toBe(true));
-    authRequired.value = false;
+    // Only a 204 means the session ended. Offline, or any other answer, the session may live
+    // on, so the board stays and says so instead of showing a login screen over it.
+    for (const fail of [
+      () => fetchMock.mockRejectedValueOnce(new TypeError('offline')),
+      () => fetchMock.mockResolvedValueOnce(new Response(null, { status: 500 })),
+      () => fetchMock.mockResolvedValueOnce(new Response('Missing X-Kage header', { status: 403 })),
+    ]) {
+      toast.value = null;
+      fail();
+      find('Sign out').run();
+      await vi.waitFor(() =>
+        expect(toast.value).toEqual({ kind: 'note', text: "Couldn't sign out; try again." }),
+      );
+      expect(authRequired.value).toBe(false);
+    }
+    toast.value = null;
     load(demoSessions(NOW), 0, false);
     expect(titles('general')).not.toContain('Sign out');
   });

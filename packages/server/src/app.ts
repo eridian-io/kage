@@ -25,7 +25,7 @@ import {
   parsePin,
   parseReply,
 } from './control/validate.ts';
-import type { EventHub } from './events.ts';
+import { type EventHub, MAX_STREAMS_PER_PEER } from './events.ts';
 import type { FinishActions } from './finish/actions.ts';
 import { firstLine } from './git/exec.ts';
 import { DiffError, type DiffService } from './preview/diff.ts';
@@ -65,6 +65,7 @@ export interface AppDeps {
 const DEMO_NO_TASKS = "Demo mode can't start tasks.";
 const DEMO_NO_CONTROLS = "Demo mode can't run tasks.";
 const DEMO_NO_DIFF = "Demo mode can't show diffs.";
+const TOO_MANY_BOARDS = 'Too many open boards from this address.';
 /** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
 const WHOLE = /^\d{1,9}$/;
 
@@ -89,6 +90,8 @@ const CSP = [
   "img-src 'self'",
   "font-src 'self'",
   "connect-src 'self'",
+  "object-src 'none'",
+  "frame-src 'none'",
   "base-uri 'none'",
   "form-action 'none'",
   "frame-ancestors 'none'",
@@ -145,9 +148,17 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
 
   app.use('*', async (c, next) => {
     await next();
-    c.res.headers.set('X-Content-Type-Options', 'nosniff');
-    c.res.headers.set('Referrer-Policy', 'no-referrer');
-    c.res.headers.set('Content-Security-Policy', CSP);
+    const h = c.res.headers;
+    h.set('X-Content-Type-Options', 'nosniff');
+    h.set('Referrer-Policy', 'no-referrer');
+    h.set('Content-Security-Policy', CSP);
+    // Security M7: no other origin may embed Kage's answers or keep a handle on its window.
+    h.set('Cross-Origin-Resource-Policy', 'same-origin');
+    h.set('Cross-Origin-Opener-Policy', 'same-origin');
+    // Session lists, projects, errors: no API answer is kept in a cache.
+    if (c.req.path.startsWith('/api/') && h.get('Content-Type')?.startsWith('application/json')) {
+      h.set('Cache-Control', 'no-store');
+    }
   });
   app.use('*', hostGuard(allowed));
   // Every method but GET and HEAD needs X-Kage: 1 and a matching Origin (ruling R1).
@@ -210,7 +221,12 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     // The stream belongs to its session: signing out, or the session's end, closes it (F6).
     const owner = c.get('session');
     if (owner !== '' && !auth.sessions.has(owner)) return c.json({ error: SIGN_IN }, 401);
-    return new Response(hub.stream(owner === '' ? null : owner), { headers });
+    // Security M3: one address can't hold the server's memory with streams.
+    const peer = remoteAddress(c.env);
+    if (hub.streamsFrom(peer) >= MAX_STREAMS_PER_PEER) {
+      return c.json({ error: TOO_MANY_BOARDS }, 429);
+    }
+    return new Response(hub.stream(owner === '' ? null : owner, peer), { headers });
   });
 
   // The terminal is a WebSocket (serve.ts takes the upgrade before Hono); a plain GET lands here.

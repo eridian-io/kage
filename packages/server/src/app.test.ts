@@ -224,6 +224,51 @@ describe('static assets', () => {
     expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
   });
 
+  it('every answer carries CORP and COOP same-origin, and the CSP has object-src and frame-src none', async () => {
+    const a = app();
+    const answers = [
+      await a.fetch(req('/')),
+      await a.fetch(req('/app-ABC123.js')),
+      await a.fetch(req('/nope.js')),
+      await a.fetch(req('/api/nope')),
+      await a.fetch(req('/api/auth')),
+      await a.fetch(mutate('POST', '/api/view', {})),
+      // Refused by the guards, too.
+      await a.fetch(new Request('http://evil:8080/', { headers: { Host: 'evil:8080' } })),
+      await a.fetch(req('/api/view', { method: 'POST' })),
+    ];
+    for (const res of answers) {
+      const where = `${res.status} ${res.url}`;
+      expect(res.headers.get('cross-origin-resource-policy'), where).toBe('same-origin');
+      expect(res.headers.get('cross-origin-opener-policy'), where).toBe('same-origin');
+      const csp = res.headers.get('content-security-policy') ?? '';
+      expect(csp, where).toContain("object-src 'none'");
+      expect(csp, where).toContain("frame-src 'none'");
+    }
+  });
+
+  it('/api JSON answers are no-store', async () => {
+    const a = app(false, '', true);
+    const answers = [
+      await a.fetch(req('/api/projects')),
+      await a.fetch(req('/api/nope')),
+      await a.fetch(req('/api/sessions')),
+      await a.fetch(mutate('POST', '/api/view', {})),
+      await app(false, 'a-very-secret-token-0123').fetch(req('/api/projects')),
+    ];
+    for (const res of answers) {
+      expect(res.headers.get('content-type'), String(res.status)).toContain('application/json');
+      expect(res.headers.get('cache-control'), String(res.status)).toBe('no-store');
+    }
+    // The event stream keeps its own; assets keep theirs.
+    const sse = await a.fetch(req('/api/events'));
+    expect(sse.headers.get('cache-control')).toBe('no-cache, no-transform');
+    await sse.body?.cancel();
+    expect((await a.fetch(req('/app-ABC123.js'))).headers.get('cache-control')).toBe(
+      'public, max-age=31536000, immutable',
+    );
+  });
+
   it("keeps the strict CSP for the terminal too: no 'unsafe-inline', no nonce (R55, R60)", async () => {
     for (const path of ['/', '/term-GHI789.js', '/term-JKL012.css', '/api/nope']) {
       const csp = (await app().fetch(req(path))).headers.get('content-security-policy') ?? '';
@@ -602,13 +647,53 @@ describe('token login (B13)', () => {
     expect((await from(a, login({ token: TOKEN }), '100.64.0.10')).status).toBe(204);
   });
 
-  it('30 failures a minute across all addresses refuse every address', async () => {
+  it('30 failures a minute across all addresses refuse every address that has failed', async () => {
     const a = app(false, TOKEN);
     for (let i = 0; i < 30; i++) {
       const r = login({ token: `wrong-token-${i}-padding` });
       expect((await from(a, r, `100.64.1.${i}`)).status).toBe(401);
     }
-    expect((await from(a, login({ token: TOKEN }), '100.64.2.1')).status).toBe(429);
+    expect((await from(a, login({ token: TOKEN }), '100.64.1.0')).status).toBe(429);
+  });
+
+  it('the global ceiling no longer blocks an address with no recent failures (security M2)', async () => {
+    const a = app(false, TOKEN);
+    // The review's probe: six addresses fail five times each.
+    for (let p = 0; p < 6; p++) {
+      for (let i = 0; i < 5; i++) {
+        const r = login({ token: `wrong-token-${i}-padding` });
+        expect((await from(a, r, `100.64.1.${p}`)).status).toBe(401);
+      }
+    }
+    expect((await from(a, login({ token: TOKEN }), '100.64.1.0')).status).toBe(429);
+    // A seventh address with the right token gets in.
+    expect((await from(a, login({ token: TOKEN }), '100.64.0.9')).status).toBe(204);
+  });
+
+  it('a 17th stream from one peer gets 429; another peer still connects', async () => {
+    const a = app(false, TOKEN);
+    const mine = await signIn(a, '100.64.0.9');
+    const theirs = await signIn(a, '100.64.0.10');
+    const open: ReadableStream<Uint8Array>[] = [];
+    for (let i = 0; i < 16; i++) {
+      const res = await from(a, withCookie(req('/api/events'), mine), '100.64.0.9');
+      expect(res.status).toBe(200);
+      open.push(res.body as ReadableStream<Uint8Array>);
+    }
+    expect(hub.streamsFrom('100.64.0.9')).toBe(16);
+    const refused = await record(await from(a, withCookie(req('/api/events'), mine), '100.64.0.9'));
+    expect(refused.status).toBe(429);
+    expect(await refused.json()).toEqual({ error: 'Too many open boards from this address.' });
+    expect(hub.clientCount).toBe(16);
+    const other = await from(a, withCookie(req('/api/events'), theirs), '100.64.0.10');
+    expect(other.status).toBe(200);
+    expect(hub.streamsFrom('100.64.0.10')).toBe(1);
+    // One closed, and the next one is let in.
+    await open.pop()?.cancel();
+    const again = await from(a, withCookie(req('/api/events'), mine), '100.64.0.9');
+    expect(again.status).toBe(200);
+    for (const s of [...open, again.body, other.body]) await s?.cancel();
+    expect(hub.clientCount).toBe(0);
   });
 
   it("logout revokes its session: that cookie gets 401, another login's still 204", async () => {

@@ -1,7 +1,7 @@
 import { type DisplayLine, demoSessions, type Session } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DemoSource } from './demo-source.ts';
-import { EventHub } from './events.ts';
+import { EventHub, MAX_STREAMS_PER_PEER } from './events.ts';
 import { NotFoundError, type SessionSource, type SourceEvent } from './source.ts';
 
 const dec = new TextDecoder();
@@ -105,6 +105,24 @@ describe('EventHub', () => {
     hub.dropOwner('key-a');
     hub.dropOwner('nobody');
     expect(hub.clientCount).toBe(2);
+    hub.close();
+  });
+
+  it('streamsFrom counts the open streams of one peer; a cancel or dropOwner lowers it (security M3)', async () => {
+    expect(MAX_STREAMS_PER_PEER).toBe(16);
+    const source = new StubSource();
+    const hub = new EventHub(source, 'my-pc', '/p');
+    const a = [hub.stream('key-a', '100.64.0.9'), hub.stream('key-a', '100.64.0.9')];
+    const b = hub.stream('key-b', '100.64.0.10');
+    expect(hub.streamsFrom('100.64.0.9')).toBe(2);
+    expect(hub.streamsFrom('100.64.0.10')).toBe(1);
+    expect(hub.streamsFrom('100.64.0.11')).toBe(0);
+    await (a[0] as ReadableStream<Uint8Array>).cancel();
+    expect(hub.streamsFrom('100.64.0.9')).toBe(1);
+    hub.dropOwner('key-a');
+    expect(hub.streamsFrom('100.64.0.9')).toBe(0);
+    await b.cancel();
+    expect(hub.streamsFrom('100.64.0.10')).toBe(0);
     hub.close();
   });
 

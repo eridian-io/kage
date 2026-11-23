@@ -23,7 +23,7 @@ Work deliberately left out of a phase, with the reason it's needed. Each item na
 Deferred from the phase 3 reviews. None blocks use; each is a small change.
 
 - **B20** The token cookie has no server-side expiry: it lasts its 30 days. To revoke every device, change the token and restart. A server-side session list or a rotating secret would give a real sign-out.
-- **B21** A peer can use up the global login ceiling (30 failures a minute) and lock everyone out of signing in for 60 s. Cookies that exist keep working. Behind a reverse proxy, all clients share one address and one bucket.
+- **B21** (done, hardening Task 5, security M2: an address with no recent failure always gets its try) A peer can use up the global login ceiling (30 failures a minute) and lock everyone out of signing in for 60 s. Cookies that exist keep working. Behind a reverse proxy, all clients share one address and one bucket.
 - **B22** The multi-select question (checkboxes) is unrecorded: Kage disables answering it and says to use the terminal. Capture a real one, record the keys, and then support it.
 - **B23** The port scan misses a daemon that detached from the pane (its parent became init). Match by working directory or process group as well.
 - **B24** A project reached through a symlink is recorded under the alias name. Record the real folder's name.
@@ -105,4 +105,6 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 
 - **B67** (from hardening Task 2, R130) Warn at startup, on stderr, when an explicit `host` is a single label or a `.local` name: Kage then trusts everyone on the local network to answer for that name (spec §5.10).
 - **B68** (from hardening Task 2, R130) Print one stderr line when `--unsafe-listen-all` starts with Tailscale down and no configured host name: the allow-list is then empty, so every request gets 403.
+- **B69** (pre-flight F1, hardening) HTTPS through `tailscale serve` doesn't work and isn't advised: the CSRF guard takes only `http://<name>:<port>` Origins, so `https://box.tail….ts.net` is refused, and `Secure` never sets because Kage sees http. Any reverse proxy, `tailscale serve` included, also makes every device one peer address: that voids the per-login address binding (a cookie is then good from every device behind the proxy) and the per-address login limiter and stream cap. Making it work needs https Origins for the MagicDNS name and trusted `X-Forwarded-*` handling.
+- **B70** (R127, security M1, parked) Read a transcript only when its real path lies under `~/.claude/projects/`, so a forged hook can't point a card at any `.jsonl` file the user can read. Every e2e fake has to write its transcripts there first.
 - **B11** Small hardening and tidying, each optional: per-encoding or weak ETags (one ETag now covers every encoding); case-insensitive `q=` parsing in Accept-Encoding; pixelmatch `includeAA` in the visual tests; CI `cancel-in-progress` only off `main`; add esbuild to `onlyBuiltDependencies` (the owner's call).

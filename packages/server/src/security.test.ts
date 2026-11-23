@@ -123,6 +123,29 @@ describe('hostAllowed and originAllowed agree with the middlewares', () => {
     const r = await csrfApp.request('/', { method: 'POST', headers });
     expect(r.status === 200).toBe(ok);
   });
+  it('Origin http://127.0.0.1:4385/ with a trailing slash is refused (security M7)', async () => {
+    const local = { hostNames: ['127.0.0.1'], port: 4385 };
+    expect(originAllowed('http://127.0.0.1:4385', local)).toBe(true);
+    for (const o of [
+      'http://127.0.0.1:4385/',
+      'http://127.0.0.1:4385/x',
+      'http://127.0.0.1:4385?',
+      'http://127.0.0.1:4385#',
+      'http://127.0.0.1:4385\\',
+      'http://127.0.0.1/',
+    ]) {
+      expect(originAllowed(o, local), o).toBe(false);
+    }
+    const r = await new Hono()
+      .use(csrfGuard(local))
+      .post('/', (c) => c.text('ok'))
+      .request('/', {
+        method: 'POST',
+        headers: { 'X-Kage': '1', Origin: 'http://127.0.0.1:4385/', Host: '127.0.0.1:4385' },
+      });
+    expect(r.status).toBe(403);
+  });
+
   it('a port-80 server takes an Origin without a port', () => {
     const p80 = { hostNames: ['my-pc'], port: 80 };
     expect(originAllowed('http://my-pc', p80)).toBe(true);

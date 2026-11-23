@@ -1,5 +1,5 @@
-import { type FSWatcher, type Stats, watch } from 'node:fs';
-import { open, stat } from 'node:fs/promises';
+import { constants, type FSWatcher, type Stats, watch } from 'node:fs';
+import { type FileHandle, open, stat } from 'node:fs/promises';
 import { basename, dirname } from 'node:path';
 import type { DisplayLine, Question } from '@kage/shared';
 import {
@@ -19,6 +19,8 @@ const CHUNK = 64 * 1024;
 const MISSING_POLL_MS = 1000;
 /** Fallback size poll while following, for filesystems where fs.watch misses events. */
 const FOLLOW_POLL_MS = 2000;
+/** Read-only and non-blocking: opening a FIFO returns at once instead of waiting for a writer (M1). Windows has no O_NONBLOCK. */
+const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
 
 type Listener = (added: DisplayLine[], reset: boolean) => void;
 
@@ -139,8 +141,15 @@ export class TranscriptTail {
     return this.#busy;
   }
 
+  /**
+   * One look at the file. The path's stat is only the cheap "anything new?" of the poll; what is
+   * read comes from a handle opened non-blocking and checked with fstat (security M1), so a FIFO
+   * or device swapped in after the stat can't hold a pool thread, and only a regular file is read.
+   */
   async #checkOnce(): Promise<void> {
     if (!this.#running) return;
+    // Claude's transcripts are .jsonl files; any other path is treated as missing, unwatched.
+    if (!this.#path.endsWith('.jsonl')) return;
     let st: Stats;
     try {
       st = await stat(this.#path);
@@ -150,16 +159,45 @@ export class TranscriptTail {
       return;
     }
     if (!this.#running) return;
-    const replaced = this.#ino !== undefined && this.#ino !== 0 && st.ino !== this.#ino;
-    if (replaced || st.size < this.#offset) this.#startOver();
-    if (this.#ino === undefined || replaced) {
-      this.#ino = st.ino;
-      await this.#seekStart(st.size);
-      if (!this.#running) return;
+    if (this.#ino !== undefined && !this.#replaced(st) && st.size === this.#offset) {
+      this.#follow();
+      if (this.#reset) this.#emit([]);
+      return;
     }
-    this.#follow();
-    if (st.size > this.#offset) await this.#read(st.size);
-    else if (this.#reset) this.#emit([]);
+    let fh: FileHandle;
+    try {
+      fh = await open(this.#path, OPEN_FLAGS);
+    } catch {
+      if (this.#running) this.#waitForFile();
+      return;
+    }
+    try {
+      const fst = await fh.stat();
+      if (!fst.isFile()) {
+        if (this.#running) this.#waitForFile();
+        return;
+      }
+      if (!this.#running) return;
+      const replaced = this.#replaced(fst);
+      if (replaced || fst.size < this.#offset) this.#startOver();
+      if (this.#ino === undefined || replaced) {
+        this.#ino = fst.ino;
+        await this.#seekStart(fh, fst.size);
+        if (!this.#running) return;
+      }
+      this.#follow();
+      if (fst.size > this.#offset) await this.#read(fh, fst.size);
+      else if (this.#reset) this.#emit([]);
+    } catch {
+      // An fstat error: the next check tries again.
+    } finally {
+      await fh.close().catch(() => {});
+    }
+  }
+
+  /** Another file now has the path (inode 0, as some filesystems report, never counts). */
+  #replaced(st: Stats): boolean {
+    return this.#ino !== undefined && this.#ino !== 0 && st.ino !== this.#ino;
   }
 
   /** Drops all state; the next batch is flagged as a reset. */
@@ -179,30 +217,19 @@ export class TranscriptTail {
   }
 
   /** Starts at the last fromEnd bytes; a cut first line is skipped. */
-  async #seekStart(size: number): Promise<void> {
+  async #seekStart(fh: FileHandle, size: number): Promise<void> {
     this.#offset = Math.max(0, size - this.#fromEnd);
     if (this.#offset === 0) return;
     // Skip the first line unless the byte before the start ends a line.
     this.#skipping = true;
     try {
-      const fh = await open(this.#path, 'r');
-      try {
-        const b = Buffer.alloc(1);
-        const { bytesRead } = await fh.read(b, 0, 1, this.#offset - 1);
-        if (bytesRead === 1 && b[0] === 0x0a) this.#skipping = false;
-      } finally {
-        await fh.close();
-      }
+      const b = Buffer.alloc(1);
+      const { bytesRead } = await fh.read(b, 0, 1, this.#offset - 1);
+      if (bytesRead === 1 && b[0] === 0x0a) this.#skipping = false;
     } catch {}
   }
 
-  async #read(size: number): Promise<void> {
-    let fh: Awaited<ReturnType<typeof open>>;
-    try {
-      fh = await open(this.#path, 'r');
-    } catch {
-      return;
-    }
+  async #read(fh: FileHandle, size: number): Promise<void> {
     const added: DisplayLine[] = [];
     try {
       const buf = Buffer.alloc(this.#chunk);
@@ -215,8 +242,6 @@ export class TranscriptTail {
       }
     } catch {
       // A read error leaves the offset where it got to; the next check carries on.
-    } finally {
-      await fh.close().catch(() => {});
     }
     if (this.#running) this.#emit(added);
   }

@@ -1,9 +1,17 @@
 /**
  * The launchd agent (macOS; host-integration §7.5, documented, not observed). It starts at load
  * and at login, restarts after a non-zero exit at most every 10 s, and logs to
- * ~/Library/Logs/kage.log.
+ * ~/Library/Logs/kage.log, which is private (0600; security M8).
  */
-import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  rmSync,
+} from 'node:fs';
 import { join } from 'node:path';
 import type { RunResult } from './run.ts';
 import type { ServiceDeps, ServiceManager, ServiceSpec, ServiceState } from './service.ts';
@@ -87,6 +95,9 @@ export function renderPlist(spec: ServiceSpec, logPath: string): string {
     // daemonises into a group of its own anyway; this makes sure. Documented, not observed (§7.5).
     '  <key>AbandonProcessGroup</key>',
     '  <true/>',
+    // Security M8: what the agent creates is 0600 (umask 077 = 63), on a home that is 0755.
+    '  <key>Umask</key>',
+    '  <integer>63</integer>',
     '  <key>StandardOutPath</key>',
     str('  ', logPath),
     '  <key>StandardErrorPath</key>',
@@ -143,8 +154,11 @@ export function launchdManager(d: ServiceDeps): ServiceManager {
     async install(spec) {
       const text = renderPlist(spec, logPath);
       assertOurs(file, isOurPlist);
-      // launchd creates the log file, not its folder.
+      // launchd creates the log file, not its folder. Kage makes the file first, 0600, so it is
+      // never world-readable (security M8); one an older Kage left 0644 is made private too.
       mkdirSync(join(d.home, 'Library', 'Logs'), { recursive: true });
+      closeSync(openSync(logPath, 'a', 0o600));
+      chmodSync(logPath, 0o600);
       writeServiceFile(file, text);
       // Bootstrapping a loaded label fails, so a reinstall boots it out first (ignored if not loaded).
       await launchctl(['bootout', target]);

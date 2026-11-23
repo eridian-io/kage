@@ -12,7 +12,7 @@ import { hookCommand } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
-import { NO_TOKEN_REFUSAL } from './serve.ts';
+import { limitServer, NO_TOKEN_REFUSAL, SERVER_OPTIONS } from './serve.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
 import { testTmuxSocket } from './tmux/test-sockets.ts';
@@ -384,6 +384,41 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
     expect(err).toEqual(["Couldn't start Kage: EACCES: permission denied, open dist/app.js"]);
     expect(out).toEqual([]);
   });
+});
+
+describe('kage serve: connection caps (security M3)', () => {
+  it('limitServer caps connections at 256 and gives the headers 10 s', async () => {
+    const { createServer } = await import('node:http');
+    const s = createServer();
+    limitServer(s);
+    expect(s.maxConnections).toBe(256);
+    expect(s.headersTimeout).toBe(10_000);
+    // The request as a whole may take longer than its headers.
+    expect(s.requestTimeout).toBeGreaterThanOrEqual(s.headersTimeout);
+    // The timeout is checked every 5 s, not Node's 30 s.
+    expect(SERVER_OPTIONS.connectionsCheckingInterval).toBe(5_000);
+  });
+
+  it('a connection that never finishes its headers is closed by the headers timeout (here 300 ms)', async () => {
+    const { createServer } = await import('node:http');
+    const { connect } = await import('node:net');
+    const s = createServer(SERVER_OPTIONS, (_q, r) => r.end('ok'));
+    limitServer(s);
+    s.headersTimeout = 300;
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+    const port = (s.address() as { port: number }).port;
+    const started = Date.now();
+    const closed = await new Promise<number>((resolve) => {
+      const c = connect(port, '127.0.0.1', () => c.write('GET / HTTP/1.1\r\nHost: x\r\n'));
+      c.on('data', () => {});
+      c.on('close', () => resolve(Date.now() - started));
+      c.on('error', () => {});
+    });
+    await new Promise<void>((r) => s.close(() => r()));
+    // Shut within the timeout plus one check interval.
+    expect(closed).toBeGreaterThanOrEqual(300);
+    expect(closed).toBeLessThan(300 + SERVER_OPTIONS.connectionsCheckingInterval + 1000);
+  }, 15_000);
 });
 
 describe('serveSignals (B15)', () => {

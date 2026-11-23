@@ -50,14 +50,14 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # Corepack first, so setup-node finds pnpm (the version pinned in packageManager) for its cache.
+      # Corepack provides pnpm (the version pinned in packageManager). No dependency cache in a release
+      # build (security M5): a cache another workflow wrote could poison the release.
       - run: corepack enable
       # The Node that runs the build tools (esbuild, postject). The executable is made from the
       # verified Node fetched below, not from this one.
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - name: Fetch the release Node and verify it (signature, then checksum)
@@ -137,7 +137,6 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version-file: .node-version
-          cache: pnpm
       - name: A tag is v<package version>
         if: github.ref_type == 'tag'
         env:

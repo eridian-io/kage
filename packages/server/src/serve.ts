@@ -72,6 +72,22 @@ export const STOPPED = 'Stopped before Kage was ready.';
 /** The exit code after a startup interrupted by a signal (128 + SIGINT). */
 export const STOPPED_CODE = 130;
 
+/**
+ * Security M3: at most 256 open connections, and 10 s for a request's headers (Node's default
+ * is 60 s), so slow-header connections can't pile up. The per-address cap on event streams is
+ * in app.ts (MAX_STREAMS_PER_PEER).
+ */
+export function limitServer(server: Pick<HttpServer, 'maxConnections' | 'headersTimeout'>): void {
+  server.maxConnections = 256;
+  server.headersTimeout = 10_000;
+}
+
+/**
+ * Node checks the headers timeout on an interval (30 s by default), which would let a slow
+ * connection live up to 40 s; every 5 s keeps it near 10 s. Only settable at creation.
+ */
+export const SERVER_OPTIONS = { connectionsCheckingInterval: 5_000 } as const;
+
 /** Why live mode can't start here, or null. Checked before anything is started. */
 export function liveModeError(
   platform: NodeJS.Platform,
@@ -618,11 +634,18 @@ async function startServer(
   let server: ReturnType<typeof serve>;
   try {
     server = await new Promise<ReturnType<typeof serve>>((resolve, reject) => {
-      const s = serve({ fetch: app.fetch, hostname: listen.address, port: cfg.port }, () => {
+      const options = {
+        fetch: app.fetch,
+        hostname: listen.address,
+        port: cfg.port,
+        serverOptions: SERVER_OPTIONS,
+      };
+      const s = serve(options, () => {
         s.off('error', reject);
         resolve(s);
       });
       s.once('error', reject);
+      limitServer(s as HttpServer);
       // Every upgrade goes to the terminal server, which refuses all but its own path.
       (s as HttpServer).on('upgrade', (req, socket, head) =>
         terminals.handleUpgrade(req, socket, head),

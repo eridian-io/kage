@@ -109,6 +109,9 @@ describe('renderPlist', () => {
         // R122: a stop never takes the tmux server's process group along.
         '  <key>AbandonProcessGroup</key>',
         '  <true/>',
+        // security M8: files the agent creates are 0600 (umask 077).
+        '  <key>Umask</key>',
+        '  <integer>63</integer>',
         '  <key>StandardOutPath</key>',
         '  <string>/Users/u/Library/Logs/kage.log</string>',
         '  <key>StandardErrorPath</key>',
@@ -181,6 +184,29 @@ describe('launchdManager', () => {
       'launchctl enable gui/501/io.eridian.kage',
       `launchctl bootstrap gui/501 ${plistPath()}`,
     ]);
+  });
+
+  it('the plist sets Umask 63, and the log file is created 0600', async () => {
+    expect(renderPlist(SPEC, logPath())).toContain('  <key>Umask</key>\n  <integer>63</integer>\n');
+    // Made before launchd opens it: bootstrap finds it there already, private.
+    let atBootstrap: number | null = null;
+    const { run } = fakeRun((_c, args) => {
+      if (args[0] === 'bootstrap') atBootstrap = statSync(logPath()).mode & 0o777;
+      return {};
+    });
+    await launchdManager(deps(run)).install(SPEC);
+    expect(atBootstrap).not.toBeNull();
+    expect(readFileSync(logPath(), 'utf8')).toBe('');
+    if (!isWin) {
+      expect(atBootstrap).toBe(0o600);
+      // A log an older Kage left world-readable is made private, its lines kept.
+      writeFileSync(logPath(), 'Kage is running\n', { mode: 0o644 });
+      const { chmodSync } = await import('node:fs');
+      chmodSync(logPath(), 0o644);
+      await launchdManager(deps(fakeRun().run)).install(SPEC);
+      expect(statSync(logPath()).mode & 0o777).toBe(0o600);
+      expect(readFileSync(logPath(), 'utf8')).toBe('Kage is running\n');
+    }
   });
 
   it('installing again runs the same sequence', async () => {

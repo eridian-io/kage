@@ -22,7 +22,8 @@ const DAY = 24 * 60 * 60 * 1000;
 /** A store on a clock the test moves by hand. */
 function clocked(o: { max?: number } = {}) {
   let t = 1_000_000;
-  const store = new SessionStore({ clock: () => t, ...o });
+  // One clock for both limits here; 'the 30-day limit runs on the wall clock' splits them.
+  const store = new SessionStore({ clock: () => t, wallClock: () => t, ...o });
   return {
     store,
     advance: (ms: number) => {
@@ -123,11 +124,38 @@ describe('SessionStore and the session cookie (security I1)', () => {
     expect(s2.size).toBe(0);
   });
 
+  it('the 30-day limit runs on the wall clock, so host sleep does not stretch it; the 7-day idle limit on the monotonic clock', () => {
+    let mono = 0;
+    let wall = 1_800_000_000_000;
+    const store = new SessionStore({ clock: () => mono, wallClock: () => wall });
+    const id = store.create(PEER);
+    // 29 days of sleep: the monotonic clock stood still, the wall clock moved on.
+    wall += 29 * DAY;
+    expect(store.check(id, PEER)).not.toBeNull();
+    mono += 1000;
+    wall += DAY;
+    expect(store.check(id, PEER)).toBeNull();
+
+    // A wall-clock jump alone never ends the idle count early, nor revives it.
+    const s2 = new SessionStore({ clock: () => mono, wallClock: () => wall });
+    const b = s2.create(PEER);
+    mono += SESSION_IDLE_MS - 1;
+    expect(s2.check(b, PEER)).not.toBeNull();
+    wall -= 10 * DAY;
+    mono += SESSION_IDLE_MS;
+    expect(s2.check(b, PEER)).toBeNull();
+  });
+
   it('expiry is swept without a request: a timer at the earliest expiry fires onRevoke (F6)', async () => {
     vi.useFakeTimers();
     try {
       let t = 0;
-      const store = new SessionStore({ clock: () => t, idleMs: 1000, maxAgeMs: 10_000 });
+      const store = new SessionStore({
+        clock: () => t,
+        wallClock: () => t,
+        idleMs: 1000,
+        maxAgeMs: 10_000,
+      });
       const heard: string[] = [];
       store.onRevoke((k) => heard.push(k));
       const a = store.create(PEER);
@@ -252,7 +280,7 @@ describe('LoginLimiter', () => {
     expect(l.allow(B)).toBe(true);
   });
 
-  it('30 failures a minute from all addresses together refuse everyone', () => {
+  it('30 failures a minute from all addresses together refuse every address that has failed', () => {
     let t = 0;
     const l = new LoginLimiter({ now: () => t });
     for (let i = 0; i < 30; i++) {
@@ -260,9 +288,33 @@ describe('LoginLimiter', () => {
       expect(l.allow(peer)).toBe(true);
       l.fail(peer);
     }
-    expect(l.allow('100.64.2.1')).toBe(false);
+    // One failure each, far below 5, yet the ceiling is full: refused.
+    expect(l.allow('100.64.1.0')).toBe(false);
+    expect(l.allow('100.64.1.29')).toBe(false);
     t = 60_000;
-    expect(l.allow('100.64.2.1')).toBe(true);
+    expect(l.allow('100.64.1.0')).toBe(true);
+  });
+
+  it('the global ceiling no longer blocks an address with no recent failures (security M2)', () => {
+    let t = 0;
+    const l = new LoginLimiter({ now: () => t });
+    // The review's probe: six addresses fail five times each and fill the ceiling.
+    for (let p = 0; p < 6; p++) {
+      for (let i = 0; i < 5; i++) {
+        expect(l.allow(`100.64.1.${p}`)).toBe(true);
+        l.fail(`100.64.1.${p}`);
+      }
+    }
+    expect(l.allow('100.64.1.0')).toBe(false);
+    // The owner's device has failed nothing: it gets its try.
+    expect(l.allow(A)).toBe(true);
+    // One failure while the ceiling is full, and that address waits too.
+    l.fail(A);
+    expect(l.allow(A)).toBe(false);
+    expect(l.allow(B)).toBe(true);
+    // A failure older than the window is forgotten: the address counts as clean again.
+    t = 60_001;
+    expect(l.allow(A)).toBe(true);
   });
 
   it('counts only failures, and its memory stays bounded', () => {

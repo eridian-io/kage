@@ -55,9 +55,14 @@ const hostOk = (host: string | undefined, ok: Matcher): boolean => {
   return p !== null && ok(p.hostname, p.port, true);
 };
 
-/** `http://<allowed name>:<port>` (the port may be left out only when it is 80); missing → false. */
+/**
+ * `http://<allowed name>:<port>` exactly (the port may be left out only when it is 80); missing
+ * → false. A browser's Origin has no path, query or fragment, so not even a trailing `/` passes
+ * (security M7).
+ */
 const originOk = (origin: string | undefined, ok: Matcher): boolean => {
-  const m = origin ? /^http:\/\/(.+)$/.exec(origin) : null;
+  // A backslash too: the URL parser reads it as `/` in an http URL.
+  const m = origin ? /^http:\/\/([^/?#\\]+)$/.exec(origin) : null;
   const p = m?.[1] ? parseAuthority(m[1]) : null;
   return p !== null && ok(p.hostname, p.port, false);
 };

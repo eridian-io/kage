@@ -49,7 +49,9 @@ interface Entry {
   hash: Buffer;
   /** The address that signed in (normalised). */
   peer: string;
+  /** When it signed in, on the wall clock. */
   created: number;
+  /** When it was last seen, on the monotonic clock. */
   seen: number;
 }
 
@@ -57,8 +59,16 @@ export interface SessionStoreOptions {
   idleMs?: number;
   maxAgeMs?: number;
   max?: number;
-  /** Milliseconds on a monotonic clock (default `performance.now`): a wall-clock jump can't revive or end a session. */
+  /**
+   * The idle limit's clock, monotonic (default `performance.now`): a wall-clock jump can't
+   * revive or end an idle session. It stands still while the host sleeps.
+   */
   clock?: () => number;
+  /**
+   * The 30-day limit's clock, the wall clock (default `Date.now`), so the time a host spends
+   * asleep counts toward it. A clock set back (which takes root) can stretch it.
+   */
+  wallClock?: () => number;
 }
 
 /**
@@ -76,6 +86,7 @@ export class SessionStore {
   readonly #maxAgeMs: number;
   readonly #max: number;
   readonly #clock: () => number;
+  readonly #wallClock: () => number;
   /** By key (the id's SHA-256, base64url); Map order is least recently seen first. */
   readonly #entries = new Map<string, Entry>();
   readonly #listeners = new Set<(key: string) => void>();
@@ -86,6 +97,7 @@ export class SessionStore {
     this.#maxAgeMs = o.maxAgeMs ?? SESSION_MAX_MS;
     this.#max = o.max ?? SESSION_MAX;
     this.#clock = o.clock ?? (() => performance.now());
+    this.#wallClock = o.wallClock ?? Date.now;
   }
 
   get size(): number {
@@ -100,8 +112,12 @@ export class SessionStore {
     }
     const id = randomBytes(32).toString('base64url');
     const hash = digest(id);
-    const now = this.#clock();
-    this.#entries.set(hash.toString('base64url'), { hash, peer, created: now, seen: now });
+    this.#entries.set(hash.toString('base64url'), {
+      hash,
+      peer,
+      created: this.#wallClock(),
+      seen: this.#clock(),
+    });
     this.#arm();
     return id;
   }
@@ -150,22 +166,26 @@ export class SessionStore {
     };
   }
 
-  #deadline(e: Entry): number {
-    return Math.min(e.seen + this.#idleMs, e.created + this.#maxAgeMs);
+  /** Milliseconds until the session expires, by the nearer of its two limits; ≤ 0 once expired. */
+  #left(e: Entry, mono: number, wall: number): number {
+    return Math.min(e.seen + this.#idleMs - mono, e.created + this.#maxAgeMs - wall);
   }
 
   /** Revokes every expired session. */
   #sweep(): void {
-    const now = this.#clock();
-    for (const [key, e] of [...this.#entries]) if (now >= this.#deadline(e)) this.revoke(key);
+    const mono = this.#clock();
+    const wall = this.#wallClock();
+    for (const [key, e] of [...this.#entries]) if (this.#left(e, mono, wall) <= 0) this.revoke(key);
   }
 
   /** Sets the timer for the earliest deadline, unless one is set; a timer that fires early re-arms. */
   #arm(): void {
     if (this.#timer !== null || this.#entries.size === 0) return;
+    const mono = this.#clock();
+    const wall = this.#wallClock();
     let next = Number.POSITIVE_INFINITY;
-    for (const e of this.#entries.values()) next = Math.min(next, this.#deadline(e));
-    const delay = Math.min(Math.max(Math.ceil(next - this.#clock()), 1), MAX_DELAY_MS);
+    for (const e of this.#entries.values()) next = Math.min(next, this.#left(e, mono, wall));
+    const delay = Math.min(Math.max(Math.ceil(next), 1), MAX_DELAY_MS);
     const t = setTimeout(() => {
       this.#timer = null;
       this.#sweep();
@@ -261,7 +281,10 @@ export function authGuard(auth: Auth): MiddlewareHandler<AuthEnv> {
 /**
  * Failed logins (ruling R31): `max` failures from one address within `windowMs` refuse that
  * address until its oldest failure leaves the window, and `globalMax` failures from all addresses
- * together refuse everyone. Only failures count. Memory is bounded: at most `max` timestamps per
+ * together refuse every address that has failed within the window. An address with no failure in
+ * the window always gets its try (security M2): other peers' failures can't lock the owner out,
+ * and each new address costs an attacker one guess a window while the ceiling is full. Only
+ * failures count. Memory is bounded: at most `max` timestamps per
  * address, `globalMax` overall, and `maxKeys` addresses (the least recently failed goes first).
  * allow() and fail() are synchronous, so a caller that runs them with no await in between can't
  * be raced by parallel requests.
@@ -302,8 +325,6 @@ export class LoginLimiter {
   }
 
   allow(key: string): boolean {
-    this.#prune(this.#all);
-    if (this.#all.length >= this.#globalMax) return false;
     const list = this.#byKey.get(key);
     if (!list) return true;
     this.#prune(list);
@@ -311,7 +332,9 @@ export class LoginLimiter {
       this.#byKey.delete(key);
       return true;
     }
-    return list.length < this.#max;
+    if (list.length >= this.#max) return false;
+    this.#prune(this.#all);
+    return this.#all.length < this.#globalMax;
   }
 
   fail(key: string): void {
