@@ -74,7 +74,7 @@ export const STOPPED = 'Stopped before Kage was ready.';
 export const STOPPED_CODE = 130;
 
 /**
- * Open connections one address (an IPv6 /64, peerKey) may hold. A browser keeps at most 6
+ * Open connections one address (as peerKey counts it) may hold. A browser keeps at most 6
  * HTTP/1.1 connections to one host, event streams included, plus a WebSocket per open terminal,
  * so 32 leaves room for two browsers and several terminals on one device.
  */

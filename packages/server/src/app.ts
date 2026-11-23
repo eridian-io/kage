@@ -187,7 +187,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     }
     // No await from here to fail(): parallel tries can't all pass allow() before one fails.
     const peer = remoteAddress(c.env);
-    // Counted by peerKey: an IPv6 /64 is one address to the limiter.
+    // Counted by peerKey: a tailnet node by its address, other IPv6 by its /64.
     const key = peerKey(peer);
     if (!limiter.allow(key)) {
       return c.json({ error: 'Too many tries. Wait a minute and try again.' }, 429);

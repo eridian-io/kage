@@ -36,27 +36,53 @@ export function normalizePeer(address: string): string {
 
 /**
  * The key the per-address limits count by (the login limiter, the stream cap, the connection
- * cap): an IPv4 address as it is, an IPv6 address by its /64 (`2001:db8:1:2::/64`). One host
- * usually holds a whole /64 and can pick any address in it, so counting each address alone would
- * let it multiply every limit. Sessions stay bound to the exact address (normalizePeer).
+ * cap). An IPv4 address counts as it is. A Tailscale IPv6 address (fd7a:115c:a1e0::/48) counts
+ * by its full /128: every tailnet node shares that prefix, and WireGuard authenticates each
+ * node's source address, so a node can't pick another's. Any other IPv6 address counts by its
+ * /64 (`2001:db8:1:2::/64`): a host on an ordinary network may pick any address in its /64, so
+ * counting each address alone would let it multiply every limit. Sessions stay bound to the
+ * exact address (normalizePeer).
  */
 export function peerKey(address: string): string {
   const a = normalizePeer(address).replace(/%.*$/, '');
   if (!a.includes(':')) return a;
-  const [head = '', tail] = a.split('::') as [string, string | undefined];
-  // An embedded IPv4 tail (::1.2.3.4) is two groups; only the first four groups matter here.
-  const split = (part: string) =>
-    part === '' ? [] : part.split(':').flatMap((g) => (g.includes('.') ? ['0', '0'] : [g]));
-  const left = split(head);
-  const right = tail === undefined ? [] : split(tail);
-  const fill = tail === undefined ? 0 : 8 - left.length - right.length;
-  if (fill < 0) return a;
+  const groups = ipv6Groups(a);
+  if (groups === null) return a;
+  const hex = groups.map((g) => g.toString(16));
+  if (groups[0] === 0xfd7a && groups[1] === 0x115c && groups[2] === 0xa1e0) return hex.join(':');
+  return `${hex.slice(0, 4).join(':')}::/64`;
+}
+
+/** The eight 16-bit groups of an IPv6 address (`::` and an IPv4 tail expanded), or null. */
+function ipv6Groups(a: string): number[] | null {
+  const parts = a.split('::');
+  if (parts.length > 2) return null;
+  const split = (part: string): string[] | null => {
+    if (part === '') return [];
+    const out: string[] = [];
+    const items = part.split(':');
+    for (const [i, g] of items.entries()) {
+      if (!g.includes('.')) {
+        out.push(g);
+        continue;
+      }
+      // An IPv4 tail (64:ff9b::1.2.3.4) is the last two groups.
+      const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(g);
+      if (!v4 || i !== items.length - 1) return null;
+      const [b0, b1, b2, b3] = v4.slice(1).map(Number) as [number, number, number, number];
+      if ([b0, b1, b2, b3].some((b) => b > 255)) return null;
+      out.push(((b0 << 8) | b1).toString(16), ((b2 << 8) | b3).toString(16));
+    }
+    return out;
+  };
+  const left = split(parts[0] as string);
+  const right = parts.length === 2 ? split(parts[1] as string) : [];
+  if (left === null || right === null) return null;
+  const fill = parts.length === 2 ? 8 - left.length - right.length : 0;
+  if (fill < 0 || (parts.length === 2 && fill === 0)) return null;
   const groups = [...left, ...Array<string>(fill).fill('0'), ...right];
-  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return a;
-  return `${groups
-    .slice(0, 4)
-    .map((g) => Number.parseInt(g, 16).toString(16))
-    .join(':')}::/64`;
+  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return null;
+  return groups.map((g) => Number.parseInt(g, 16));
 }
 
 const digest = (s: string) => createHash('sha256').update(s).digest();
@@ -309,7 +335,7 @@ export function authGuard(auth: Auth): MiddlewareHandler<AuthEnv> {
  * together refuse every address that has failed within the window. An address with no failure in
  * the window always gets its try (security M2): other peers' failures can't lock the owner out.
  * While the ceiling is full, each address that hasn't failed still gets one guess a window, so
- * the rate grows with the addresses an attacker holds; app.ts keys by peerKey (an IPv6 /64). Only
+ * the rate grows with the addresses an attacker holds; app.ts keys by peerKey. Only
  * failures count. Memory is bounded: at most `max` timestamps per
  * address, `globalMax` overall, and `maxKeys` addresses (the least recently failed goes first).
  * allow() and fail() are synchronous, so a caller that runs them with no await in between can't

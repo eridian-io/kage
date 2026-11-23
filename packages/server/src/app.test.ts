@@ -670,6 +670,32 @@ describe('token login (B13)', () => {
     expect((await from(a, login({ token: TOKEN }), '100.64.0.9')).status).toBe(204);
   });
 
+  it('over Tailscale IPv6, a locked-out node does not lock out the owner (each node is its own /128)', async () => {
+    const a = app(false, TOKEN);
+    const attacker = 'fd7a:115c:a1e0:ab12:4843:cd96:6258:b241';
+    for (let i = 0; i < 5; i++) {
+      const r = login({ token: `wrong-token-${i}-padding` });
+      expect((await from(a, r, attacker)).status).toBe(401);
+    }
+    expect((await from(a, login({ token: TOKEN }), attacker)).status).toBe(429);
+    const owner = 'fd7a:115c:a1e0:ab12:4843:cd96:6258:b240';
+    const c = await signIn(a, owner);
+    // The attacker's streams don't count against the owner's.
+    const open: ReadableStream<Uint8Array>[] = [];
+    const mine = await signIn(a, attacker.replace(/b241$/, 'b242'));
+    for (let i = 0; i < 16; i++) {
+      const res = await from(
+        a,
+        withCookie(req('/api/events'), mine),
+        attacker.replace(/b241$/, 'b242'),
+      );
+      open.push(res.body as ReadableStream<Uint8Array>);
+    }
+    const res = await from(a, withCookie(req('/api/events'), c), owner);
+    expect(res.status).toBe(200);
+    for (const s of [...open, res.body]) await s?.cancel();
+  });
+
   it('IPv6 addresses in one /64 share a limiter bucket and the stream cap; the cookie stays per address', async () => {
     const a = app(false, TOKEN);
     // Five failures spread over five addresses of one /64: the sixth address in it waits.
