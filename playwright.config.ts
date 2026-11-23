@@ -7,6 +7,8 @@ export default defineConfig({
   fullyParallel: false,
   forbidOnly: true,
   reporter: 'list',
+  // Ends test tmux servers a killed worker left behind (kage-test-<pid>-… only).
+  globalTeardown: './e2e/tmux-sweep.ts',
   use: {
     ...devices['Desktop Chrome'],
     baseURL: BASE,

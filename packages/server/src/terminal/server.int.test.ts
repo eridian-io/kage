@@ -1,16 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import type { SessionStatus } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import WebSocket from 'ws';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
+import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { TerminalBridge } from './bridge.ts';
 import { ControlClient } from './control.ts';
 import { TerminalServer } from './server.ts';
 
-const sock = `kage-test-${randomBytes(4).toString('hex')}`;
+const sock = testTmuxSocket();
 const tmux = (...a: string[]): string =>
   execFileSync('tmux', ['-f', '/dev/null', '-L', sock, ...a], { encoding: 'utf8' }).replace(
     /\n$/,

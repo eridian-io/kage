@@ -1,12 +1,12 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import { hasTmux, SEND_TEXT_MAX_BYTES, TmuxClient } from './client.ts';
+import { testTmuxSocket } from './test-sockets.ts';
 
-const sock = `kage-test-${randomBytes(4).toString('hex')}`;
+const sock = testTmuxSocket();
 const tmp = mkdtempSync(join(tmpdir(), 'kage-tmux-'));
 
 /** Polls until `check` returns a value other than undefined (or 10 s pass). */
@@ -22,12 +22,13 @@ async function until<T>(
 }
 
 afterAll(() => {
-  rmSync(tmp, { recursive: true, force: true });
+  // The server first: it ends even if removing the folder fails.
   try {
     execFileSync('tmux', ['-L', sock, 'kill-server'], { stdio: 'ignore' });
   } catch {
     // no server, or no tmux: nothing to clean up
   }
+  rmSync(tmp, { recursive: true, force: true });
 });
 
 describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
@@ -72,7 +73,7 @@ describe.runIf(hasTmux)('TmuxClient (real tmux, private socket)', () => {
   it.runIf(process.platform === 'linux')(
     "the first window's shell gets the session env (new-session -e KAGE_SOCKET)",
     async () => {
-      const sock2 = `kage-test-${randomBytes(4).toString('hex')}`;
+      const sock2 = testTmuxSocket();
       const c = new TmuxClient({
         session: 'kage',
         socket: sock2,

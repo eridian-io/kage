@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   existsSync,
@@ -15,6 +14,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { gitExec } from '../git/exec.ts';
 import type { SessionRecord } from '../state/store.ts';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
+import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { TaskLauncher } from './launcher.ts';
 
 const hasGit = (() => {
@@ -29,7 +29,7 @@ const hasGit = (() => {
 describe.runIf(hasTmux && hasGit && process.platform !== 'win32')(
   'TaskLauncher (real git and tmux, private socket)',
   () => {
-    const sock = `kage-test-${randomBytes(4).toString('hex')}`;
+    const sock = testTmuxSocket();
     const tmp = mkdtempSync(join(tmpdir(), 'kage-launch-int-'));
     const root = join(tmp, 'projects');
     const repo = join(root, 'shop');

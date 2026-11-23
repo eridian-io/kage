@@ -1,5 +1,4 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -12,6 +11,7 @@ import { gitExec } from '../git/exec.ts';
 import type { FinishTarget } from '../live-source.ts';
 import { type SessionRecord, StateStore } from '../state/store.ts';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
+import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { FinishActions, type FinishTmux } from './actions.ts';
 
 /**
@@ -157,7 +157,7 @@ describe.runIf(hasGit)('FinishActions.remove (temp repo, real git, real state fi
       unpinnedAt: null,
     });
     if (withTmux) {
-      sock = `kage-test-${randomBytes(4).toString('hex')}`;
+      sock = testTmuxSocket();
       tmuxClient = new TmuxClient({ session: 'kage', socket: sock, configFile: '/dev/null' });
       await tmuxClient.ensureSession();
       const out = tmux(

@@ -14,6 +14,7 @@ import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
+import { testTmuxSocket } from './tmux/test-sockets.ts';
 
 const MAIN = fileURLToPath(new URL('./main.ts', import.meta.url));
 const isWin = process.platform === 'win32';
@@ -515,7 +516,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     execFileSync('tmux', ['-f', '/dev/null', '-L', socket, ...args], { encoding: 'utf8' });
 
   beforeEach(() => {
-    socket = `kage-test-${randomBytes(4).toString('hex')}`;
+    socket = testTmuxSocket();
   });
   afterEach(async () => {
     await new Promise<void>((r) => execFile('tmux', ['-L', socket, 'kill-server'], () => r()));

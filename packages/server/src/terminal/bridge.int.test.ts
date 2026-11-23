@@ -1,11 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hasTmux } from '../tmux/client.ts';
+import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { TerminalBridge, type TermSink } from './bridge.ts';
 import { ControlClient } from './control.ts';
 
-const sock = `kage-test-${randomBytes(4).toString('hex')}`;
+const sock = testTmuxSocket();
 const tmux = (...a: string[]): string =>
   execFileSync('tmux', ['-f', '/dev/null', '-L', sock, ...a], { encoding: 'utf8' }).replace(
     /\n$/,

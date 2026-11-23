@@ -1,10 +1,11 @@
 import { execFileSync } from 'node:child_process';
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { hasTmux, TmuxClient } from '../tmux/client.ts';
+import { testTmuxSocket } from '../tmux/test-sockets.ts';
 import { type ControlTarget, SessionControls } from './actions.ts';
 
 /**
@@ -13,7 +14,7 @@ import { type ControlTarget, SessionControls } from './actions.ts';
  * what it receives, so the tests see exactly which keys arrived. Never real Claude.
  */
 
-const sock = `kage-test-${randomBytes(4).toString('hex')}`;
+const sock = testTmuxSocket();
 const tmp = mkdtempSync(join(tmpdir(), 'kage-actions-'));
 const TUI = join(tmp, 'tui.mjs');
 
