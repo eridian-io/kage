@@ -1,13 +1,14 @@
 /**
- * `kage uninstall` (phase 6, Task 7): removes what Kage installed (its service and its program)
- * and, with --purge, its config and state folders. Never a project, a worktree, a branch or the
+ * `kage uninstall` (phase 6, Task 7): removes what Kage installed (its service, its program and
+ * its hooks file, R119-6) and, with --purge, its config and state folders. Never a project, a worktree, a branch or the
  * tmux session "kage": nothing here runs git or tmux, and the user's windows keep running.
  * Linger is left as it is (other programs may need it); uninstall says how to turn it off.
  */
 import { lstat, realpath, rm } from 'node:fs/promises';
-import { basename, dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { configPath, displayPath } from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
+import { SETTINGS_FILE } from '../hooks/settings.ts';
 import type { Io } from '../main.ts';
 import { stateDir } from '../state/store.ts';
 import { isStopped, type Prompter } from './prompt.ts';
@@ -104,12 +105,15 @@ export async function uninstallCommand(
 
   // 2. The program.
   if (deps.mode.kind === 'sea') {
-    // The stable path (R110-5), and the program an update kept for going back: update keeps it
-    // next to the file itself, which a link at the stable path may point to.
+    // The stable path (R110-5); when it is a link, the program it leads to too (runtime.ts's
+    // installedExe names a link only when it leads to this program's own execPath); and the
+    // program an update kept for going back, next to the file itself.
     const exe = deps.mode.exe;
     const real = await realpath(exe).catch(() => exe);
-    for (const file of new Set([exe, `${exe}.previous`, `${real}.previous`])) {
-      if (!(await exists(file))) continue;
+    for (const file of new Set([exe, real, `${exe}.previous`, `${real}.previous`])) {
+      const st = await lstat(file).catch(() => null);
+      if (st === null) continue;
+      if (file === real && file !== exe && !st.isFile()) continue;
       try {
         await rm(file, { force: true });
         removed.push(shown(file));
@@ -121,11 +125,22 @@ export async function uninstallCommand(
     notes.push(`Remove the program with: npm uninstall -g ${NPM_NAME}`);
   }
 
-  // 3. With --purge, Kage's own folders: the config, and the state (records, the hooks file,
+  // 3. Kage's own hooks file (R119-6): Claude never reads it once the program is gone.
+  const state = stateDir(deps.env);
+  const hooks = join(state, SETTINGS_FILE);
+  if (!purge && (await exists(hooks))) {
+    try {
+      await rm(hooks, { force: true });
+      removed.push(shown(hooks));
+    } catch (err) {
+      notes.push(`Couldn't remove ${shown(hooks)}: ${firstLine(err)}`);
+    }
+  }
+
+  // 4. With --purge, Kage's own folders: the config, and the state (records, the hooks file,
   // the socket). Each is a folder named kage, never anything above it.
   const cfgFile = configPath(deps.env);
   const cfgDir = dirname(cfgFile);
-  const state = stateDir(deps.env);
   if (purge) {
     for (const folder of [cfgDir, state]) {
       if (basename(folder) !== 'kage' || !(await exists(folder))) continue;

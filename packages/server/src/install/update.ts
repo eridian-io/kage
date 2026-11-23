@@ -9,13 +9,18 @@
  * - checks the download's SHA-256 against its line in SHA256SUMS, unpacks it next to the old
  *   program (the same folder, so the same file system), checks the new program answers
  *   `--version` with the release's version, and only then renames it over the old one;
- * - any failure before that rename leaves the old program and the running service as they were.
+ * - any failure before that rename leaves the old program and the running service as they were;
+ * - one update at a time: a lock file in the program's folder (a stale one, whose process is gone,
+ *   is taken over).
+ *
+ * SHA256SUMS over HTTPS protects against corruption and truncation, not against a compromised
+ * release host; `gh attestation verify` checks a release's authenticity by hand.
  *
  * Release names and targets come from targets.ts, never release/build.ts (F4: no esbuild here).
  */
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { copyFile, link, open, realpath, rename, rm, stat } from 'node:fs/promises';
+import { copyFile, link, open, readFile, realpath, rename, rm, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
@@ -25,7 +30,7 @@ import type { ServerStatus } from '../hooks/server.ts';
 import type { Io } from '../main.ts';
 import { LAUNCHD_LABEL } from './launchd.ts';
 import { KAGE_VERSION, type RunMode } from './runtime.ts';
-import type { ServiceManager } from './service.ts';
+import type { ServiceManager, ServiceState } from './service.ts';
 import { fetchStatus } from './status.ts';
 import { SYSTEMD_UNIT } from './systemd.ts';
 import {
@@ -47,8 +52,11 @@ export class ReleaseError extends Error {
 const MAX_DOWNLOAD = 200 * 1024 * 1024;
 const MAX_PROGRAM = 512 * 1024 * 1024;
 const MAX_TEXT = 64 * 1024;
-const TIMEOUT_MS = 120_000;
-const TEXT_TIMEOUT_MS = 30_000;
+/** A download stops after this long without a byte (the idle limit)... */
+const IDLE_MS = 30_000;
+/** ...and after this long in all, however it trickles. */
+const TOTAL_MS = 15 * 60_000;
+const LOCK_FILE = '.kage-update.lock';
 const VERSION_CHECK_MS = 10_000;
 const WAIT_MS = 15_000;
 const POLL_MS = 250;
@@ -150,29 +158,51 @@ export function compareVersions(a: string, b: string): -1 | 0 | 1 {
   return 0;
 }
 
+export interface DownloadLimits {
+  maxBytes?: number;
+  /** Idle limit: this long without a byte (or without the headers) stops it. Default 30 s. */
+  timeoutMs?: number;
+  /** Total limit for the whole request. Default 15 min. */
+  totalMs?: number;
+}
+
 /**
- * One GET, read to the end within `maxBytes` and `timeoutMs` (the whole request, body included).
- * Every doubt is a ReleaseError with fixed words; a redirect may only land on another allowed URL.
+ * One GET, read to the end within `maxBytes`, the idle limit and the total limit. Every doubt is
+ * a ReleaseError with fixed words; a redirect may only land on another allowed URL. It asks for
+ * the bytes as stored (`accept-encoding: identity`) and refuses a compressed reply: fetch would
+ * decode it, so the bytes checked would not be the bytes the release lists.
  */
 async function get(
   doFetch: typeof fetch,
   url: URL,
   maxBytes: number,
-  timeoutMs: number,
+  o: DownloadLimits = {},
 ): Promise<Uint8Array> {
   const ac = new AbortController();
   let timedOut = false;
-  const timer = setTimeout(() => {
+  const stop = () => {
     timedOut = true;
     ac.abort();
-  }, timeoutMs);
+  };
+  const idleMs = o.timeoutMs ?? IDLE_MS;
+  let idle = setTimeout(stop, idleMs);
+  const poke = () => {
+    clearTimeout(idle);
+    idle = setTimeout(stop, idleMs);
+  };
+  const total = setTimeout(stop, o.totalMs ?? TOTAL_MS);
   try {
     let res: Response;
     try {
-      res = await doFetch(url, { signal: ac.signal, redirect: 'follow' });
+      res = await doFetch(url, {
+        signal: ac.signal,
+        redirect: 'follow',
+        headers: { 'accept-encoding': 'identity' },
+      });
     } catch {
       throw new ReleaseError(timedOut ? 'timed out' : "couldn't reach the release server");
     }
+    poke();
     if (res.url && !allowed(new URL(res.url))) {
       await res.body?.cancel().catch(() => {});
       throw new ReleaseError('a redirect away from HTTPS');
@@ -180,6 +210,11 @@ async function get(
     if (res.status !== 200) {
       await res.body?.cancel().catch(() => {});
       throw new ReleaseError(`HTTP ${res.status}`);
+    }
+    const encoding = (res.headers.get('content-encoding') ?? '').trim().toLowerCase();
+    if (encoding !== '' && encoding !== 'identity') {
+      await res.body?.cancel().catch(() => {});
+      throw new ReleaseError('the server sent a compressed reply');
     }
     const length = Number(res.headers.get('content-length') ?? Number.NaN);
     if (Number.isFinite(length) && length > maxBytes) {
@@ -198,6 +233,7 @@ async function get(
           throw new ReleaseError(timedOut ? 'timed out' : 'the download was cut short');
         }
         if (r.done) break;
+        poke();
         size += r.value.byteLength;
         if (size > maxBytes) {
           await reader.cancel().catch(() => {});
@@ -211,29 +247,26 @@ async function get(
     }
     return Buffer.concat(chunks);
   } finally {
-    clearTimeout(timer);
+    clearTimeout(idle);
+    clearTimeout(total);
   }
 }
 
 /**
  * Downloads `name` from the release and returns it only if its SHA-256 matches its line in
- * `sums` (checked before any byte is fetched: no line, no download). 200 MiB and 120 s at most.
+ * `sums` (checked before any byte is fetched: no line, no download). 200 MiB at most; 30 s
+ * without a byte or 15 min in all stops it.
  */
 export async function downloadVerified(
   doFetch: typeof fetch,
   base: URL,
   name: string,
   sums: Map<string, string>,
-  o: { maxBytes?: number; timeoutMs?: number } = {},
+  o: DownloadLimits = {},
 ): Promise<Uint8Array> {
   const want = sums.get(name);
   if (want === undefined) throw new ReleaseError(`no checksum for ${name}`);
-  const body = await get(
-    doFetch,
-    new URL(name, base),
-    o.maxBytes ?? MAX_DOWNLOAD,
-    o.timeoutMs ?? TIMEOUT_MS,
-  );
+  const body = await get(doFetch, new URL(name, base), o.maxBytes ?? MAX_DOWNLOAD, o);
   const got = createHash('sha256').update(body).digest('hex');
   if (got !== want) throw new ReleaseError('checksum mismatch');
   return body;
@@ -327,6 +360,13 @@ function restartCommand(m: ServiceManager, uid: number | undefined): string {
     : `launchctl kickstart -k gui/${uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
 }
 
+/** The command that starts a stopped service by hand. */
+function startCommand(m: ServiceManager, uid: number | undefined): string {
+  return m.kind === 'systemd'
+    ? `systemctl --user start ${SYSTEMD_UNIT}`
+    : `launchctl kickstart gui/${uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
+}
+
 /** `<exe> --version`'s first line, or null when it doesn't run or says nothing. */
 function runVersion(exe: string): Promise<string | null> {
   return new Promise((resolve) => {
@@ -360,7 +400,57 @@ export interface UpdateDeps {
   waitMs?: number;
   maxBytes?: number;
   timeoutMs?: number;
+  totalMs?: number;
   rename?: (from: string, to: string) => Promise<void>;
+}
+
+/** True while a process with this pid exists (EPERM: it exists, but isn't ours). */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return (err as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}
+
+/** A lock file this young without a pid in it may be one another update is still writing. */
+const LOCK_FRESH_MS = 10_000;
+
+/**
+ * Takes `<dir>/.kage-update.lock` without waiting: the release function, or null when another
+ * update holds it. A lock whose process is gone (or an old one without a pid) is stale and taken over.
+ */
+export async function takeUpdateLock(dir: string): Promise<(() => Promise<void>) | null> {
+  const file = join(dir, LOCK_FILE);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const fh = await open(file, 'wx', 0o600);
+      try {
+        await fh.writeFile(`${process.pid}
+`);
+      } finally {
+        await fh.close();
+      }
+      return () => rm(file, { force: true });
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
+    }
+    const text = await readFile(file, 'utf8').catch(() => null);
+    if (text === null) continue; // removed meanwhile: try again
+    const pid = Number(text.trim());
+    if (Number.isInteger(pid) && pid > 0) {
+      if (alive(pid)) return null;
+    } else {
+      const age = await stat(file).then(
+        (st) => Date.now() - st.mtimeMs,
+        () => Number.POSITIVE_INFINITY,
+      );
+      if (age < LOCK_FRESH_MS) return null;
+    }
+    await rm(file, { force: true });
+  }
+  return null;
 }
 
 function firstLine(err: unknown): string {
@@ -393,13 +483,50 @@ export async function updateCommand(args: string[], io: Io, deps: UpdateDeps): P
     return 1;
   }
 
-  const old = KAGE_VERSION;
+  // The file itself, not a link to it: a link (the stable path hooks name, R110-5) stays put.
   let exe: string;
+  try {
+    exe = await realpath(mode.exe);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? firstLine(err);
+    io.err(`Update failed: couldn't find the installed program (${code}). Nothing was changed.`);
+    return 1;
+  }
+  let release: (() => Promise<void>) | null;
+  try {
+    release = await takeUpdateLock(dirname(exe));
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code ?? firstLine(err);
+    io.err(`Update failed: couldn't write next to ${mode.exe} (${code}). Nothing was changed.`);
+    return 1;
+  }
+  if (release === null) {
+    io.err('Another kage update is running.');
+    return 1;
+  }
+  try {
+    return await update(io, deps, { force, target, exe, shown: mode.exe });
+  } finally {
+    await release().catch(() => {});
+  }
+}
+
+async function update(
+  io: Io,
+  deps: UpdateDeps,
+  o: { force: boolean; target: Target; exe: string; shown: string },
+): Promise<number> {
+  const { force, target, exe } = o;
+  const limits: DownloadLimits = {
+    ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
+    ...(deps.totalMs !== undefined ? { totalMs: deps.totalMs } : {}),
+  };
+  const old = KAGE_VERSION;
   let next: string;
   try {
     const base = releaseBase(io.env);
     const versionText = new TextDecoder().decode(
-      await get(deps.fetch, new URL(VERSION_FILE, base), MAX_TEXT, TEXT_TIMEOUT_MS),
+      await get(deps.fetch, new URL(VERSION_FILE, base), MAX_TEXT, limits),
     );
     next = versionText.trim();
     if (!isVersion(next)) throw new ReleaseError("the release's VERSION isn't a version");
@@ -408,18 +535,14 @@ export async function updateCommand(args: string[], io: Io, deps: UpdateDeps): P
       return 0;
     }
     const sums = parseSums(
-      new TextDecoder().decode(
-        await get(deps.fetch, new URL(SUMS_FILE, base), MAX_TEXT, TEXT_TIMEOUT_MS),
-      ),
+      new TextDecoder().decode(await get(deps.fetch, new URL(SUMS_FILE, base), MAX_TEXT, limits)),
     );
     const name = assetName(target);
     io.out(`Downloading Kage ${next} for ${target}.`);
     const gz = await downloadVerified(deps.fetch, base, name, sums, {
+      ...limits,
       ...(deps.maxBytes !== undefined ? { maxBytes: deps.maxBytes } : {}),
-      ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
     });
-    // The file itself, not a link to it: a link (the stable path hooks name, R110-5) stays put.
-    exe = await realpath(mode.exe);
     const programVersion = deps.programVersion ?? runVersion;
     const want = next;
     const doRename = deps.rename ?? rename;
@@ -434,7 +557,7 @@ export async function updateCommand(args: string[], io: Io, deps: UpdateDeps): P
           await doRename(from, to);
         } catch (err) {
           const code = (err as NodeJS.ErrnoException).code ?? firstLine(err);
-          throw new ReleaseError(`couldn't replace ${mode.exe} (${code})`);
+          throw new ReleaseError(`couldn't replace ${o.shown} (${code})`);
         }
       },
       keepPrevious: `${exe}.previous`,
@@ -446,7 +569,7 @@ export async function updateCommand(args: string[], io: Io, deps: UpdateDeps): P
     }
     const code = (err as NodeJS.ErrnoException).code;
     io.err(
-      `Update failed: couldn't write next to ${mode.exe} (${code ?? firstLine(err)}). Nothing was changed.`,
+      `Update failed: couldn't write next to ${o.shown} (${code ?? firstLine(err)}). Nothing was changed.`,
     );
     return 1;
   }
@@ -462,16 +585,23 @@ async function restartAfter(
 ): Promise<number> {
   const m = deps.manager;
   // R112: state() needs a user manager, so ask unavailable() first.
-  let installed = false;
+  let state: ServiceState = 'missing';
   if (m !== null && (await m.unavailable()) === null) {
     try {
-      installed = (await m.state()) !== 'missing';
+      state = await m.state();
     } catch {
-      installed = false;
+      state = 'missing';
     }
   }
-  if (m === null || !installed) {
+  if (m === null || state === 'missing') {
     io.out('Restart Kage to use it.');
+    return 0;
+  }
+  // R119-5: only a running (or starting) service is restarted; a stopped one stays stopped.
+  if (state !== 'active' && state !== 'starting') {
+    io.out(
+      `The service isn't running, so it stays stopped. To start it: ${startCommand(m, deps.uid)}`,
+    );
     return 0;
   }
   const status = deps.status ?? ((socket: string) => fetchStatus(socket));

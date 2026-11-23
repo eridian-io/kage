@@ -1,7 +1,16 @@
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { Io } from '../main.ts';
@@ -157,13 +166,36 @@ describe('kage uninstall', () => {
     expect(existsSync(unit)).toBe(false);
     expect(existsSync(exe)).toBe(false);
     expect(existsSync(join(home, '.config', 'kage', 'config.json'))).toBe(true);
-    expect(existsSync(join(home, '.local', 'state', 'kage', 'claude-settings.json'))).toBe(true);
+    expect(existsSync(join(home, '.local', 'state', 'kage', 'records'))).toBe(true);
+    // R119-6: Kage's own hooks file goes either way.
+    expect(existsSync(join(home, '.local', 'state', 'kage', 'claude-settings.json'))).toBe(false);
     expectWorkKept(branches);
-    expect(o.out.slice(-2)).toEqual([
+    expect(o.out).toEqual([
+      'Removed: the systemd user unit kage.service (~/.config/systemd/user/kage.service).',
+      'Removed: ~/.local/bin/kage.',
+      'Removed: ~/.local/state/kage/claude-settings.json.',
       KEPT_WORK,
       'Kept: ~/.config/kage/config.json and ~/.local/state/kage (kage uninstall --purge removes them).',
     ]);
   });
+
+  it.runIf(process.platform !== 'win32')(
+    'the stable path is a link: removes the link and the program it leads to',
+    async () => {
+      const real = join(home, '.local', 'lib', 'kage', 'kage');
+      mkdirSync(dirname(real), { recursive: true });
+      renameSync(exe, real);
+      symlinkSync(real, exe);
+      writeFileSync(`${real}.previous`, 'older kage');
+      const o = io();
+      expect(await uninstallCommand(['--yes'], o.io, deps())).toBe(0);
+      expect(existsSync(exe)).toBe(false);
+      expect(existsSync(real)).toBe(false);
+      expect(existsSync(`${real}.previous`)).toBe(false);
+      expect(o.out).toContain('Removed: ~/.local/bin/kage.');
+      expect(o.out).toContain('Removed: ~/.local/lib/kage/kage.');
+    },
+  );
 
   it('also removes the program an update kept as kage.previous', async () => {
     writeFileSync(`${exe}.previous`, 'older kage');
@@ -237,8 +269,9 @@ describe('kage uninstall', () => {
     const mode: RunMode = { kind: 'bundle', node: '/usr/bin/node', script: '/x/kage.mjs' };
     expect(await uninstallCommand(['--yes'], o.io, deps({ mode }))).toBe(0);
     expect(existsSync(exe)).toBe(true);
-    expect(o.out.slice(0, 2)).toEqual([
+    expect(o.out.slice(0, 3)).toEqual([
       'Removed: the systemd user unit kage.service (~/.config/systemd/user/kage.service).',
+      'Removed: ~/.local/state/kage/claude-settings.json.',
       'Remove the program with: npm uninstall -g @eridian-io/kage',
     ]);
   });
@@ -246,6 +279,7 @@ describe('kage uninstall', () => {
   it('nothing installed: says so, and still says what it keeps', async () => {
     rmSync(unit);
     rmSync(exe);
+    rmSync(join(home, '.local', 'state', 'kage', 'claude-settings.json'));
     const o = io();
     expect(await uninstallCommand(['--yes'], o.io, deps({ manager: null }))).toBe(0);
     expect(o.out[0]).toBe("Removed: nothing. Kage's service and program weren't there.");

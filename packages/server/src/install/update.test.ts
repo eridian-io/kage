@@ -1,3 +1,4 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
   chmodSync,
@@ -11,6 +12,7 @@ import {
   rmSync,
   statSync,
   symlinkSync,
+  utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -384,6 +386,146 @@ describe('kage update', () => {
     expect(await updateCommand(['--force'], io().io, deps({ manager: null }))).toBe(0);
   });
 
+  it('R119-5: a stopped or failed service stays stopped, and update says how to start it', async () => {
+    for (const state of ['inactive', 'failed'] as const) {
+      release();
+      const { m, calls } = manager(state);
+      const o = io();
+      expect(await updateCommand(['--force'], o.io, deps({ manager: m }))).toBe(0);
+      expect(calls).toEqual([]);
+      expect(o.out.at(-1)).toBe(
+        "The service isn't running, so it stays stopped. To start it: systemctl --user start kage.service",
+      );
+    }
+    const { m, calls } = manager('inactive', {
+      kind: 'launchd',
+      name: 'launchd agent io.eridian.kage',
+    });
+    const o = io();
+    expect(await updateCommand(['--force'], o.io, deps({ manager: m, uid: 501 }))).toBe(0);
+    expect(calls).toEqual([]);
+    expect(o.out.at(-1)).toBe(
+      "The service isn't running, so it stays stopped. To start it: launchctl kickstart gui/501/io.eridian.kage",
+    );
+  });
+
+  it('a starting service (R111) is restarted', async () => {
+    release();
+    const { m, calls } = manager('starting');
+    expect(await updateCommand([], io().io, deps({ manager: m }))).toBe(0);
+    expect(calls).toEqual(['restart']);
+  });
+
+  it('asks for the bytes as stored (accept-encoding: identity)', async () => {
+    release();
+    const seen: (string | undefined)[] = [];
+    const inner = routes.get(`/rel/${ASSET}`);
+    route(ASSET, (req, res) => {
+      seen.push(req.headers['accept-encoding']);
+      inner?.(req, res);
+    });
+    expect(await updateCommand([], io().io, deps())).toBe(0);
+    expect(seen).toEqual(['identity']);
+  });
+
+  it('a trickle that never pauses 30 s (the idle limit) is fine; the total limit still stops it', async () => {
+    const gz = release();
+    const trickle: Handler = (_req, res) => {
+      res.writeHead(200, { 'content-length': gz.length });
+      let i = 0;
+      const step = Math.ceil(gz.length / 6);
+      const t = setInterval(() => {
+        if (res.destroyed) return clearInterval(t);
+        res.write(gz.subarray(i, i + step));
+        i += step;
+        if (i >= gz.length) {
+          clearInterval(t);
+          res.end();
+        }
+      }, 80);
+    };
+    route(ASSET, trickle);
+    // Idle 200 ms, but about 500 ms in all: it arrives.
+    expect(await updateCommand([], io().io, deps({ timeoutMs: 200 }))).toBe(0);
+    expect(readFileSync(exe).equals(NEW)).toBe(true);
+    writeFileSync(exe, 'old');
+    rmSync(`${exe}.previous`);
+    const o = io();
+    expect(await updateCommand([], o.io, deps({ timeoutMs: 200, totalMs: 250 }))).toBe(1);
+    expect(o.err).toEqual(['Update failed: timed out. Nothing was changed.']);
+    expectUntouched();
+  });
+
+  it('one update at a time: a second one says so and changes nothing', async () => {
+    const gz = release();
+    let letGo: () => void = () => {};
+    const held = new Promise<void>((r) => {
+      letGo = r;
+    });
+    route(ASSET, (_req, res) => {
+      void held.then(() => send(gz)(_req, res));
+    });
+    const first = updateCommand([], io().io, deps());
+    // Wait until the first one is downloading, so it holds the lock.
+    while (!hits.includes(`/rel/${ASSET}`)) await new Promise((r) => setTimeout(r, 10));
+    const o = io();
+    expect(await updateCommand([], o.io, deps())).toBe(1);
+    expect(o.err).toEqual(['Another kage update is running.']);
+    letGo();
+    expect(await first).toBe(0);
+    expect(readdirSync(join(dir, 'bin')).sort()).toEqual(['kage', 'kage.previous']);
+  });
+
+  it("a stale lock (its process is gone) doesn't block", async () => {
+    release();
+    const child = spawn(process.execPath, ['-e', '']);
+    const pid = child.pid as number;
+    await new Promise((r) => child.on('exit', r));
+    writeFileSync(
+      join(dir, 'bin', '.kage-update.lock'),
+      `${pid}
+`,
+    );
+    expect(await updateCommand([], io().io, deps())).toBe(0);
+    expect(readFileSync(exe).equals(NEW)).toBe(true);
+    expect(readdirSync(join(dir, 'bin')).sort()).toEqual(['kage', 'kage.previous']);
+  });
+
+  it('a lock held by a live process blocks; an old lock without a pid does not', async () => {
+    release();
+    const lock = join(dir, 'bin', '.kage-update.lock');
+    writeFileSync(
+      lock,
+      `${process.ppid}
+`,
+    );
+    const o = io();
+    expect(await updateCommand([], o.io, deps())).toBe(1);
+    expect(o.err).toEqual(['Another kage update is running.']);
+    expect(readFileSync(lock, 'utf8')).toBe(`${process.ppid}
+`);
+    writeFileSync(lock, '');
+    const old = new Date(Date.now() - 60_000);
+    utimesSync(lock, old, old);
+    expect(await updateCommand([], io().io, deps())).toBe(0);
+  });
+
+  it("the installed program can't be found: its own words, nothing changed", async () => {
+    release();
+    const o = io();
+    expect(
+      await updateCommand(
+        [],
+        o.io,
+        deps({ mode: { kind: 'sea', exe: join(dir, 'gone', 'kage') } }),
+      ),
+    ).toBe(1);
+    expect(o.err).toEqual([
+      "Update failed: couldn't find the installed program (ENOENT). Nothing was changed.",
+    ]);
+    expect(hits).toEqual([]);
+  });
+
   it('no user manager (R112): never asks the state, says to restart Kage', async () => {
     release();
     const { m, calls } = manager('active', {
@@ -513,6 +655,27 @@ describe('kage update', () => {
         'timed out',
         { timeoutMs: 200 },
       ));
+
+    it('a compressed reply (Content-Encoding: gzip) for the asset', () =>
+      fails(() => {
+        const gz = release();
+        route(ASSET, (_req, res) => {
+          const body = gzipSync(gz);
+          res.writeHead(200, { 'content-encoding': 'gzip', 'content-length': body.length });
+          res.end(body);
+        });
+      }, 'the server sent a compressed reply'));
+
+    it('a compressed reply for VERSION', () =>
+      fails(() => {
+        release();
+        route('VERSION', (_req, res) => {
+          const body = gzipSync(`${NEW_VERSION}
+`);
+          res.writeHead(200, { 'content-encoding': 'gzip', 'content-length': body.length });
+          res.end(body);
+        });
+      }, 'the server sent a compressed reply'));
 
     it("a gzip that doesn't decompress", () =>
       fails(
