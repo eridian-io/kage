@@ -66,8 +66,11 @@ export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
 }
 
 const MISSING_RE = /no server running|error connecting to|can't find session/i;
-/** list-panes' words when the server runs but has no session by that name (renamed, killed). */
-const NO_SESSION_RE = /can't find session/i;
+/**
+ * list-panes' words when the server runs but has no session by that name (renamed, killed).
+ * tmux 3.4 says "can't find window: kage" for `list-panes -s -t =kage` (host-integration §2).
+ */
+const NO_SESSION_RE = /can't find session|can't find window/i;
 /** has-session's words when no tmux server runs at all (not just no such session). */
 const NO_SERVER_RE = /no server running|error connecting to/i;
 const stderrOf = (e: unknown): string => String((e as { stderr?: unknown }).stderr ?? '');

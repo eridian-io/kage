@@ -122,6 +122,8 @@ The output is `quote"d.txt\0sub/space name.txt\0uni-é.txt\0untracked.txt\0`. Ea
 | `new-window` with a missing argv[0] | Exit 0. It prints the window id, and then the window closes at once. |
 | `new-window` with a missing `-c` folder | Exit 0. The process starts in `$HOME`. |
 | `new-window -t =nosuch:` | `can't find session: nosuch`, exit 1. |
+| `list-panes -s -t =kage` after `rename-session -t =kage work`, or after `kill-session -t =kage` with another session left (tmux 3.4, WSL, 2026-11-23, hardening Task 10) | `can't find window: kage`, exit 1 (not "can't find session"). Kage's strict listing reads both as the session missing. |
+| `display-message -p -t =kage '#{pid}'` with no session `kage` but a live server (same check) | Prints the server's pid, exit 0: it doesn't prove the session is there. `list-sessions -F '#{session_name}\t#{pid}'` lists each session with the server's pid, and with no server says `no server running on …`, exit 1. |
 
 ## 3. Ports and processes
 

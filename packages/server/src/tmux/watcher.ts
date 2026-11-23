@@ -39,18 +39,24 @@ const ATTACHED_MS = 1000;
 const PID = /^\d+$/;
 
 /**
- * The pid of the tmux server that holds `=<session>` (`display-message -p '#{pid}'`, within
- * EXEC_OPTIONS' 5 s), or null when there is no such server or session.
+ * The pid of the tmux server when it holds a session named exactly `session`, or null when
+ * there is no server or no such session (within EXEC_OPTIONS' 5 s). It reads `list-sessions`:
+ * `display-message -t =<session>` prints the pid, exit 0, even when the session is gone
+ * (tmux 3.4, host-integration §2).
  */
 export function serverPid(target: TmuxTarget, session: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       'tmux',
-      tmuxArgs(target, ['display-message', '-p', '-t', `=${session}`, '#{pid}']),
+      tmuxArgs(target, ['list-sessions', '-F', '#{session_name}\t#{pid}']),
       { timeout: EXEC_OPTIONS.timeout },
       (err, stdout) => {
-        const pid = err ? '' : String(stdout).trim();
-        resolve(PID.test(pid) ? pid : null);
+        if (err) return resolve(null);
+        for (const line of String(stdout).split('\n')) {
+          const [name, pid = ''] = line.replace(/\r$/, '').split('\t');
+          if (name === session && PID.test(pid)) return resolve(pid);
+        }
+        resolve(null);
       },
     );
   });

@@ -57,6 +57,14 @@ describe('TmuxClient.listWindows', () => {
     expect(await c.listWindows()).toEqual([]);
   });
 
+  it("strict: tmux 3.4's words for a renamed session (can't find window) throw SessionMissing too", async () => {
+    const c = client(async () => {
+      throw fail("can't find window: kage");
+    });
+    const err = await c.listWindows(undefined, { strict: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionMissing);
+  });
+
   it.each([
     'no server running on /tmp/tmux-1000/sock',
     'error connecting to /tmp/tmux-1000/sock (No such file or directory)',
