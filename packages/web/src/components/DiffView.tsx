@@ -70,6 +70,8 @@ interface Loaded {
   back: number[];
   loading: boolean;
   error: string | null;
+  /** The error is the demo's 501: its sentence alone, as a note, with no Try again (U6). */
+  note?: boolean;
 }
 
 /**
@@ -114,9 +116,10 @@ export function DiffView({ session: s }: { session: Session }) {
     const ctl = new AbortController();
     const cur = live.current;
     asked.current = cur.files;
-    setSt((l) => ({ ...l, loading: true, error: null }));
+    setSt((l) => ({ ...l, loading: true, error: null, note: false }));
     void (async () => {
       let error = NO_ANSWER;
+      let note = false;
       try {
         const res = await apiGet(
           `/api/sessions/${encodeURIComponent(cur.id)}/diff?from=${req.from}`,
@@ -133,10 +136,11 @@ export function DiffView({ session: s }: { session: Session }) {
         // A 401 has sent the board to the login screen.
         if (res.status === 401) return;
         error = await errorOf(res);
+        note = res.status === 501;
       } catch {
         // An abort (closed or switched) shows nothing; anything else is "Kage didn't answer."
       }
-      if (!ctl.signal.aborted) setSt((l) => ({ ...l, loading: false, error }));
+      if (!ctl.signal.aborted) setSt((l) => ({ ...l, loading: false, error, note }));
     })();
     return () => ctl.abort();
   }, [req]);
@@ -208,7 +212,14 @@ export function DiffView({ session: s }: { session: Session }) {
           The files changed. Reload the diff.
         </button>
       )}
-      {st.error !== null && (
+      {st.error !== null && st.note && (
+        <div class="k-diff-error">
+          <span class="k-err" role="status">
+            {st.error}
+          </span>
+        </div>
+      )}
+      {st.error !== null && !st.note && (
         <div class="k-diff-error">
           <span class="k-err" role="alert">
             {couldnt('load the diff', st.error)}

@@ -75,6 +75,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

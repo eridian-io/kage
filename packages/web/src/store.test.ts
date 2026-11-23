@@ -5,6 +5,7 @@ import {
   archivedCount,
   archiveOpen,
   beginRemoval,
+  demo,
   endRemoval,
   lineKeyBase,
   linesById,
@@ -24,6 +25,7 @@ const snap = () =>
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'h',
     streamId: 's1',
     projectsRoot: '/p',
@@ -41,6 +43,22 @@ describe('protocol v2 store', () => {
   it('a snapshot stores streamId and projectsRoot', () => {
     expect(streamId.value).toBe('s1');
     expect(projectsRoot.value).toBe('/p');
+  });
+  it('a snapshot sets demo, false outside the demo (usability U6)', () => {
+    expect(demo.value).toBe(false);
+    applyEvent({
+      type: 'snapshot',
+      auth: false,
+      demo: true,
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: [],
+      archived: 0,
+    });
+    expect(demo.value).toBe(true);
+    snap();
+    expect(demo.value).toBe(false);
   });
   it('reset replaces the lines, otherwise they append', () => {
     applyEvent({ type: 'session.lines', id: 'a', lines: [line(1), line(2)], reset: true });
@@ -65,6 +83,7 @@ describe('protocol v2 store', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -81,6 +100,7 @@ describe('protocol v2 store', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -95,6 +115,7 @@ describe('protocol v2 store', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'h',
       streamId: 's2',
       projectsRoot: '/p',
@@ -115,6 +136,7 @@ describe('protocol v3 store', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -162,6 +184,7 @@ describe('protocol v3 store', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -187,6 +210,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -221,6 +245,7 @@ describe('selecting a started session (Task 9, F5)', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'h',
       streamId: 's1',
@@ -243,6 +268,7 @@ describe('the archive count', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -260,6 +286,7 @@ describe('the heartbeat (reliability I3)', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',
@@ -288,6 +315,7 @@ describe('the archived list and the removal toasts (Task 9, F12)', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'h',
       streamId: 's1',
       projectsRoot: '/p',

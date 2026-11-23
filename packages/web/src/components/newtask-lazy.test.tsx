@@ -23,6 +23,7 @@ async function fresh() {
   store.applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -93,6 +94,7 @@ describe('New task, loaded on demand', () => {
       store.applyEvent({
         type: 'snapshot',
         auth: false,
+        demo: false,
         host: 'my-pc',
         streamId: 's',
         projectsRoot: '/p',
@@ -111,6 +113,7 @@ describe('New task, loaded on demand', () => {
       store.applyEvent({
         type: 'snapshot',
         auth: false,
+        demo: false,
         host: 'my-pc',
         streamId: 's2',
         projectsRoot: '/p',
@@ -146,6 +149,7 @@ describe('New task, loaded on demand', () => {
       store.applyEvent({
         type: 'snapshot',
         auth: false,
+        demo: false,
         host: 'my-pc',
         streamId,
         projectsRoot: '/p',

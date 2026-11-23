@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { createApp } from './app.ts';
+import { createApp, DEMO } from './app.ts';
 import { type Asset, loadAssets } from './assets.ts';
 import { type Auth, authCookieName, clearCookieHeader, SessionStore } from './auth.ts';
 import { ActionError } from './control/actions.ts';
@@ -399,6 +399,30 @@ describe('API', () => {
     expect(ok.status).toBe(204);
     expect(demoResets).toBe(1);
     expect(source.get('docs')).toBeDefined();
+  });
+
+  it('every demo refusal is the one demo sentence (usability U6)', async () => {
+    expect(DEMO).toBe(
+      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+    );
+    const demo = app(true);
+    for (const r of [
+      req('/api/projects'),
+      mutate('POST', '/api/sessions', { task: 't', project: 'p', branch: 'main' }),
+      mutate('POST', '/api/sessions/k-1/answer', { option: 1, question: 'Q?' }),
+      mutate('POST', '/api/sessions/k-1/reply', { text: 'hi' }),
+      mutate('POST', '/api/sessions/k-1/stop'),
+      mutate('POST', '/api/sessions/k-1/pin', { pinned: true }),
+      mutate('POST', '/api/sessions/k-1/archive', { archived: true }),
+      mutate('POST', '/api/sessions/k-1/resume'),
+      req('/api/archive'),
+      req('/api/sessions/docs/diff'),
+    ]) {
+      const res = await demo.fetch(r);
+      const where = `${r.method} ${new URL(r.url).pathname}`;
+      expect(`${where} ${res.status}`).toBe(`${where} 501`);
+      expect(await res.json()).toEqual({ error: DEMO });
+    }
   });
 });
 
@@ -840,7 +864,7 @@ describe('GET /api/projects', () => {
   it('is 501 without a projects dep', async () => {
     const res = await app().fetch(req('/api/projects'));
     expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ error: "Demo mode can't start tasks." });
+    expect(await res.json()).toEqual({ error: DEMO });
   });
   it('needs the token when one is set', async () => {
     const token = 'x'.repeat(20);
@@ -948,7 +972,7 @@ describe('POST /api/sessions', () => {
   it('is 501 in demo mode', async () => {
     const res = await app(true).fetch(mutate('POST', '/api/sessions', BODY));
     expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ error: "Demo mode can't start tasks." });
+    expect(await res.json()).toEqual({ error: DEMO });
   });
 
   it('needs X-Kage and Origin, and the token when one is set', async () => {
@@ -1073,7 +1097,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     expect(await res.json()).toEqual({ error: "Kage couldn't send that to the session: boom" });
   });
 
-  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+  it('is 501 in demo mode, with the demo sentence', async () => {
     for (const [path, body] of [
       ['answer', { option: 1, question: 'Q?' }],
       ['reply', { text: 'hi' }],
@@ -1081,7 +1105,7 @@ describe('POST /api/sessions/:id/answer, /reply, /stop (Task 7)', () => {
     ] as const) {
       const res = await app(true).fetch(mutate('POST', `/api/sessions/k-1/${path}`, body));
       expect(res.status).toBe(501);
-      expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+      expect(await res.json()).toEqual({ error: DEMO });
     }
   });
 
@@ -1217,7 +1241,7 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
     expect(await res.json()).toEqual({ sessions: ARCHIVED });
   });
 
-  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+  it('is 501 in demo mode, with the demo sentence', async () => {
     for (const r of [
       mutate('POST', '/api/sessions/k-1/pin', { pinned: true }),
       mutate('POST', '/api/sessions/k-1/archive', { archived: true }),
@@ -1225,7 +1249,7 @@ describe('POST /api/sessions/:id/pin, /archive and GET /api/archive (phase 4 Tas
     ]) {
       const res = await app(true).fetch(r);
       expect(res.status).toBe(501);
-      expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+      expect(await res.json()).toEqual({ error: DEMO });
     }
   });
 
@@ -1472,10 +1496,10 @@ describe('POST /api/sessions/:id/resume (phase 4 Task 7)', () => {
     expect(await res.json()).toEqual({ error: "Kage couldn't resume the session: boom" });
   });
 
-  it('is 501 in demo mode: "Demo mode can\'t run tasks."', async () => {
+  it('is 501 in demo mode, with the demo sentence', async () => {
     const res = await app(true).fetch(mutate('POST', '/api/sessions/k-1/resume'));
     expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ error: "Demo mode can't run tasks." });
+    expect(await res.json()).toEqual({ error: DEMO });
   });
 
   it('needs X-Kage and Origin, and the token when one is set', async () => {
@@ -1563,10 +1587,10 @@ describe('GET /api/sessions/:id/diff (phase 4 Task 8)', () => {
     expect(await res.json()).toEqual({ error: 'No session with id nope.' });
   });
 
-  it('is 501 in demo mode: "Demo mode can\'t show diffs."', async () => {
+  it('is 501 in demo mode, with the demo sentence', async () => {
     const res = await app(true).fetch(req('/api/sessions/docs/diff'));
     expect(res.status).toBe(501);
-    expect(await res.json()).toEqual({ error: "Demo mode can't show diffs." });
+    expect(await res.json()).toEqual({ error: DEMO });
   });
 
   it('is behind the host guard and the token guard', async () => {

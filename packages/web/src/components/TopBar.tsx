@@ -1,6 +1,6 @@
 import { loadPalette } from '../palette-loader.tsx';
 import { isMac, paletteHint } from '../platform.ts';
-import { authRequired, hadSnapshot, host, paletteOpen, sorted } from '../store.ts';
+import { authRequired, demo, hadSnapshot, host, paletteOpen, sorted } from '../store.ts';
 
 /** Fetches the palette's chunk ahead of a click (ruling B1: on the hint's hover, never at load). */
 const prefetch = () => {
@@ -36,6 +36,8 @@ export function TopBar() {
             <i class="dot d-run" />
             {host.value} · {list.length} {list.length === 1 ? 'session' : 'sessions'}
           </span>
+          {/* The demo says so (U6): a quiet grey outline like the ended chip, beside the pill. */}
+          {demo.value && <span class="k-demo">demo</span>}
           <span class="k-counts">
             <span>
               <i class="dot d-wait" />

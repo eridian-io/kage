@@ -47,6 +47,7 @@ function snapshot(count: number) {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -294,6 +295,7 @@ describe('the archived list chunk', () => {
       store.applyEvent({
         type: 'snapshot',
         auth: false,
+        demo: false,
         host: 'my-pc',
         streamId: 's',
         projectsRoot: '/p',

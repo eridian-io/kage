@@ -33,6 +33,8 @@ export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal
 export const authRequired: Signal<boolean> = signal(false);
 /** A token is set (the snapshot's `auth`): the palette offers Sign out. */
 export const tokenSet: Signal<boolean> = signal(false);
+/** This is the demo (the snapshot's `demo`): the top bar shows a quiet badge (usability U6). */
+export const demo: Signal<boolean> = signal(false);
 /** False until the first snapshot: until then the board knows nothing, not "no sessions". */
 export const hadSnapshot: Signal<boolean> = signal(false);
 export const confirmingDelete: Signal<boolean> = signal(false);
@@ -91,7 +93,8 @@ export const replyOpen: Signal<boolean> = signal(false);
 /** Session ids with an answer, reply or stop in flight; their controls are disabled. */
 export const busy: Signal<ReadonlySet<string>> = signal(new Set());
 /** The last action's failure, shown above that session's footer; cleared on select and the next action. */
-export const actionError: Signal<{ id: string; text: string } | null> = signal(null);
+export const actionError: Signal<{ id: string; text: string; note?: boolean } | null> =
+  signal(null);
 /**
  * The question last answered or replied to from this page, by session and content. Its buttons
  * stay disabled while that same question shows, so a second click can't send another digit to an
@@ -280,6 +283,7 @@ export function applyEvent(e: ServerEvent): void {
     if (e.type === 'snapshot') {
       host.value = e.host;
       tokenSet.value = e.auth;
+      demo.value = e.demo;
       // A new stream (a reconnect) starts without lines: the view brings them again.
       const fresh = streamId.value !== e.streamId;
       streamId.value = e.streamId;

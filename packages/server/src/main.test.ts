@@ -1,12 +1,21 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { EventEmitter } from 'node:events';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEMO } from './app.ts';
 import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand, SettingsWriteError } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
@@ -215,7 +224,7 @@ describe('kage serve: live-mode checks', () => {
       const closed = await new Promise<[number, string]>((res) =>
         ws.on('close', (code, why) => res([code, why.toString()])),
       );
-      expect(closed).toEqual([4501, 'Demo mode has no terminal.']);
+      expect(closed).toEqual([4501, DEMO]);
     } finally {
       await (r as Running).stop();
     }
@@ -248,6 +257,87 @@ describe('kage serve: live-mode checks', () => {
   it('bad flags exit 1 with the usage', async () => {
     expect(await main(['serve', '--nope'], io(env()))).toBe(1);
     expect(err.join('\n')).toContain('Usage:');
+  });
+});
+
+describe('kage serve: the demo on loopback (usability U5)', () => {
+  /** Every file under `dir`, relative to it, with forward slashes. */
+  const filesUnder = (dir: string): string[] => {
+    const found: string[] = [];
+    const walk = (d: string, rel: string) => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const r = rel === '' ? e.name : `${rel}/${e.name}`;
+        if (e.isDirectory()) walk(join(d, e.name), r);
+        else found.push(r);
+      }
+    };
+    walk(dir, '');
+    return found.sort();
+  };
+
+  it('serve --demo --host 127.0.0.1 listens on loopback, and the snapshot says demo: true', async () => {
+    // No host in the config or the environment: without --host, Kage would ask Tailscale.
+    const e = env();
+    const p = await port();
+    writeConfig(e, { port: p });
+    const tmuxCalls: string[][] = [];
+    const tmuxExec: ExecFn = async (_cmd, args) => {
+      tmuxCalls.push(args);
+      throw new Error('the demo must never run tmux');
+    };
+    const r = await main(
+      ['serve', '--demo', '--host', '127.0.0.1'],
+      io(e, { dist: makeDist(), tmuxVersion: null, tmuxExec }),
+    );
+    expect(typeof r).toBe('object');
+    const base = `http://127.0.0.1:${p}`;
+    try {
+      expect(err).toEqual([]);
+      expect(out).toEqual([`Kage is running at ${base}`]);
+      const res = await fetch(`${base}/api/events`);
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      const snapshot = JSON.parse(first.slice(first.indexOf('data: ') + 6));
+      expect(snapshot.demo).toBe(true);
+      expect(snapshot.auth).toBe(false);
+      await reader.cancel();
+    } finally {
+      await (r as Running).stop();
+    }
+    // The demo never touches tmux or real files: no tmux call, no hook socket, no settings or
+    // state file. The config and the board are all there is.
+    expect(tmuxCalls).toEqual([]);
+    expect(filesUnder(root)).toEqual(['config/kage/config.json', 'dist/index.html']);
+  });
+
+  it('--host is checked like the config host: all interfaces and other networks are refused', async () => {
+    const e = env();
+    writeConfig(e, { port: await port() });
+    const run = (host: string) =>
+      main(['serve', '--demo', '--host', host], io(e, { dist: makeDist() }));
+    expect(await run('0.0.0.0')).toBe(1);
+    expect(err).toEqual([
+      'Refusing to listen on "0.0.0.0": that exposes Kage to every network. Pass --unsafe-listen-all if you really mean it.',
+    ]);
+    err.length = 0;
+    expect(await run('192.168.1.20')).toBe(1);
+    expect(err).toEqual([
+      "192.168.1.20 isn't a Tailscale address. Kage only listens on Tailscale or loopback; pass --unsafe-listen-all to override.",
+    ]);
+  });
+
+  it('pnpm demo builds and serves the demo on 127.0.0.1', () => {
+    const pkg = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../../../package.json', import.meta.url)), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(pkg.scripts.demo).toBe(
+      'pnpm build && node packages/server/dist/kage.mjs serve --demo --host 127.0.0.1',
+    );
+  });
+
+  it('the usage names --host', () => {
+    expect(USAGE).toContain("--host ADDR listens on ADDR instead of the config's host.");
   });
 });
 
@@ -350,7 +440,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
 
   it('the usage names the flag', () => {
     expect(USAGE).toContain(
-      'kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]',
+      'kage serve [--demo] [--host ADDR] [--unsafe-listen-all] [--allow-no-token] [--port N]',
     );
     expect(USAGE).toContain('--allow-no-token runs live mode without an access token.');
   });
@@ -808,7 +898,7 @@ describe('kage (no command, help, unknown)', () => {
     expect(await main(['--help'], io(env()))).toBe(0);
     const text = out.join('\n');
     expect(text).toContain(
-      'kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]',
+      'kage serve [--demo] [--host ADDR] [--unsafe-listen-all] [--allow-no-token] [--port N]',
     );
     expect(text).toContain('kage hooks-path');
     expect(text).toContain('kage hook <Event>');

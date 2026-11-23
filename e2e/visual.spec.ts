@@ -83,9 +83,12 @@ async function expectFontsLoaded(page: Page, label: string): Promise<void> {
   }
 }
 
-/** Freezes the blinking cursor, parks the mouse where nothing hovers, checks the fonts. */
-async function settle(page: Page, label: string): Promise<Buffer> {
-  await page.addStyleTag({ content: '.cursor{animation:none}' });
+/**
+ * Freezes the blinking cursor, parks the mouse where nothing hovers, checks the fonts. `extra` is
+ * more CSS for this page only.
+ */
+async function settle(page: Page, label: string, extra = ''): Promise<Buffer> {
+  await page.addStyleTag({ content: `.cursor{animation:none}${extra}` });
   await page.mouse.move(0, 0);
   await expectFontsLoaded(page, label);
   return page.screenshot({ animations: 'disabled' });
@@ -111,7 +114,8 @@ for (const state of STATES) {
     await page.goto('/');
     await expect(page.locator('.k-it')).toHaveCount(6);
     await state.app(page);
-    const got = PNG.sync.read(await settle(page, 'app'));
+    // The demo badge (U6) isn't part of the design and the target has none (R127): hidden here only.
+    const got = PNG.sync.read(await settle(page, 'app', '.k-demo{display:none}'));
 
     expect([got.width, got.height]).toEqual([WIDTH, HEIGHT]);
     expect([want.width, want.height]).toEqual([WIDTH, HEIGHT]);

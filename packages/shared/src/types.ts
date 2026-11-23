@@ -70,6 +70,8 @@ export type ServerEvent =
       type: 'snapshot';
       /** A token is set, so the board offers Sign out (amended 2026-11-23, hardening). */
       auth: boolean;
+      /** This is the demo (kage serve --demo), so the board shows its badge (amended 2026-11-23, hardening). */
+      demo: boolean;
       host: string;
       streamId: string;
       projectsRoot: string;

@@ -14,6 +14,7 @@ import {
   busy,
   confirmingDelete,
   connection,
+  demo,
   endRemoval,
   hadSnapshot,
   host,
@@ -82,6 +83,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -160,6 +162,82 @@ describe('top bar', () => {
     reset(list);
     const { container } = render(<Board />);
     expect(q(container, '.k-host').textContent).toBe('my-pc · 5 sessions');
+  });
+  it('the demo badge shows only in demo mode (usability U6)', async () => {
+    const snapshot = (demo: boolean) =>
+      applyEvent({
+        type: 'snapshot',
+        auth: false,
+        demo,
+        host: 'my-pc',
+        streamId: 's',
+        projectsRoot: '/p',
+        archived: 0,
+        sessions: demoSessions(NOW).map((s) => ({ ...s, lines: [] })),
+      });
+    const { container } = render(<Board />);
+    expect(container.querySelector('.k-demo')).toBeNull();
+    snapshot(true);
+    await waitFor(() => expect(container.querySelector('.k-demo')).not.toBeNull());
+    const badge = q(container, '.k-demo');
+    expect(badge.tagName).toBe('SPAN');
+    expect(badge.textContent).toBe('demo');
+    // Beside the host pill.
+    expect(badge.previousElementSibling?.classList.contains('k-host')).toBe(true);
+    snapshot(false);
+    await waitFor(() => expect(container.querySelector('.k-demo')).toBeNull());
+  });
+  it('the demo badge is a quiet grey outline like the ended chip, with no fill (spec §6.3)', () => {
+    const rule = /\.k-demo\s*\{([^}]*)\}/.exec(board)?.[1] ?? '';
+    expect(rule).toContain('border: 1px solid var(--line-strong)');
+    expect(rule).toContain('color: var(--fg-2)');
+    expect(rule).not.toMatch(/background|lime|amber|red/);
+  });
+});
+
+describe('the demo (usability U6)', () => {
+  const SENTENCE =
+    'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
+  const line = (c: Element) => c.querySelector('.k-err');
+
+  it("a 501 shows the sentence alone, without Couldn't", async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    replies = [[501, SENTENCE]];
+    fireEvent.click(button(container, 'Archive'));
+    await waitFor(() => expect(line(container)?.textContent).toBe(SENTENCE));
+    // A calm note, not an alert.
+    expect(line(container)?.getAttribute('role')).toBe('status');
+    await waitFor(() => expect(busy.value.size).toBe(0));
+    // Pin by its star: the same note, never "Couldn't pin."
+    actionError.value = null;
+    replies = [[501, SENTENCE]];
+    fireEvent.click(q(container, '.k-pin'));
+    await waitFor(() => expect(line(container)?.textContent).toBe(SENTENCE));
+    expect(line(container)?.getAttribute('role')).toBe('status');
+  });
+
+  it("any other refusal still reads Couldn't <verb>., announced", async () => {
+    replies = [[409, 'This session is still running.']];
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    fireEvent.click(button(container, 'Archive'));
+    await waitFor(() =>
+      expect(line(container)?.textContent).toBe("Couldn't archive. This session is still running."),
+    );
+    expect(line(container)?.getAttribute('role')).toBe('alert');
+  });
+
+  it("the demo's terminal close shows the sentence alone, as a note", async () => {
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    demo.value = true;
+    termNote.value = SENTENCE;
+    await waitFor(() => expect(line(container)?.textContent).toBe(SENTENCE));
+    expect(line(container)?.getAttribute('role')).toBe('status');
+    // Outside the demo a close reason stays an alert.
+    demo.value = false;
+    await waitFor(() => expect(line(container)?.getAttribute('role')).toBe('alert'));
   });
 });
 
@@ -608,6 +686,7 @@ describe('reconnect bar', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -643,6 +722,7 @@ describe('before the first snapshot', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -690,6 +770,7 @@ describe('pending delete', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -870,6 +951,7 @@ describe('board v2', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/home/dev/projects',
@@ -996,6 +1078,7 @@ describe('controls', () => {
       applyEvent({
         type: 'snapshot',
         auth: false,
+        demo: false,
         host: 'my-pc',
         streamId: 's2',
         projectsRoot: '/p',

@@ -294,8 +294,13 @@ describe('mountTerminal', () => {
   it('the demo answer (4501) ends it with its sentence', () => {
     mount();
     last().open();
-    last().end(4501, 'Demo mode has no terminal.');
-    expect(ends).toEqual(['Demo mode has no terminal.']);
+    last().end(
+      4501,
+      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+    );
+    expect(ends).toEqual([
+      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+    ]);
   });
 
   it('a socket that never opened ends with null (the board asks /api/auth)', () => {

@@ -9,6 +9,7 @@ import {
   closeTerminal,
   confirmingDelete,
   countsKnown,
+  demo,
   mainView,
   now,
   openTerminal,
@@ -204,7 +205,11 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const confirming = done && own && confirmingDelete.value && !diff && !term;
   const chip = ended ? 'ended' : group;
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
-  const error = actionError.value?.id === s.id ? actionError.value.text : termNote.value;
+  const failed = actionError.value?.id === s.id ? actionError.value : null;
+  const error = failed ? failed.text : termNote.value;
+  // The demo's refusal (U6) is a calm note, not an alert: an action's 501, or a terminal the demo
+  // can't open.
+  const note = failed ? failed.note === true : demo.value;
   // Every action waits for a live stream (its result arrives as an event) and for the last one.
   const off = !canAct(s.id);
   return (
@@ -268,7 +273,7 @@ export function SessionPanel({ session: s }: { session: Session }) {
       )}
       {confirming && <Confirm s={s} />}
       {error !== null && (
-        <div class="k-err" role="alert">
+        <div class="k-err" role={note ? 'status' : 'alert'}>
           {error}
         </div>
       )}

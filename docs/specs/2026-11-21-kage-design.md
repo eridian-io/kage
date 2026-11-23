@@ -239,7 +239,7 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 | 4404 | No such session | No session with id <id>. |
 | 4409 | The session ended, or its window closed | This session has ended. / The session's window has closed. |
 | 4429 | Too many terminals | Too many terminals are open. Close one and try again. |
-| 4501 | Demo mode | Demo mode has no terminal. |
+| 4501 | Demo mode | This is the demo, so nothing here changes. Install Kage to run your own sessions. (amended 2026-11-23, hardening; usability U6) |
 
   (amended 2026-11-22, phase 5): the sentences end in a full stop. **Exception:** the plain-text HTTP refusal of the upgrade "Not found" stays a bare word, the same as the static files' "Not found". A browser's WebSocket can't read it, and the board never shows it, so it is not copy. (amended 2026-11-23, hardening; security I2): a refused Host or Origin, on the upgrade and on the HTTP guards alike, is a whole sentence that says what to set (§5.10, §6.9), because someone who opens Kage under a name it doesn't trust reads it in the browser. The JSON `/api/*` refusals do end in a full stop ("Not found.").
 
@@ -316,7 +316,7 @@ Two channels tell the developer that a session needs them: ntfy on the phone, an
 ### 5.10 Security
 
 Kage can run commands on the machine, so the defaults are strict:
-- **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed.
+- **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed. (amended 2026-11-23, hardening; usability U5): `kage serve --host ADDR` overrides the config's host and `KAGE_HOST` for one run, checked the same way (loopback or Tailscale only, unless `--unsafe-listen-all`). `pnpm demo` runs `pnpm build`, then `kage serve --demo --host 127.0.0.1`: the demo on loopback, with no Tailscale and no token needed (R127: `localhost` is trusted only on a loopback bind). It reads the config file and never writes one; it starts no tmux, opens no hook socket and writes no settings or state file.
 - **DNS rebinding:** reject requests whose `Host` header isn't the configured host name or IP.
   - **The allow-list** (amended 2026-11-23, hardening; security I2, replaces B12). The `Host` guard, the `Origin` check and the terminal's upgrade trust only:
     - the bound IP (an IPv6 literal written in brackets, `[fd7a:115c:a1e0::1]`);
@@ -444,7 +444,7 @@ Kage can run commands on the machine, so the defaults are strict:
 - 401: no live session: never signed in, signed out, expired, another address or a restart (amended 2026-11-23, hardening). 403: a window or origin Kage doesn't own. 404: no such session, project or branch.
 - 409: the session isn't in the state the action needs (the question changed, still working, ended, text still in the input box).
 - 413: a body over 16 KB. 422: git or tmux refused. 426: the terminal path needs a WebSocket (amended 2026-11-22, phase 4). 429: too many logins, or two diff requests already running (amended 2026-11-22, phase 4). 503: no `claude`.
-- 501: demo mode has no tasks or controls.
+- 501: demo mode has no tasks or controls. (amended 2026-11-23, hardening; usability U6): every 501 has the one demo sentence, "This is the demo, so nothing here changes. Install Kage to run your own sessions."
 
 ### 5.13 Install and distribution
 
@@ -621,20 +621,21 @@ The design target is the source of truth. Open `docs/design/kage-board.html`; wh
 
 - **First run with no sessions:** the middle column says "No sessions yet" and offers the New task form with a short explanation.
 - **New task:** clicking New task turns the left column's top into a form (task text, Project ▾, Branch off ▾, an "Accept edits automatically" checkbox, Start). `Enter` starts it, and `Esc` cancels.
-- **New task, as built** (amended 2026-11-21, phase 3): the form loads the projects ("Loading…", or "No git repositories in <projectsRoot>." when there are none), picks the last-used project and its default branch, and disables Start while the stream is down. Start shows "Starting…" until the 201, then selects the new session. An error shows in one line under the form, in the server's own words. The form is inline and non-modal, with no focus trap, and `Esc` is always visible. In demo mode the server's 501 sentence shows as that line.
+- **New task, as built** (amended 2026-11-21, phase 3): the form loads the projects ("Loading…", or "No git repositories in <projectsRoot>." when there are none), picks the last-used project and its default branch, and disables Start while the stream is down. Start shows "Starting…" until the 201, then selects the new session. An error shows in one line under the form, in the server's own words. The form is inline and non-modal, with no focus trap, and `Esc` is always visible. In demo mode the server's 501 sentence shows as that line (amended 2026-11-23, hardening: the one demo sentence, §6.9).
 - **Login** (amended 2026-11-21, phase 3): when a token is set and the browser has no valid cookie, the page shows only an "Access token" field and **Sign in** (in the strong text colour, not lime). A wrong token shows "That token isn't right."; too many tries show "Too many tries. Wait a minute and try again."
 - **Local-only port** (amended 2026-11-21, phase 3): the card says "Only on this machine" and shows `ssh -L <port>:localhost:<port> <host>` to copy. When the board itself is open on that machine, the port links to `localhost`.
 - **Server unreachable:** a thin bar under the top bar says "Reconnecting to my-pc…". The UI stays readable, and actions are disabled until the connection is back.
 - **Terminal open** (amended 2026-11-22, phase 4): the output area becomes the terminal. Its footer shows "Back to session" with `⇧Esc`, and the hint "Shift+Esc (or Ctrl+Shift+X) to leave". While it loads: "Loading the terminal…". A view-only window shows "View only: Kage didn't start this window, so it doesn't type into it." A failure returns to the output and shows a line there: "Couldn't load the terminal.", "Couldn't open the terminal.", or the server's close reason.
 - **Diff view** (amended 2026-11-22, phase 4): it replaces the output area with a read-only unified diff, one page at a time (Previous, Next), with "No changes yet." when empty and "Back to session  Esc" as the footer. An error keeps the last page and its buttons and adds "Couldn't load the diff. …" and a **Try again** button.
 - **Archived list, toasts, warning** (amended 2026-11-22, phase 4): "archived N" sits at the bottom of the left column and opens the list (project, task, age, **Restore**). Archiving shows a toast "Archived <name> · worktree and branch kept", deleting "Deleted <name> · worktree and branch removed". Only a removal this page asked for shows one. The delete confirmation names the loss (§5.8, §6.6), and Delete session ignores a click within 400 ms of its counts changing.
+- **The demo** (amended 2026-11-23, hardening; usability U6): the top bar shows a quiet `demo` badge beside the host pill, a grey outline like the ended chip with no fill (§6.3). An action the demo can't do (New task, answer, reply, Stop, pin, archive, resume, the diff, the terminal) shows the one demo sentence (§6.9) alone, as a note (`role="status"`, in the muted text colour): no "Couldn't <verb>." in front, and in the diff no Try again. Delete still removes a demo session in memory.
 - **Ended session** (after a reboot, or when `claude` exited): the chip says "ended" in grey. The footer shows Resume `U` on the left, and Archive `E` and Delete… on the right.
 
 ### 6.6 Copy added in phase 4 (amended 2026-11-22, phase 4)
 
 Every new sentence a user can read, collected. A change here is a change in the code and its tests.
 
-- **Action errors on the board** are `Couldn't <verb>. <the server's sentence>` (a lower-case first letter raised), with the verb `send`, `pin`, `unpin`, `archive`, `restore`, `resume` or `delete`, shown above the session's footer. Also `Couldn't load the archive. …` and `Couldn't load the diff. …`. With no answer at all: "Kage didn't answer."
+- **Action errors on the board** are `Couldn't <verb>. <the server's sentence>` (except the demo's 501, which shows its sentence alone: §6.9, amended 2026-11-23, hardening) (a lower-case first letter raised), with the verb `send`, `pin`, `unpin`, `archive`, `restore`, `resume` or `delete`, shown above the session's footer. Also `Couldn't load the archive. …` and `Couldn't load the diff. …`. With no answer at all: "Kage didn't answer."
 - **Server fallbacks** (a 500 with the first line of the error): "Kage couldn't change the session: …", "Kage couldn't delete the session: …", "Kage couldn't resume the session: …", "Kage couldn't send that to the session: …", "git couldn't show the diff: …".
 - **Containment, one sentence for delete and resume:** "Kage won't touch <worktree>: it isn't one of Kage's worktrees." (It first read "won't delete", which was wrong for resume.)
 - **Off-branch worktree** (R71, delete and resume): "This worktree isn't on its branch any more. Switch it back in the terminal, or remove it there."
@@ -646,7 +647,7 @@ Every new sentence a user can read, collected. A change here is a change in the 
 - **Toasts:** "Archived <name> · worktree and branch kept"; "Deleted <name> · worktree and branch removed".
 - **Diff:** "Binary file, not shown."; "Symbolic link, not shown."; "N more lines in this file aren't shown."; "No changes yet."; the button "Try again"; and, for a bad `from`, "from must be a whole number."
 - **Terminal:** "Loading the terminal…"; "Couldn't load the terminal."; "Couldn't open the terminal."; "The terminal closed."; "That was too much at once."; the leave hint "Shift+Esc (or Ctrl+Shift+X) to leave"; the view-only line (§6.5); and the close reasons of §5.6. Plain HTTP refusals of the upgrade: "Open the terminal with a WebSocket.", "Kage's terminal speaks kage.term.v1.", "The terminal size is out of range." The refused Host and Origin are in §6.9 (amended 2026-11-23, hardening).
-- **Demo mode:** "Demo mode can't show diffs." for the diff; the other demo sentences are unchanged.
+- **Demo mode:** the diff had its own demo sentence; since hardening every demo refusal is the one sentence in §6.9 (amended 2026-11-23, hardening).
 
 ### 6.7 Copy added in phase 5 (amended 2026-11-22, phase 5)
 
@@ -732,7 +733,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
   - `kage doctor`, the token line after the config line: ✗ "No access token is set, so Kage won't start." with "Run kage setup to set one."; ! "No access token: anyone on your tailnet can start and approve tasks." with the same fix; ✓ "An access token is set.";
   - `kage status`, after the Service line when a config file is there: "Access token: on" or "Access token: off";
   - `kage setup`, turning the token off: "Turned off the access token: anyone on your tailnet can open Kage." It replaces `Saved the access token…` for that case (U20);
-  - usage, under `kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]`: "--allow-no-token runs live mode without an access token.".
+  - usage, under `kage serve [--demo] [--host ADDR] [--unsafe-listen-all] [--allow-no-token] [--port N]`: "--allow-no-token runs live mode without an access token.".
 - **A renamed tmux session** (reliability M4; §5.8a), Kage's log, once per episode: “kage: the tmux session "<name>" isn't there by that name any more, so Kage keeps the last state.”
 - **The Claude settings file can't be rewritten** (reliability M5). When `kage serve` can't write or rename the hooks settings file (a full disk; R139: a folder it can't make or tighten still stops it) and the file there already holds exactly what it would write, it starts anyway and logs one line: "kage: couldn't rewrite the Claude settings file (<reason>), but the one there is current." Otherwise it stops as before. A failed write leaves no temp file.
 - **Uninstall while Claude sessions run** (reliability M11). When `kage uninstall` removed the hooks settings file (also with `--purge`), its last line is "Claude sessions still running will show hook errors until you restart them."
@@ -752,6 +753,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
   - after the test ping: "Sent a test ping. Did it arrive?" (default Yes); no prints "Check the topic in the ntfy app, then run kage ping to try again.";
   - a ping that can't be sent: "Couldn't send the test ping (<reason>). Run kage ping to try again.";
   - with `--yes`, a ping sent: "Sent a test ping to <host>." (§6.7's `kage ping` line).
+- **The demo** (usability U5, U6; §5.10, §6.5): every refusal of the demo, each 501 and the terminal's 4501 close, is one sentence: "This is the demo, so nothing here changes. Install Kage to run your own sessions." It replaces the four demo sentences of phases 3 and 4 (start tasks, run tasks, show diffs, no terminal), which also named the wrong action for pin, archive and Stop. The board shows it alone, as a note. The top bar's badge reads `demo`. Usage, under `kage serve`: "--host ADDR listens on ADDR instead of the config's host."
 - **Usage** (usability U2, U9): the `kage hooks-path` entry now ends “Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default”, so Claude asks before it acts and Kage sees each prompt; new entries "Restart Kage's service and check that it answers." and, under `kage logs [-f]`, "Show the last 100 lines of Kage's log. -f keeps following it." (R144).
 
 ## 7. Performance budgets
@@ -787,7 +789,7 @@ These are checked in CI (§8):
 
 ## 8. Making sure it matches the design
 
-- **Demo mode:** `kage --demo` serves the exact sample sessions from the design target (the same data object), with no tmux needed.
+- **Demo mode:** `kage --demo` serves the exact sample sessions from the design target (the same data object), with no tmux needed. (amended 2026-11-23, hardening; R127): the visual test hides the demo badge on the app's page only (`.k-demo{display:none}`), because the design target has none and the badge isn't part of the design.
 - **Visual tests:** Playwright renders the design target in frameless mode (`kage-board.html#full`) and the app in demo mode, both at 1320×900 and scale 1, in the same browser. Google Fonts requests from the target are redirected to the app's own self-hosted Geist files, so both use identical fonts. The test drives both to four states (needs you, running, done, the delete confirmation) and compares the two screenshots pixel by pixel; more than 0.5% differing pixels fails. Comparing live, rather than against stored images, means operating-system font rendering can't cause false failures. The screenshots in `docs/design/reference/` are the human-readable record of the same states. Changing the design means updating the target page and the screenshots in the same pull request.
 - **Token test:** a unit test checks that `public/kage.css` defines every token in §6.2 with the listed value.
 - **Behaviour tests:** end-to-end tests drive a fake `claude` (a script that fires the same hooks, writes a transcript fixture, and prints a numbered question), with real tmux and git, through: start a task, see running, see needs you, answer, see done, delete.

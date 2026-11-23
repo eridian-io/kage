@@ -24,8 +24,9 @@ export const USAGE = `Usage:
       Restart Kage's service and check that it answers.
   kage logs [-f]
       Show the last 100 lines of Kage's log. -f keeps following it.
-  kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]
+  kage serve [--demo] [--host ADDR] [--unsafe-listen-all] [--allow-no-token] [--port N]
       Run the board: live tmux sessions, or the demo sessions with --demo.
+      --host ADDR listens on ADDR instead of the config's host.
       --allow-no-token runs live mode without an access token.
   kage hooks-path
       Write the Claude settings that send hook events to Kage, and print the file's path.

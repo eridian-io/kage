@@ -458,6 +458,7 @@ export async function serveCommand(
     demo?: boolean;
     'unsafe-listen-all'?: boolean;
     'allow-no-token'?: boolean;
+    host?: string;
     port?: string;
   };
   try {
@@ -467,6 +468,7 @@ export async function serveCommand(
         demo: { type: 'boolean' },
         'unsafe-listen-all': { type: 'boolean' },
         'allow-no-token': { type: 'boolean' },
+        host: { type: 'string' },
         port: { type: 'string' },
       },
       strict: true,
@@ -495,6 +497,9 @@ export async function serveCommand(
     }
     cfg = { ...cfg, port: n };
   }
+  // --host overrides the config's host (and KAGE_HOST); resolveListenAddress checks it the same way:
+  // loopback or Tailscale only, unless --unsafe-listen-all. pnpm demo passes 127.0.0.1 (U5).
+  if (values.host !== undefined) cfg = { ...cfg, host: values.host };
 
   const cleanups: Cleanup[] = [];
   try {
@@ -647,7 +652,10 @@ async function startServer(
     sessions: new SessionStore(),
     cookie: authCookieName(cfg.port),
   };
-  const hub = new EventHub(source, cfg.name, cfg.projectsRoot, { auth: cfg.token !== '' });
+  const hub = new EventHub(source, cfg.name, cfg.projectsRoot, {
+    auth: cfg.token !== '',
+    demo,
+  });
   cleanups.push(() => hub.close());
   const allowed = { hostNames: listen.hostNames, port: cfg.port };
   const app = createApp({

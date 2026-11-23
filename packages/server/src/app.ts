@@ -63,9 +63,12 @@ export interface AppDeps {
   differ?: Pick<DiffService, 'page'>;
 }
 
-const DEMO_NO_TASKS = "Demo mode can't start tasks.";
-const DEMO_NO_CONTROLS = "Demo mode can't run tasks.";
-const DEMO_NO_DIFF = "Demo mode can't show diffs.";
+/**
+ * Usability U6: every refusal of the demo (each 501 route, and the terminal's 4501 close) is this one
+ * calm sentence: what the demo is, and how to try Kage for real. The board shows it alone, as a note.
+ */
+export const DEMO =
+  'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
 const TOO_MANY_BOARDS = 'Too many open boards from this address.';
 /** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
 const WHOLE = /^\d{1,9}$/;
@@ -239,7 +242,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
 
   const { projects } = deps;
   app.get('/api/projects', async (c) => {
-    if (!projects) return c.json({ error: DEMO_NO_TASKS }, 501);
+    if (!projects) return c.json({ error: DEMO }, 501);
     try {
       return c.json(await projects());
     } catch (err) {
@@ -249,7 +252,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
 
   const { launcher, invalidateProjects } = deps;
   app.post('/api/sessions', async (c) => {
-    if (!launcher) return c.json({ error: DEMO_NO_TASKS }, 501);
+    if (!launcher) return c.json({ error: DEMO }, 501);
     // Not JSON: the launcher answers 400 for undefined, after its 503 check.
     const body: unknown = await c.req.json().catch(() => undefined);
     try {
@@ -275,7 +278,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
       run: (a: A, id: string, body: T) => Promise<void>,
     ) =>
     async (c: Context) => {
-      if (!actor) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+      if (!actor) return c.json({ error: DEMO }, 501);
       const parsed = parse(await c.req.text());
       if (!parsed.ok) return c.json({ error: parsed.error }, 400);
       try {
@@ -336,7 +339,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
   );
   const { resumer } = deps;
   app.post('/api/sessions/:id/resume', async (c) => {
-    if (!resumer) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+    if (!resumer) return c.json({ error: DEMO }, 501);
     const parsed = parseNoBody(await c.req.text());
     if (!parsed.ok) return c.json({ error: parsed.error }, 400);
     try {
@@ -348,14 +351,14 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     return c.body(null, 204);
   });
   app.get('/api/archive', (c) => {
-    if (!archivedList) return c.json({ error: DEMO_NO_CONTROLS }, 501);
+    if (!archivedList) return c.json({ error: DEMO }, 501);
     const body: ArchivedResponse = { sessions: archivedList() };
     return c.json(body);
   });
 
   const { differ } = deps;
   app.get('/api/sessions/:id/diff', async (c) => {
-    if (!differ) return c.json({ error: DEMO_NO_DIFF }, 501);
+    if (!differ) return c.json({ error: DEMO }, 501);
     const raw = c.req.query('from');
     if (raw !== undefined && !WHOLE.test(raw)) {
       return c.json({ error: 'from must be a whole number.' }, 400);

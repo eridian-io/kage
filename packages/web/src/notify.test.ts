@@ -88,6 +88,7 @@ const snapshot = (list: Session[]) =>
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 'st',
     projectsRoot: '/p',

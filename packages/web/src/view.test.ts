@@ -35,6 +35,7 @@ const snap = (id: string, ids: string[]) =>
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     archived: 0,
     host: 'h',
     streamId: id,

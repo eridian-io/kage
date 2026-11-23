@@ -8,6 +8,7 @@ import {
   type TermServerMsg,
 } from '@kage/shared';
 import { type RawData, WebSocket, WebSocketServer } from 'ws';
+import { DEMO } from '../app.ts';
 import { type Auth, remoteAddress, SIGN_IN } from '../auth.ts';
 import { GONE_RE, isExecError } from '../control/actions.ts';
 import { firstLine } from '../git/exec.ts';
@@ -17,7 +18,6 @@ import type { TmuxClient } from '../tmux/client.ts';
 import { BridgeError, type TermHandle, type TerminalBridge, type TermSink } from './bridge.ts';
 import { checkUpgrade } from './upgrade.ts';
 
-const DEMO = 'Demo mode has no terminal.';
 const ENDED = 'This session has ended.';
 const NOT_KAGES = "That window isn't Kage's any more.";
 const UNCLEAR = "Kage didn't understand that.";

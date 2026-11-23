@@ -2,6 +2,9 @@
 export const DEMO_NOW = 1795271520000;
 export const PORT = 4391;
 export const BASE = `http://127.0.0.1:${PORT}`;
+/** The demo's one refusal (app.ts DEMO, usability U6): every action it can't do shows it alone. */
+export const DEMO_SENTENCE =
+  'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
 /** The environment every demo server in the e2e specs runs with. */
 export const SERVER_ENV = {
   KAGE_DEMO_NOW: String(DEMO_NOW),

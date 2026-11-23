@@ -135,11 +135,14 @@ async function request(
   busy.value = new Set(busy.value).add(id);
   actionError.value = null;
   let error: string | null = null;
+  let note = false;
   try {
     const url = `/api/sessions/${encodeURIComponent(id)}${path === '' ? '' : `/${path}`}`;
     const res = await (path === '' ? apiDelete(url, body) : apiPost(url, body));
     if (res.ok) return true;
     if (res.status !== 401) error = await errorOf(res);
+    // The demo (501): its one calm sentence alone, as a note, not "Couldn't <verb>." (U6).
+    note = res.status === 501;
   } catch {
     error = NO_ANSWER;
   } finally {
@@ -147,7 +150,9 @@ async function request(
     left.delete(id);
     busy.value = left;
   }
-  if (error !== null) actionError.value = { id, text: couldnt(verb, error) };
+  if (error !== null) {
+    actionError.value = note ? { id, text: error, note } : { id, text: couldnt(verb, error) };
+  }
   return false;
 }
 

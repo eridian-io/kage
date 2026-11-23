@@ -1,5 +1,5 @@
 import { expect, type Page, test } from '@playwright/test';
-import { DEMO_NOW, resetDemo } from './env.ts';
+import { DEMO_NOW, DEMO_SENTENCE, resetDemo } from './env.ts';
 
 /**
  * The command palette end to end (Task 8, spec §6.4) on the demo board: the lazy chunk opens on
@@ -82,7 +82,7 @@ test('over the diff view, Esc closes only the palette', async ({ page }) => {
   await page.getByRole('button', { name: /View diff/ }).click();
   const diff = page.locator('.k-dv');
   // The diff's chunk takes focus when it mounts; demo mode then answers with its sentence.
-  await expect(diff).toContainText("Demo mode can't show diffs.");
+  await expect(diff).toContainText(DEMO_SENTENCE);
   await openKey(page);
   await expect(input(page)).toBeFocused();
   // The diff's own command is gone while it is open.

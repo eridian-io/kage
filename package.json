@@ -9,6 +9,7 @@
   },
   "scripts": {
     "dev": "node packages/web/build.ts && pnpm -r --parallel dev",
+    "demo": "pnpm build && node packages/server/dist/kage.mjs serve --demo --host 127.0.0.1",
     "build": "pnpm -r build",
     "build:server": "pnpm --filter @kage/server build",
     "lint": "biome check .",

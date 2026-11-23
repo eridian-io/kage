@@ -2,7 +2,7 @@ import { LIMITS, type NewTaskResponse, type Project, type ProjectsResponse } fro
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, apiPost, errorOf, NO_ANSWER } from '../api.ts';
 import { couldnt } from '../copy.ts';
-import { connection, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
+import { connection, demo, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
 
 const COUNT_FROM = 3600;
 const fmt = (n: number) => n.toLocaleString('en-US');
@@ -253,8 +253,9 @@ export function NewTask() {
           Cancel<kbd>Esc</kbd>
         </button>
       </div>
+      {/* In the demo the only error is its one sentence (U6): a calm note, not an alert. */}
       {error && (
-        <p class="k-nt-err" role="alert">
+        <p class="k-nt-err" role={demo.value ? 'status' : 'alert'}>
           {error}
         </p>
       )}

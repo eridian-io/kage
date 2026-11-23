@@ -39,6 +39,7 @@ function snapshot(list: Session[]) {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/home/me/code',
@@ -190,12 +191,20 @@ describe('opening the New task form', () => {
 
   it('a failed projects fetch (demo mode: 501) shows the server message unprefixed (F7)', async () => {
     vi.mocked(apiGet).mockImplementation(async () =>
-      json({ error: "Demo mode can't start tasks." }, 501),
+      json(
+        {
+          error:
+            'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+        },
+        501,
+      ),
     );
     const { container } = render(<Board />);
     fireEvent.click(q(container, '.k-side > .k-new'));
     await waitFor(() =>
-      expect(q(container, '.k-nt-err').textContent).toBe("Demo mode can't start tasks."),
+      expect(q(container, '.k-nt-err').textContent).toBe(
+        'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+      ),
     );
     expect(container.querySelector('.k-nt-none')).toBeNull();
     type(area(container), 'fix it');

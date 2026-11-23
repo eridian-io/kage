@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net';
 import { LIMITS, type SessionStatus } from '@kage/shared';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import WebSocket from 'ws';
+import { DEMO } from '../app.ts';
 import { type Auth, authCookieName, SessionStore, SIGN_IN } from '../auth.ts';
 import { BAD_ORIGIN } from '../security.ts';
 import { BridgeError, type TermHandle, type TermSink } from './bridge.ts';
@@ -317,9 +318,9 @@ describe('TerminalServer: sessions', () => {
     expect(bridge.opens).toHaveLength(0);
   });
 
-  it('demo mode → 4501', async () => {
+  it('demo mode → 4501 with the one demo sentence (usability U6)', async () => {
     const { connect } = await setup({ demo: true });
-    expect(await connect().closed).toEqual([4501, 'Demo mode has no terminal.']);
+    expect(await connect().closed).toEqual([4501, DEMO]);
   });
 
   it('an unknown id → 4404; an ended session or one with no window → 4409', async () => {

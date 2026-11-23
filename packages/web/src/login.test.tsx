@@ -62,6 +62,7 @@ describe('the login screen', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       archived: 0,
       host: 'my-pc',
       streamId: 's',

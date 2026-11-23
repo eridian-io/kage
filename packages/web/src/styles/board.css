@@ -163,6 +163,15 @@ button {
   padding: 3px 9px;
   border-radius: 999px;
 }
+/* The demo badge (usability U6): grey outline like the ended chip, no fill (spec §6.3). */
+.k-demo {
+  flex: none;
+  font: 500 11.5px var(--mono);
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line-strong);
+  color: var(--fg-2);
+}
 .k-counts {
   display: flex;
   gap: 14px;

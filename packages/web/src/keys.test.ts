@@ -52,6 +52,7 @@ beforeEach(() => {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -177,6 +178,7 @@ describe('installKeys: after the selection changes by itself', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -523,6 +525,7 @@ describe('installKeys: the terminal (Task 13)', () => {
     applyEvent({
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',

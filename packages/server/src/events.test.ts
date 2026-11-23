@@ -86,6 +86,19 @@ describe('EventHub', () => {
     expect((await snap(new EventHub(source, 'my-pc', '/p', { auth: true }))).auth).toBe(true);
   });
 
+  it('the snapshot says whether this is the demo (demo), false by default', async () => {
+    const source = new DemoSource(1_000_000);
+    const snap = async (hub: EventHub) => {
+      const reader = hub.stream().getReader();
+      const text = await read(reader);
+      await reader.cancel();
+      hub.close();
+      return JSON.parse(text.slice('event: snapshot\ndata: '.length));
+    };
+    expect((await snap(new EventHub(source, 'my-pc', '/p'))).demo).toBe(false);
+    expect((await snap(new EventHub(source, 'my-pc', '/p', { demo: true }))).demo).toBe(true);
+  });
+
   it('dropOwner errors the streams that session opened, and no others', async () => {
     const source = new StubSource();
     const hub = new EventHub(source, 'my-pc', '/p');

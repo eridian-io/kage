@@ -92,6 +92,7 @@ function reset(list: Session[] = demoSessions(NOW)) {
   applyEvent({
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -306,7 +307,6 @@ describe('the diff view', () => {
       [429, 'Kage is still working on the last diff.'],
       [404, 'No session with id docs.'],
       [422, "git couldn't show the diff: the folder is gone."],
-      [501, "Demo mode can't show diffs."],
     ] as const) {
       pages.set(0, [status, error]);
       const c = await openDiff();
@@ -317,6 +317,17 @@ describe('the diff view', () => {
       expect(err.getAttribute('role')).toBe('alert');
       cleanup();
     }
+  });
+
+  it("the demo's 501 shows its sentence alone, as a note, with no Try again (usability U6)", async () => {
+    const sentence =
+      'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
+    pages.set(0, [501, sentence]);
+    const c = await openDiff();
+    const note = q(c, '.k-dv .k-err');
+    expect(note.textContent).toBe(sentence);
+    expect(note.getAttribute('role')).toBe('status');
+    expect(c.textContent).not.toContain('Try again');
   });
 
   it('an error keeps the last page and its controls, and Try again asks for the same page', async () => {

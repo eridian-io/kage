@@ -123,7 +123,7 @@ test('a terminal upgrade needs the token cookie: 401 without it, 101 (then demo 
 
   const signedIn = await rawUpgrade(PORT, path, { ...good, Cookie: cookie });
   expect(signedIn.status).toBe(101);
-  // Demo mode has no terminal: it closes right after the upgrade with 4501.
+  // The demo has no terminal: it closes right after the upgrade with 4501 (its one sentence).
   expect(closeCode(signedIn.frame)).toBe(4501);
 });
 

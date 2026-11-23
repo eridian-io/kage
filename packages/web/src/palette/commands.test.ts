@@ -27,6 +27,7 @@ function load(list: Session[], archived = 0, auth = false) {
   applyEvent({
     type: 'snapshot',
     auth,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

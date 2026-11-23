@@ -112,6 +112,7 @@ describe('connect: sign-in (B13)', () => {
     latest().emit('snapshot', {
       type: 'snapshot',
       auth: true,
+      demo: false,
       host: 'my-pc',
       streamId: 's1',
       projectsRoot: '/p',
@@ -176,6 +177,7 @@ describe('connect', () => {
     latest().emit('snapshot', {
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -194,6 +196,7 @@ describe('connect', () => {
     latest().emit('snapshot', {
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'h',
       streamId: 's',
       projectsRoot: '/p',
@@ -219,6 +222,7 @@ describe('connect', () => {
     first.emit('snapshot', {
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -247,6 +251,7 @@ describe('connect', () => {
     latest().emit('snapshot', {
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -281,6 +286,7 @@ describe('connect', () => {
     latest().emit('snapshot', {
       type: 'snapshot',
       auth: false,
+      demo: false,
       host: 'my-pc',
       streamId: 's',
       projectsRoot: '/p',
@@ -326,6 +332,7 @@ describe('the kage:board mark (spec §7, time to a usable board)', () => {
   const snapshot = {
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',
@@ -360,6 +367,7 @@ describe('the watchdog (reliability I3)', () => {
   const snapshot = {
     type: 'snapshot',
     auth: false,
+    demo: false,
     host: 'my-pc',
     streamId: 's',
     projectsRoot: '/p',

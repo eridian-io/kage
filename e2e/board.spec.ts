@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
-import { DEMO_NOW, resetDemo, SERVER_ENV } from './env.ts';
+import { DEMO_NOW, DEMO_SENTENCE, resetDemo, SERVER_ENV } from './env.ts';
 
 const ROOT = join(import.meta.dirname, '..');
 
@@ -48,9 +48,10 @@ test('keys typed right after R go into the reply field, never to the board', asy
   // A digit reaching the board would answer the question.
   await page.keyboard.type('1 Use CSS variables');
   await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
-  // Demo mode refuses the send; the text stays and the server's sentence shows.
+  // The demo refuses the send; the text stays and its one sentence shows alone, as a note (U6).
   await page.keyboard.press('Enter');
-  await expect(page.locator('.k-err')).toHaveText("Couldn't send. Demo mode can't run tasks.");
+  await expect(page.locator('.k-err')).toHaveText(DEMO_SENTENCE);
+  await expect(page.locator('.k-err')).toHaveAttribute('role', 'status');
   await expect(page.locator('.k-ask .k-follow input')).toHaveValue('1 Use CSS variables');
   await page.keyboard.press('Escape');
   await expect(page.locator('.k-ask .k-follow')).toHaveCount(0);
@@ -142,7 +143,7 @@ test.describe('the terminal (Task 13)', () => {
     await expect(page.locator('.k-it.on')).toHaveText(/dark mode/);
     expect(requested.filter((p) => p.startsWith('/term-'))).toEqual([]);
     await page.keyboard.press('t');
-    await expect(page.locator('.k-err')).toHaveText('Demo mode has no terminal.');
+    await expect(page.locator('.k-err')).toHaveText(DEMO_SENTENCE);
     await expect(page.locator('[data-act="term"]')).toHaveText('TerminalT');
     expect(requested.filter((p) => /^\/term-\w+\.js$/.test(p))).toHaveLength(1);
     expect(requested.filter((p) => /^\/term-\w+\.css$/.test(p))).toHaveLength(1);

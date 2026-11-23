@@ -40,6 +40,8 @@ export class EventHub {
   private readonly maxQueue: number;
   /** A token is set: the snapshot's `auth`, so the board offers Sign out. */
   private readonly auth: boolean;
+  /** The demo (kage serve --demo): the snapshot's `demo`, so the board shows its badge. */
+  private readonly demo: boolean;
   private readonly clients = new Map<string, Client>();
   private unsubscribe: (() => void) | null = null;
   /** The union of every stream's viewed session, as last told to the source. */
@@ -49,7 +51,7 @@ export class EventHub {
     source: SessionSource,
     host: string,
     projectsRoot: string,
-    opts: { heartbeatMs?: number; maxQueue?: number; auth?: boolean } = {},
+    opts: { heartbeatMs?: number; maxQueue?: number; auth?: boolean; demo?: boolean } = {},
   ) {
     this.source = source;
     this.host = host;
@@ -57,6 +59,7 @@ export class EventHub {
     this.heartbeatMs = opts.heartbeatMs ?? 30_000;
     this.maxQueue = opts.maxQueue ?? 256;
     this.auth = opts.auth ?? false;
+    this.demo = opts.demo ?? false;
   }
 
   get clientCount(): number {
@@ -94,6 +97,7 @@ export class EventHub {
           encode({
             type: 'snapshot',
             auth: this.auth,
+            demo: this.demo,
             host: this.host,
             streamId: c.streamId,
             projectsRoot: this.projectsRoot,
