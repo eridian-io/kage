@@ -361,9 +361,20 @@ describe('checkoutOf (usability U3)', () => {
     expect(checkoutOf({ kind: 'sea', exe: at('kage') }, () => true)).toBeNull();
   });
 
-  it('by default it looks at the file system: this repository, run from the sources', () => {
-    expect(checkoutOf({ kind: 'source', node: '/n', script: MAIN })).toBe(
-      join(MAIN, '..', '..', '..', '..'),
-    );
+  it('by default it looks at the file system: a checkout with .git, run from the sources', () => {
+    // A temp fixture, not this repository: a copy without .git (the test:linux container) has none.
+    const root = mkdtempSync(join(tmpdir(), 'kage-checkout-'));
+    try {
+      const src = join(root, 'packages', 'server', 'src');
+      mkdirSync(src, { recursive: true });
+      const script = join(src, 'main.ts');
+      writeFileSync(script, '');
+      const m = { kind: 'source', node: '/n', script } as const;
+      expect(checkoutOf(m)).toBeNull();
+      mkdirSync(join(root, '.git'));
+      expect(checkoutOf(m)).toBe(root);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
