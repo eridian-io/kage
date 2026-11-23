@@ -1,0 +1,24 @@
+# The clean-install image: `pnpm test:install` (scripts/test-install.sh) copies the tracked files
+# into a fresh container of this image, builds the release there and installs it as `dev` with
+# the real install.sh. NODE_VERSION is .node-version (the release Node).
+# tmux, git, curl, procps (ps), util-linux (script, setsid, runuser). Debian trixie, not bookworm:
+# bookworm's git is 2.39 (and its backports have none), and Kage needs git 2.40 or newer.
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends tmux git curl procps util-linux ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+# The same corepack as Dockerfile.test; pnpm's version comes from packageManager.
+RUN npm install -g --force corepack@0.36.0
+
+# The image's own uid 1000 (node) makes way for dev, the user who installs Kage. Its runtime
+# folder stands in for the one logind would make.
+RUN userdel -r node \
+  && useradd -m -u 1000 -s /bin/bash dev \
+  && install -d -o dev -g dev -m 700 /run/user/1000
+
+ENV CI=1 \
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /work

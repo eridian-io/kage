@@ -1,0 +1,27 @@
+# The reboot image: `pnpm test:reboot` (scripts/test-reboot.sh) boots this with systemd as PID 1
+# (no --privileged; see the script for the flags), installs Kage as `dev` with linger on, then
+# restarts the container and expects the service back. NODE_VERSION is .node-version. Debian
+# trixie for git 2.40 or newer, as Dockerfile.install. dbus-user-session gives dev's user manager
+# its bus; libpam-systemd registers the logins logind tracks.
+ARG NODE_VERSION
+FROM node:${NODE_VERSION}-trixie-slim
+
+RUN apt-get update \
+  && apt-get install -y --no-install-recommends systemd systemd-sysv dbus dbus-user-session \
+    libpam-systemd tmux git curl procps util-linux ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
+RUN npm install -g --force corepack@0.36.0
+
+# Units that make no sense in a container.
+RUN systemctl mask systemd-udevd.service systemd-udevd-control.socket systemd-udevd-kernel.socket \
+    tmp.mount getty.target console-getty.service systemd-firstboot.service systemd-resolved.service \
+    systemd-networkd.service systemd-timesyncd.service apt-daily.timer apt-daily-upgrade.timer \
+  && userdel -r node \
+  && useradd -m -u 1000 -s /bin/bash dev
+
+ENV CI=1 \
+  COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+WORKDIR /work
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

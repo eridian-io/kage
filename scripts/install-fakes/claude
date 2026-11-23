@@ -1,0 +1,35 @@
+#!/bin/sh
+# A fake claude for pnpm test:install and test:reboot. `claude --version` answers like Claude
+# Code 2.1.330. Started as the README says (claude --settings <file> --permission-mode default),
+# it writes its environment to $FAKE_LOG (default ~/fake-claude.log), then runs the SessionStart
+# and Stop hook commands of the --settings file through sh -c with Claude's JSON on stdin, as
+# Claude does, and stays in its window. Each hook's exit code and output go to $FAKE_LOG.hooks.
+# All content is invented.
+log=${FAKE_LOG:-$HOME/fake-claude.log}
+case ${1:-} in --version) echo '2.1.330 (Claude Code)'; exit 0 ;; esac
+
+settings=
+while [ $# -gt 0 ]; do
+  case $1 in --settings) settings=${2:-}; shift ;; esac
+  shift
+done
+env >"$log"
+[ -f "$settings" ] || { echo "fake claude: no settings file: $settings" >>"$log.hooks"; exec sleep 2147483647; }
+
+sid=$(cat /proc/sys/kernel/random/uuid)
+transcript=$HOME/.claude/projects/fake/$sid.jsonl
+mkdir -p "$(dirname "$transcript")"
+: >"$transcript"
+
+# The command the settings file gives for event $1 (writeHooksSettings' one line per command).
+hook() {
+  c=$(sed -n "s/^ *\"command\": \"\(.*'hook' '$1'\)\"\$/\1/p" "$settings" | head -n 1)
+  [ -n "$c" ] || { echo "$1: no command" >>"$log.hooks"; return; }
+  out=$(printf '%s' "$2" | sh -c "$c" 2>&1)
+  echo "$1: exit $? output [$out]" >>"$log.hooks"
+}
+
+base="\"session_id\":\"$sid\",\"transcript_path\":\"$transcript\",\"cwd\":\"$PWD\""
+hook SessionStart "{$base,\"hook_event_name\":\"SessionStart\",\"source\":\"startup\",\"model\":\"claude-opus-5-5\"}"
+hook Stop "{$base,\"permission_mode\":\"default\",\"hook_event_name\":\"Stop\",\"stop_hook_active\":false,\"last_assistant_message\":\"Done.\"}"
+exec sleep 2147483647

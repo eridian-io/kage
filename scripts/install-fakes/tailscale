@@ -1,0 +1,8 @@
+#!/bin/sh
+# A fake tailscale for pnpm test:install: up, with an invented MagicDNS name and address.
+case "$1 $2" in
+  'status --json')
+    printf '%s\n' '{"BackendState":"Running","Self":{"DNSName":"kage-check.example-tailnet.ts.net.","TailscaleIPs":["100.100.100.100"]}}' ;;
+  'ip -4') echo 100.100.100.100 ;;
+  *) echo "fake tailscale: no $*" >&2; exit 1 ;;
+esac

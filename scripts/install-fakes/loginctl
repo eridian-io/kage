@@ -1,0 +1,11 @@
+#!/bin/sh
+# A fake loginctl for pnpm test:install: linger is a word in a file, and every call is logged.
+state=${XDG_RUNTIME_DIR:-/tmp}/fake-systemd
+mkdir -p "$state"
+echo "loginctl $*" >>"$state/calls"
+case $1 in
+  show-user) cat "$state/linger" 2>/dev/null || echo no ;;
+  enable-linger) echo yes >"$state/linger" ;;
+  disable-linger) echo no >"$state/linger" ;;
+  *) echo "fake loginctl: no $*" >&2; exit 1 ;;
+esac
