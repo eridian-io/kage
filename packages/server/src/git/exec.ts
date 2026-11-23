@@ -254,6 +254,8 @@ function commonDirOf(repo: string, exec: GitExec): Promise<string | null> {
  * Anything else is null: the `.git` was redirected, or git no longer knows this worktree.
  * Relative paths (`worktree.useRelativePaths`) resolve from the file's own folder. The two
  * pointer files are read on every call, never cached, so a `.git` rewritten between two refreshes is caught at the next one.
+ * A refusal drops the kept common dir and checks once more with a fresh one: the repo may have
+ * moved its git dir since it was kept.
  */
 export async function worktreePin(
   repo: string,
@@ -266,6 +268,21 @@ export async function worktreePin(
   if (!line) return null;
   const common = await commonDirOf(repo, exec);
   if (common === null) return null;
+  const pin = await pinUnder(common, worktree, realWorktree, line);
+  if (pin) return pin;
+  commonDirs.delete(resolvePath(repo));
+  const fresh = await commonDirOf(repo, exec);
+  if (fresh === null || samePath(fresh, common)) return null;
+  return pinUnder(fresh, worktree, realWorktree, line);
+}
+
+/** Steps 2 and 3 of worktreePin against one common dir: the admin folder and its way back. */
+async function pinUnder(
+  common: string,
+  worktree: string,
+  realWorktree: string,
+  line: string,
+): Promise<GitPin | null> {
   const admin = await real(resolvePath(worktree, line));
   if (admin === null || !samePath(dirname(admin), join(common, 'worktrees'))) return null;
   const back = (await readPointer(join(admin, 'gitdir')))?.trim();

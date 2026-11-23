@@ -356,6 +356,8 @@ export class LiveSource implements SessionSource {
    * `gen` is the server generation they were set aside in (M3).
    */
   #setAside: { e: HookEvent; at: number; gen: number }[] = [];
+  /** When each hook reached #onHook (monotonic ms): a set-aside entry's `at` is its arrival. */
+  readonly #arrivedAt = new WeakMap<HookEvent, number>();
   /** M3: bumped at each `down`: a new tmux server numbers its panes and windows afresh. */
   #serverGen = 0;
   /** M4: the watcher saw `up` and no `down` since: its control client is attached. */
@@ -1476,6 +1478,8 @@ export class LiveSource implements SessionSource {
 
   #onHook(e: HookEvent): void {
     if (!this.#running) return;
+    // Kept from the first time it came in (an early hook is replayed through here once ready).
+    if (!this.#arrivedAt.has(e)) this.#arrivedAt.set(e, this.#clock());
     if (!this.#ready) {
       this.#early.push(e);
       return;
@@ -1524,7 +1528,9 @@ export class LiveSource implements SessionSource {
 
   /** B34: keeps a dropped hook for a claim that may name its pane soon (the newest 32). */
   #setAsideHook(e: HookEvent): void {
-    this.#setAside.push({ e, at: this.#clock(), gen: this.#serverGen });
+    // Its arrival, not now: a hook that came before a launch began isn't that launch's, even
+    // when its re-list ended after (M3, Task 10's review).
+    this.#setAside.push({ e, at: this.#arrivedAt.get(e) ?? this.#clock(), gen: this.#serverGen });
     if (this.#setAside.length > SET_ASIDE_MAX) this.#setAside.shift();
   }
 

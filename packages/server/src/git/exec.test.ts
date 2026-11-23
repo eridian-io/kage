@@ -179,10 +179,35 @@ describe('worktreePin (F3: by content, not by name)', () => {
     expect(await worktreePin(repo, wt, exec)).not.toBeNull();
     expect(await worktreePin(repo, wt, exec)).not.toBeNull();
     expect(asked).toBe(1);
-    // A rewrite between two calls is caught at the next one.
+    // A rewrite between two calls is caught at the next one. The refusal asks for the common dir
+    // once more (the repo may have moved it), and still refuses.
     await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
     expect(await worktreePin(repo, wt, exec)).toBeNull();
-    expect(asked).toBe(1);
+    expect(asked).toBe(2);
+  });
+
+  it('a refusal drops the kept common dir and tries once more uncached (the git dir moved)', async () => {
+    const moved = join(root, 'elsewhere.git');
+    let dir = common;
+    let asked = 0;
+    const exec: GitExec = async (args, opts) => {
+      asked++;
+      return execFor(dir)(args, opts);
+    };
+    const repo = join(root, 'repo');
+    const { wt } = await layout('x', 'x');
+    expect(await worktreePin(repo, wt, exec)).not.toBeNull();
+    // The git dir moved and `git worktree repair` ran: both pointers lead to the new place.
+    const admin = join(moved, 'worktrees', 'x');
+    await mkdir(admin, { recursive: true });
+    await writeFile(join(admin, 'gitdir'), `${join(wt, '.git')}\n`);
+    await writeFile(join(wt, '.git'), `gitdir: ${admin}\n`);
+    dir = moved;
+    expect(await worktreePin(repo, wt, exec)).toEqual({ gitDir: admin, workTree: wt });
+    expect(asked).toBe(2);
+    // Kept again: the next call asks nothing.
+    expect(await worktreePin(repo, wt, exec)).not.toBeNull();
+    expect(asked).toBe(2);
   });
 
   it('R131: a failed common-dir lookup is not kept', async () => {

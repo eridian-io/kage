@@ -24,6 +24,8 @@ describe('TmuxClient.listWindows', () => {
     'no server running on /tmp/tmux-1000/sock',
     'error connecting to /tmp/tmux-1000/sock (No such file or directory)',
     "can't find session: kage",
+    // tmux 3.4's words for a missing session in `list-panes -s -t =kage` (Task 10's minor).
+    "can't find window: kage",
     'No Server Running on x',
   ])('returns [] for "%s"', async (stderr) => {
     const c = client(async () => {
@@ -63,6 +65,8 @@ describe('TmuxClient.listWindows', () => {
     });
     const err = await c.listWindows(undefined, { strict: true }).catch((e: unknown) => e);
     expect(err).toBeInstanceOf(SessionMissing);
+    // Not strict: [] as for "can't find session".
+    expect(await c.listWindows()).toEqual([]);
   });
 
   it.each([

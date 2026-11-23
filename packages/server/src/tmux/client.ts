@@ -65,10 +65,15 @@ export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
   ];
 }
 
-const MISSING_RE = /no server running|error connecting to|can't find session/i;
 /**
- * list-panes' words when the server runs but has no session by that name (renamed, killed).
- * tmux 3.4 says "can't find window: kage" for `list-panes -s -t =kage` (host-integration §2).
+ * list-panes' words when there is nothing to list: no tmux server, or no session by that name.
+ * The non-strict listWindows answers [] for any of them. tmux 3.4 names a missing session
+ * "can't find window: kage" for `list-panes -s -t =kage` (host-integration §2).
+ */
+const MISSING_RE = /no server running|error connecting to|can't find session|can't find window/i;
+/**
+ * The subset that means the server runs but has no session by that name (renamed, killed):
+ * strict listWindows throws SessionMissing for these, in both tmux spellings.
  */
 const NO_SESSION_RE = /can't find session|can't find window/i;
 /** has-session's words when no tmux server runs at all (not just no such session). */

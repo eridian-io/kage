@@ -335,6 +335,41 @@ describe('TmuxWatcher', () => {
       w.stop();
     });
 
+    it('a pid not known at the first line is asked again at a later line (at most once a second)', async () => {
+      // The first ask found nothing (tmux busy): without a pid, a new server would pass for the same.
+      let pid: string | null = null;
+      let asked = 0;
+      const { w, procs, events } = setup(undefined, {
+        serverPid: async () => {
+          asked++;
+          return pid;
+        },
+      });
+      w.start();
+      procs[0]?.say('%begin 1 2 0\n');
+      await flush();
+      expect(asked).toBe(1);
+      pid = '4242';
+      procs[0]?.say('%window-add @1\n%window-add @2\n');
+      await flush();
+      expect(asked).toBe(1);
+      await vi.advanceTimersByTimeAsync(1000);
+      procs[0]?.say('%window-add @3\n');
+      await flush();
+      expect(asked).toBe(2);
+      // Noted now: later lines ask nothing.
+      await vi.advanceTimersByTimeAsync(5000);
+      procs[0]?.say('%window-add @4\n');
+      await flush();
+      expect(asked).toBe(2);
+      // kill-server and a new server at once: another pid, so a down.
+      pid = '5151';
+      procs[0]?.emit('exit', 1);
+      await flush();
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(1);
+      w.stop();
+    });
+
     it('a new server under the same name (another pid) counts as down', async () => {
       let pid = '4242';
       const { w, procs, events } = setup(undefined, { serverPid: async () => pid });

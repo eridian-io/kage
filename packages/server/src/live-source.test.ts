@@ -4716,6 +4716,26 @@ describe('LiveSource: tmux edges (hardening Task 10: reliability M3, M4, M9, M11
     await s.source.stop();
   });
 
+  it('a hook that arrived before the launch began is not claimed, though set aside after it', async () => {
+    // Task 10's minor: a set-aside entry keeps its arrival time, not the time the re-list ended.
+    const s = setup({ records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })] });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    // Another Claude's SessionEnd from %4 lands; its re-list is still 50 ms away.
+    s.hooks.fire(hook('SessionEnd', '%4', { sessionId: 'random' }));
+    await vi.advanceTimersByTimeAsync(10);
+    s.source.resumed('k-1', 's-1');
+    await vi.advanceTimersByTimeAsync(60); // the re-list finds no %4: set aside now
+    // The resume's window opens as %4 too (the other Claude's pane has gone).
+    s.tmux.windows = [kageWin({ windowId: '@4', paneId: '%4' })];
+    s.source.claim('k-1', '@4', '%4');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(s.source.lines('k-1').some((l) => l.text === FAILED)).toBe(false);
+    await s.source.stop();
+  });
+
   it('the session missing while the watcher is attached keeps every state and logs once', async () => {
     const logs: string[] = [];
     const s = setup({

@@ -36,6 +36,8 @@ const REATTACH_WINDOW_MS = 10_000;
  * `%exit`) first, so lines alone don't prove it (Task 10, from Task 6's review).
  */
 const ATTACHED_MS = 1000;
+/** While the attached server's pid isn't known, a later line asks again, at most this often. */
+const PID_RETRY_MS = 1000;
 const PID = /^\d+$/;
 
 /**
@@ -81,6 +83,9 @@ export class TmuxWatcher {
   readonly #serverPid: () => Promise<string | null>;
   /** The server pid noted at the current client's first line; null when not known. */
   #pid: string | null = null;
+  /** A pid lookup is in flight, and when the last one began (monotonic ms). */
+  #pidAsking = false;
+  #pidAskedAt = Number.NEGATIVE_INFINITY;
   /** Monotonic times of the re-attaches since a client last stayed attached ATTACHED_MS. */
   #reattaches: number[] = [];
   #gen = 0;
@@ -190,6 +195,9 @@ export class TmuxWatcher {
           first = false;
           this.#notePid(gen);
           this.#emit({ type: 'up' });
+        } else if (this.#pid === null && !this.#pidAsking) {
+          // The first ask found no pid: ask again at a later line, at most once a second.
+          if (performance.now() - this.#pidAskedAt >= PID_RETRY_MS) this.#notePid(gen);
         }
         this.#line(buf.slice(0, nl).replace(/\r$/, ''));
         buf = buf.slice(nl + 1);
@@ -213,13 +221,21 @@ export class TmuxWatcher {
     proc.on('error', onEnd);
   }
 
-  /** The attached server's pid, asked once per client (at its first line). */
+  /**
+   * The attached server's pid, asked at each client's first line, and again at a later line
+   * (at most once per PID_RETRY_MS) while it isn't known.
+   */
   #notePid(gen: number): void {
+    this.#pidAsking = true;
+    this.#pidAskedAt = performance.now();
     this.#serverPid().then(
       (pid) => {
+        this.#pidAsking = false;
         if (this.#running && gen === this.#gen && pid !== null) this.#pid = pid;
       },
-      () => {},
+      () => {
+        this.#pidAsking = false;
+      },
     );
   }
 
