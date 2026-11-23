@@ -13,6 +13,7 @@
     "*.ts",
     "../playwright.config.ts",
     "../packages/web/sizes.ts",
-    "../packages/server/test/setup-fetch.ts"
+    "../packages/server/test/setup-fetch.ts",
+    "../packages/server/src/install/runtime.ts"
   ]
 }

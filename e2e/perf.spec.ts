@@ -7,7 +7,18 @@ import { expect, type Page, test } from '@playwright/test';
 import { measureSizes, SIZE_LIMITS } from '../packages/web/sizes.ts';
 import { median, percentile, readBudgets, recordBudget } from './budgets.ts';
 import { PERF_BASE, PERF_PORT } from './env.ts';
-import { blur, chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } from './harness.ts';
+import {
+  BUNDLE,
+  blur,
+  chip,
+  hasTmux,
+  LiveHarness,
+  PERF_SEA,
+  ROOT,
+  row,
+  STATUS_MS,
+  startTask,
+} from './harness.ts';
 
 /**
  * The budgets of spec §7, each through recordBudget (test-results/budgets.json). Every budget
@@ -20,7 +31,9 @@ import { blur, chip, hasTmux, LiveHarness, ROOT, row, STATUS_MS, startTask } fro
  * - hook to screen: the test's clock before the hook's socket write to a MutationObserver's
  *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time is an annotation;
  * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc), on
- *   the shipped bundle with its flags (R91); the dev run from the sources is an annotation;
+ *   the shipped bundle with its flags (R91); the dev run from the sources is an annotation; with
+ *   KAGE_PERF_SEA=<gunzipped kage>, the single executable too (Task 6), plus its `kage hook` wall
+ *   time beside the bundle's as an annotation;
  * - rendering: the DOM cap and line identity under a 2,000-line flood, and a 3,000-line diff;
  * - SSE under load: 30 windows writing transcript records and posting tool hooks, frames and
  *   bytes counted over the 10 s burst.
@@ -312,7 +325,7 @@ test.describe('live budgets', () => {
   });
 
   test('idle server: CPU and RSS with 10 done sessions and no page or stream open', async () => {
-    test.setTimeout(150_000);
+    test.setTimeout(PERF_SEA ? 270_000 : 150_000);
     try {
       test.skip(!existsSync('/proc/self/stat'), 'Reads /proc/<pid>: Linux only');
       await sleep(10_000);
@@ -346,11 +359,75 @@ test.describe('live budgets', () => {
         await h.stopServe();
         await h.startServe('shipped');
       }
+      if (PERF_SEA) await idleSea(PERF_SEA);
     } finally {
       // Ten Node fakes would weigh on every later test (memory): they go now, checked.
       await freeIdle();
     }
   });
+
+  /**
+   * The single executable (Task 6): the same idle measurement with the SEA serving, then
+   * `kage hook`'s wall time from the SEA and from the bundle (spawn to exit, a PostToolUse with a
+   * body, median of 10; reported, not asserted). The shipped bundle serves again afterwards.
+   */
+  const idleSea = async (sea: string) => {
+    await h.stopServe();
+    await h.startServe('sea');
+    const cwd = dirOf('projects/demo');
+    let pane = '';
+    try {
+      await expect
+        .poll(async () => (await snapshot()).filter((s) => s.task.startsWith('idle-')).length, {
+          timeout: STATUS_MS,
+        })
+        .toBe(10);
+      await sleep(10_000);
+      const cpu0 = h.serveCpuMs();
+      const t0 = performance.now();
+      await sleep(30_000);
+      const cpu = ((h.serveCpuMs() - cpu0) / (performance.now() - t0)) * 100;
+      recordBudget({ name: 'Idle server CPU (SEA, 30 s)', value: cpu, limit: 1, unit: '%' });
+      recordBudget({ name: 'Idle server RSS (SEA)', value: h.serveRss(), limit: 80, unit: 'MB' });
+
+      pane = await newWindow('sea-hook-probe', cwd, 'exec sleep 3600');
+      const body = JSON.stringify({
+        session_id: randomUUID(),
+        cwd,
+        hook_event_name: 'PostToolUse',
+        tool_name: 'Bash',
+        tool_input: { command: 'npm test' },
+      });
+      const wall = async (file: string, args: string[]) => {
+        const walls: number[] = [];
+        for (let i = 0; i < 11; i++) {
+          const t = performance.now();
+          await new Promise<void>((resolve, reject) => {
+            const c = spawn(file, [...args, 'hook', 'PostToolUse'], {
+              cwd: ROOT,
+              env: { ...h.env, TMUX_PANE: pane },
+              stdio: ['pipe', 'ignore', 'ignore'],
+            });
+            c.once('error', reject);
+            c.once('exit', () => resolve());
+            c.stdin.end(body);
+          });
+          // The first run warms the page cache; ten are kept.
+          if (i > 0) walls.push(performance.now() - t);
+        }
+        return median(walls);
+      };
+      const seaMs = await wall(sea, []);
+      const bundleMs = await wall(process.execPath, ['--no-warnings', BUNDLE]);
+      const note = `kage hook wall time, median of 10: SEA ${seaMs.toFixed(1)} ms, bundle ${bundleMs.toFixed(1)} ms (reported, not asserted)`;
+      console.log(note);
+      test.info().annotations.push({ type: 'budget (not asserted)', description: note });
+    } finally {
+      if (pane) await closePanes([pane]);
+      await h.stopServe();
+      await h.startServe('shipped');
+    }
+  };
 
   test('time to a usable board (median of 5 on a tailnet LAN); the terminal fetched once', async ({
     browser,

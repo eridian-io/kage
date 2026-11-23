@@ -1,0 +1,135 @@
+# The release (phase 6, Task 6). Written, never run by an agent (R107): the owner pushes a v* tag.
+#
+# - build: one single executable per target, each on its own runner, because the SEA's code
+#   cache has to be made on the architecture that runs it (docs/specs/host-integration.md §7.3).
+#   Each is smoke-tested and uploaded as a workflow artifact.
+# - publish: only for a pushed v* tag, never for workflow_dispatch (F5). It stages the npm package,
+#   writes VERSION and SHA256SUMS, attests every file, creates the GitHub release and publishes to
+#   npm through trusted publishing (OIDC; no token is stored anywhere).
+#
+# Actions are pinned by commit SHA, at releases at least two weeks old.
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  # Builds and smoke-tests the four executables; publishes nothing.
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+          - runner: macos-15
+            target: darwin-arm64
+          - runner: macos-15-intel
+            target: darwin-x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Corepack first, so setup-node finds pnpm (the version pinned in packageManager) for its cache.
+      - run: corepack enable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Build the single executable
+        run: node packages/server/src/release/build.ts --out dist/release --sea-only
+      - name: Smoke-test it
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [ "$REF_TYPE" = tag ]; then want="${REF_NAME#v}"
+          else want="$(node -p "require('./packages/server/package.json').version")"; fi
+          box="$(mktemp -d)"
+          mkdir -p "$box/home" "$box/config" "$box/state" "$box/run"
+          export HOME="$box/home" XDG_CONFIG_HOME="$box/config" XDG_STATE_HOME="$box/state"
+          export XDG_RUNTIME_DIR="$box/run" KAGE_SOCKET="$box/run/kage.sock"
+          gunzip -c "dist/release/kage-$TARGET.gz" > "$box/kage"
+          chmod 755 "$box/kage"
+          got="$("$box/kage" --version)"
+          [ "$got" = "$want" ] || { echo "kage --version printed '$got', expected '$want'"; exit 1; }
+          "$box/kage" hook Stop </dev/null >"$box/out" 2>"$box/err"
+          [ ! -s "$box/out" ] && [ ! -s "$box/err" ] || { echo "kage hook printed output"; cat "$box/out" "$box/err"; exit 1; }
+          # Doctor runs; on a runner some checks fail (no tmux, Claude or Tailscale), which is exit 1.
+          set +e; "$box/kage" doctor; code=$?; set -e
+          [ "$code" -le 1 ] || { echo "kage doctor exited $code"; exit 1; }
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: kage-${{ matrix.target }}
+          path: dist/release/kage-${{ matrix.target }}.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    needs: build
+    # A pushed v* tag only (F5): workflow_dispatch never reaches this job.
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: corepack enable
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: pnpm
+      - name: The tag is v<package version>
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version="$(node -p "require('./packages/server/package.json').version")"
+          [ "$TAG" = "v$version" ] || { echo "Tag $TAG is not v$version (packages/server/package.json)"; exit 1; }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: kage-*
+          path: dist/release
+          merge-multiple: true
+      - name: Stage the npm package, VERSION and SHA256SUMS
+        run: |
+          node packages/server/src/release/build.ts --out dist/release --no-sea
+          rm -rf dist/release/npm
+          cd dist/release && sha256sum -c SHA256SUMS && ls -l
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: dist/release/*
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: gh release create "$TAG" --verify-tag --title "$TAG" --generate-notes dist/release/*
+      - name: Publish to npm (trusted publishing, with provenance)
+        env:
+          TAG: ${{ github.ref_name }}
+        run: npm publish "dist/release/eridian-io-kage-${TAG#v}.tgz" --provenance --access public

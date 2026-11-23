@@ -16,6 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, type Page, type TestInfo } from '@playwright/test';
+import { serviceEnv } from '../packages/server/src/install/runtime.ts';
 import { LIVE_PORT } from './env.ts';
 import { assertLocalNtfy } from './fake-ntfy.ts';
 
@@ -37,6 +38,11 @@ export const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
 export const BUNDLE = join(ROOT, 'packages/server/dist/kage.mjs');
 export const SHIPPED_FLAGS = ['--v8-pool-size=1'];
 export const SHIPPED_ENV = { MALLOC_ARENA_MAX: '2' };
+/**
+ * A single executable to measure as well (Task 6): `KAGE_PERF_SEA=<gunzipped kage>`. It runs with
+ * the service's environment (serviceEnv); its pool size is in its own execArgv.
+ */
+export const PERF_SEA: string | undefined = process.env.KAGE_PERF_SEA || undefined;
 const run = promisify(execFile);
 /** Status changes can take a few hook and re-list rounds; never wait on fixed sleeps. */
 export const STATUS_MS = 15_000;
@@ -242,13 +248,18 @@ export class LiveHarness {
   };
 
   /**
-   * Starts `kage serve`: from the sources (`dev`, as `node packages/server/src/main.ts`), or the
-   * bundle with the shipped flags and environment (`shipped`, ruling R91).
+   * Starts `kage serve`: from the sources (`dev`, as `node packages/server/src/main.ts`), the
+   * bundle with the shipped flags and environment (`shipped`, ruling R91), or the single
+   * executable at KAGE_PERF_SEA with the service's environment (`sea`, Task 6).
    */
-  startServe = (mode: 'dev' | 'shipped' = 'dev'): Promise<void> =>
+  startServe = (mode: 'dev' | 'shipped' | 'sea' = 'dev'): Promise<void> =>
     new Promise((resolve, reject) => {
       if (mode === 'shipped' && !existsSync(BUNDLE)) {
         reject(new Error(`No server bundle at ${BUNDLE}: run corepack pnpm build`));
+        return;
+      }
+      if (mode === 'sea' && !(PERF_SEA && existsSync(PERF_SEA))) {
+        reject(new Error(`No single executable at KAGE_PERF_SEA (${PERF_SEA ?? 'unset'})`));
         return;
       }
       // The config as serve will read it, however a spec wrote it: no topic without the fake (R85).
@@ -260,12 +271,23 @@ export class LiveHarness {
         reject(err);
         return;
       }
-      const args =
-        mode === 'shipped'
-          ? [...SHIPPED_FLAGS, BUNDLE, 'serve', '--port', String(this.port)]
-          : ['packages/server/src/main.ts', 'serve', '--port', String(this.port)];
-      const env = mode === 'shipped' ? { ...this.env, ...SHIPPED_ENV } : this.env;
-      const c = spawn(process.execPath, args, {
+      const port = ['serve', '--port', String(this.port)];
+      const sea = PERF_SEA as string;
+      const [file, args, env] =
+        mode === 'sea'
+          ? [
+              sea,
+              port,
+              { ...this.env, ...serviceEnv({ kind: 'sea', exe: sea }, this.env.PATH ?? '') },
+            ]
+          : mode === 'shipped'
+            ? [
+                process.execPath,
+                [...SHIPPED_FLAGS, BUNDLE, ...port],
+                { ...this.env, ...SHIPPED_ENV },
+              ]
+            : [process.execPath, ['packages/server/src/main.ts', ...port], this.env];
+      const c = spawn(file, args, {
         cwd: ROOT,
         env,
         stdio: ['ignore', 'pipe', 'pipe'],
