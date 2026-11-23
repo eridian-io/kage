@@ -13,7 +13,6 @@ import type { PromptKind } from './control/keys.ts';
 import type { AutoArchiver, AutoCandidate } from './finish/auto-archive.ts';
 import type { HookEvent } from './hooks/event.ts';
 import type { HookServer } from './hooks/server.ts';
-import { nextStatus } from './hooks/status.ts';
 import {
   ACTIVE_MS,
   multiSelectByQuestion,
@@ -26,7 +25,15 @@ import {
   toSession,
   viewChange,
 } from './live/session-view.ts';
-import { type Observation, type StatusFacts, step } from './live/status.ts';
+import {
+  holdsFirstPrompt,
+  type Observation,
+  permissionCounts,
+  resumeFails,
+  type StatusFacts,
+  step,
+  UNNAMED_TOOL,
+} from './live/status.ts';
 import {
   numberedPromptKind,
   paneLines,
@@ -194,10 +201,6 @@ const TURN_END_CHECK_MS = 2000;
  * shell-ended sessions.
  */
 const ACTIVITY_RELIST_MS = 5000;
-/** M11: a pending tool whose hook had no `tool_use_id` (a PermissionRequest, a prompt on screen). */
-const UNNAMED_TOOL = '';
-/** M11: `tool_use_id`s whose PostToolUse came before their PreToolUse, kept at most this many. */
-const TOOLS_DONE_MAX = 64;
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -1664,48 +1667,10 @@ export class LiveSource implements SessionSource {
   }
 
   /**
-   * R12 with M11: which tools are pending, by `tool_use_id`. A PostToolUse that arrives before its
-   * PreToolUse (parallel tools, separate `kage hook` processes) leaves a note, and that PreToolUse
-   * then adds nothing. A turn's end (Stop, SessionEnd, a new session) clears them.
+   * No tool is pending (an answer, a denial, an end): the early-PostToolUse notes go too. The
+   * hook path's tool tracking is the status module's (R12, M11); the paths not moved yet use
+   * this until Task 6 (F9).
    */
-  #trackTools(st: Live, e: HookEvent, compact: boolean): void {
-    const id = e.toolUseId;
-    switch (e.event) {
-      case 'PreToolUse':
-        if (id === null) st.pending.add(UNNAMED_TOOL);
-        else if (!st.toolsDone.delete(id)) st.pending.add(id);
-        break;
-      case 'PermissionRequest':
-        // It carries no tool_use_id; its tool's PreToolUse has usually added it already.
-        if (st.pending.size === 0) st.pending.add(UNNAMED_TOOL);
-        break;
-      case 'PostToolUse':
-      case 'PostToolUseFailure':
-        if (id === null) {
-          this.#clearPending(st);
-          break;
-        }
-        st.pending.delete(UNNAMED_TOOL);
-        if (!st.pending.delete(id)) {
-          st.toolsDone.add(id);
-          if (st.toolsDone.size > TOOLS_DONE_MAX) {
-            st.toolsDone.delete(st.toolsDone.values().next().value as string);
-          }
-        }
-        break;
-      case 'Stop':
-      case 'SessionEnd':
-        this.#clearPending(st);
-        break;
-      case 'SessionStart':
-        if (!compact) this.#clearPending(st);
-        break;
-      default:
-        break;
-    }
-  }
-
-  /** No tool is pending (an answer, a denial, an end): the early-PostToolUse notes go too. */
   #clearPending(st: Live): void {
     st.pending.clear();
     st.toolsDone.clear();
@@ -1725,42 +1690,28 @@ export class LiveSource implements SessionSource {
     if (!st.record && e.pane !== null && this.#now() - st.firstSeen < UNKNOWN_PANE_MS) {
       this.#setAsideHook(e);
     }
-    if (st.resuming) {
-      const want = st.resuming.sessionId;
-      st.resuming = null;
-      if (e.event === 'SessionEnd' && want !== null && e.sessionId !== want) {
-        this.#resumeFailed(st, want);
-        return;
-      }
+    const facts = this.#factsOf(st);
+    const want = st.resuming?.sessionId ?? null;
+    if (want !== null && resumeFails(facts, e)) {
+      this.#resumeFailed(st, want);
+      return;
     }
+    // The hook's step ends the resume too; it ends here first, so a tail #link starts below
+    // doesn't take this Claude's transcript for the resume's replay (#onTailChange).
+    st.resuming = null;
     // R12: a permission Notification counts only while a tool is pending.
-    const counts = !(
-      e.event === 'Notification' &&
-      e.notification === 'permission' &&
-      st.pending.size === 0
-    );
+    const counts = permissionCounts(facts, e);
     // Every hook names its session and transcript: link on any of them, so a pane whose
     // SessionStart Kage missed (a restart, a hook lost) still gets its tail.
     this.#link(st, e);
     st.hookSeen = true;
     st.hookCount++;
     st.claudeExited = false;
-    // A compaction (auto-compact can run mid-turn) is the same turn going on (R21 exception).
-    const compact = e.event === 'SessionStart' && e.source === 'compact';
     // I2: a hook says what Claude is doing; a turn-end check armed before it is moot.
-    this.#clearTimers(st, ['startup', 'turnEnd']);
-    this.#trackTools(st, e, compact);
-    st.mode = 'hooks';
-    st.startup = false;
-    this.#clearTimers(st, ['idle']);
-    if (e.event === 'UserPromptSubmit' || e.event === 'PreToolUse' || e.event === 'SessionEnd') {
-      this.#endFirstPromptWait(st);
-    }
-    const before = st.status;
-    let next = counts ? (nextStatus(st.status, e) ?? st.status) : st.status;
-    // P3F1: a launched session's SessionStart comes just before its task's first prompt.
-    if (e.event === 'SessionStart' && !compact && st.firstPromptPending && before !== 'ended') {
-      next = 'running';
+    this.#clearTimers(st, ['startup', 'turnEnd', 'idle']);
+    // P3F1: a launched session's SessionStart comes just before its task's first prompt; `step`
+    // keeps it running, and its fallback looks at the pane if no prompt comes.
+    if (holdsFirstPrompt(this.#factsOf(st), e)) {
       st.now = STARTING;
       this.#clearTimers(st, ['firstPrompt']);
       st.timers.firstPrompt = setTimeout(() => {
@@ -1768,8 +1719,12 @@ export class LiveSource implements SessionSource {
         void this.#firstPromptFallback(st);
       }, FIRST_PROMPT_MS);
     }
-    // F3: a hook is live, also while an attach catches up.
-    this.#setStatus(st, next, 'live');
+    const before = st.status;
+    // F3: a hook is live, also while an attach catches up. Tools, mode and the waits follow too.
+    // TODO(Task 7): the transition goes out before the question and prompt kind below are set;
+    // fold them into the step before the notifier reads them off a transition.
+    this.#apply(st, { kind: 'hook', event: e });
+    const next = st.status;
     if (before === 'ended' && next !== 'ended') this.#clearTimers(st, ['retire']);
     if (next === 'needs-you') {
       if (e.event === 'PreToolUse' && e.toolName === 'AskUserQuestion') {
@@ -1803,11 +1758,10 @@ export class LiveSource implements SessionSource {
    * error is reported: a line on the card and one in Kage's log.
    */
   #resumeFailed(st: Live, sessionId: string): void {
-    this.#endFirstPromptWait(st);
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
-    st.mode = 'hooks';
-    this.#clearPending(st);
-    this.#setStatus(st, 'ended', 'live');
+    // Ended, hooks mode, no tool pending, the resume and the first-prompt wait over (#apply ends
+    // the wait's timer and its "Starting Claude…" line). Always live (F3).
+    this.#apply(st, { kind: 'resume-failed' });
     const line: DisplayLine = { kind: 'out', text: RESUME_FAILED };
     st.lines = [...(st.tail ? st.tail.lines() : st.lines), line].slice(-MAX_LINES);
     this.#stopTail(st);

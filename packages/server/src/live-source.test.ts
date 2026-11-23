@@ -5314,3 +5314,41 @@ describe('LiveSource: transitions (Task 1)', () => {
     ]);
   });
 });
+
+describe('LiveSource: hooks through the status module (Task 2)', () => {
+  const transitions = (events: SourceEvent[], id?: string): Transition[] =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && (!id || e.transition.id === id) ? [e.transition] : [],
+    );
+
+  it("a hook that lands while the up's attach still catches up is live (F3): its question isn't lost", async () => {
+    const gate: TailGate = { wait: null };
+    const { source, watcher, hooks, events } = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      tailGate: gate,
+    });
+    await source.start();
+    await flush();
+    // tmux goes down and comes back; the up's attach waits on its tail start.
+    watcher.emit({ type: 'down' });
+    await flush();
+    const open = holdTails(gate);
+    events.length = 0;
+    watcher.emit({ type: 'up' });
+    await flush();
+    // The attach itself is reconcile: it is catching up.
+    expect(transitions(events, 'k-1').map((t) => t.cause)).toEqual(['reconcile']);
+    const placed = transitions(events, 'k-1')[0]?.to;
+    hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(transitions(events, 'k-1').at(-1)).toMatchObject({
+      from: placed,
+      to: 'needs-you',
+      cause: 'live',
+    });
+    open();
+    await flush();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+  });
+});
