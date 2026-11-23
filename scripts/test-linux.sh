@@ -16,14 +16,16 @@ echo "== building $image"
 docker build --quiet --tag "$image" - < Dockerfile.test >/dev/null
 
 echo "== copying $(git ls-files | wc -l | tr -d ' ') tracked files into a fresh container"
-git ls-files -z | tar --null -T - -c -f - | docker run --rm -i --init "$image" bash -c '
+# R134: at most 4 GB of memory, so an overrun fails inside the container instead of the host
+# killing the run, and vitest on 2 workers (Playwright stays on 1, playwright.config.ts).
+git ls-files -z | tar --null -T - -c -f - | docker run --rm -i --init --memory 4g "$image" bash -c '
   set -euo pipefail
   mkdir -p /work && tar -x --no-same-owner -f - -C /work && cd /work
   stage() { echo; echo "== $*"; "$@"; }
   stage corepack pnpm install --frozen-lockfile
   stage corepack pnpm lint
   stage corepack pnpm typecheck
-  stage corepack pnpm test
+  stage corepack pnpm test --maxWorkers=2
   stage corepack pnpm build
   stage corepack pnpm test:e2e
   echo; echo "== all stages passed"
