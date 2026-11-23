@@ -3,7 +3,8 @@
  * the default. Ctrl+C or the end of input during a question stops setup: the question rejects
  * with an AbortError. Ctrl+C between questions (while setup looks something up) exits 130 at
  * once. After close(), the terminal is back to normal and Ctrl+C is the process's own SIGINT,
- * which ends it.
+ * which ends it. A question after close() opens the terminal again (setup's "Did it arrive?",
+ * asked once the service answers); close() it again after.
  */
 import { createInterface, type Interface } from 'node:readline/promises';
 
@@ -12,6 +13,8 @@ export interface Prompter {
   ask(question: string, def: string): Promise<string>;
   /** Shows `<question> [Y/n] ` (or `[y/N]`) until the answer is empty, yes or no. */
   confirm(question: string, def: boolean): Promise<boolean>;
+  /** Waits for Enter, showing nothing more; setup falls back to ask() without it. */
+  pause?(): Promise<void>;
   /** Called after the last question; a scripted Prompter needn't have one. */
   close?(): void;
 }
@@ -29,6 +32,8 @@ export function ttyPrompter(
 ): Prompter & { close(): void } {
   const exit = opts.exit ?? ((code: number) => process.exit(code));
   let rl: Interface | null = null;
+  /** Interfaces closed by close(), not by the end of input: they don't stop later questions. */
+  const closedByUs = new WeakSet<Interface>();
   let pending = 0;
   const stop = new AbortController();
   const open = (): Interface => {
@@ -50,7 +55,9 @@ export function ttyPrompter(
         r.close();
         exit(130);
       });
-      r.on('close', () => stop.abort());
+      r.on('close', () => {
+        if (!closedByUs.has(r)) stop.abort();
+      });
     }
     return rl;
   };
@@ -77,8 +84,14 @@ export function ttyPrompter(
         output.write('Please answer y or n.\n');
       }
     },
+    async pause() {
+      await line('');
+    },
     close() {
-      rl?.close();
+      if (rl === null) return;
+      closedByUs.add(rl);
+      rl.close();
+      rl = null;
     },
   };
 }

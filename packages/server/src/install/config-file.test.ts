@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConfigError } from '../config.ts';
-import { generateToken, readConfigObject, writeConfig } from './config-file.ts';
+import { generateToken, generateTopic, readConfigObject, writeConfig } from './config-file.ts';
 
 const isWin = process.platform === 'win32';
 const mode = (p: string) => statSync(p).mode & 0o777;
@@ -33,6 +33,17 @@ describe('generateToken', () => {
     const a = generateToken();
     expect(a).toMatch(/^[A-Za-z0-9_-]{32}$/);
     expect(generateToken()).not.toBe(a);
+  });
+});
+
+describe('generateTopic (usability U7)', () => {
+  it('is kage- and 20 base64url characters, 25 in all, different each time, and ntfy.sh takes it', () => {
+    const a = generateTopic();
+    expect(a).toMatch(/^kage-[A-Za-z0-9_-]{20}$/);
+    expect(a).toHaveLength(25);
+    expect(generateTopic()).not.toBe(a);
+    // The config's rule (1 to 64 of [A-Za-z0-9_-], at least 16 on ntfy.sh).
+    expect(a).toMatch(/^[A-Za-z0-9_-]{16,64}$/);
   });
 });
 

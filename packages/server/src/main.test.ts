@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand, SettingsWriteError } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
@@ -673,6 +673,34 @@ describe('kage ping (against the fake ntfy, R85)', () => {
     expect(fake.received[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
     const printed = [...out, ...err].join('\n');
     for (const secret of [TOPIC, TOKEN, 'secret-prefix']) expect(printed).not.toContain(secret);
+  });
+
+  it('kage ping uses sendTestPing and prints as before', async () => {
+    // Setup's test ping and kage ping are one function (usability U7).
+    const sent: { topic: string; fetchFn: unknown }[] = [];
+    const answers = [
+      { ok: true as const, host: 'ntfy.example.invalid' },
+      { ok: false as const, reason: 'HTTP 403' },
+    ];
+    vi.doMock('./notify/test-ping.ts', () => ({
+      sendTestPing: async (cfg: { ntfyTopic: string }, fetchFn?: unknown) => {
+        sent.push({ topic: cfg.ntfyTopic, fetchFn });
+        return answers.shift();
+      },
+    }));
+    try {
+      const e = env();
+      writeConfig(e, { ntfyTopic: TOPIC });
+      expect(await main(['ping'], io(e))).toBe(0);
+      expect(out).toEqual(['Sent a test ping to ntfy.example.invalid.']);
+      expect(await main(['ping'], io(e))).toBe(1);
+      expect(err).toEqual(["Couldn't send the ping (HTTP 403)."]);
+      expect(sent.map((c) => c.topic)).toEqual([TOPIC, TOPIC]);
+      // The real fetch: kage ping passes none of its own.
+      expect(sent.map((c) => c.fetchFn)).toEqual([undefined, undefined]);
+    } finally {
+      vi.doUnmock('./notify/test-ping.ts');
+    }
   });
 
   it('with no topic: the exact line and exit 1', async () => {

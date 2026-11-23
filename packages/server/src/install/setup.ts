@@ -12,12 +12,20 @@ import { mkdir, readdir, stat } from 'node:fs/promises';
 import { isIP } from 'node:net';
 import { userInfo } from 'node:os';
 import { join, posix, resolve } from 'node:path';
-import { ConfigError, configFrom, configPath, DEFAULT_CONFIG, displayPath } from '../config.ts';
+import {
+  ConfigError,
+  configFrom,
+  configPath,
+  DEFAULT_CONFIG,
+  displayPath,
+  type KageConfig,
+} from '../config.ts';
 import { socketPath } from '../hooks/cli.ts';
 import { ListenError, resolveListenAddress, tailscaleDnsName } from '../listen.ts';
 import type { Io } from '../main.ts';
+import { sendTestPing } from '../notify/test-ping.ts';
 import { type CheckDeps, formatChecks, requirementChecks } from './checks.ts';
-import { generateToken, readConfigObject, writeConfig } from './config-file.ts';
+import { generateToken, generateTopic, readConfigObject, writeConfig } from './config-file.ts';
 import { isStopped, type Prompter } from './prompt.ts';
 import { type RunMode, serviceArgv, serviceEnv } from './runtime.ts';
 import type { ServiceManager } from './service.ts';
@@ -32,6 +40,8 @@ export interface SetupDeps extends CheckDeps {
   waitMs?: number;
   /** Resolves a typed host name (a test seam; default dns.lookup). */
   lookup?: (name: string) => Promise<{ address: string; family: number }[]>;
+  /** Sends setup's test ping (a test seam, R85; default notify/test-ping.ts). */
+  ping?: typeof sendTestPing;
 }
 
 export const NEEDS_TTY =
@@ -42,6 +52,19 @@ const TOKEN_QUESTION = 'Set an access token? Anyone on your tailnet can reach Ka
 const LINGER_QUESTION = "Keep Kage running when you're logged out?";
 export const LINGER_ON =
   "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger";
+/** U14: Tailscale is the only requirement missing, and Kage can still run on this machine. */
+const LOOPBACK_NOTE = "Tailscale isn't up, so only this machine can open Kage.";
+const LOOPBACK_QUESTION =
+  "Tailscale isn't up, so only this machine can open Kage. Continue on 127.0.0.1?";
+/** U7: phone pings. The topic is a secret: printed once, when it is made, and never again. */
+const NTFY_QUESTION = 'Send pings to your phone through ntfy?';
+const NTFY_SECRET =
+  "Keep the topic secret: anyone who knows it can read your pings, and each ping carries the task's text.";
+const NTFY_SUBSCRIBE = 'Subscribe to this topic in the ntfy app, then press Enter:';
+/** With --yes there is nobody to press Enter. */
+const NTFY_SUBSCRIBE_LATER = 'Subscribe to this topic in the ntfy app:';
+const PING_ARRIVED = 'Sent a test ping. Did it arrive?';
+const PING_RETRY = 'Check the topic in the ntfy app, then run kage ping to try again.';
 const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin';
 const POLL_MS = 250;
 const SERVER_TIMEOUT_MS = 3000;
@@ -52,6 +75,7 @@ interface Flags {
   host?: string;
   port?: string;
   token?: boolean;
+  ntfy?: boolean;
   service: boolean;
   linger?: boolean;
 }
@@ -96,6 +120,12 @@ export function parseSetupFlags(args: string[]): Flags | string {
         break;
       case '--no-token':
         f.token = false;
+        break;
+      case '--ntfy':
+        f.ntfy = true;
+        break;
+      case '--no-ntfy':
+        f.ntfy = false;
         break;
       case '--no-service':
         f.service = false;
@@ -262,6 +292,7 @@ const SETTING_NAMES: Record<string, string> = {
   host: 'host name',
   port: 'port',
   token: 'access token',
+  ntfyTopic: 'ntfy topic',
   // Turning the token on writes allowNoToken: false with it: one setting, said once.
   allowNoToken: 'access token',
 };
@@ -303,12 +334,37 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     io.err(NEEDS_TTY);
     return 1;
   }
+  const ask = (question: string, def: string): Promise<string> =>
+    prompt ? prompt.ask(question, def) : Promise.resolve(def);
+  const confirm = (question: string, def: boolean): Promise<boolean> =>
+    prompt ? prompt.confirm(question, def) : Promise.resolve(def);
+
   const checks = await requirementChecks(deps);
-  for (const line of formatChecks(checks)) io.out(line);
+  // U14: when Tailscale is all that's missing, Kage can still run on loopback, for this machine
+  // only: with a loopback --host, or when the user says so (never with --yes alone).
+  const fails = checks.filter((c) => c.level === 'fail');
+  const onlyTailscale = fails.length > 0 && fails.every((c) => c.id === 'tailscale');
+  let loopback: 'no' | 'yes' | 'ask' = 'no';
+  if (onlyTailscale && f.host !== undefined) loopback = isLoopbackHost(f.host) ? 'yes' : 'no';
+  else if (onlyTailscale && prompt !== null) loopback = 'ask';
+  const shownChecks =
+    loopback === 'no'
+      ? checks
+      : checks.map((c) => (c.id === 'tailscale' ? { ...c, level: 'warn' as const } : c));
+  for (const line of formatChecks(shownChecks)) io.out(line);
   io.out('');
-  if (checks.some((c) => c.level === 'fail')) {
+  if (loopback === 'no' && fails.length > 0) {
     io.out('Fix the items above, then run kage setup again.');
     return 1;
+  }
+  if (loopback === 'yes') io.out(LOOPBACK_NOTE);
+  if (loopback === 'ask') {
+    if (!(await confirm(LOOPBACK_QUESTION, false))) {
+      io.out('Fix the items above, then run kage setup again.');
+      return 1;
+    }
+    // The host question has its answer: the one address Kage can listen on here.
+    f.host = '127.0.0.1';
   }
 
   const cfgFile = configPath(deps.env);
@@ -324,10 +380,6 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
 
   // 2. The questions; a flag answers its own, and --yes takes each default. Nothing is
   // written until every answer is in and the whole config checks out (R116(4)).
-  const ask = (question: string, def: string): Promise<string> =>
-    prompt ? prompt.ask(question, def) : Promise.resolve(def);
-  const confirm = (question: string, def: boolean): Promise<boolean> =>
-    prompt ? prompt.confirm(question, def) : Promise.resolve(def);
 
   const projects = await askProjects(io, deps, f, current, ask, confirm);
   if (projects === null) return 1;
@@ -342,6 +394,19 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   const keepToken = curToken !== null && curToken.length >= 16;
   const token = wantToken ? (keepToken ? curToken : generateToken()) : '';
   const generated = wantToken && !keepToken;
+
+  // U7: phone pings, after the token. A topic already set stays, and nothing is asked. The
+  // default is No (R127), so --yes sets up no pings. The new topic is shown once, here.
+  const curTopic =
+    typeof current?.ntfyTopic === 'string' && current.ntfyTopic !== '' ? current.ntfyTopic : null;
+  let topic: string | null = null;
+  if (curTopic === null && (f.ntfy ?? (await confirm(NTFY_QUESTION, false)))) {
+    topic = generateTopic();
+    io.out(NTFY_SECRET);
+    io.out(prompt ? NTFY_SUBSCRIBE : NTFY_SUBSCRIBE_LATER);
+    io.out(`  ${topic}`);
+    if (prompt) await (prompt.pause ? prompt.pause() : prompt.ask('', ''));
+  }
 
   // The service's plan, and its one question (linger), before anything changes.
   const m = deps.manager;
@@ -368,6 +433,7 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   if (host.change) patch.host = host.value;
   if (current?.port !== port) patch.port = port;
   if (current?.token !== token) patch.token = token;
+  if (topic !== null) patch.ntfyTopic = topic;
   // Security I3: no token is an opt-out serve needs written down (allowNoToken); a token on
   // clears an opt-out that was there.
   if (!wantToken && current?.allowNoToken !== true) patch.allowNoToken = true;
@@ -375,9 +441,10 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     patch.allowNoToken = false;
   }
   const turnedOff = !wantToken && ('token' in patch || 'allowNoToken' in patch);
+  let merged: KageConfig;
   try {
     // A key setup didn't ask about may be wrong too; the service would only restart forever.
-    configFrom({ ...(current ?? {}), ...patch }, deps.env);
+    merged = configFrom({ ...(current ?? {}), ...patch }, deps.env);
   } catch (err) {
     if (!(err instanceof ConfigError)) throw err;
     io.err(`Config error: ${err.message}`);
@@ -423,6 +490,8 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   // 4. The service.
   if (skipped !== null) io.out(skipped);
   if (argv === null || m === null) {
+    // The ping goes straight to ntfy, so it needs no service to test the phone.
+    if (topic !== null) await testPing(io, deps, prompt, merged);
     io.out('Start Kage with: kage serve');
     io.out(CLAUDE_LINE);
     return 0;
@@ -449,8 +518,40 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   // 5. Does it answer?
   const code = await checkAnswers(io, deps, m, { host: host.value, at: host.at, port });
   if (code !== 0) return code;
+  if (topic !== null) await testPing(io, deps, prompt, merged);
   io.out(CLAUDE_LINE);
   return 0;
+}
+
+/** 127.0.0.1, ::1 or localhost: a host only this machine can reach (U14). */
+function isLoopbackHost(host: string): boolean {
+  const h = host.toLowerCase().replace(/^\[|\]$/g, '');
+  return h === '127.0.0.1' || h === '::1' || h === 'localhost';
+}
+
+/**
+ * U7: the test ping with the settings just saved, then (with a terminal) whether it arrived.
+ * The question comes after the prompter was closed for the install, so it opens it again and
+ * closes it after. Only the server's host and a redacted reason are printed, never the topic.
+ */
+async function testPing(
+  io: Io,
+  deps: SetupDeps,
+  prompt: Prompter | null,
+  cfg: KageConfig,
+): Promise<void> {
+  const res = await (deps.ping ?? sendTestPing)(cfg);
+  if (!res.ok) {
+    io.out(`Couldn't send the test ping (${res.reason}). Run kage ping to try again.`);
+    return;
+  }
+  if (prompt === null) {
+    io.out(`Sent a test ping to ${res.host}.`);
+    return;
+  }
+  const arrived = await prompt.confirm(PING_ARRIVED, true);
+  prompt.close?.();
+  if (!arrived) io.out(PING_RETRY);
 }
 
 type Ask = (question: string, def: string) => Promise<string>;

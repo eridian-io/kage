@@ -15,7 +15,7 @@ import type { ExecFn } from './tmux/client.ts';
 
 export const USAGE = `Usage:
   kage setup [--yes] [--projects DIR] [--host NAME] [--port N] [--token | --no-token]
-             [--no-service] [--linger | --no-linger]
+             [--ntfy | --no-ntfy] [--no-service] [--linger | --no-linger]
       Check what Kage needs, ask for its settings, then install and start its service.
       Run it again to change a setting. --yes takes every default and asks nothing.
   kage status
@@ -93,13 +93,13 @@ export function currentSettings(env: NodeJS.ProcessEnv): Promise<string | null> 
 }
 
 /**
- * `kage ping`: one test ping with the config's ntfy settings, one try (no 40 s of retries at a
- * prompt). Prints the server's host and a redacted reason only: never the topic, the token or
+ * `kage ping`: one test ping with the config's ntfy settings (notify/test-ping.ts, which setup
+ * sends too: one try). Prints the server's host and a redacted reason only: never the topic, the token or
  * the server's path (N1, PF5 F15). The modules load here, so `kage hook` stays light.
  */
 async function pingCommand(io: Io): Promise<number> {
   const { ConfigError, loadConfig } = await import('./config.ts');
-  const { NtfyClient, redact } = await import('./notify/ntfy.ts');
+  const { sendTestPing } = await import('./notify/test-ping.ts');
   let cfg: Awaited<ReturnType<typeof loadConfig>>;
   try {
     cfg = await loadConfig({ env: io.env });
@@ -114,38 +114,12 @@ async function pingCommand(io: Io): Promise<number> {
     io.err('No ntfyTopic yet. Run kage setup to set up phone pings.');
     return 1;
   }
-  // The client never says why a try failed, so the fetch it uses remembers it.
-  let failure: unknown = null;
-  const client = new NtfyClient({
-    config: { server: cfg.ntfyServer, topic: cfg.ntfyTopic, token: cfg.ntfyToken },
-    log: () => {},
-    fetch: async (url, init) => {
-      try {
-        const res = await fetch(url, init);
-        if (res.status < 200 || res.status >= 300) failure = `HTTP ${res.status}`;
-        return res;
-      } catch (err) {
-        failure = err;
-        throw err;
-      }
-    },
-  });
-  const ok = await client.send(
-    {
-      title: 'Kage test ping',
-      message: `ntfy is set up for ${cfg.name}.`,
-      priority: 3,
-      click: null,
-    },
-    () => false,
-  );
-  client.close();
-  if (ok) {
-    io.out(`Sent a test ping to ${new URL(cfg.ntfyServer).host}.`);
+  const res = await sendTestPing(cfg);
+  if (res.ok) {
+    io.out(`Sent a test ping to ${res.host}.`);
     return 0;
   }
-  const reason = typeof failure === 'string' ? failure : redact(failure);
-  io.err(`Couldn't send the ping (${reason}).`);
+  io.err(`Couldn't send the ping (${res.reason}).`);
   return 1;
 }
 

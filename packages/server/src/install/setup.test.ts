@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KageConfig } from '../config.ts';
 import type { ServerStatus } from '../hooks/server.ts';
 import type { Io } from '../main.ts';
 import type { Prompter } from './prompt.ts';
@@ -138,6 +139,9 @@ function scripted(answers: (string | boolean)[]) {
       const a = next(`${q} ${def ? '[Y/n]' : '[y/N]'}`);
       return typeof a === 'boolean' ? a : def;
     },
+    pause: async () => {
+      next('(Enter)');
+    },
   };
   return { p, asked };
 }
@@ -147,6 +151,7 @@ function harness(over: Partial<SetupDeps> = {}, table = GOOD) {
   const fm = fakeManager();
   const settings: NodeJS.ProcessEnv[] = [];
   const urls: string[] = [];
+  const pings: KageConfig[] = [];
   const env: NodeJS.ProcessEnv = {
     HOME: home,
     XDG_CONFIG_HOME: join(home, '.config'),
@@ -182,6 +187,11 @@ function harness(over: Partial<SetupDeps> = {}, table = GOOD) {
     lookup: async () => {
       throw new Error('no DNS in tests');
     },
+    // R85: the test ping never leaves the test.
+    ping: async (cfg) => {
+      pings.push(cfg);
+      return { ok: true, host: 'ntfy.example.invalid' };
+    },
     ...over,
   };
   const out: string[] = [];
@@ -192,7 +202,7 @@ function harness(over: Partial<SetupDeps> = {}, table = GOOD) {
     out: (l) => out.push(l),
     err: (l) => err.push(l),
   };
-  return { deps, io, out, err, calls: t.calls, fm, settings, urls };
+  return { deps, io, out, err, calls: t.calls, fm, settings, urls, pings };
 }
 
 /**
@@ -466,7 +476,7 @@ describe('kage setup, Review Focus 4: running it again', () => {
 describe('kage setup: the questions', () => {
   it('asks each question with the current value as its default, in order', async () => {
     mkdirSync(join(home, 'code', 'a', '.git'), { recursive: true });
-    const s = scripted(['', '', '9000', true, true]);
+    const s = scripted(['', '', '9000', true, false, true]);
     const h = harness({
       prompt: s.p,
       isTty: true,
@@ -478,6 +488,7 @@ describe('kage setup: the questions', () => {
       'Host name [box.tail1234.ts.net]:',
       'Port [8080]:',
       'Set an access token? Anyone on your tailnet can reach Kage. [Y/n]',
+      'Send pings to your phone through ntfy? [y/N]',
       "Keep Kage running when you're logged out? [Y/n]",
     ]);
     const cfg = readCfg();
@@ -487,7 +498,7 @@ describe('kage setup: the questions', () => {
 
   it('a projects folder that is missing: Create <dir>? and it is made; No asks for the folder again', async () => {
     mkdirSync(join(home, 'projects'));
-    const s = scripted(['~/work', false, '~/work2', true, '', '', true]);
+    const s = scripted(['~/work', false, '~/work2', true, '', '', true, false]);
     const h = harness({ prompt: s.p, isTty: true });
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
     expect(s.asked.slice(0, 4)).toEqual([
@@ -503,7 +514,7 @@ describe('kage setup: the questions', () => {
 
   it('a typed host Kage can listen on is written; one it cannot is explained and asked again', async () => {
     mkdirSync(join(home, 'projects'));
-    const s = scripted(['', 'nowhere', '10.0.0.5', '127.0.0.1', '', true]);
+    const s = scripted(['', 'nowhere', '10.0.0.5', '127.0.0.1', '', true, false]);
     const h = harness({ prompt: s.p, isTty: true });
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
     expect(h.out).toContain("Kage can't find the address of nowhere.");
@@ -566,7 +577,7 @@ describe('kage setup: the questions', () => {
     const h = harness();
     expect(await setupCommand(['--yes', '--no-token'], h.io, h.deps)).toBe(0);
     expect(readCfg().token).toBe('');
-    const s = scripted(['', '', '', '']);
+    const s = scripted(['', '', '', '', '']);
     const g = harness({ prompt: s.p, isTty: true });
     expect(await setupCommand([], g.io, g.deps)).toBe(0);
     expect(s.asked[3]).toBe('Set an access token? Anyone on your tailnet can reach Kage. [y/N]');
@@ -580,7 +591,7 @@ describe('kage setup: the questions', () => {
     mkdirSync(join(home, '.config', 'kage'), { recursive: true });
     mkdirSync(join(home, 'projects'));
     writeFileSync(cfgFile, JSON.stringify({ token: 'existing-token-0123456789abcdef' }));
-    const s = scripted(['', '', '', false]);
+    const s = scripted(['', '', '', false, false]);
     const h = harness({ prompt: s.p, isTty: true });
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
     const cfg = readCfg();
@@ -673,7 +684,7 @@ describe('kage setup: the service', () => {
     expect(on.fm.linger).toEqual({ asked: 1, enabled: 0 });
 
     const fm = fakeManager({ lingerEnabled: async () => false, enableLinger: async () => false });
-    const s = scripted(['', '', '', true, true]);
+    const s = scripted(['', '', '', true, false, true]);
     const off = harness({ manager: fm.m, prompt: s.p, isTty: true });
     mkdirSync(join(home, 'projects'), { recursive: true });
     expect(await setupCommand([], off.io, off.deps)).toBe(0);
@@ -700,10 +711,10 @@ describe('kage setup: the service', () => {
     delete fm.m.lingerEnabled;
     delete fm.m.enableLinger;
     mkdirSync(join(home, 'projects'));
-    const s = scripted(['', '', '', true]);
+    const s = scripted(['', '', '', true, false]);
     const h = harness({ manager: fm.m, prompt: s.p, isTty: true, platform: 'darwin' });
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
-    expect(s.asked).toHaveLength(4);
+    expect(s.asked).toHaveLength(5);
   });
 
   it('Kage not answering in time: the journalctl line after waitMs, exit 1', async () => {
@@ -781,7 +792,7 @@ describe('kage setup, fix round 1', () => {
   it('the linger question comes before install, and the prompter is closed after the last question', async () => {
     mkdirSync(join(home, 'projects'));
     const events: string[] = [];
-    const s = scripted(['', '', '', true, false]);
+    const s = scripted(['', '', '', true, false, false]);
     const p: Prompter = {
       ask: async (q, d) => {
         events.push(`ask ${q}`);
@@ -836,7 +847,7 @@ describe('kage setup, fix round 1', () => {
     expect(existsSync(cfgFile)).toBe(false);
 
     mkdirSync(join(home, 'projects'));
-    const s = scripted(['', 'other.tail1234.ts.net', '100.101.102.103', '', true]);
+    const s = scripted(['', 'other.tail1234.ts.net', '100.101.102.103', '', true, false]);
     const g = harness({
       prompt: s.p,
       isTty: true,
@@ -874,6 +885,281 @@ describe('kage setup, fix round 1', () => {
     );
     expect(h.urls).toEqual([]);
     expect(polled).toBeGreaterThan(2);
+  });
+});
+
+describe('kage setup without Tailscale (usability U14)', () => {
+  const DOWN: Record<string, Partial<RunResult>> = {
+    ...GOOD,
+    'tailscale status --json': {
+      code: 1,
+      stdout: JSON.stringify({ BackendState: 'Stopped', Self: { TailscaleIPs: [] } }),
+    },
+  };
+  const LOOPBACK_Q =
+    "Tailscale isn't up, so only this machine can open Kage. Continue on 127.0.0.1? [y/N]";
+
+  it('Tailscale down, --host 127.0.0.1: a ! line, and setup goes on', async () => {
+    const h = harness({}, DOWN);
+    expect(await setupCommand(['--yes', '--host', '127.0.0.1'], h.io, h.deps)).toBe(0);
+    expect(h.out).toContain("! Tailscale isn't up.");
+    expect(h.out).toContain('  sudo tailscale up');
+    expect(h.out).toContain("Tailscale isn't up, so only this machine can open Kage.");
+    expect(h.out.some((l) => l.startsWith('✗'))).toBe(false);
+    expect(h.out).not.toContain('Fix the items above, then run kage setup again.');
+    expect(readCfg().host).toBe('127.0.0.1');
+    expect(h.fm.installs).toHaveLength(1);
+    expect(h.out.at(-1)).toBe(CLAUDE_LINE);
+
+    // ::1 and localhost count as loopback too.
+    for (const host of ['::1', 'localhost']) {
+      rmSync(cfgFile, { force: true });
+      const g = harness({ lookup: async () => [{ address: '127.0.0.1', family: 4 }] }, DOWN);
+      expect(await setupCommand(['--yes', '--host', host], g.io, g.deps), host).toBe(0);
+      expect(readCfg().host, host).toBe(host);
+    }
+  });
+
+  it('Tailscale down, interactive: y to the question writes host 127.0.0.1', async () => {
+    mkdirSync(join(home, 'projects'));
+    const s = scripted([true, '', '', true, false]);
+    const h = harness({ prompt: s.p, isTty: true }, DOWN);
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    expect(h.out).toContain("! Tailscale isn't up.");
+    // The host question is answered: 127.0.0.1, the only address this machine has for Kage.
+    expect(s.asked).toEqual([
+      LOOPBACK_Q,
+      'Projects folder [~/projects]:',
+      'Port [8080]:',
+      'Set an access token? Anyone on your tailnet can reach Kage. [Y/n]',
+      'Send pings to your phone through ntfy? [y/N]',
+    ]);
+    const cfg = readCfg();
+    expect(cfg.host).toBe('127.0.0.1');
+    // R127/I3: loopback still gets a token.
+    expect(cfg.token).toMatch(/^[A-Za-z0-9_-]{32}$/);
+
+    // No (the default) stops, as before, with nothing written.
+    rmSync(cfgFile, { force: true });
+    const n = scripted([false]);
+    const g = harness({ prompt: n.p, isTty: true }, DOWN);
+    expect(await setupCommand([], g.io, g.deps)).toBe(1);
+    expect(n.asked).toEqual([LOOPBACK_Q]);
+    expect(g.out.at(-1)).toBe('Fix the items above, then run kage setup again.');
+    expect(existsSync(cfgFile)).toBe(false);
+    expect(g.fm.installs).toEqual([]);
+  });
+
+  it('Tailscale down with --yes and no loopback host stops as before', async () => {
+    const h = harness({}, DOWN);
+    expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(1);
+    expect(h.out).toContain("✗ Tailscale isn't up.");
+    expect(h.out.at(-1)).toBe('Fix the items above, then run kage setup again.');
+    expect(existsSync(cfgFile)).toBe(false);
+
+    // A host that isn't loopback stops too, asked or not.
+    const s = scripted([]);
+    const g = harness({ prompt: s.p, isTty: true }, DOWN);
+    expect(await setupCommand(['--host', '100.101.102.103'], g.io, g.deps)).toBe(1);
+    expect(s.asked).toEqual([]);
+    expect(g.out).toContain("✗ Tailscale isn't up.");
+
+    // Another failure besides Tailscale stops even with a loopback host.
+    const { 'tmux -V': _, ...noTmux } = DOWN;
+    const t = harness({}, noTmux);
+    expect(await setupCommand(['--yes', '--host', '127.0.0.1'], t.io, t.deps)).toBe(1);
+    expect(t.out.at(-1)).toBe('Fix the items above, then run kage setup again.');
+  });
+});
+
+describe('kage setup: phone pings (usability U7)', () => {
+  const NTFY_Q = 'Send pings to your phone through ntfy? [y/N]';
+  const SUBSCRIBE = 'Subscribe to this topic in the ntfy app, then press Enter:';
+  const SECRET =
+    "Keep the topic secret: anyone who knows it can read your pings, and each ping carries the task's text.";
+  const ARRIVED = 'Sent a test ping. Did it arrive? [Y/n]';
+  const RETRY = 'Check the topic in the ntfy app, then run kage ping to try again.';
+
+  it('ntfy yes: a 25-character topic is saved, the hint and the topic print, the test ping goes after the service answers, and n prints the kage ping line', async () => {
+    mkdirSync(join(home, 'projects'));
+    const events: string[] = [];
+    const s = scripted(['', '', '', true, true, '', false]);
+    const p: Prompter = {
+      ...s.p,
+      pause: async () => {
+        events.push('enter');
+        await s.p.pause?.();
+      },
+      confirm: async (q, d) => {
+        events.push(`confirm ${q}`);
+        return s.p.confirm(q, d);
+      },
+      close: () => events.push('close'),
+    };
+    const fm = fakeManager({
+      install: async () => {
+        events.push('install');
+      },
+      state: async () => 'missing',
+    });
+    const pings: KageConfig[] = [];
+    const h = harness({
+      prompt: p,
+      isTty: true,
+      manager: fm.m,
+      status: async () => {
+        events.push('status');
+        return UP;
+      },
+      ping: async (cfg) => {
+        events.push('ping');
+        pings.push(cfg);
+        return { ok: true, host: 'ntfy.example.invalid' };
+      },
+    });
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    expect(s.asked).toEqual([
+      'Projects folder [~/projects]:',
+      'Host name [box.tail1234.ts.net]:',
+      'Port [8080]:',
+      'Set an access token? Anyone on your tailnet can reach Kage. [Y/n]',
+      NTFY_Q,
+      '(Enter)',
+      ARRIVED,
+    ]);
+    const cfg = readCfg();
+    const topic = cfg.ntfyTopic as string;
+    expect(topic).toMatch(/^kage-[A-Za-z0-9_-]{20}$/);
+    expect(topic).toHaveLength(25);
+    // The hint, then the topic on its own line, indented two spaces; and only there.
+    const at = h.out.indexOf(SUBSCRIBE);
+    expect(at).toBeGreaterThan(-1);
+    expect(h.out[at - 1]).toBe(SECRET);
+    expect(h.out[at + 1]).toBe(`  ${topic}`);
+    expect([...h.out, ...h.err].filter((l) => l.includes(topic))).toEqual([`  ${topic}`]);
+    expect(h.out).toContain('Saved your settings in ~/.config/kage/config.json.');
+    // Enter is waited for among the questions; the ping goes once Kage answers.
+    expect(events.indexOf('enter')).toBeLessThan(events.indexOf('close'));
+    expect(events.indexOf('close')).toBeLessThan(events.indexOf('install'));
+    expect(events.indexOf('status')).toBeLessThan(events.indexOf('ping'));
+    expect(events.slice(events.indexOf('ping'))).toEqual([
+      'ping',
+      `confirm ${ARRIVED.replace(' [Y/n]', '')}`,
+      'close',
+    ]);
+    expect(pings).toHaveLength(1);
+    expect(pings[0]?.ntfyTopic).toBe(topic);
+    expect(h.out.slice(-3)).toEqual([
+      'Kage is running at http://box.tail1234.ts.net:8080',
+      RETRY,
+      CLAUDE_LINE,
+    ]);
+
+    // Yes to "Did it arrive?" says nothing more.
+    rmSync(cfgFile, { force: true });
+    const y = scripted(['', '', '', true, true, '', true]);
+    const g = harness({ prompt: y.p, isTty: true });
+    expect(await setupCommand([], g.io, g.deps)).toBe(0);
+    expect(g.out).not.toContain(RETRY);
+    expect(g.out.at(-1)).toBe(CLAUDE_LINE);
+
+    // A ping that can't be sent: the reason, and kage ping to try again; nothing asked.
+    rmSync(cfgFile, { force: true });
+    const f = scripted(['', '', '', true, true, '']);
+    const e = harness({
+      prompt: f.p,
+      isTty: true,
+      ping: async () => ({ ok: false, reason: 'HTTP 403' }),
+    });
+    expect(await setupCommand([], e.io, e.deps)).toBe(0);
+    expect(f.asked).not.toContain(ARRIVED);
+    expect(e.out).toContain("Couldn't send the test ping (HTTP 403). Run kage ping to try again.");
+  });
+
+  it('--yes asks nothing about ntfy and leaves ntfyTopic unset', async () => {
+    const h = harness();
+    expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(0);
+    expect('ntfyTopic' in readCfg()).toBe(false);
+    expect(h.pings).toEqual([]);
+    expect(h.out.join('\n')).not.toContain('ntfy');
+
+    // --no-ntfy answers No without asking.
+    rmSync(cfgFile, { force: true });
+    mkdirSync(join(home, 'projects'), { recursive: true });
+    const s = scripted(['', '', '', true]);
+    const g = harness({ prompt: s.p, isTty: true });
+    expect(await setupCommand(['--no-ntfy'], g.io, g.deps)).toBe(0);
+    expect(s.asked).not.toContain(NTFY_Q);
+    expect('ntfyTopic' in readCfg()).toBe(false);
+    expect(g.pings).toEqual([]);
+  });
+
+  it('a rerun with a topic keeps it and asks nothing', async () => {
+    mkdirSync(join(home, '.config', 'kage'), { recursive: true });
+    mkdirSync(join(home, 'projects'));
+    const seeded = {
+      projectsRoot: '~/projects',
+      port: 8080,
+      token: 'existing-token-0123456789abcdef',
+      ntfyTopic: 'invented-topic-0123456789',
+    };
+    writeFileSync(cfgFile, JSON.stringify(seeded));
+    const s = scripted(['', '', '', true]);
+    const h = harness({ prompt: s.p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    expect(s.asked).not.toContain(NTFY_Q);
+    expect(readCfg().ntfyTopic).toBe(seeded.ntfyTopic);
+    expect(h.pings).toEqual([]);
+    expect([...h.out, ...h.err].join('\n')).not.toContain(seeded.ntfyTopic);
+
+    // --ntfy doesn't replace it either.
+    const g = harness();
+    expect(await setupCommand(['--yes', '--ntfy'], g.io, g.deps)).toBe(0);
+    expect(readCfg().ntfyTopic).toBe(seeded.ntfyTopic);
+    expect(g.pings).toEqual([]);
+  });
+
+  it('the test ping goes only to the injected sender', async () => {
+    // R85: --yes --ntfy sets up pings without a question; the one ping goes to deps.ping, and
+    // deps.fetch sees only Kage's own address.
+    const h = harness();
+    expect(await setupCommand(['--yes', '--ntfy'], h.io, h.deps)).toBe(0);
+    const topic = readCfg().ntfyTopic as string;
+    expect(topic).toMatch(/^kage-[A-Za-z0-9_-]{20}$/);
+    expect(h.pings.map((c) => c.ntfyTopic)).toEqual([topic]);
+    expect(h.urls).toEqual(['http://box.tail1234.ts.net:8080/']);
+    // Nobody to press Enter or answer: the topic, then what was sent.
+    expect(h.out).toContain('Subscribe to this topic in the ntfy app:');
+    expect(h.out).not.toContain(SUBSCRIBE);
+    expect(h.out).toContain('Sent a test ping to ntfy.example.invalid.');
+    expect([...h.out, ...h.err].filter((l) => l.includes(topic))).toEqual([`  ${topic}`]);
+  });
+
+  it('without a service the test ping still goes, before the kage serve line', async () => {
+    const h = harness();
+    expect(await setupCommand(['--yes', '--ntfy', '--no-service'], h.io, h.deps)).toBe(0);
+    expect(h.pings).toHaveLength(1);
+    expect(h.out.slice(-3)).toEqual([
+      'Sent a test ping to ntfy.example.invalid.',
+      'Start Kage with: kage serve',
+      CLAUDE_LINE,
+    ]);
+  });
+
+  it('Ctrl+C at the Enter wait stops setup with nothing written', async () => {
+    mkdirSync(join(home, 'projects'));
+    const s = scripted(['', '', '', true, true]);
+    const p: Prompter = {
+      ...s.p,
+      pause: async () => {
+        throw new DOMException('Setup stopped.', 'AbortError');
+      },
+    };
+    const h = harness({ prompt: p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(130);
+    expect(h.err).toEqual(['Setup stopped.']);
+    expect(existsSync(cfgFile)).toBe(false);
+    expect(h.pings).toEqual([]);
   });
 });
 

@@ -46,6 +46,27 @@ describe('ttyPrompter', () => {
     expect(s.shown()).toContain('Keep it? [y/N] ');
   });
 
+  it('pause waits for Enter; a question after close() opens the terminal again', async () => {
+    const s = streams();
+    const p = ttyPrompter(s.input, s.output);
+    let resumed = false;
+    const wait = p.pause?.().then(() => {
+      resumed = true;
+    });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(resumed).toBe(false);
+    s.input.write('\n');
+    await wait;
+    expect(resumed).toBe(true);
+    p.close();
+    // Setup's "Did it arrive?" comes after close(), once the service answers.
+    const q = p.confirm('Sent a test ping. Did it arrive?', true);
+    s.input.write('n\n');
+    expect(await q).toBe(false);
+    p.close();
+    expect(s.shown()).toContain('Sent a test ping. Did it arrive? [Y/n] ');
+  });
+
   it('the end of input stops the question with an AbortError', async () => {
     const s = streams();
     const p = ttyPrompter(s.input, s.output);

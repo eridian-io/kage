@@ -1,7 +1,8 @@
 /**
  * Writing Kage's config file for `kage setup` (phase 6, Task 5). Setup owns only the keys it
- * asks about; every other key in the file (the ntfy settings, autoArchive, keys this version
- * doesn't know) is kept as it was. The file may hold the token, so it is written 0600 in a 0700
+ * asks about; every other key in the file (ntfyServer and ntfyToken, autoArchive, keys this
+ * version doesn't know) is kept as it was. Setup writes ntfyTopic only when it makes a new one.
+ * The file may hold the token and the topic, so it is written 0600 in a 0700
  * folder, atomically (a temporary file renamed over it), and a file Kage can't parse is never
  * replaced.
  */
@@ -17,6 +18,15 @@ const isObj = (v: unknown): v is Obj => typeof v === 'object' && v !== null && !
 /** A fresh access token: 32 base64url characters from 24 random bytes. */
 export function generateToken(): string {
   return randomBytes(24).toString('base64url');
+}
+
+/**
+ * A fresh ntfy topic (usability U7): `kage-` and 20 base64url characters from 15 random bytes,
+ * 25 in all. It passes the config's rule (letters, digits, - and _, at least 16 on ntfy.sh),
+ * and 120 random bits are past guessing on a public server.
+ */
+export function generateTopic(): string {
+  return `kage-${randomBytes(15).toString('base64url')}`;
 }
 
 /**
