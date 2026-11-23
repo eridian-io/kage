@@ -16,7 +16,10 @@ class FakeProc extends EventEmitter {
   }
 }
 
-function setup(throttleMs?: number, extra: { beforeLaunch?: () => Promise<void> } = {}) {
+function setup(
+  throttleMs?: number,
+  extra: { beforeLaunch?: () => Promise<void>; alive?: () => Promise<boolean> } = {},
+) {
   const procs: FakeProc[] = [];
   const calls: { cmd: string; args: string[] }[] = [];
   const spawn = ((cmd: string, args: string[]) => {
@@ -25,7 +28,15 @@ function setup(throttleMs?: number, extra: { beforeLaunch?: () => Promise<void> 
     procs.push(p);
     return p;
   }) as never;
-  const w = new TmuxWatcher({ session: 'kage', socket: null, spawn, throttleMs, ...extra });
+  // The server is gone unless a test says otherwise: never ask a real tmux from a unit test.
+  const w = new TmuxWatcher({
+    session: 'kage',
+    socket: null,
+    spawn,
+    throttleMs,
+    alive: async () => false,
+    ...extra,
+  });
   const events: WatchEvent[] = [];
   w.on((e) => events.push(e));
   return { w, procs, calls, events };
@@ -181,6 +192,7 @@ describe('TmuxWatcher', () => {
       session: 'kage',
       socket: null,
       spawn,
+      alive: async () => false,
       beforeLaunch: async () => {
         order.push('before');
       },
@@ -255,6 +267,130 @@ describe('TmuxWatcher', () => {
     procs[0]?.emit('exit', 0);
     await flush();
     expect(events).toHaveLength(before);
+  });
+
+  describe('a client that exits (reliability I1)', () => {
+    it('a client that exits while has-session succeeds re-attaches at once and emits no down', async () => {
+      let asked = 0;
+      const { w, procs, events } = setup(undefined, {
+        alive: async () => {
+          asked++;
+          return true;
+        },
+      });
+      w.start();
+      procs[0]?.say('%begin 1 2 0\n');
+      await flush();
+      expect(events).toEqual([{ type: 'up' }]);
+      // `tmux attach -d` at the PC: tmux detaches Kage's client (%exit) and the server lives.
+      procs[0]?.say('%exit\n');
+      procs[0]?.emit('exit', 0);
+      await flush();
+      expect(asked).toBe(1);
+      expect(procs).toHaveLength(2);
+      expect(events).toEqual([{ type: 'up' }]);
+      // The new client's first line is the resync.
+      procs[1]?.say('%begin 3 4 0\n');
+      await flush();
+      expect(events).toEqual([{ type: 'up' }, { type: 'up' }]);
+      expect(events.some((e) => e.type === 'down')).toBe(false);
+      w.stop();
+    });
+
+    it('a client that exits with the server gone emits down and backs off', async () => {
+      const { w, procs, events } = setup(undefined, { alive: async () => false });
+      w.start();
+      procs[0]?.say('%begin 1 2 0\n');
+      await flush();
+      procs[0]?.emit('exit', 1);
+      await flush();
+      expect(events).toEqual([{ type: 'up' }, { type: 'down' }]);
+      expect(procs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(999);
+      expect(procs).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(procs).toHaveLength(2);
+      procs[1]?.emit('exit', 1);
+      await vi.advanceTimersByTimeAsync(1999);
+      expect(procs).toHaveLength(2);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(procs).toHaveLength(3);
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(2);
+      w.stop();
+    });
+
+    it('a has-session that fails or throws counts as the server gone', async () => {
+      const { w, procs, events } = setup(undefined, {
+        alive: async () => {
+          throw new Error('spawn tmux ENOENT');
+        },
+      });
+      w.start();
+      procs[0]?.emit('exit', 1);
+      await flush();
+      expect(events).toEqual([{ type: 'down' }]);
+      expect(procs).toHaveLength(1);
+      w.stop();
+    });
+
+    it('three re-attaches in 10 s without a line emit down', async () => {
+      const { w, procs, events } = setup(undefined, { alive: async () => true });
+      w.start();
+      procs[0]?.say('%begin 1 2 0\n');
+      await flush();
+      // tmux keeps refusing the client: each one exits before it prints a line.
+      for (let i = 0; i < 3; i++) {
+        procs[i]?.emit('exit', 1);
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(procs).toHaveLength(i + 2);
+      }
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(0);
+      procs[3]?.emit('exit', 1);
+      await flush();
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(1);
+      expect(procs).toHaveLength(4);
+      // …and backs off as today.
+      await vi.advanceTimersByTimeAsync(999);
+      expect(procs).toHaveLength(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(procs).toHaveLength(5);
+      w.stop();
+    });
+
+    it('a line between re-attaches starts the count over, and so do 10 s', async () => {
+      const { w, procs, events } = setup(undefined, { alive: async () => true });
+      w.start();
+      for (let i = 0; i < 6; i++) {
+        procs[i]?.say('%begin 1 2 0\n');
+        await flush();
+        procs[i]?.emit('exit', 0);
+        await flush();
+      }
+      expect(procs).toHaveLength(7);
+      // Without lines, but spread over more than 10 s.
+      for (let i = 6; i < 12; i++) {
+        procs[i]?.emit('exit', 1);
+        await vi.advanceTimersByTimeAsync(6000);
+      }
+      expect(procs).toHaveLength(13);
+      expect(events.some((e) => e.type === 'down')).toBe(false);
+      w.stop();
+    });
+
+    it('stop() while has-session is asked spawns nothing and emits nothing', async () => {
+      let answer: (v: boolean) => void = () => {};
+      const { w, procs, events } = setup(undefined, {
+        alive: () => new Promise<boolean>((r) => (answer = r)),
+      });
+      w.start();
+      procs[0]?.emit('exit', 1);
+      await flush();
+      w.stop();
+      answer(false);
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(procs).toHaveLength(1);
+      expect(events).toEqual([]);
+    });
   });
 
   it('reads the control client as UTF-8, so a character split across chunks stays whole', async () => {

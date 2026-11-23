@@ -121,6 +121,7 @@ describe.runIf(hasGit)('AutoArchiver (temp repo, real git)', () => {
       archive: async (id) => {
         archived.push(id);
       },
+      confirm: async () => true,
       gitDir: (r) => gitCommonDir(r),
       log: (l) => logs.push(l),
     });
@@ -152,6 +153,7 @@ describe.runIf(hasGit)('AutoArchiver (temp repo, real git)', () => {
       archive: async (id) => {
         archived.push(id);
       },
+      confirm: async () => true,
       gitDir: (r) => gitCommonDir(r),
       watch: () => ({ close() {} }),
     });
@@ -183,6 +185,7 @@ describe.runIf(hasGit)('AutoArchiver (temp repo, real git)', () => {
       archive: async (id) => {
         archived.push(id);
       },
+      confirm: async () => true,
       gitDir: (r) => gitCommonDir(r),
       watch: () => ({ close() {} }),
     });

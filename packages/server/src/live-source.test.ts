@@ -582,6 +582,35 @@ describe('LiveSource: windows and records', () => {
     expect(source.get('k-1')?.status).not.toBe('ended');
   });
 
+  it('tmux attach -d at the PC keeps needs-you, emits no ended and touches no auto-archive', async () => {
+    // The review's R1 with the fixed watcher: a detached control client re-attaches while the
+    // server lives and reports only `up` (a resync), never `down`.
+    const { source, watcher, tmux, hooks, auto, events } = setup({
+      windows: [win(), kageWin()],
+      records: [rec()],
+    });
+    tmux.setCapture('%2', pane('permission-bash'));
+    await source.start();
+    hooks.fire(hook('SessionStart', '%2'));
+    hooks.fire(hook('PreToolUse', '%2'));
+    hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    events.length = 0;
+    auto.calls = [];
+    const lists = tmux.listCalls;
+    watcher.emit({ type: 'up' });
+    await flush();
+    expect(tmux.listCalls).toBe(lists + 1);
+    expect(source.get('k-1')?.status).toBe('needs-you');
+    expect(source.get('ext-@1')).toBeDefined();
+    expect(events.filter((e) => e.type === 'session.removed')).toEqual([]);
+    expect(events.some((e) => e.type === 'session.updated' && e.session.status === 'ended')).toBe(
+      false,
+    );
+    expect(auto.calls.filter((c) => c.startsWith('touch'))).toEqual([]);
+  });
+
   it('remove() rejects with NotImplementedError', async () => {
     const { source } = setup({ windows: [win()] });
     await source.start();
@@ -3385,6 +3414,7 @@ describe('LiveSource: auto-archive fix round 1 (R69)', () => {
           archive: async (id) => {
             archived.push(id);
           },
+          confirm: async () => true,
           gitDir: async (repo) => repo,
           watch: () => ({ close() {} }),
         }),

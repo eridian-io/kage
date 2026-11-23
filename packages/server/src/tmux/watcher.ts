@@ -1,5 +1,5 @@
-import { spawn as nodeSpawn } from 'node:child_process';
-import { type TmuxTarget, tmuxArgs } from './client.ts';
+import { execFile, spawn as nodeSpawn } from 'node:child_process';
+import { EXEC_OPTIONS, type TmuxTarget, tmuxArgs } from './client.ts';
 
 export type WatchEvent =
   | { type: 'windows-changed' }
@@ -26,15 +26,40 @@ const PANE_ID = /^%\d+$/;
 const WINDOW_EVENTS = new Set(['%window-add', '%window-close', '%unlinked-window-close']);
 const BACKOFF_START_MS = 1000;
 const BACKOFF_MAX_MS = 30_000;
+/** Re-attaches to a live server without a control-mode line in between: this many in… */
+const REATTACH_MAX = 3;
+/** …this long count as the server down, so a client tmux keeps refusing can't spin (I1). */
+const REATTACH_WINDOW_MS = 10_000;
+
+/** `tmux has-session -t =<session>` succeeds (within EXEC_OPTIONS' 5 s). */
+export function hasSession(target: TmuxTarget, session: string): Promise<boolean> {
+  return new Promise((resolve) => {
+    execFile(
+      'tmux',
+      tmuxArgs(target, ['has-session', '-t', `=${session}`]),
+      { timeout: EXEC_OPTIONS.timeout },
+      (err) => resolve(!err),
+    );
+  });
+}
 
 /**
  * Listens to one tmux control-mode client (`tmux -C attach`) and reports window changes and pane
  * output. It only reads: nothing is ever written to the client's stdin.
+ *
+ * A client can end while the server lives: `tmux attach -d` or `detach-client -a` at the PC, or
+ * tmux dropping a client that fell behind (reliability I1). So an ended client first asks
+ * `alive()`: with the session still there it re-attaches at once and says nothing until the new
+ * client's first line, which emits `up` (a resync). `down` means the server or the session is
+ * gone (or tmux refused REATTACH_MAX re-attaches in a row), and the next try backs off.
  */
 export class TmuxWatcher {
   readonly #session: string;
   readonly #target: TmuxTarget;
   readonly #beforeLaunch: (() => Promise<void>) | undefined;
+  readonly #alive: () => Promise<boolean>;
+  /** Monotonic times of the re-attaches since the last control-mode line. */
+  #reattaches: number[] = [];
   #gen = 0;
   readonly #spawn: SpawnFn;
   readonly #throttleMs: number;
@@ -50,12 +75,15 @@ export class TmuxWatcher {
     socket: string | null;
     configFile?: string;
     beforeLaunch?: () => Promise<void>;
+    /** Whether the server and session live after a client ended (default: `has-session`). */
+    alive?: () => Promise<boolean>;
     spawn?: SpawnFn;
     throttleMs?: number;
   }) {
     this.#session = opts.session;
     this.#target = { socket: opts.socket, configFile: opts.configFile };
     this.#beforeLaunch = opts.beforeLaunch;
+    this.#alive = opts.alive ?? (() => hasSession(this.#target, this.#session));
     this.#spawn = opts.spawn ?? defaultSpawn;
     this.#throttleMs = opts.throttleMs ?? 250;
   }
@@ -144,17 +172,34 @@ export class TmuxWatcher {
       if (ended || this.#proc !== proc) return;
       ended = true;
       this.#proc = null;
-      this.#emit({ type: 'down' });
-      if (!this.#running) return;
-      this.#retryLater();
+      if (this.#running) this.#ended();
     };
     proc.on('exit', onEnd);
     proc.on('error', onEnd);
   }
 
+  /** A client ended while running: re-attach to a live server, else report it down. */
+  #ended(): void {
+    const gen = this.#gen;
+    const decide = (alive: boolean) => {
+      if (!this.#running || gen !== this.#gen) return;
+      const now = performance.now();
+      this.#reattaches = this.#reattaches.filter((t) => now - t < REATTACH_WINDOW_MS);
+      if (alive && this.#reattaches.length < REATTACH_MAX) {
+        this.#reattaches.push(now);
+        this.#spawnClient();
+        return;
+      }
+      this.#emit({ type: 'down' });
+      this.#retryLater();
+    };
+    this.#alive().then(decide, () => decide(false));
+  }
+
   #line(line: string): void {
     // Any control-mode line proves the attach worked: the next failure starts the backoff over.
     this.#backoff = BACKOFF_START_MS;
+    this.#reattaches = [];
     const sp = line.indexOf(' ');
     const kind = sp < 0 ? line : line.slice(0, sp);
     if (WINDOW_EVENTS.has(kind)) {

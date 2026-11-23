@@ -7,6 +7,7 @@ import {
   AutoArchiver,
   type AutoCandidate,
   watchFailed,
+  windowGone,
 } from './auto-archive.ts';
 
 const T0 = 1_800_000_000_000;
@@ -69,9 +70,11 @@ function setup(
     config?: { onMerge: boolean; afterDays: number };
     state?: (c: AutoCandidate) => Promise<BranchState>;
     archive?: (id: string) => Promise<void>;
+    confirm?: (id: string) => Promise<boolean>;
   } = {},
 ) {
   let cands = o.cands ?? [];
+  const confirms: string[] = [];
   const archived: string[] = [];
   const checks: string[] = [];
   const logs: string[] = [];
@@ -92,6 +95,10 @@ function setup(
         archived.push(id);
         cands = cands.filter((c) => c.id !== id);
       }),
+    confirm: async (id) => {
+      confirms.push(id);
+      return o.confirm ? o.confirm(id) : true;
+    },
     gitDir: async (repo) => `${repo}/.git`,
     watch: fw.watch,
     log: (l) => logs.push(l),
@@ -99,6 +106,7 @@ function setup(
   const a = new AutoArchiver(deps);
   return {
     a,
+    confirms,
     fw,
     states,
     archived,
@@ -116,6 +124,26 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.useRealTimers();
+});
+
+describe("windowGone (serve's confirm)", () => {
+  const w = (kageId: string | null) => ({ kageId });
+  it('true only when a listing has windows and none is tagged with the id', async () => {
+    expect(await windowGone(async () => [w(null), w('k-2')], 'k-1')).toBe(true);
+    expect(await windowGone(async () => [w(null), w('k-1')], 'k-1')).toBe(false);
+  });
+
+  it('an empty listing (session or server missing) is not proof: false', async () => {
+    expect(await windowGone(async () => [], 'k-1')).toBe(false);
+  });
+
+  it('a failed listing throws, so the archiver skips and logs it', async () => {
+    await expect(
+      windowGone(async () => {
+        throw new Error('tmux timed out');
+      }, 'k-1'),
+    ).rejects.toThrow('tmux timed out');
+  });
 });
 
 describe('AutoArchiver: idle cost', () => {
@@ -161,6 +189,52 @@ describe('AutoArchiver: the merge rule', () => {
     a.start();
     await flush();
     expect(archived).toEqual(['k-1']);
+  });
+
+  it('a candidate that has a window again at archive time is not archived', async () => {
+    // A merged, clean session whose Claude still works (a follow-up after an early merge), seen
+    // as ended for a moment: its window is listed again right before the archive.
+    let hasWindow = true;
+    const { a, states, archived, confirms } = setup({
+      cands: [cand()],
+      confirm: async () => !hasWindow,
+    });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
+    a.start();
+    await flush();
+    expect(confirms).toEqual(['k-1']);
+    expect(archived).toEqual([]);
+    hasWindow = false;
+    a.touch('k-1');
+    await flush();
+    expect(archived).toEqual(['k-1']);
+  });
+
+  it('a confirm that fails skips the archive and logs once', async () => {
+    const { a, states, archived, logs } = setup({
+      cands: [cand()],
+      confirm: async () => {
+        throw new Error('tmux timed out');
+      },
+    });
+    states.set('k-1', { unpushed: 0, uncommitted: 0, ignored: 0, merged: true });
+    a.start();
+    await flush();
+    a.touch('k-1');
+    await flush();
+    expect(archived).toEqual([]);
+    expect(logs).toEqual(['Auto-archive skipped kage/fix-the-cart-total: tmux timed out']);
+  });
+
+  it('the age rule asks confirm too, and a refused candidate stays', async () => {
+    const { a, archived, confirms } = setup({
+      cands: [cand({ doneAt: T0 - 15 * DAY })],
+      confirm: async () => false,
+    });
+    a.start();
+    await flush();
+    expect(confirms).toEqual(['k-1']);
+    expect(archived).toEqual([]);
   });
 
   it('touch checks the session again', async () => {
@@ -471,6 +545,7 @@ describe('AutoArchiver: watchers', () => {
         return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
       },
       archive: async () => {},
+      confirm: async () => true,
       gitDir: async () => {
         throw new Error('not a git repository');
       },

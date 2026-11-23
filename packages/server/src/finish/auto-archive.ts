@@ -27,6 +27,12 @@ export interface AutoArchiveDeps {
   candidates: () => AutoCandidate[];
   state: (c: AutoCandidate) => Promise<BranchState>;
   archive: (id: string) => Promise<void>;
+  /**
+   * Asked right before each archive: true only when the session's window is really gone. A
+   * session can read ended for a moment while its Claude still works (reliability I1), so false
+   * or a failure skips the archive; a later trigger checks again.
+   */
+  confirm: (id: string) => Promise<boolean>;
   /** `rev-parse --git-common-dir`, made absolute. */
   gitDir: (repo: string) => Promise<string>;
   /**
@@ -57,6 +63,20 @@ const DEBOUNCE_MS = 5000;
  * change on every commit or merge attempt, and the lock names of the same operation cover it.
  */
 const WATCH_NAMES = new Set(['FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', 'HEAD']);
+
+/**
+ * `confirm` for serve (reliability I1, F13): a fresh listing of the tmux session finds no window
+ * tagged with the session's `@kage_id`. An empty listing means tmux says the server or the
+ * session is missing, which doesn't prove the window gone, so it answers false too; a failed
+ * listing throws, and the archiver skips and logs it.
+ */
+export async function windowGone(
+  listWindows: () => Promise<readonly { kageId: string | null }[]>,
+  id: string,
+): Promise<boolean> {
+  const windows = await listWindows();
+  return windows.length > 0 && !windows.some((w) => w.kageId === id);
+}
 
 /** Logged once per directory when fs.watch throws. */
 export const watchFailed = (dir: string): string =>
@@ -338,7 +358,7 @@ export class AutoArchiver {
 
   /**
    * The age rule (no git), else the merge rule: merged and a clean worktree. The candidate is
-   * read again right before the archive. A refusal or a failed check is logged once per session.
+   * read again, and `confirm` asked, right before the archive. A refusal or a failed check is logged once per session.
    */
   async #check(c: AutoCandidate): Promise<void> {
     try {
@@ -352,6 +372,10 @@ export class AutoArchiver {
       // queued a fresh check.
       const fresh = this.#candidate(c.id);
       if (!due || !this.#running || !fresh || fresh.doneAt !== c.doneAt) return;
+      if (!(await this.#d.confirm(c.id))) return;
+      // The candidate again: the confirm took a tmux call, and a turn may have run meanwhile.
+      const still = this.#candidate(c.id);
+      if (!this.#running || !still || still.doneAt !== c.doneAt) return;
       await this.#d.archive(c.id);
       this.#logged.delete(c.id);
     } catch (e) {
