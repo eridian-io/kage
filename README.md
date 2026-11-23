@@ -384,15 +384,15 @@ The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `nam
 
 ## Roadmap
 
-Phases 2 to 6 and hardening are built on their branches and not merged into `main` yet. No release exists.
+Phases 1 to 6 and hardening are merged into `main`. No release exists yet.
 
 - [x] **Phase 1, skeleton:** dashboard served over Tailscale
-- [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts (built on its branch)
-- [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login (built on its branch)
-- [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser (built on its branch)
-- [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets (built on its branch)
-- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases (built on its branch; waiting for the first release)
-- [ ] **Hardening:** a login for each browser with sign-out, only your tailnet names trusted, no live mode without a token, `kage restart` and `kage logs`, `pnpm demo`, pings set up by `kage setup`, a lighter and faster Kage (built on its branch)
+- [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
+- [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
+- [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser
+- [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets
+- [x] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases (waiting for the first release)
+- [x] **Hardening:** a login for each browser with sign-out, only your tailnet names trusted, no live mode without a token, `kage restart` and `kage logs`, `pnpm demo`, pings set up by `kage setup`, a lighter and faster Kage
 - [ ] **Later:** a phone layout
 
 ## Contributing
