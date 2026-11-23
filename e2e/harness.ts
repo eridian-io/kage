@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { expect, type Page, type TestInfo } from '@playwright/test';
 import { serviceEnv } from '../packages/server/src/install/runtime.ts';
+import { anonymousMb } from '../packages/server/src/proc-memory.ts';
 import { LIVE_PORT } from './env.ts';
 import { assertLocalNtfy } from './fake-ntfy.ts';
 
@@ -38,7 +39,8 @@ export const FAKE = join(ROOT, 'e2e/fake-claude.mjs');
 export const BUNDLE = join(ROOT, 'packages/server/dist/kage.mjs');
 /** The light `kage hook` the bundle's hooks run (hardening Task 13). */
 export const HOOK_BUNDLE = join(ROOT, 'packages/server/dist/kage-hook.mjs');
-export const SHIPPED_FLAGS = ['--v8-pool-size=1'];
+/** The service's flags (serviceArgv): R91's pool size and a 1 MB young generation (Task 15, F19). */
+export const SHIPPED_FLAGS = ['--v8-pool-size=1', '--max-semi-space-size=1'];
 export const SHIPPED_ENV = { MALLOC_ARENA_MAX: '2' };
 /**
  * A single executable to measure as well (Task 6): `KAGE_PERF_SEA=<gunzipped kage>`. It runs with
@@ -359,6 +361,12 @@ export class LiveHarness {
     if (!Number.isFinite(kb)) throw new Error('No VmRSS in /proc status');
     return kb / 1024;
   };
+
+  /**
+   * `kage serve`'s anonymous memory in MB: the Anonymous line of /proc/<pid>/smaps_rollup, the
+   * part of its RSS Kage controls (performance P5); Linux only.
+   */
+  serveAnon = (): number => anonymousMb(`/proc/${this.servePid()}/smaps_rollup`);
 
   /** `kage serve`'s CPU time so far in ms (/proc/<pid>/stat utime + stime); Linux only. */
   serveCpuMs = (): number => {

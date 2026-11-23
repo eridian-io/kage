@@ -72,7 +72,7 @@ describe('renderUnit', () => {
       'StartLimitIntervalSec=0',
       '',
       '[Service]',
-      'ExecStart="/usr/bin/node" "--v8-pool-size=1" "/opt/kage/dist/kage.mjs" "serve"',
+      'ExecStart="/usr/bin/node" "--v8-pool-size=1" "--max-semi-space-size=1" "/opt/kage/dist/kage.mjs" "serve"',
       'Environment="PATH=/home/u/.local/node/bin:/usr/bin:/bin" "MALLOC_ARENA_MAX=2" "KAGE_SERVICE=1"',
       'Restart=on-failure',
       'RestartSec=5',
@@ -85,7 +85,7 @@ describe('renderUnit', () => {
 
   it('R91: ExecStart carries --v8-pool-size=1 and Environment MALLOC_ARENA_MAX=2', () => {
     const unit = renderUnit(BUNDLE);
-    expect(unit).toMatch(/^ExecStart=.*"--v8-pool-size=1"/m);
+    expect(unit).toMatch(/^ExecStart=.*"--v8-pool-size=1" "--max-semi-space-size=1"/m);
     expect(unit).toMatch(/^Environment=.*"MALLOC_ARENA_MAX=2"/m);
     expect(unit).toMatch(/^Environment=.*"KAGE_SERVICE=1"/m);
   });

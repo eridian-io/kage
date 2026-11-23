@@ -127,6 +127,7 @@ describe('renderPlist', () => {
     const m = { kind: 'bundle', node: '/opt/homebrew/bin/node', script: '/k/kage.mjs' } as const;
     const xml = renderPlist({ argv: serviceArgv(m), env: serviceEnv(m, '/usr/bin') }, '/l');
     expect(xml).toContain('<string>--v8-pool-size=1</string>');
+    expect(xml).toContain('<string>--max-semi-space-size=1</string>');
   });
 
   it("R124: setup's folder settings reach EnvironmentVariables escaped, never an API key", () => {

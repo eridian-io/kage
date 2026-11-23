@@ -15,6 +15,7 @@
     "../packages/web/sizes.ts",
     "../packages/server/test/setup-fetch.ts",
     "../packages/server/src/install/runtime.ts",
+    "../packages/server/src/proc-memory.ts",
     "../packages/server/src/tmux/test-sockets.ts",
     "../packages/server/test/tmux-global.ts"
   ]

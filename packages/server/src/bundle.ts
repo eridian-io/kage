@@ -2,7 +2,7 @@
  * The shipped server (ruling R91): `kage` as one ESM file, every runtime dependency inside
  * (hono, @hono/node-server, ws). No TypeScript is stripped at runtime, which costs an idle
  * `kage serve` about 39 MB. Phase 6 ships this file (or a single executable built from it), run
- * as `node --v8-pool-size=1 kage.mjs` with MALLOC_ARENA_MAX=2.
+ * as `node --v8-pool-size=1 --max-semi-space-size=1 kage.mjs` with MALLOC_ARENA_MAX=2.
  *
  * The hook entry `kage-hook.mjs` is built beside it (bundleHook).
  *

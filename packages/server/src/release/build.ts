@@ -75,9 +75,10 @@ export function releaseNode(): string {
 const VERSION_RE = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
 
 /**
- * The SEA config (R110): CommonJS main, the code cache, one V8 pool thread, no warning, and the
- * board as assets. `board` maps URL paths ('/index.html') to files; the manifest lives beside the
- * blob. Keys are sorted, so the same board gives the same config.
+ * The SEA config (R110): CommonJS main, the code cache, one V8 pool thread and a 1 MB young
+ * generation (performance P4), no warning, and the board as assets. `board` maps URL paths
+ * ('/index.html') to files; the manifest lives beside the blob. Keys are sorted, so the same board
+ * gives the same config.
  */
 export function seaConfig(entry: string, blob: string, board: Map<string, string>): object {
   const assets: Record<string, string> = { [SEA_MANIFEST]: join(dirname(blob), 'manifest.json') };
@@ -88,7 +89,7 @@ export function seaConfig(entry: string, blob: string, board: Map<string, string
     disableExperimentalSEAWarning: true,
     useSnapshot: false,
     useCodeCache: true,
-    execArgv: ['--v8-pool-size=1'],
+    execArgv: ['--v8-pool-size=1', '--max-semi-space-size=1'],
     assets,
   };
 }

@@ -31,11 +31,13 @@ import {
  *   of 5 against live mode with 10 sessions;
  * - hook to screen: the test's clock before the hook's socket write to a MutationObserver's
  *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time from the bundle's
- *   hook entry (kage-hook.mjs, hardening Task 13), median of 10, at most 45 ms;
+ *   hook entry (kage-hook.mjs, hardening Task 13), median of 10, at most 60 ms (R142: about 31 ms
+ *   on an idle host, 43 to 48 ms under load);
  * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc), on
- *   the shipped bundle with its flags (R91); the dev run from the sources is an annotation; with
- *   KAGE_PERF_SEA=<gunzipped kage>, the single executable too (Task 6), plus its `kage hook` wall
- *   time beside the bundle's as an annotation;
+ *   the shipped bundle with its flags (R91, Task 15): CPU, RSS, and the anonymous memory Kage
+ *   controls (smaps_rollup, performance P5; most of RSS is the node binary's pages); the dev run
+ *   from the sources is an annotation; with KAGE_PERF_SEA=<gunzipped kage>, the single executable
+ *   too (Task 6), plus its `kage hook` wall time beside the bundle's as an annotation;
  * - rendering: the DOM cap and line identity under a 2,000-line flood, and a 3,000-line diff;
  * - SSE under load: 30 windows writing transcript records and posting tool hooks, frames and
  *   bytes counted over the 10 s burst.
@@ -326,7 +328,7 @@ test.describe('live budgets', () => {
     await h.attachOnFailure(info);
   });
 
-  test('idle server: CPU and RSS with 10 done sessions and no page or stream open', async () => {
+  test('idle server: CPU, RSS and anonymous memory, 10 done sessions, no page or stream', async () => {
     test.setTimeout(PERF_SEA ? 270_000 : 150_000);
     try {
       test.skip(!existsSync('/proc/self/stat'), 'Reads /proc/<pid>: Linux only');
@@ -340,6 +342,12 @@ test.describe('live budgets', () => {
         name: 'Idle server RSS (shipped bundle)',
         value: h.serveRss(),
         limit: 80,
+        unit: 'MB',
+      });
+      recordBudget({
+        name: 'Idle server anonymous memory (shipped bundle)',
+        value: h.serveAnon(),
+        limit: 32,
         unit: 'MB',
       });
 
@@ -621,7 +629,8 @@ test.describe('live budgets', () => {
       recordBudget({
         name: 'kage hook wall time (bundle, median of 10)',
         value: median(walls),
-        limit: 45,
+        // Headroom for a loaded host (R142): about 31 ms idle, 43 to 48 ms under load.
+        limit: 60,
         unit: 'ms',
       });
     } finally {

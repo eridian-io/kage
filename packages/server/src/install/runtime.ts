@@ -137,13 +137,16 @@ export function hookArgv(m: RunMode, exists: (p: string) => boolean = isFile): s
   }
 }
 
-/** The service's command line (R91: one V8 pool thread; the SEA has it in its execArgv). */
+/**
+ * The service's command line (R91: one V8 pool thread; performance P4: a 1 MB young generation,
+ * about 4.5 MB less idle RSS; the SEA has both in its execArgv).
+ */
 export function serviceArgv(m: RunMode): string[] {
   switch (m.kind) {
     case 'sea':
       return [m.exe, 'serve'];
     case 'bundle':
-      return [m.node, '--v8-pool-size=1', m.script, 'serve'];
+      return [m.node, '--v8-pool-size=1', '--max-semi-space-size=1', m.script, 'serve'];
     case 'source':
       throw new Error(
         'Install Kage from a release, or run "pnpm build" and use node packages/server/dist/kage.mjs.',

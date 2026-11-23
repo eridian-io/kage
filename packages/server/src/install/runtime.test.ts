@@ -135,10 +135,12 @@ describe('serviceArgv', () => {
     expect(serviceArgv({ kind: 'sea', exe: '/b/kage' })).toEqual(['/b/kage', 'serve']);
   });
 
-  it('bundle: the R91 pool size before the script', () => {
+  it('the service runs the bundle with --max-semi-space-size=1', () => {
+    // R91's pool size, then the young generation at 1 MB (performance P4), before the script.
     expect(serviceArgv({ kind: 'bundle', node: '/n', script: '/k.mjs' })).toEqual([
       '/n',
       '--v8-pool-size=1',
+      '--max-semi-space-size=1',
       '/k.mjs',
       'serve',
     ]);

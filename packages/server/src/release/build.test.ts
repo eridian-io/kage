@@ -210,7 +210,11 @@ describe('seaConfig', () => {
     expect(c.disableExperimentalSEAWarning).toBe(true);
     expect(c.useCodeCache).toBe(true);
     expect(c.useSnapshot).toBe(false);
-    expect(c.execArgv).toEqual(['--v8-pool-size=1']);
+  });
+
+  it("the SEA's execArgv carries it (--max-semi-space-size=1, performance P4)", () => {
+    const c = seaConfig('/w/e.cjs', '/w/kage.blob', board) as Record<string, unknown>;
+    expect(c.execArgv).toEqual(['--v8-pool-size=1', '--max-semi-space-size=1']);
   });
 
   it('is the same object for the same board in any order (deterministic blobs)', () => {
