@@ -1,11 +1,12 @@
 # The Linux test image: `pnpm test:linux` (scripts/test-linux.sh) copies the tracked files into a
 # fresh container of this image and runs the whole check there, tmux tests and live e2e included.
 # The Playwright version matches @playwright/test in package.json; its browsers are preinstalled.
-# git for worktrees and the e2e's temp repos; iproute2 (ss) and procps (ps) for the port scan.
+# git for worktrees and the e2e's temp repos; iproute2 (ss) and procps (ps) for the port scan;
+# curl for install-sh.test.ts (install.sh downloads with it, from a server on 127.0.0.1; F11).
 FROM mcr.microsoft.com/playwright:v1.64.1-noble
 
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends tmux git iproute2 procps \
+  && apt-get install -y --no-install-recommends tmux git iproute2 procps curl \
   && rm -rf /var/lib/apt/lists/*
 
 # Node 25+ ships without corepack. --force replaces the image's yarn link with corepack's;

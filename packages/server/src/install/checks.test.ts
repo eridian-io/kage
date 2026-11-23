@@ -848,6 +848,30 @@ describe('installChecks', () => {
       });
     });
 
+    it('R114: the advice names the rc files install.sh writes, by $SHELL', async () => {
+      const bin = join(dir, 'bin');
+      const exe = fakeTool(bin, 'kage');
+      const fix = async (env: NodeJS.ProcessEnv) => {
+        const d = deps(tableRun({}).run, { mode: { kind: 'sea', exe } });
+        Object.assign(d.env, { PATH: '/usr/bin' }, env);
+        return one(await installChecks(d), 'install-path').fix;
+      };
+      const line = `'export PATH="${bin}:$PATH"'`;
+      expect(await fix({ SHELL: '/bin/zsh' })).toBe(
+        `Add ${bin} to your PATH: echo ${line} >> ~/.zshrc`,
+      );
+      expect(await fix({ SHELL: '/usr/bin/fish' })).toBe(
+        `Add ${bin} to your PATH: echo ${line} >> ~/.profile`,
+      );
+      expect(await fix({ SHELL: '/bin/bash' })).toBe(
+        `Add ${bin} to your PATH: echo ${line} | tee -a ~/.bashrc ~/.profile`,
+      );
+      writeFileSync(join(home, '.bash_profile'), '');
+      expect(await fix({ SHELL: '/bin/bash' })).toBe(
+        `Add ${bin} to your PATH: echo ${line} | tee -a ~/.bashrc ~/.bash_profile`,
+      );
+    });
+
     it('bundle mode: no PATH check', async () => {
       expect(byId(await installChecks(deps(tableRun({}).run)), 'install-path')).toEqual([]);
     });

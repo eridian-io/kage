@@ -20,6 +20,7 @@ import { stateDir } from '../state/store.ts';
 import { tailscaleCommand } from '../tailscale.ts';
 import { parseTmuxVersion } from '../tmux/client.ts';
 import { LAUNCHD_LABEL } from './launchd.ts';
+import { pathAdvice, pathRcFiles } from './path-rc.ts';
 import type { Run, RunResult } from './run.ts';
 import type { RunMode } from './runtime.ts';
 import type { ServiceManager, ServiceState } from './service.ts';
@@ -643,15 +644,27 @@ async function installPathChecks(d: CheckDeps): Promise<Check[]> {
   if (d.mode.kind === 'sea') {
     const dir = dirname(d.mode.exe);
     const onPath = (d.env.PATH ?? '').split(delimiter).some((p) => p !== '' && sameDir(p, dir));
-    checks.push(
-      onPath
-        ? ok('install-path', `${dir} is on your PATH`)
-        : warn(
-            'install-path',
-            `${dir} isn't on your PATH.`,
-            `Add ${dir} to your PATH: echo 'export PATH="${dir}:$PATH"' >> ~/.profile`,
+    if (onPath) {
+      checks.push(ok('install-path', `${dir} is on your PATH`));
+    } else {
+      // R114: the same files install.sh writes the line into.
+      const files = pathRcFiles({
+        shell: d.env.SHELL,
+        home: d.home,
+        zdotdir: d.env.ZDOTDIR,
+        hasBashProfile: await exists(join(d.home, '.bash_profile')),
+      });
+      checks.push(
+        warn(
+          'install-path',
+          `${dir} isn't on your PATH.`,
+          pathAdvice(
+            dir,
+            files.map((f) => displayPath(f, d.home)),
           ),
-    );
+        ),
+      );
+    }
   }
   return checks;
 }
