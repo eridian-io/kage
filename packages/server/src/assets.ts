@@ -32,7 +32,28 @@ const TYPES: Record<string, string> = {
 };
 
 /** Formats that are compressed already: served raw, never brotli/gzip. */
-const PRECOMPRESSED = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
+const RAW = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
+
+/**
+ * The web build's manifest of precompressed sidecars (packages/web/build.ts PRECOMPRESSED):
+ * { "/<path>": "<the body's hash, as in the ETag>" }, with <file>.br and <file>.gz beside each.
+ */
+export const PRECOMPRESSED = 'precompressed.json';
+const SIDECAR = /.(br|gz)$/;
+
+/** The build's manifest, or an empty one when it is missing or not a map of strings. */
+async function readManifest(board: BoardFiles, paths: string[]): Promise<Map<string, string>> {
+  if (!paths.includes(`/${PRECOMPRESSED}`)) return new Map();
+  try {
+    const m: unknown = JSON.parse(new TextDecoder().decode(await board.read(`/${PRECOMPRESSED}`)));
+    if (typeof m !== 'object' || m === null || Array.isArray(m)) return new Map();
+    return new Map(
+      Object.entries(m).filter((e): e is [string, string] => typeof e[1] === 'string'),
+    );
+  } catch {
+    return new Map();
+  }
+}
 
 /**
  * esbuild's hashed names (packages/web/build.ts HASHED): the board, the terminal, the lazy diff and
@@ -140,11 +161,16 @@ export function boardFor(
 }
 
 /**
- * Reads the built board (a folder, or the SEA's embedded files) into memory, precompressed (brotli quality 11, gzip level 9),
- * except formats that are compressed already (fonts, images), which stay raw.
- * Keys are URL paths ('/index.html', '/fonts/…'); '/' maps to index.html.
+ * Reads the built board (a folder, or the SEA's embedded files) into memory, compressed (brotli
+ * quality 11, gzip level 9), except formats that are compressed already (fonts, images), which
+ * stay raw. Keys are URL paths ('/index.html', '/fonts/…'); '/' maps to index.html.
  *
- * One file and one encoder at a time (R100). Run side by side, the brotli and gzip encoders
+ * The web build writes each file's brotli and gzip beside it and a manifest of the bodies' hashes
+ * (performance P1): a file whose hash the manifest holds, with both sidecars there, is read as it
+ * is. The sidecars and the manifest are never served as files. Any other file (a watch build
+ * writes no sidecars; a body changed since the build) is compressed here, at start.
+ *
+ * Compressing at start: one file and one encoder at a time (R100). Run side by side, the brotli and gzip encoders
  * share libuv's 4 pool threads and, under MALLOC_ARENA_MAX=2, the same two malloc arenas; with
  * glibc's dynamic mmap threshold their large buffers land in those arenas, and how the threads
  * interleave decides how fragmented the arenas are left and how much freed memory stays
@@ -157,12 +183,21 @@ export async function loadAssets(
 ): Promise<Map<string, Asset>> {
   const board = typeof src === 'string' ? dirFiles(src) : src;
   const map = new Map<string, Asset>();
-  for (const path of await board.list()) {
+  const paths = await board.list();
+  const have = new Set(paths);
+  const built = await readManifest(board, paths);
+  for (const path of paths) {
+    if (SIDECAR.test(path) || path === `/${PRECOMPRESSED}`) continue;
     const body = await board.read(path);
     const hash = createHash('sha256').update(body).digest('base64url').slice(0, 22);
     const ext = extname(path).toLowerCase();
+    const sidecars = built.get(path) === hash && have.has(`${path}.br`) && have.has(`${path}.gz`);
     // Same bytes as the body, so serveAsset never picks an encoding for these.
-    const encoded = PRECOMPRESSED.has(ext) ? { gzip: body, br: body } : await encode(body);
+    const encoded = RAW.has(ext)
+      ? { gzip: body, br: body }
+      : sidecars
+        ? { gzip: await board.read(`${path}.gz`), br: await board.read(`${path}.br`) }
+        : await encode(body);
     map.set(path, {
       body,
       ...encoded,

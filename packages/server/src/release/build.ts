@@ -15,7 +15,8 @@
  * from `node --experimental-sea-config` with the code cache made here (so each target builds on
  * its own runner), injected into a copy of the same Node with postject, never stripped, gzipped.
  * The board rides along as SEA assets: `board/manifest.json` (a JSON array of URL paths) and
- * `board<path>` for each file (assets.ts seaFiles).
+ * `board<path>` for each file (assets.ts seaFiles), the web build's precompressed sidecars and
+ * their manifest included (boardMap).
  *
  * Determinism: the bundles, the manifest, the config, the npm tarball (npm fixes the mtimes) and
  * the gzip framing (no name, no mtime) depend only on their inputs. The blob's code cache is V8's
@@ -27,7 +28,6 @@ import { existsSync, readFileSync } from 'node:fs';
 import {
   chmod,
   copyFile,
-  cp,
   mkdir,
   mkdtemp,
   readdir,
@@ -40,7 +40,7 @@ import { homedir, tmpdir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { parseArgs as parseCli, promisify } from 'node:util';
 import { gzip } from 'node:zlib';
-import { dirFiles, SEA_MANIFEST } from '../assets.ts';
+import { dirFiles, PRECOMPRESSED, SEA_MANIFEST } from '../assets.ts';
 import { bundleSeaEntry, bundleServer, packageVersion } from '../bundle.ts';
 import {
   assetName,
@@ -93,12 +93,26 @@ export function seaConfig(entry: string, blob: string, board: Map<string, string
   };
 }
 
-/** The board's files by URL path, sorted; throws when it hasn't been built. */
-async function boardMap(web: string): Promise<Map<string, string>> {
+/**
+ * The board's files by URL path, sorted, as they ship in the SEA and the npm package; throws when
+ * it hasn't been built. A .br or .gz rides along only when the build's manifest (PRECOMPRESSED)
+ * names its file: a stale sidecar left in dist/ never ships (F16).
+ */
+export async function boardMap(web: string): Promise<Map<string, string>> {
   if (!existsSync(join(web, 'index.html'))) {
     throw new Error(`No board at ${web}: run pnpm build first.`);
   }
-  const paths = (await dirFiles(web).list()).sort();
+  let named: Set<string> = new Set();
+  try {
+    const m: unknown = JSON.parse(await readFile(join(web, PRECOMPRESSED), 'utf8'));
+    if (typeof m === 'object' && m !== null && !Array.isArray(m)) named = new Set(Object.keys(m));
+  } catch {
+    // No manifest (a watch build): no sidecars.
+  }
+  const sidecar = /.(br|gz)$/;
+  const paths = (await dirFiles(web).list())
+    .filter((p) => !sidecar.test(p) || named.has(p.replace(sidecar, '')))
+    .sort();
   return new Map(paths.map((p) => [p, join(web, ...p.slice(1).split('/'))]));
 }
 
@@ -207,13 +221,16 @@ export interface NpmOptions {
  * and packs it into `<out>/eridian-io-kage-<version>.tgz`.
  */
 export async function stageNpm(o: NpmOptions): Promise<string> {
-  const web = o.web ?? WEB_DIST;
-  await boardMap(web);
+  const board = await boardMap(o.web ?? WEB_DIST);
   const dir = join(o.out, 'npm');
   await rm(dir, { recursive: true, force: true });
   await mkdir(dir, { recursive: true });
   await bundleServer(join(dir, 'kage.mjs'), { version: o.version });
-  await cp(web, join(dir, 'web'), { recursive: true });
+  for (const [path, src] of board) {
+    const to = join(dir, 'web', ...path.slice(1).split('/'));
+    await mkdir(dirname(to), { recursive: true });
+    await copyFile(src, to);
+  }
   await copyFile(join(REPO, 'README.md'), join(dir, 'README.md'));
   await copyFile(join(REPO, 'LICENSE'), join(dir, 'LICENSE'));
   const pkg = {

@@ -1,8 +1,10 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
+import { brotliCompressSync, constants, gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { boardFor, dirFiles, loadAssets, SEA_MANIFEST, seaFiles } from './assets.ts';
+import { boardFor, dirFiles, loadAssets, PRECOMPRESSED, SEA_MANIFEST, seaFiles } from './assets.ts';
 
 let root: string;
 beforeEach(() => {
@@ -25,10 +27,13 @@ function writeBoard(dir: string, files: Record<string, string> = FILES): void {
 }
 
 /** A fake node:sea over the same files, as the SEA build embeds them. */
-function fakeSea(dir: string): { getRawAsset(key: string): ArrayBuffer } {
+function fakeSea(
+  dir: string,
+  paths: string[] = Object.keys(FILES),
+): { getRawAsset(key: string): ArrayBuffer } {
   const assets = new Map<string, Uint8Array>();
-  assets.set(SEA_MANIFEST, new TextEncoder().encode(JSON.stringify(Object.keys(FILES))));
-  for (const p of Object.keys(FILES)) {
+  assets.set(SEA_MANIFEST, new TextEncoder().encode(JSON.stringify(paths)));
+  for (const p of paths) {
     assets.set(`board${p}`, new Uint8Array(readFileSync(join(dir, ...p.slice(1).split('/')))));
   }
   return {
@@ -72,6 +77,118 @@ describe('board sources', () => {
     const a = await loadAssets(root, encode);
     const b = await loadAssets(dirFiles(root), encode);
     expect([...a.keys()].sort()).toEqual([...b.keys()].sort());
+  });
+});
+
+describe('precompressed sidecars (packages/web/build.ts writeCompressed)', () => {
+  const hashOf = (body: string | Uint8Array) =>
+    createHash('sha256').update(body).digest('base64url').slice(0, 22);
+  const brOf = (body: string) =>
+    new Uint8Array(brotliCompressSync(body, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } }));
+  const gzOf = (body: string) => new Uint8Array(gzipSync(body, { level: 9 }));
+
+  /** FILES plus .br and .gz beside each compressible file and the manifest of their hashes. */
+  function writeCompressedBoard(dir: string, hashes: Record<string, string> = {}): string[] {
+    writeBoard(dir);
+    const manifest: Record<string, string> = {};
+    for (const p of ['/index.html', '/app-AbC123.js']) {
+      const body = FILES[p] as string;
+      const file = join(dir, ...p.slice(1).split('/'));
+      writeFileSync(`${file}.br`, brOf(body));
+      writeFileSync(`${file}.gz`, gzOf(body));
+      manifest[p] = hashes[p] ?? hashOf(body);
+    }
+    writeFileSync(join(dir, PRECOMPRESSED), JSON.stringify(manifest));
+    return dirFilesSync(dir);
+  }
+  const dirFilesSync = (dir: string) =>
+    readdirSync(dir, { recursive: true, withFileTypes: true })
+      .filter((e) => e.isFile())
+      .map((e) => `/${relative(dir, join(e.parentPath, e.name)).split(sep).join('/')}`);
+
+  const never = async (): Promise<never> => {
+    throw new Error('the encoder ran');
+  };
+
+  it('PRECOMPRESSED names the same manifest as the web build', () => {
+    expect(PRECOMPRESSED).toBe('precompressed.json');
+  });
+
+  it('loadAssets uses the sidecars and never calls the encoder', async () => {
+    writeCompressedBoard(root);
+    const map = await loadAssets(root, never);
+    for (const p of ['/index.html', '/app-AbC123.js']) {
+      const body = FILES[p] as string;
+      const a = map.get(p);
+      expect(Buffer.from(a?.br ?? []).equals(Buffer.from(brOf(body))), p).toBe(true);
+      expect(Buffer.from(a?.gzip ?? []).equals(Buffer.from(gzOf(body))), p).toBe(true);
+      expect(new TextDecoder().decode(a?.body), p).toBe(body);
+      // The ETag stays the raw body's.
+      expect(a?.etag).toBe(`"${hashOf(body)}"`);
+    }
+    // A font has no sidecars: served raw, as before.
+    const font = map.get('/fonts/x.woff2');
+    expect(font?.br).toBe(font?.body);
+    expect(map.get('/app-AbC123.js')?.immutable).toBe(true);
+    expect(map.get('/')).toBe(map.get('/index.html'));
+  });
+
+  it('a sidecar whose body changed is ignored and the file is compressed at start', async () => {
+    writeCompressedBoard(root, { '/index.html': hashOf('an older index.html') });
+    const seen: string[] = [];
+    const map = await loadAssets(root, async (body) => {
+      seen.push(new TextDecoder().decode(body));
+      return { gzip: new Uint8Array([1]), br: new Uint8Array([2]) };
+    });
+    expect(seen).toEqual([FILES['/index.html']]);
+    expect([...(map.get('/index.html')?.br ?? [])]).toEqual([2]);
+    expect([...(map.get('/index.html')?.gzip ?? [])]).toEqual([1]);
+    // The other file's sidecars still hold.
+    expect(
+      Buffer.from(map.get('/app-AbC123.js')?.br ?? []).equals(
+        Buffer.from(brOf(FILES['/app-AbC123.js'] as string)),
+      ),
+    ).toBe(true);
+  });
+
+  it('a missing sidecar, or a broken manifest, compresses at start', async () => {
+    writeCompressedBoard(root);
+    rmSync(join(root, 'app-AbC123.js.gz'));
+    const seen: string[] = [];
+    const spy = async (body: Uint8Array) => {
+      seen.push(new TextDecoder().decode(body));
+      return encode(body);
+    };
+    await loadAssets(root, spy);
+    expect(seen).toEqual([FILES['/app-AbC123.js']]);
+    writeFileSync(join(root, PRECOMPRESSED), '{not json');
+    seen.length = 0;
+    await loadAssets(root, spy);
+    expect(seen.sort()).toEqual([FILES['/app-AbC123.js'], FILES['/index.html']].sort());
+  });
+
+  it('sidecars and the manifest are not served', async () => {
+    writeCompressedBoard(root);
+    // A stray sidecar with no manifest entry is not served either.
+    writeFileSync(join(root, 'app-OLD999.js.br'), 'old');
+    const map = await loadAssets(root, never);
+    expect([...map.keys()].sort()).toEqual(['/', ...Object.keys(FILES)].sort());
+  });
+
+  it('the SEA board reads the same sidecars', async () => {
+    const paths = writeCompressedBoard(root);
+    const fromDir = await loadAssets(root, never);
+    const fromSea = await loadAssets(seaFiles(fakeSea(root, paths)), never);
+    expect([...fromSea.keys()].sort()).toEqual([...fromDir.keys()].sort());
+    for (const [k, a] of fromDir) {
+      const b = fromSea.get(k);
+      for (const field of ['body', 'gzip', 'br'] as const) {
+        expect(Buffer.from(b?.[field] ?? []).equals(Buffer.from(a[field])), `${k} ${field}`).toBe(
+          true,
+        );
+      }
+      expect(b?.etag).toBe(a.etag);
+    }
   });
 });
 

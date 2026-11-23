@@ -1,11 +1,27 @@
 // @vitest-environment node
+import { createHash } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import { mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { gzipSync } from 'node:zlib';
+import { join, relative, sep } from 'node:path';
+import {
+  brotliCompressSync,
+  brotliDecompressSync,
+  constants,
+  gunzipSync,
+  gzipSync,
+} from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { build, FONTS, HASHED, LAZY } from './build.ts';
+import {
+  build,
+  clearCompressed,
+  FONTS,
+  HASHED,
+  LAZY,
+  PRECOMPRESSED,
+  pruneSidecars,
+  writeCompressed,
+} from './build.ts';
 import { measureSizes, SIZE_LIMITS, type Sizes, termLoaderCode } from './sizes.ts';
 
 // The limits live in sizes.ts, shared with e2e/perf.spec.ts (ruling PF5, F6).
@@ -79,7 +95,9 @@ describe('web build', () => {
 
   it('builds only HASHED names: one app JS, app CSS, term JS, term CSS and one JS per lazy entry, plus shared chunks (assets.ts caches these immutable; app.test.ts)', async () => {
     const files = (await readdir(out)).filter(
-      (f) => !['fonts', 'index.html', 'kage-logo-96.png'].includes(f),
+      (f) =>
+        !['fonts', 'index.html', 'kage-logo-96.png', PRECOMPRESSED].includes(f) &&
+        !/\.(br|gz)$/.test(f),
     );
     for (const f of files) expect(f).toMatch(HASHED);
     expect(HASHED.source).toBe('^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\\.(js|css)$');
@@ -255,5 +273,112 @@ describe('web build', () => {
     expect(size).toBeLessThanOrEqual(LOADER_BUDGET);
     // A type-only import of the chunk: nothing of it is bundled.
     expect(new TextDecoder().decode(code)).not.toContain('xterm');
+  });
+
+  it('the build writes .br and .gz beside each compressible file, and a manifest of body hashes', async () => {
+    const all = (await readdir(out, { recursive: true, withFileTypes: true }))
+      .filter((e) => e.isFile())
+      .map((e) => `/${relative(out, join(e.parentPath, e.name)).split(sep).join('/')}`);
+    const sidecars = all.filter((p) => /\.(br|gz)$/.test(p));
+    const bases = all.filter((p) => !/\.(br|gz)$/.test(p) && p !== `/${PRECOMPRESSED}`);
+    // Fonts and images are compressed already: no sidecars.
+    const compressible = bases.filter((p) => !/\.(woff2|png|jpe?g|webp)$/.test(p));
+    expect(compressible).toContain('/index.html');
+    expect(compressible).toContain('/fonts/OFL-geist.txt');
+    expect(compressible.length).toBeGreaterThan(5);
+    expect(sidecars.sort()).toEqual(compressible.flatMap((p) => [`${p}.br`, `${p}.gz`]).sort());
+    const manifest = JSON.parse(await textOf(PRECOMPRESSED)) as Record<string, string>;
+    expect(Object.keys(manifest).sort()).toEqual([...compressible].sort());
+    for (const p of compressible) {
+      const file = join(out, ...p.slice(1).split('/'));
+      const body = await readFile(file);
+      const hash = createHash('sha256').update(body).digest('base64url').slice(0, 22);
+      expect(manifest[p], p).toBe(hash);
+      expect(manifest[p]).toHaveLength(22);
+      expect(brotliDecompressSync(await readFile(`${file}.br`)).equals(body), p).toBe(true);
+      expect(gunzipSync(await readFile(`${file}.gz`)).equals(body), p).toBe(true);
+    }
+  });
+});
+
+describe('precompressed sidecars', () => {
+  let dir: string;
+  beforeAll(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'kage-sidecars-'));
+  });
+  afterAll(() => rm(dir, { recursive: true, force: true }));
+
+  it('writeCompressed writes brotli 11 and gzip 9 for the paths it is given, and the manifest', async () => {
+    const w = join(dir, 'w');
+    await mkdir(join(w, 'sub'), { recursive: true });
+    const text = 'const board = "kage";\n'.repeat(200);
+    await writeFile(join(w, 'a.js'), text);
+    await writeFile(join(w, 'sub', 'b.css'), 'body{color:red}\n');
+    await writeFile(join(w, 'skip.txt'), 'not asked for');
+    await writeCompressed(w, ['/a.js', '/sub/b.css']);
+    const names = (await readdir(w, { recursive: true })).map((n) => n.split(sep).join('/'));
+    expect(names.sort()).toEqual(
+      [
+        'a.js',
+        'a.js.br',
+        'a.js.gz',
+        PRECOMPRESSED,
+        'skip.txt',
+        'sub',
+        'sub/b.css',
+        'sub/b.css.br',
+        'sub/b.css.gz',
+      ].sort(),
+    );
+    // Quality 11 and level 9: the bytes the server made at start before.
+    const body = Buffer.from(text);
+    const br = brotliCompressSync(body, {
+      params: {
+        [constants.BROTLI_PARAM_QUALITY]: 11,
+        [constants.BROTLI_PARAM_SIZE_HINT]: body.length,
+      },
+    });
+    expect((await readFile(join(w, 'a.js.br'))).equals(br)).toBe(true);
+    expect((await readFile(join(w, 'a.js.gz'))).equals(gzipSync(body, { level: 9 }))).toBe(true);
+    const manifest = JSON.parse(await readFile(join(w, PRECOMPRESSED), 'utf8'));
+    expect(manifest).toEqual({
+      '/a.js': createHash('sha256').update(body).digest('base64url').slice(0, 22),
+      '/sub/b.css': createHash('sha256')
+        .update('body{color:red}\n')
+        .digest('base64url')
+        .slice(0, 22),
+    });
+  });
+
+  it('pruneSidecars removes a sidecar whose file is gone, and keeps the rest (F16)', async () => {
+    const d = join(dir, 'p');
+    await mkdir(join(d, 'fonts'), { recursive: true });
+    for (const f of ['app-NEW.js', 'app-NEW.js.br', 'app-NEW.js.gz', 'app-OLD.js.br']) {
+      await writeFile(join(d, f), 'x');
+    }
+    await writeFile(join(d, 'fonts', 'gone.txt.gz'), 'x');
+    await pruneSidecars(d);
+    expect((await readdir(d)).sort()).toEqual([
+      'app-NEW.js',
+      'app-NEW.js.br',
+      'app-NEW.js.gz',
+      'fonts',
+    ]);
+    expect(await readdir(join(d, 'fonts'))).toEqual([]);
+  });
+
+  it('clearCompressed removes every sidecar and the manifest, nothing else (watch writes none)', async () => {
+    const d = join(dir, 'c');
+    await mkdir(join(d, 'fonts'), { recursive: true });
+    for (const f of ['index.html', 'index.html.br', 'index.html.gz', PRECOMPRESSED]) {
+      await writeFile(join(d, f), 'x');
+    }
+    await writeFile(join(d, 'fonts', 'OFL.txt'), 'x');
+    await writeFile(join(d, 'fonts', 'OFL.txt.br'), 'x');
+    await clearCompressed(d);
+    expect((await readdir(d)).sort()).toEqual(['fonts', 'index.html']);
+    expect(await readdir(join(d, 'fonts'))).toEqual(['OFL.txt']);
+    // A folder that isn't there yet is fine.
+    await clearCompressed(join(dir, 'missing'));
   });
 });

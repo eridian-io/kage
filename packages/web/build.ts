@@ -5,10 +5,16 @@
  * names (term-loader.ts loads them on the first open; spec §5.6), and one <name>-[hash].js per LAZY
  * entry, loaded by its dynamic import and named by a kage-<name> meta for a retry (diff-loader.tsx;
  * R78). The terminal is its own esbuild run, so it shares no chunk with the board.
+ * A build also writes <file>.br and <file>.gz beside each compressible file, and PRECOMPRESSED
+ * last, so the server reads them instead of compressing at every start (performance P1).
  * `node packages/web/build.ts` builds once; `--watch` rebuilds on every change.
  */
+import { createHash } from 'node:crypto';
+import type { Dirent } from 'node:fs';
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { basename, join } from 'node:path';
+import { basename, extname, join, relative, sep } from 'node:path';
+import { promisify } from 'node:util';
+import { brotliCompress, constants, gzip } from 'node:zlib';
 import * as esbuild from 'esbuild';
 
 const here = import.meta.dirname;
@@ -28,6 +34,77 @@ export const LAZY = {
 } as const;
 /** Every name the build writes; assets.ts caches the same names immutable. */
 export const HASHED = /^(app|term|diff|palette|chunk)-[A-Za-z0-9]+\.(js|css)$/;
+
+/**
+ * The manifest of the precompressed sidecars, at the top of dist/: { "/<path>": "<hash>" }, the
+ * hash being the first 22 characters of the base64url SHA-256 of the file's body (the server's
+ * ETag). assets.ts (PRECOMPRESSED there) uses a file's sidecars only when its body still matches.
+ */
+export const PRECOMPRESSED = 'precompressed.json';
+/** Formats that are compressed already (assets.ts serves them raw): no sidecars. */
+const RAW = new Set(['.woff2', '.png', '.jpg', '.jpeg', '.webp']);
+const SIDECAR = /\.(br|gz)$/;
+
+const br = promisify(brotliCompress);
+const gz = promisify(gzip);
+
+/** Every file under dir, as URL paths ('/index.html', '/fonts/…'). */
+async function listFiles(dir: string): Promise<string[]> {
+  let entries: Dirent[] = [];
+  try {
+    entries = await readdir(dir, { withFileTypes: true, recursive: true, encoding: 'utf8' });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw e;
+  }
+  return entries
+    .filter((e) => e.isFile())
+    .map((e) => `/${relative(dir, join(e.parentPath, e.name)).split(sep).join('/')}`);
+}
+
+const fileOf = (dir: string, urlPath: string) => join(dir, ...urlPath.slice(1).split('/'));
+
+/**
+ * Writes <file>.br (quality 11) and <file>.gz (level 9) for each URL path, one file and one
+ * encoder at a time (the same bytes the server made at start before, R100), then PRECOMPRESSED.
+ */
+export async function writeCompressed(outDir: string, paths: string[]): Promise<void> {
+  const manifest: Record<string, string> = {};
+  for (const path of [...paths].sort()) {
+    const file = fileOf(outDir, path);
+    const body = await readFile(file);
+    await writeFile(`${file}.gz`, await gz(body, { level: 9 }));
+    await writeFile(
+      `${file}.br`,
+      await br(body, {
+        params: {
+          [constants.BROTLI_PARAM_QUALITY]: 11,
+          [constants.BROTLI_PARAM_SIZE_HINT]: body.length,
+        },
+      }),
+    );
+    manifest[path] = createHash('sha256').update(body).digest('base64url').slice(0, 22);
+  }
+  await writeFile(join(outDir, PRECOMPRESSED), `${JSON.stringify(manifest, null, 2)}\n`);
+}
+
+/** Removes each .br or .gz whose file is gone (a HASHED output of an earlier build; F16). */
+export async function pruneSidecars(outDir: string): Promise<void> {
+  const files = await listFiles(outDir);
+  const have = new Set(files);
+  for (const p of files) {
+    if (SIDECAR.test(p) && !have.has(p.replace(SIDECAR, ''))) {
+      await rm(fileOf(outDir, p), { force: true });
+    }
+  }
+}
+
+/** Removes every sidecar and the manifest: a watch build writes none, so none may go stale. */
+export async function clearCompressed(outDir: string): Promise<void> {
+  for (const p of await listFiles(outDir)) {
+    if (SIDECAR.test(p) || p === `/${PRECOMPRESSED}`) await rm(fileOf(outDir, p), { force: true });
+  }
+}
 
 const fontPackage = (pkg: string) => join(here, 'node_modules/@fontsource-variable', pkg);
 const fontSource = (name: string) =>
@@ -128,6 +205,8 @@ async function writeBundle(outDir: string, runs: Runs): Promise<string[]> {
   for (const old of await readdir(outDir)) {
     if (HASHED.test(old) && !names.includes(old)) await rm(join(outDir, old));
   }
+  // Their .br and .gz go with them (F16).
+  await pruneSidecars(outDir);
   return [...appJs, css];
 }
 
@@ -197,13 +276,19 @@ export async function build(opts: { outDir?: string } = {}): Promise<BuildResult
   ]);
   const runs = { board, term };
   const firstLoad = await writeBundle(outDir, runs);
+  const compressible = (await listFiles(outDir)).filter(
+    (p) => !RAW.has(extname(p).toLowerCase()) && !SIDECAR.test(p) && p !== `/${PRECOMPRESSED}`,
+  );
+  await writeCompressed(outDir, compressible);
   return { metafile: merged(runs), firstLoad };
 }
 
 /** Builds, then rebuilds dist/ on every source change until the process exits. */
 export async function watch(opts: { outDir?: string } = {}): Promise<void> {
   const outDir = opts.outDir ?? join(here, 'dist');
-  // No wipe here: a server started next to the watcher may be reading dist/ already.
+  // No wipe here: a server started next to the watcher may be reading dist/ already. But no
+  // sidecars: a watch build compresses nothing, so the server compresses at start (assets.ts).
+  await clearCompressed(outDir);
   await copyStatic(outDir);
   // Each run keeps its last good result; index.html is written once both have one.
   const last: Partial<Runs> = {};

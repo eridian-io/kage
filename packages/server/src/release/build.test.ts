@@ -1,15 +1,17 @@
 import { execFile, spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { get } from 'node:http';
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join, parse, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { gunzipSync } from 'node:zlib';
+import { brotliCompressSync, gunzipSync, gzipSync } from 'node:zlib';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { assetName, npmTarball, TARGETS } from '../install/targets.ts';
 import {
   assertSafeOut,
+  boardMap,
   buildSea,
   cleanRelease,
   hostTarget,
@@ -36,15 +38,68 @@ afterAll(() => {
   for (const d of roots) rmSync(d, { recursive: true, force: true });
 });
 
-/** An invented board: index.html, one hashed script and one font. */
+/** Long enough that brotli is smaller than the body, so the server sends it. */
+const APP_JS = 'console.log("test board");\n'.repeat(8);
+
+/**
+ * An invented board: index.html, one hashed script and one font, as the web build writes it: the
+ * script's .br and .gz beside it and named by precompressed.json, plus a stale sidecar of an
+ * earlier build that the manifest doesn't name (F16).
+ */
 function fakeBoard(): string {
   const dir = temp('kage-board-');
   mkdirSync(join(dir, 'fonts'));
   writeFileSync(join(dir, 'index.html'), '<!doctype html><title>Kage test board</title>\n');
-  writeFileSync(join(dir, 'app-TESTHASH1.js'), 'console.log("test board");\n');
+  writeFileSync(join(dir, 'app-TESTHASH1.js'), APP_JS);
+  writeFileSync(join(dir, 'app-TESTHASH1.js.br'), brotliCompressSync(APP_JS));
+  writeFileSync(join(dir, 'app-TESTHASH1.js.gz'), gzipSync(APP_JS));
+  writeFileSync(join(dir, 'app-TESTOLD.js.br'), 'stale');
   writeFileSync(join(dir, 'fonts', 'test.woff2'), Buffer.from([0x77, 0x4f, 0x46, 0x32]));
+  const hash = createHash('sha256').update(APP_JS).digest('base64url').slice(0, 22);
+  writeFileSync(join(dir, 'precompressed.json'), JSON.stringify({ '/app-TESTHASH1.js': hash }));
   return dir;
 }
+
+/** GET with Accept-Encoding: br, the body left as sent. */
+function rawGet(url: string): Promise<{ status: number; encoding: string; body: Buffer }> {
+  return new Promise((resolve, reject) => {
+    get(url, { headers: { 'accept-encoding': 'br' } }, (res) => {
+      const parts: Buffer[] = [];
+      res.on('data', (d: Buffer) => parts.push(d));
+      res.on('end', () =>
+        resolve({
+          status: res.statusCode ?? 0,
+          encoding: String(res.headers['content-encoding'] ?? ''),
+          body: Buffer.concat(parts),
+        }),
+      );
+    }).on('error', reject);
+  });
+}
+
+describe('boardMap', () => {
+  it('takes the manifest and only the sidecars it names (F16)', async () => {
+    const web = fakeBoard();
+    expect([...(await boardMap(web)).keys()]).toEqual([
+      '/app-TESTHASH1.js',
+      '/app-TESTHASH1.js.br',
+      '/app-TESTHASH1.js.gz',
+      '/fonts/test.woff2',
+      '/index.html',
+      '/precompressed.json',
+    ]);
+  });
+
+  it('with no manifest (a watch build), takes no sidecars', async () => {
+    const web = fakeBoard();
+    rmSync(join(web, 'precompressed.json'));
+    expect([...(await boardMap(web)).keys()]).toEqual([
+      '/app-TESTHASH1.js',
+      '/fonts/test.woff2',
+      '/index.html',
+    ]);
+  });
+});
 
 /** A temp HOME, XDG dirs and KAGE_SOCKET for every kage a test runs (F12). */
 function kageEnv(extra: Record<string, string> = {}): NodeJS.ProcessEnv {
@@ -326,8 +381,11 @@ describe.runIf(process.platform !== 'win32')('stageNpm (npm offline, F13)', () =
       'kage.mjs',
       'package.json',
       'web/app-TESTHASH1.js',
+      'web/app-TESTHASH1.js.br',
+      'web/app-TESTHASH1.js.gz',
       'web/fonts/test.woff2',
       'web/index.html',
+      'web/precompressed.json',
     ]);
   });
 
@@ -417,7 +475,13 @@ describe.runIf(seaReason === '')('buildSea (the release Node on Linux)', () => {
       const app = await fetch(`http://127.0.0.1:${port}/app-TESTHASH1.js`);
       expect(app.status).toBe(200);
       expect(app.headers.get('cache-control')).toBe('public, max-age=31536000, immutable');
-      expect(await app.text()).toBe('console.log("test board");\n');
+      expect(await app.text()).toBe(APP_JS);
+      // The build's brotli sidecar rides in the SEA and is what goes out.
+      const raw = await rawGet(`http://127.0.0.1:${port}/app-TESTHASH1.js`);
+      expect(raw.status).toBe(200);
+      expect(raw.encoding).toBe('br');
+      expect(raw.body.equals(brotliCompressSync(APP_JS))).toBe(true);
+      expect((await rawGet(`http://127.0.0.1:${port}/precompressed.json`)).status).toBe(404);
     } finally {
       c.kill('SIGTERM');
     }
