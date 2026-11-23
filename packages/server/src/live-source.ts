@@ -345,6 +345,13 @@ interface Live extends SessionView {
   timers: Partial<Record<TimerName, ReturnType<typeof setTimeout>>>;
   /** I2: the cause that armed the `turnEnd` timer (F19), kept and cleared with it. */
   turnEndCause: Cause | null;
+  /** The cause of the last transition (#apply); #fresh's 'reconcile' until one (F18). */
+  lastCause: Cause;
+  /**
+   * The status and statusSince the last frame showed, or that a suppressed frame (archived) would
+   * have shown: a frame carries `lastCause` only when they changed (Task 8). Null: no frame yet.
+   */
+  framed: { status: SessionStatus; since: number } | null;
 }
 
 /**
@@ -878,6 +885,8 @@ export class LiveSource implements SessionSource {
     if (restoring) {
       if (now) {
         now.last = null;
+        // F11: no transition here, so its frame carries no cause (Task 8).
+        now.framed = { status: now.status, since: now.statusSince };
         this.#emitNow(now);
         this.#emit({ type: 'archive', count: this.archivedCount() });
         return;
@@ -1088,6 +1097,8 @@ export class LiveSource implements SessionSource {
       captureAgain: false,
       timers: {},
       turnEndCause: null,
+      lastCause: 'reconcile',
+      framed: null,
     };
   }
 
@@ -2359,6 +2370,7 @@ export class LiveSource implements SessionSource {
     if (!move) return null;
     const t: Transition = { id: st.id, ...move, at: 'at' in obs ? obs.at : this.#now() };
     st.statusSince = t.at;
+    st.lastCause = t.cause;
     st.gen++;
     // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.
     st.tail?.setIdle(t.to !== 'running');
@@ -2416,17 +2428,28 @@ export class LiveSource implements SessionSource {
     this.#emit({ type: 'session.lines', id: st.id, lines: lines.map((l) => ({ ...l })), reset });
   }
 
-  /** Emits session.updated when a visible field changed. */
+  /**
+   * Emits session.updated when a visible field changed. The frame carries the last transition's
+   * cause only when its status or statusSince differs from the last frame's (or it is the first):
+   * a frame with a cause always shows a transition, and a suppressed one leaves none behind.
+   */
   #emitNow(st: Live): void {
     this.#clearTimers(st, ['emit']);
     if (!this.#running || this.#sessions.get(st.id) !== st) return;
+    const f = st.framed;
+    const moved = !f || f.status !== st.status || f.since !== st.statusSince;
+    if (moved) st.framed = { status: st.status, since: st.statusSince };
     // Archived sessions are hidden from the board: no updates for them.
     if (st.record?.archived) return;
     const s = toSession(st);
     if (sameSession(st.last, s)) return;
     st.last = s;
     st.lastEmitAt = this.#clock();
-    this.#emit({ type: 'session.updated', session: s });
+    this.#emit(
+      moved
+        ? { type: 'session.updated', session: s, cause: st.lastCause }
+        : { type: 'session.updated', session: s },
+    );
   }
 
   /**

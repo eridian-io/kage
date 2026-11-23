@@ -9,7 +9,7 @@
  * notifications. The notification's text and construction are a lazy chunk (notify-show.ts),
  * loaded only when one may show.
  */
-import { LIMITS, type ServerEvent, type Session, type SessionStatus } from '@kage/shared';
+import { LIMITS, type Session } from '@kage/shared';
 import { computed, effect, type Signal, signal } from '@preact/signals';
 import { host, onApplied, select, sorted } from './store.ts';
 
@@ -100,8 +100,10 @@ export function installNotify(w: Window | undefined = win): () => void {
     );
   };
 
-  const off = onApplied((e: ServerEvent, was: SessionStatus | undefined) => {
-    if (e.type === 'session.updated' && e.session.status === 'needs-you' && was !== 'needs-you') {
+  // A live transition into needs-you only (transitions Task 8): a snapshot, a frame without a
+  // cause (no transition; the demo) and a reconcile or act move never notify.
+  const off = onApplied((e) => {
+    if (e.type === 'session.updated' && e.cause === 'live' && e.session.status === 'needs-you') {
       notify(e.session);
     }
   });

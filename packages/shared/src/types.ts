@@ -91,7 +91,11 @@ export type ServerEvent =
       sessions: Session[];
       archived: number;
     }
-  | { type: 'session.updated'; session: Session }
+  /**
+   * A transition's frame carries its cause; a frame with no transition (a now line, a count, a
+   * pin) has none (amended 2026-11-23, transitions).
+   */
+  | { type: 'session.updated'; session: Session; cause?: Cause }
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset: boolean }
   | { type: 'session.removed'; id: string }
   | { type: 'session.ports'; id: string; ports: Port[] }

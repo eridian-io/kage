@@ -329,6 +329,26 @@ describe('EventHub', () => {
       }
       hub.close();
     });
+    it('session.updated keeps its cause on the wire', async () => {
+      const source = new StubSource();
+      const hub = new EventHub(source, 'h', '/p');
+      const a = await open(hub);
+      const shop = source.get('shop');
+      if (!shop) throw new Error('no shop');
+      const moved: Session = { ...shop, status: 'needs-you', lines: [] };
+      source.emit({ type: 'session.updated', session: moved, cause: 'live' });
+      expect(JSON.parse((await read(a.reader)).split('data: ')[1] ?? '')).toEqual({
+        type: 'session.updated',
+        session: moved,
+        cause: 'live',
+      });
+      // A frame without a transition has no cause on the wire.
+      source.emit({ type: 'session.updated', session: { ...moved, now: 'x' } });
+      expect(JSON.parse((await read(a.reader)).split('data: ')[1] ?? '')).not.toHaveProperty(
+        'cause',
+      );
+      hub.close();
+    });
     it('session.ports and session.files reach every stream, whatever it views', async () => {
       const source = new StubSource();
       const hub = new EventHub(source, 'h', '/p');

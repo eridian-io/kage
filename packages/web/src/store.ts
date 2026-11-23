@@ -3,7 +3,6 @@ import {
   groupOf,
   type ServerEvent,
   type Session,
-  type SessionStatus,
   sortSessions,
 } from '@kage/shared';
 import { batch, computed, effect, type ReadonlySignal, type Signal, signal } from '@preact/signals';
@@ -267,10 +266,10 @@ function keepLive(incoming: Session): Session {
 
 /**
  * Told of each event once the store has applied it (link.ts, and notify.ts once its chunk is in;
- * W1), with the status a session.updated replaced (undefined for a session new to the store).
- * Returns the listener's remover.
+ * W1). An effect reads the event itself, a session.updated's cause above all, never a diff of
+ * the store (ADR 0001). Returns the listener's remover.
  */
-type AppliedHook = (e: ServerEvent, was: SessionStatus | undefined) => void;
+type AppliedHook = (e: ServerEvent) => void;
 const appliedHooks = new Set<AppliedHook>();
 export function onApplied(fn: AppliedHook): () => void {
   appliedHooks.add(fn);
@@ -282,7 +281,6 @@ export function onApplied(fn: AppliedHook): () => void {
 export function applyEvent(e: ServerEvent): void {
   // The heartbeat only tells sse.ts's watchdog that the stream is alive.
   if (e.type === 'hb') return;
-  let was: SessionStatus | undefined;
   batch(() => {
     if (e.type === 'snapshot') {
       host.value = e.host;
@@ -315,7 +313,6 @@ export function applyEvent(e: ServerEvent): void {
       const i = list.findIndex((s) => s.id === e.session.id);
       const incoming = keepLive(e.session);
       const held = i < 0 ? undefined : list[i];
-      was = held?.status;
       if (
         held &&
         (held.unpushed !== incoming.unpushed ||
@@ -364,7 +361,7 @@ export function applyEvent(e: ServerEvent): void {
     if (waiting !== null && sorted.value.some((s) => s.id === waiting)) select(waiting);
     keepSelection();
   });
-  for (const fn of appliedHooks) fn(e, was);
+  for (const fn of appliedHooks) fn(e);
 }
 
 export function selectNext(delta: 1 | -1): void {

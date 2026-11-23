@@ -5935,3 +5935,78 @@ describe('LiveSource: the last status rules in the module (Task 6b, R155)', () =
     await t.source.stop();
   });
 });
+
+describe('LiveSource: the board takes cause (Task 8)', () => {
+  /** Each session.updated of `id`: its status, statusSince and cause (absent: no key). */
+  const frames = (events: SourceEvent[], id: string) =>
+    events.flatMap((e) =>
+      e.type === 'session.updated' && e.session.id === id
+        ? [{ status: e.session.status, since: e.session.statusSince, cause: e.cause }]
+        : [],
+    );
+  /** The frame rule itself: a cause exactly when status or statusSince moved (or first frame). */
+  const followsRule = (fs: ReturnType<typeof frames>) =>
+    fs.every((f, i) => {
+      const prev = fs[i - 1];
+      const moved = !prev || prev.status !== f.status || prev.since !== f.since;
+      return moved === (f.cause !== undefined);
+    });
+
+  it('a frame carries cause only when its status or status time changed since the last frame', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    // A now line alone: a frame with no transition, so no cause.
+    s.tails[0]?.push([], { now: 'Editing cart.ts' });
+    await vi.advanceTimersByTimeAsync(250);
+    s.tails[0]?.push([], { now: 'Running npm test' });
+    await vi.advanceTimersByTimeAsync(250);
+    s.hooks.fire(hook('Stop', '%2'));
+    await flush();
+    // Kage's own act: a pin is a frame, never a transition.
+    await s.source.setFlags('k-1', { pinned: true });
+    const fs = frames(s.events, 'k-1');
+    expect(followsRule(fs)).toBe(true);
+    expect(fs.map((f) => [f.status, f.cause ?? null])).toEqual([
+      ['done', 'reconcile'], // the first frame: the start placed it
+      ['running', 'live'],
+      ['running', null], // now lines
+      ['running', null],
+      ['done', 'live'],
+      ['done', null], // the pin
+    ]);
+    // A frame without a transition has no cause key at all on the wire.
+    const plain = s.events.find((e) => e.type === 'session.updated' && e.cause === undefined);
+    expect(plain && 'cause' in plain).toBe(false);
+    await s.source.stop();
+  });
+
+  it('a transition whose frame was suppressed leaves no cause on the next frame', async () => {
+    // An archived record whose window is still listed (a stale listing or a failed kill): its
+    // session lives, hidden, so its transitions' frames are suppressed.
+    const s = setup({
+      windows: [kageWin()],
+      records: [rec({ sessionId: 's-1', archived: true, archivedAt: T0 - 5 })],
+    });
+    await s.source.start();
+    await flush();
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    s.hooks.fire(permissionNote('%2'));
+    s.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    expect(frames(s.events, 'k-1')).toEqual([]);
+    expect(s.events.some((e) => e.type === 'session.transition' && e.transition.id === 'k-1')).toBe(
+      true,
+    );
+    // The restore sends the session afresh: a frame that carries no transition of its own.
+    await s.source.setFlags('k-1', { archived: false });
+    const fs = frames(s.events, 'k-1');
+    expect(fs).toHaveLength(1);
+    expect(fs[0]?.cause).toBeUndefined();
+    await s.source.stop();
+  });
+});

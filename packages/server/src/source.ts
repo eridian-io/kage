@@ -1,4 +1,4 @@
-import type { DisplayLine, FileChange, Port, Session, Transition } from '@kage/shared';
+import type { Cause, DisplayLine, FileChange, Port, Session, Transition } from '@kage/shared';
 
 export class NotFoundError extends Error {}
 
@@ -6,7 +6,11 @@ export class NotFoundError extends Error {}
 export class NotImplementedError extends Error {}
 
 export type SourceEvent =
-  | { type: 'session.updated'; session: Session }
+  /**
+   * A transition's frame carries its cause; a frame with no transition (a now line, a count, a
+   * pin) has none (amended 2026-11-23, transitions).
+   */
+  | { type: 'session.updated'; session: Session; cause?: Cause }
   | { type: 'session.removed'; id: string }
   /** Appended lines; with `reset`, the session's whole line list (a pane snapshot, a new transcript). */
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset?: boolean }

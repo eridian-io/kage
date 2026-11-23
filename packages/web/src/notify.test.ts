@@ -1,4 +1,4 @@
-import type { Session, SessionStatus } from '@kage/shared';
+import type { Cause, Session, SessionStatus } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { installLazy, notifyChunk } from './lazy.tsx';
 import { installLink } from './link.ts';
@@ -95,7 +95,11 @@ const snapshot = (list: Session[]) =>
     sessions: list,
     archived: 0,
   });
-const update = (s: Session) => applyEvent({ type: 'session.updated', session: s });
+/** A transition's frame, as the server sends it for a live move (F8: the helper gains `cause`). */
+const update = (s: Session, cause: Cause = 'live') =>
+  applyEvent({ type: 'session.updated', session: s, cause });
+/** A frame that carries no transition (a now line, a count, a pin; the demo): no `cause`. */
+const frame = (s: Session) => applyEvent({ type: 'session.updated', session: s });
 
 let stop: (() => void) | null = null;
 /** The link follow (first load, link.ts) and notify (its lazy chunk), as main.tsx has them. */
@@ -179,8 +183,8 @@ describe('notifications', () => {
     const n = FakeNotification.made[0];
     expect(n?.title).toBe('p-a needs you');
     expect(n?.options).toEqual({ body: 'Task of a', tag: 'kage-a' });
-    // Another update while still waiting is no new move.
-    update(session('a', 'needs-you', { now: 'x' }));
+    // Another frame while still waiting carries no transition, so no cause: no new move.
+    frame(session('a', 'needs-you', { now: 'x' }));
     await settle();
     expect(FakeNotification.made).toHaveLength(1);
   });
@@ -294,6 +298,43 @@ describe('notifications', () => {
     update(session('a', 'needs-you'));
     await expect(settle()).resolves.toBeUndefined();
     expect(FakeNotification.made).toHaveLength(1);
+  });
+});
+
+describe('notifications follow the cause (transitions Task 8)', () => {
+  it('a live session.updated into needs-you notifies; reconcile, act and frames without a cause do not', async () => {
+    const w = install(fakeWin());
+    hide(w);
+    snapshot([
+      session('a', 'running'),
+      session('b', 'running'),
+      session('c', 'running'),
+      session('d', 'running'),
+    ]);
+    update(session('b', 'needs-you'), 'reconcile');
+    update(session('c', 'needs-you'), 'act');
+    frame(session('d', 'needs-you'));
+    await settle();
+    expect(FakeNotification.made).toHaveLength(0);
+    update(session('a', 'needs-you'), 'live');
+    await settle();
+    expect(FakeNotification.made.map((n) => n.options.tag)).toEqual(['kage-a']);
+    // A live move into another status notifies nothing.
+    update(session('b', 'done'), 'live');
+    await settle();
+    expect(FakeNotification.made).toHaveLength(1);
+    // The title still counts every waiting session, whatever moved it.
+    expect(w.document.title).toBe('(3) kage');
+  });
+  it('a snapshot with a session already waiting notifies nothing', async () => {
+    const w = install(fakeWin());
+    hide(w);
+    snapshot([session('a', 'needs-you')]);
+    // A later frame of that session without a transition is no move either.
+    frame(session('a', 'needs-you', { now: 'still waiting' }));
+    await settle();
+    expect(FakeNotification.made).toHaveLength(0);
+    expect(w.document.title).toBe('(1) kage');
   });
 });
 

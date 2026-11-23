@@ -370,3 +370,38 @@ describe('the archived list and the removal toasts (Task 9, F12)', () => {
     expect(toast.value).toEqual({ kind: 'deleted', name: 'docs · update README' });
   });
 });
+
+describe('onApplied (transitions Task 8)', () => {
+  it('onApplied hands each applied event, and only the event', () => {
+    const heard: unknown[][] = [];
+    const off = onApplied((...args: unknown[]) => heard.push(args));
+    try {
+      const list = demoSessions(1);
+      const s = list[0];
+      if (!s) throw new Error('no session');
+      const snapshot = {
+        type: 'snapshot' as const,
+        auth: false,
+        demo: false,
+        host: 'h',
+        streamId: 's-t8',
+        projectsRoot: '/p',
+        sessions: list,
+        archived: 0,
+      };
+      const updated = {
+        type: 'session.updated' as const,
+        session: { ...s, status: 'needs-you' as const },
+        cause: 'live' as const,
+      };
+      applyEvent(snapshot);
+      applyEvent(updated);
+      applyEvent({ type: 'hb' });
+      // The board no longer hands the replaced status: an effect reads the event's cause.
+      expect(heard).toEqual([[snapshot], [updated]]);
+      expect(heard[1]?.[0]).toBe(updated);
+    } finally {
+      off();
+    }
+  });
+});
