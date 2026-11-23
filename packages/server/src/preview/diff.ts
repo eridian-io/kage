@@ -378,7 +378,8 @@ async function trackedDiffs(
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
-        '--ignore-submodules=none',
+        // R131: =all, so git never runs in a submodule or reads its .git (both writable by Claude).
+        '--ignore-submodules=all',
         '--src-prefix=a/',
         '--dst-prefix=b/',
         '-U3',
@@ -421,7 +422,7 @@ export async function diffPage(
 ): Promise<DiffPage> {
   const exec = deps.exec ?? gitExec;
   const pin = await requirePin(t.repo, t.worktree, exec);
-  const { mb, changes } = await listChanges(t.worktree, t.base, exec, { pin });
+  const { mb, changes } = await listChanges(t.worktree, t.base, exec, pin);
   const head = {
     base: mb === 'HEAD' ? null : t.base,
     branch: t.branch,

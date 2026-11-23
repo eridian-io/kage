@@ -183,8 +183,6 @@ export class UntrackedCache {
 export interface ListOptions {
   cache?: UntrackedCache;
   read?: typeof readUntracked;
-  /** Every git call runs with GIT_DIR and GIT_WORK_TREE from the record (security M4). */
-  pin?: GitPin | undefined;
 }
 
 /** An untracked file's line count, from the cache while its size and mtime are unchanged. */
@@ -218,8 +216,8 @@ async function cachedLines(
 export async function mergeBase(
   worktree: string,
   base: string | null,
-  exec: GitExec = gitExec,
-  pin?: GitPin,
+  exec: GitExec,
+  pin: GitPin | undefined,
 ): Promise<string> {
   if (base === null) return 'HEAD';
   try {
@@ -237,17 +235,19 @@ export async function mergeBase(
  * The worktree's changes against the merge base of `base` and HEAD (or HEAD when the base is
  * null or missing): commits on the branch plus uncommitted work (`git diff <mb>`), and untracked
  * files, sorted by path and uncapped. The one source of the form the file list and the diff share
- * (spec §5.7, amended). Paths are relative to `worktree`. Rejects when git fails (not a
+ * (spec §5.7, amended). Paths are relative to `worktree`. Every git call carries `pin`
+ * (worktreePin; undefined, written out, for an external window). Rejects when git fails (not a
  * repository, no HEAD).
  */
 export async function listChanges(
   worktree: string,
   base: string | null,
-  exec: GitExec = gitExec,
+  exec: GitExec,
+  pin: GitPin | undefined,
   o: ListOptions = {},
 ): Promise<{ mb: string; changes: Change[] }> {
-  const opts = { cwd: worktree, pin: o.pin };
-  const mb = await mergeBase(worktree, base, exec, o.pin);
+  const opts = { cwd: worktree, pin };
+  const mb = await mergeBase(worktree, base, exec, pin);
   const [diff, others] = await Promise.all([
     exec(
       [
@@ -259,7 +259,8 @@ export async function listChanges(
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
-        '--ignore-submodules=none',
+        // R131: =all, so git never runs in a submodule or reads its .git (both writable by Claude).
+        '--ignore-submodules=all',
         mb,
         '--',
       ],
@@ -303,7 +304,7 @@ export async function changedFiles(
     if (e instanceof UnpinnedError) return { files: [], total: 0, note: e.message };
     throw e;
   }
-  const { changes } = await listChanges(worktree, base, exec, { ...o, pin });
+  const { changes } = await listChanges(worktree, base, exec, pin, o);
   return {
     files: changes.slice(0, LIMITS.files).map(({ path, added, removed }) => ({
       path: stripAnsi(path, { oneLine: true }),

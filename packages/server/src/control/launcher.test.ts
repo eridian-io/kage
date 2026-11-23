@@ -2,10 +2,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { delimiter, join } from 'node:path';
+import { delimiter, join, resolve } from 'node:path';
 import type { NewTaskBody } from '@kage/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type GitExec, gitExec, UNPINNED } from '../git/exec.ts';
+import { type GitExec, type GitPin, gitExec, UNPINNED } from '../git/exec.ts';
 import type { FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
@@ -352,6 +352,42 @@ describe('TaskLauncher', () => {
           : gitExec(args, opts),
     });
     expect(await launcher.start(body())).toEqual({ id: 'k-1' });
+    expect(source.records[0]?.baseCommit).toBeNull();
+  });
+
+  it('R131: the rev-parse in the new worktree runs pinned to its admin dir', async () => {
+    const pins: (GitPin | undefined)[] = [];
+    const { launcher, source } = setup({
+      git: async (args, opts) => {
+        if (args.join(' ') === 'rev-parse HEAD') pins.push(opts?.pin);
+        return gitExec(args, opts);
+      },
+    });
+    await launcher.start(body());
+    const wt = source.records[0]?.worktree as string;
+    expect(pins).toHaveLength(1);
+    expect(pins[0]?.workTree).toBe(resolve(wt));
+    expect(pins[0]?.gitDir).toMatch(/[/\\]\.git[/\\]worktrees[/\\][^/\\]+$/);
+    expect(source.records[0]?.baseCommit).toMatch(/^[0-9a-f]{40}$/);
+  });
+
+  it('R131: a new worktree whose .git does not pin runs no rev-parse there; baseCommit is null', async () => {
+    const revs: string[] = [];
+    const { launcher, source } = setup({
+      git: async (args, opts) => {
+        const r = await gitExec(args, opts);
+        if (args[0] === 'worktree' && args[1] === 'add') {
+          // Something rewrote the new worktree's .git before the read.
+          const wt = args[args.length - 2] as string;
+          await rm(join(wt, '.git'));
+          await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
+        }
+        if (args.join(' ') === 'rev-parse HEAD') revs.push(opts?.cwd ?? '');
+        return r;
+      },
+    });
+    expect(await launcher.start(body())).toEqual({ id: 'k-1' });
+    expect(revs).toEqual([]);
     expect(source.records[0]?.baseCommit).toBeNull();
   });
 

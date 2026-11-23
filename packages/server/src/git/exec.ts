@@ -220,16 +220,40 @@ async function readPointer(path: string): Promise<string | null> {
 const real = (p: string): Promise<string | null> => realpath(p).catch(() => null);
 
 /**
+ * Each repository's common dir, realpath'd, once per repo path (R131): it comes from the repo,
+ * the trust root, so it can be kept. A failed lookup isn't kept. The worktree's `.git` and the
+ * admin folder's `gitdir` are never cached.
+ */
+const commonDirs = new Map<string, Promise<string | null>>();
+
+function commonDirOf(repo: string, exec: GitExec): Promise<string | null> {
+  const key = resolvePath(repo);
+  const hit = commonDirs.get(key);
+  if (hit) return hit;
+  const p = gitCommonDir(repo, exec).then(real);
+  commonDirs.set(key, p);
+  // Not kept when it fails or finds nothing, so the next call asks again.
+  p.then(
+    (dir) => {
+      if (dir === null) commonDirs.delete(key);
+    },
+    () => commonDirs.delete(key),
+  );
+  return p;
+}
+
+/**
  * The worktree's admin folder in `repo`, found by content, not by name (F3): git may suffix the
  * name (`x1` after an unpruned `x`), and the repo may keep its git dir elsewhere
  * (`--separate-git-dir`).
- * 1. `<common>` is `rev-parse --git-common-dir`, run in the repo (the trust root, R67);
+ * 1. `<common>` is `rev-parse --git-common-dir`, run in the repo (the trust root, R67), looked
+ *    up once per repo path;
  * 2. `<worktree>/.git` is a regular file whose `gitdir:` line resolves (links too) to a folder
  *    directly under `<common>/worktrees/`;
  * 3. that folder's `gitdir` file names `<worktree>/.git`.
  * Anything else is null: the `.git` was redirected, or git no longer knows this worktree.
- * Relative paths (`worktree.useRelativePaths`) resolve from the file's own folder. Read on every
- * call, never cached, so a `.git` rewritten between two refreshes is caught at the next one.
+ * Relative paths (`worktree.useRelativePaths`) resolve from the file's own folder. The two
+ * pointer files are read on every call, never cached, so a `.git` rewritten between two refreshes is caught at the next one.
  */
 export async function worktreePin(
   repo: string,
@@ -240,7 +264,7 @@ export async function worktreePin(
   if (realWorktree === null) return null;
   const line = (await readPointer(join(worktree, '.git')))?.match(/^gitdir: *(.+?)\s*$/m)?.[1];
   if (!line) return null;
-  const common = await real(await gitCommonDir(repo, exec));
+  const common = await commonDirOf(repo, exec);
   if (common === null) return null;
   const admin = await real(resolvePath(worktree, line));
   if (admin === null || !samePath(dirname(admin), join(common, 'worktrees'))) return null;

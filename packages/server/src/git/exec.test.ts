@@ -168,6 +168,36 @@ describe('worktreePin (F3: by content, not by name)', () => {
     expect(await worktreePin(join(root, 'repo'), wt, execFor(common))).toBeNull();
   });
 
+  it('R131: the common dir is asked once per repo; the .git pointer is read on every call', async () => {
+    const { wt } = await layout('x', 'x');
+    let asked = 0;
+    const exec: GitExec = async (args, opts) => {
+      asked++;
+      return execFor(common)(args, opts);
+    };
+    const repo = join(root, 'repo');
+    expect(await worktreePin(repo, wt, exec)).not.toBeNull();
+    expect(await worktreePin(repo, wt, exec)).not.toBeNull();
+    expect(asked).toBe(1);
+    // A rewrite between two calls is caught at the next one.
+    await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
+    expect(await worktreePin(repo, wt, exec)).toBeNull();
+    expect(asked).toBe(1);
+  });
+
+  it('R131: a failed common-dir lookup is not kept', async () => {
+    const { wt } = await layout('x', 'x');
+    let fail = true;
+    const exec: GitExec = async (args, opts) => {
+      if (fail) throw new Error('not a git repository');
+      return execFor(common)(args, opts);
+    };
+    const repo = join(root, 'repo');
+    await expect(worktreePin(repo, wt, exec)).rejects.toThrow('not a git repository');
+    fail = false;
+    expect(await worktreePin(repo, wt, exec)).not.toBeNull();
+  });
+
   it('requirePin: no repo is no pin (external); a refusal throws UNPINNED; a gone folder is ENOENT', async () => {
     const { wt } = await layout('x', 'x');
     expect(await requirePin(null, wt, execFor(common))).toBeUndefined();

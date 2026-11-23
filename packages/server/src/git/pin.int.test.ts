@@ -175,4 +175,60 @@ describe.runIf(hasGit && process.platform !== 'win32')('git pinned to the record
     const repo = await newRepo();
     expect(await worktreePin(repo, repo)).toBeNull();
   });
+
+  it("R131: a submodule's .git redirected to a gitdir with a clean filter runs nothing (=all)", async () => {
+    // A submodule source repo, added to the project, initialised in the session's worktree.
+    const subo = join(root, `subo${++n}`);
+    await mkdir(subo);
+    git(subo, 'init', '-q', '-b', 'main');
+    await writeFile(join(subo, 'f.txt'), 'one\n');
+    git(subo, 'add', '.');
+    git(subo, 'commit', '-q', '-m', 's');
+    const repo = await newRepo();
+    git(repo, '-c', 'protocol.file.allow=always', 'submodule', '-q', 'add', subo, 'sub');
+    git(repo, 'commit', '-q', '-m', 'sub');
+    const wt = join(repo, '.worktrees', 's');
+    git(repo, 'worktree', 'add', '-q', '-b', 'kage/s', wt, 'main');
+    git(wt, '-c', 'protocol.file.allow=always', 'submodule', '-q', 'update', '--init');
+    const sub = join(wt, 'sub');
+    const real = git(sub, 'rev-parse', '--absolute-git-dir').trim();
+    const sha = git(sub, 'rev-parse', 'HEAD').trim();
+    // The crafted gitdir, by file edits only, and the submodule's .git pointed at it.
+    const marker = join(root, 'pwned-sub');
+    const evil = join(wt, 'evil');
+    await mkdir(join(evil, 'refs', 'heads'), { recursive: true });
+    await mkdir(join(evil, 'objects', 'info'), { recursive: true });
+    await writeFile(join(evil, 'HEAD'), 'ref: refs/heads/main\n');
+    await writeFile(join(evil, 'refs', 'heads', 'main'), `${sha}\n`);
+    await writeFile(join(evil, 'objects', 'info', 'alternates'), `${join(real, 'objects')}\n`);
+    execFileSync('cp', [join(real, 'index'), join(evil, 'index')]);
+    await writeFile(
+      join(evil, 'config'),
+      `[core]\n\trepositoryformatversion = 0\n[filter "x"]\n\tclean = touch ${marker}\n`,
+    );
+    await writeFile(join(sub, '.gitattributes'), '* filter=x\n');
+    // Same size, a later mtime: git has to hash the file, through the filter.
+    await new Promise((r) => setTimeout(r, 1100));
+    await writeFile(join(sub, 'f.txt'), 'two\n');
+    await writeFile(join(sub, '.git'), `gitdir: ${evil}\n`);
+    const pin = await worktreePin(repo, wt);
+    expect(pin).not.toBeNull();
+
+    // Control: the top level pinned, but =none still runs git inside the submodule.
+    await gitExec(['status', '--porcelain', '--ignore-submodules=none'], {
+      cwd: wt,
+      pin: pin ?? undefined,
+    });
+    expect(existsSync(marker)).toBe(true);
+    await rm(marker);
+
+    // Kage's own calls: counts, the list, the merged check and the diff.
+    // Only evil/ counts: a submodule's changes count nothing under =all (§5.7).
+    expect(await branchCounts(wt, 'kage/s', gitExec, repo)).toMatchObject({ uncommitted: 1 });
+    await changedFiles(wt, 'main', gitExec, { repo });
+    const cut = git(repo, 'rev-parse', 'main').trim();
+    await branchState(wt, { branch: 'kage/s', base: 'main', baseCommit: cut, repo }, gitExec);
+    await diffPage({ worktree: wt, base: 'main', branch: 'kage/s', repo }, 0);
+    expect(existsSync(marker)).toBe(false);
+  });
 });

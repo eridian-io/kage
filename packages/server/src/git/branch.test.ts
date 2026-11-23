@@ -9,7 +9,6 @@ import {
   branchState,
   isMerged,
   SAFE_REF,
-  uncommittedCount,
   unpushedCount,
   worktreeCounts,
 } from './branch.ts';
@@ -82,7 +81,7 @@ async function mainMoves(dir: string): Promise<void> {
 }
 
 const merged = (wt: string, base: string) =>
-  isMerged(wt, { branch: 'kage/x', base: 'main', baseCommit: base });
+  isMerged(wt, { branch: 'kage/x', base: 'main', baseCommit: base }, gitExec, undefined);
 
 /** A tree entry for plumbing-built commits: a name as raw bytes, a mode and an object id. */
 type Entry = { name: Buffer | string; mode?: '100644' | '160000'; oid: string };
@@ -189,31 +188,31 @@ describe('unpushedCount', REPO_TESTS, () => {
   it('counts commits only this branch reaches: 2, then 0 after push, 0 after a merge', async () => {
     const { dir, wt } = await repo();
     await twoCommits(wt);
-    expect(await unpushedCount(wt, 'kage/x')).toBe(2);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(2);
     git(dir, 'push', '-q', 'origin', 'kage/x');
-    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(0);
     git(dir, 'push', '-q', 'origin', '--delete', 'kage/x');
     git(dir, 'fetch', '-q', '--prune', 'origin');
-    expect(await unpushedCount(wt, 'kage/x')).toBe(2);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(2);
     git(dir, 'merge', '-q', '--no-ff', '-m', 'merge', 'kage/x');
-    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(0);
   });
 
   it('a commit also on another branch is not counted', async () => {
     const { dir, wt } = await repo();
     await twoCommits(wt);
     git(dir, 'branch', 'other', 'kage/x~1');
-    expect(await unpushedCount(wt, 'kage/x')).toBe(1);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(1);
   });
 
   it('a branch named -x is refused by SAFE_REF with no git call', async () => {
     const g = noGit();
-    expect(await unpushedCount('/nowhere', '-x', g.exec)).toBe(0);
+    expect(await unpushedCount('/nowhere', '-x', g.exec, undefined)).toBe(0);
     expect(g.calls).toEqual([]);
   });
 });
 
-describe('uncommittedCount', REPO_TESTS, () => {
+describe('worktreeCounts', REPO_TESTS, () => {
   it('one modified, one staged and one untracked file count; an ignored one does not', async () => {
     const { dir } = await repo();
     await writeFile(join(dir, '.git', 'info', 'exclude'), 'ignored.log\n');
@@ -222,19 +221,19 @@ describe('uncommittedCount', REPO_TESTS, () => {
     git(dir, 'add', 'staged.txt');
     await writeFile(join(dir, 'untracked.txt'), 'u\n');
     await writeFile(join(dir, 'ignored.log'), 'i\n');
-    expect(await uncommittedCount(dir)).toBe(3);
+    expect((await worktreeCounts(dir, gitExec, undefined)).uncommitted).toBe(3);
   });
 
   it('a staged rename counts once (its old path is an extra field, not a record)', async () => {
     const { dir } = await repo();
     git(dir, 'mv', 'base.txt', 'renamed.txt');
-    expect(await uncommittedCount(dir)).toBe(1);
+    expect((await worktreeCounts(dir, gitExec, undefined)).uncommitted).toBe(1);
   });
 
   it('a clean worktree counts 0', async () => {
     const { dir } = await repo();
-    expect(await uncommittedCount(dir)).toBe(0);
-    expect(await worktreeCounts(dir)).toEqual({ uncommitted: 0, ignored: 0 });
+    expect((await worktreeCounts(dir, gitExec, undefined)).uncommitted).toBe(0);
+    expect(await worktreeCounts(dir, gitExec, undefined)).toEqual({ uncommitted: 0, ignored: 0 });
   });
 
   it('R73: worktreeCounts counts ignored entries apart; an ignored folder counts once', async () => {
@@ -246,8 +245,8 @@ describe('uncommittedCount', REPO_TESTS, () => {
     await writeFile(join(dir, 'node_modules', 'pkg', 'i.js'), 'x\n');
     await writeFile(join(dir, 'node_modules', 'pkg', 'j.js'), 'x\n');
     await writeFile(join(dir, 'untracked.txt'), 'u\n');
-    expect(await worktreeCounts(dir)).toEqual({ uncommitted: 1, ignored: 3 });
-    expect(await uncommittedCount(dir)).toBe(1);
+    expect(await worktreeCounts(dir, gitExec, undefined)).toEqual({ uncommitted: 1, ignored: 3 });
+    expect((await worktreeCounts(dir, gitExec, undefined)).uncommitted).toBe(1);
   });
 });
 
@@ -339,26 +338,31 @@ describe('isMerged', REPO_TESTS, () => {
     git(dir, 'merge', '-q', '--no-ff', '-m', 'merge', 'kage/x');
     git(dir, 'revert', '--no-edit', '-m', '1', 'HEAD');
     expect(await merged(wt, base)).toBe(true);
-    expect(await unpushedCount(wt, 'kage/x')).toBe(0);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(0);
   });
 
   it('false when baseCommit or base is null, or a name fails SAFE_REF, with no git call', async () => {
     const g = noGit();
     const sha = 'a'.repeat(40);
-    expect(await isMerged('/r', { branch: 'kage/x', base: 'main', baseCommit: null }, g.exec)).toBe(
-      false,
-    );
-    expect(await isMerged('/r', { branch: 'kage/x', base: null, baseCommit: sha }, g.exec)).toBe(
-      false,
-    );
-    expect(await isMerged('/r', { branch: '-x', base: 'main', baseCommit: sha }, g.exec)).toBe(
-      false,
-    );
-    expect(await isMerged('/r', { branch: 'kage/x', base: 'a..b', baseCommit: sha }, g.exec)).toBe(
-      false,
-    );
     expect(
-      await isMerged('/r', { branch: 'kage/x', base: 'main', baseCommit: '--all' }, g.exec),
+      await isMerged('/r', { branch: 'kage/x', base: 'main', baseCommit: null }, g.exec, undefined),
+    ).toBe(false);
+    expect(
+      await isMerged('/r', { branch: 'kage/x', base: null, baseCommit: sha }, g.exec, undefined),
+    ).toBe(false);
+    expect(
+      await isMerged('/r', { branch: '-x', base: 'main', baseCommit: sha }, g.exec, undefined),
+    ).toBe(false);
+    expect(
+      await isMerged('/r', { branch: 'kage/x', base: 'a..b', baseCommit: sha }, g.exec, undefined),
+    ).toBe(false);
+    expect(
+      await isMerged(
+        '/r',
+        { branch: 'kage/x', base: 'main', baseCommit: '--all' },
+        g.exec,
+        undefined,
+      ),
     ).toBe(false);
     expect(g.calls).toEqual([]);
   });
@@ -368,7 +372,12 @@ describe('isMerged', REPO_TESTS, () => {
       throw Object.assign(new Error('timed out'), { code: null, killed: true });
     };
     expect(
-      await isMerged('/r', { branch: 'kage/x', base: 'main', baseCommit: 'a'.repeat(40) }, exec),
+      await isMerged(
+        '/r',
+        { branch: 'kage/x', base: 'main', baseCommit: 'a'.repeat(40) },
+        exec,
+        undefined,
+      ),
     ).toBe(false);
   });
 });
@@ -383,7 +392,7 @@ describe('fix round 1: what the path check must not miss', REPO_TESTS, () => {
     await writeFile(join(wt, 'lost.txt'), 'only on the detached HEAD\n');
     git(wt, 'add', 'lost.txt');
     git(wt, 'commit', '-q', '-m', 'detached work');
-    expect(await unpushedCount(wt, 'kage/x')).toBe(1);
+    expect(await unpushedCount(wt, 'kage/x', gitExec, undefined)).toBe(1);
     expect(await merged(wt, base)).toBe(false);
     expect(await branchState(wt, { branch: 'kage/x', base: 'main', baseCommit: base })).toEqual({
       unpushed: 1,
@@ -605,7 +614,7 @@ describe('branchState', () => {
           '-z',
           '--untracked-files=normal',
           '--ignored=matching',
-          '--ignore-submodules=none',
+          '--ignore-submodules=all',
         ],
         cwd: '/w/x',
       },
@@ -627,7 +636,12 @@ describe('branchState', () => {
       throw Object.assign(new Error('not an ancestor'), { code: 1 });
     };
     expect(
-      await isMerged('/w', { branch: 'kage/x', base: 'main', baseCommit: 'e'.repeat(40) }, exec),
+      await isMerged(
+        '/w',
+        { branch: 'kage/x', base: 'main', baseCommit: 'e'.repeat(40) },
+        exec,
+        undefined,
+      ),
     ).toBe(false);
     expect(calls).toEqual([
       ['symbolic-ref', '-q', 'HEAD'],

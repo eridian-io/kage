@@ -606,7 +606,7 @@ describe('diffPage', () => {
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
-        '--ignore-submodules=none',
+        '--ignore-submodules=all',
         '-U3',
         ':(literal)[ab].txt',
         ':(literal)a.txt',

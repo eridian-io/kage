@@ -366,11 +366,15 @@ export class TaskLauncher {
     }
 
     // The commit the worktree was cut from, read from the worktree itself (the base may move on
-    // meanwhile): merge detection's "a commit past baseCommit". Null when git gives no commit id.
-    const head = await d.git(['rev-parse', 'HEAD'], { cwd: path }).then(
-      (r) => r.stdout.trim(),
-      () => '',
-    );
+    // meanwhile): merge detection's "a commit past baseCommit". Null when git gives no commit id,
+    // or when the new worktree's .git doesn't pin to the repo (R131, security M4): then git
+    // doesn't run there, and the null baseCommit means auto-archive never calls it merged.
+    const head = await requirePin(repo, path, d.git)
+      .then((pin) => d.git(['rev-parse', 'HEAD'], { cwd: path, pin }))
+      .then(
+        (r) => r.stdout.trim(),
+        () => '',
+      );
     const baseCommit = HEX_COMMIT.test(head) ? head : null;
 
     const kageId = this.#newId();

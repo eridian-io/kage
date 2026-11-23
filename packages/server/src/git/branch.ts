@@ -31,8 +31,8 @@ const toCount = (out: string): number => {
 export async function unpushedCount(
   cwd: string,
   branch: string,
-  exec: GitExec = gitExec,
-  pin?: GitPin,
+  exec: GitExec,
+  pin: GitPin | undefined,
 ): Promise<number> {
   if (!SAFE_REF.test(branch)) return 0;
   const { stdout } = await exec(
@@ -54,8 +54,9 @@ export async function unpushedCount(
 
 /**
  * The worktree's entries from one `status --porcelain=v1 -z --untracked-files=normal
- * --ignored=matching --ignore-submodules=none` (§5.4; a dirty submodule counts whatever
- * `diff.ignoreSubmodules` or `.gitmodules` say):
+ * --ignored=matching --ignore-submodules=all` (§5.4). Submodules count nothing (R131): with any
+ * other mode git runs `git status` inside each one, or reads its `.git`, and the session can
+ * rewrite that file (security M4):
  * - uncommitted: every entry but `!!`; an untracked folder counts once, and a rename or copy
  *   counts once (its old path follows as an extra NUL-terminated field);
  * - ignored (R73): the `!!` entries, which `worktree remove` deletes too; an ignored folder
@@ -64,8 +65,8 @@ export async function unpushedCount(
  */
 export async function worktreeCounts(
   worktree: string,
-  exec: GitExec = gitExec,
-  pin?: GitPin,
+  exec: GitExec,
+  pin: GitPin | undefined,
 ): Promise<{ uncommitted: number; ignored: number }> {
   const { stdout } = await exec(
     [
@@ -74,7 +75,8 @@ export async function worktreeCounts(
       '-z',
       '--untracked-files=normal',
       '--ignored=matching',
-      '--ignore-submodules=none',
+      // R131: =all, so git never runs in a submodule or reads its .git (both writable by Claude).
+      '--ignore-submodules=all',
     ],
     { cwd: worktree, pin },
   );
@@ -92,11 +94,6 @@ export async function worktreeCounts(
     if (/^[RC]|^.[RC]/.test(f)) i++;
   }
   return { uncommitted, ignored };
-}
-
-/** The uncommitted part of worktreeCounts. */
-export async function uncommittedCount(worktree: string, exec: GitExec = gitExec): Promise<number> {
-  return (await worktreeCounts(worktree, exec)).uncommitted;
 }
 
 /** Where a worktree's git runs: its folder, and the pin when it has a record (security M4). */
@@ -150,13 +147,14 @@ async function onBranch(exec: GitExec, at: At, tip: string): Promise<boolean> {
  * driver-free path-equal check of host-integration §5.5 (R59/R65), never `merge-tree`, which can
  * run a repository's merge driver. The check intersects two tree diffs in JS (no pathspec, so no
  * argument limit). False for a null baseCommit or base, a name failing SAFE_REF (no git call),
- * and whenever git fails (closed). Every call carries `pin` (worktreePin) when given.
+ * and whenever git fails (closed). Every call carries `pin` (worktreePin); undefined, written
+ * out, runs git's own discovery (an external window's folder).
  */
 export async function isMerged(
   cwd: string,
   o: { branch: string; base: string | null; baseCommit: string | null },
-  exec: GitExec = gitExec,
-  pin?: GitPin,
+  exec: GitExec,
+  pin: GitPin | undefined,
 ): Promise<boolean> {
   const { branch, base, baseCommit } = o;
   if (base === null || baseCommit === null) return false;

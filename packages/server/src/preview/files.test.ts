@@ -200,7 +200,7 @@ describe('changedFiles: displayed paths (B36)', () => {
     const r = await changedFiles('/w', 'main', exec);
     expect(r.files).toEqual([{ path: 'src/cleartxt.js', added: 3, removed: 1 }]);
     // The diff asks git by the raw path, so the shared list keeps it as git gave it.
-    expect((await listChanges('/w', 'main', exec)).changes[0]?.path).toBe(evil);
+    expect((await listChanges('/w', 'main', exec, undefined)).changes[0]?.path).toBe(evil);
   });
 });
 
@@ -222,7 +222,7 @@ describe('changedFiles: arguments (F4, F8)', () => {
         '--no-ext-diff',
         '--no-textconv',
         '--no-color',
-        '--ignore-submodules=none',
+        '--ignore-submodules=all',
         'HEAD',
         '--',
       ],
@@ -237,9 +237,9 @@ describe('mergeBase and listChanges (shared by the list and the diff)', () => {
     const fork = git(dir, 'rev-parse', 'HEAD').trim();
     await writeFile(join(dir, 'a.txt'), 'x\n');
     git(dir, 'commit', '-q', '-am', 'on task');
-    expect(await mergeBase(dir, 'main')).toBe(fork);
-    expect(await mergeBase(dir, null)).toBe('HEAD');
-    expect(await mergeBase(dir, 'gone')).toBe('HEAD');
+    expect(await mergeBase(dir, 'main', gitExec, undefined)).toBe(fork);
+    expect(await mergeBase(dir, null, gitExec, undefined)).toBe('HEAD');
+    expect(await mergeBase(dir, 'gone', gitExec, undefined)).toBe('HEAD');
   });
 
   it('listChanges keeps rename sources and marks untracked files, sorted and uncapped', async () => {
@@ -248,7 +248,7 @@ describe('mergeBase and listChanges (shared by the list and the diff)', () => {
     await writeFile(join(dir, 'b.txt'), 'alpha\n');
     await writeFile(join(dir, 'u.txt'), 'u\n');
     for (let i = 0; i < LIMITS.files + 5; i++) await writeFile(join(dir, `z${i}.txt`), 'z\n');
-    const { mb, changes } = await listChanges(dir, 'main');
+    const { mb, changes } = await listChanges(dir, 'main', gitExec, undefined);
     expect(mb).toMatch(/^[0-9a-f]{40}$/);
     expect(changes).toHaveLength(LIMITS.files + 8);
     expect(changes.slice(0, 3)).toEqual([
@@ -290,10 +290,10 @@ describe('the untracked line-count cache (B37)', () => {
     for (const n of ['u1.txt', 'u2.txt', 'u3.txt']) await old(join(dir, n), 'a\nb\n');
     const cache = new UntrackedCache();
     const { reads, read } = counting();
-    const first = await listChanges(dir, 'main', undefined, { cache, read });
+    const first = await listChanges(dir, 'main', gitExec, undefined, { cache, read });
     expect(reads.sort()).toEqual(['u1.txt', 'u2.txt', 'u3.txt']);
     reads.length = 0;
-    const second = await listChanges(dir, 'main', undefined, { cache, read });
+    const second = await listChanges(dir, 'main', gitExec, undefined, { cache, read });
     expect(reads).toEqual([]);
     expect(counts(second.changes)).toEqual(counts(first.changes));
     expect(counts(second.changes)).toEqual({ 'u1.txt': 2, 'u2.txt': 2, 'u3.txt': 2 });
@@ -304,11 +304,11 @@ describe('the untracked line-count cache (B37)', () => {
     for (const n of ['u1.txt', 'u2.txt']) await old(join(dir, n), 'a\nb\n', 120_000);
     const cache = new UntrackedCache();
     const { reads, read } = counting();
-    await listChanges(dir, 'main', undefined, { cache, read });
+    await listChanges(dir, 'main', gitExec, undefined, { cache, read });
     reads.length = 0;
     // Same size, new content and a new mtime: only the mtime tells it changed.
     await old(join(dir, 'u2.txt'), 'abc\n');
-    const { changes } = await listChanges(dir, 'main', undefined, { cache, read });
+    const { changes } = await listChanges(dir, 'main', gitExec, undefined, { cache, read });
     expect(reads).toEqual(['u2.txt']);
     expect(counts(changes)).toEqual({ 'u1.txt': 2, 'u2.txt': 1 });
   });
@@ -320,20 +320,20 @@ describe('the untracked line-count cache (B37)', () => {
     await old(join(b, 'v.txt'), 'v\n');
     const cache = new UntrackedCache(2);
     const { reads, read } = counting();
-    await listChanges(a, 'main', undefined, { cache, read });
+    await listChanges(a, 'main', gitExec, undefined, { cache, read });
     expect(cache.size).toBe(2);
     reads.length = 0;
-    await listChanges(a, 'main', undefined, { cache, read });
+    await listChanges(a, 'main', gitExec, undefined, { cache, read });
     expect(reads.length).toBeGreaterThan(0);
 
     const big = new UntrackedCache();
-    await listChanges(a, 'main', undefined, { cache: big, read });
-    await listChanges(b, 'main', undefined, { cache: big, read });
+    await listChanges(a, 'main', gitExec, undefined, { cache: big, read });
+    await listChanges(b, 'main', gitExec, undefined, { cache: big, read });
     expect(big.size).toBe(4);
     big.forget(a);
     expect(big.size).toBe(1);
     reads.length = 0;
-    await listChanges(b, 'main', undefined, { cache: big, read });
+    await listChanges(b, 'main', gitExec, undefined, { cache: big, read });
     expect(reads).toEqual([]);
   });
 
@@ -366,8 +366,8 @@ describe("UntrackedCache: racy entries (git's rule)", () => {
       reads.push(rel);
       return readUntracked(r, rel);
     };
-    await listChanges(dir, 'main', undefined, { cache, read });
-    await listChanges(dir, 'main', undefined, { cache, read });
+    await listChanges(dir, 'main', gitExec, undefined, { cache, read });
+    await listChanges(dir, 'main', gitExec, undefined, { cache, read });
     expect(reads).toEqual(['new.txt', 'new.txt']);
   });
 });
@@ -407,7 +407,8 @@ describe('the pin (security M4)', () => {
     const inRepo = seen.filter((s) => s.cwd === dir);
     expect(inWorktree.length).toBeGreaterThan(5);
     for (const s of inWorktree) expect(s.pin, s.args).toEqual(pin);
-    expect(new Set(inRepo.map((s) => s.args))).toEqual(new Set(['rev-parse --git-common-dir']));
+    // The common dir is cached per repo (R131), so it may not be asked again at all.
+    for (const s of inRepo) expect(s.args).toBe('rev-parse --git-common-dir');
     for (const s of inRepo) expect(s.pin).toBeUndefined();
     expect(streamed).toEqual([pin]);
   });
