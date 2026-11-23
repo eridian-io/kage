@@ -28,7 +28,7 @@ Deferred from the phase 3 reviews. None blocks use; each is a small change.
 - **B23** The port scan misses a daemon that detached from the pane (its parent became init). Match by working directory or process group as well.
 - **B24** A project reached through a symlink is recorded under the alias name. Record the real folder's name.
 - **B25** processLabel cosmetics: some long or wrapped commands give an odd label on the port card.
-- **B26** The 5 s window after a reply ignores a real Esc that the user presses in the terminal during it.
+- **B26** (done, hardening Task 7: an interrupt inside the window arms the 2 s turn-end check, so an idle pane ends in done) The 5 s window after a reply ignores a real Esc that the user presses in the terminal during it.
 - **B27** Two hooked claude processes in one window: the first wins. Side-pane activity re-lists the windows.
 - **B28** (done, phase 5 Task 9) The web doesn't clamp the files list to its limit. The server owns the bound, so this only matters if the server changes.
 - **B29** The 404 for an unknown project or branch echoes the name without a length cap (cosmetic).

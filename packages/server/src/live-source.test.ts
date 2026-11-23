@@ -179,6 +179,7 @@ class FakeTail implements TailLike {
   #now: string | null;
   fns = new Set<(added: DisplayLine[], reset: boolean) => void>();
   interruptFns = new Set<() => void>();
+  turnEndFns = new Set<() => void>();
   started = false;
   stopped = false;
   /** While `gate.wait` is set, start() waits for it: a hook can land while a tail starts. */
@@ -216,6 +217,10 @@ class FakeTail implements TailLike {
     this.interruptFns.add(fn);
     return () => this.interruptFns.delete(fn);
   }
+  onTurnEnd(fn: () => void): () => void {
+    this.turnEndFns.add(fn);
+    return () => this.turnEndFns.delete(fn);
+  }
   /** Appends lines (or starts over) and updates question/now, like a real batch. */
   push(
     added: DisplayLine[],
@@ -231,6 +236,11 @@ class FakeTail implements TailLike {
     this.#question = null;
     this.#now = null;
     for (const fn of [...this.interruptFns]) fn();
+  }
+  /** A record that ends the turn (an end_turn reply, stop_hook_summary or turn_duration). */
+  turnEnd(): void {
+    this.#now = null;
+    for (const fn of [...this.turnEndFns]) fn();
   }
 }
 
@@ -4132,5 +4142,256 @@ describe('LiveSource: a launch on its startup screens (P4F1)', () => {
     await vi.advanceTimersByTimeAsync(6000);
     await flush();
     expect(s.source.get('k-9')?.status).toBe('done');
+  });
+});
+
+describe('LiveSource: a turn that ends without a Stop (hardening Task 7: I2, M1, B26)', () => {
+  const IDLE = ['● Fixed the total.', '', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+  const BUSY = ['✻ Thinking… (esc to interrupt)', '', RULE, '❯ ', RULE, ''].join('\n');
+  const DONE_LINE: DisplayLine = { kind: 'say', text: 'Fixed the total.' };
+
+  /** A hooked turn whose tool ran; no Stop comes. */
+  async function turn() {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.hooks.fire(hook('PostToolUse', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    return s;
+  }
+
+  it('a lost Stop: the turn ends in the transcript and the pane is idle, so the session is done 2 s later', async () => {
+    const s = await turn();
+    s.tmux.setCapture('%2', IDLE);
+    s.auto.calls = [];
+    s.preview.calls = [];
+    const captures = s.tmux.captureCalls.length;
+    s.tails[0]?.push([DONE_LINE], { now: null });
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(1999);
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(s.tmux.captureCalls.length).toBe(captures);
+    await vi.advanceTimersByTimeAsync(1);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    expect(s.tmux.captureCalls.length).toBe(captures + 1);
+    expect(s.updates('k-1').at(-1)?.status).toBe('done');
+    // As a Stop would: doneAt stamped and saved, auto-archive and the preview told.
+    expect(s.auto.calls).toContain('touch k-1');
+    expect(s.preview.calls).toContain('touch k-1 turn-end');
+    const doneAt = Date.now();
+    await vi.advanceTimersByTimeAsync(600);
+    expect(s.store.saves.at(-1)?.find((r) => r.kageId === 'k-1')?.doneAt).toBe(doneAt);
+    // One look, no timer left behind.
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(s.tmux.captureCalls.length).toBe(captures + 1);
+  });
+
+  it('a hook within those 2 s cancels the check', async () => {
+    const s = await turn();
+    s.tmux.setCapture('%2', IDLE);
+    const captures = s.tmux.captureCalls.length;
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(1000);
+    // Claude goes on (a stale turn end, or the next tool): its hook wins.
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(s.tmux.captureCalls.length).toBe(captures);
+  });
+
+  it('a hook during the check capture wins over it', async () => {
+    const s = await turn();
+    s.tmux.setCapture('%2', IDLE);
+    let open = () => {};
+    s.tmux.gate = new Promise<void>((r) => {
+      open = r;
+    });
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    s.tmux.gate = null;
+    open();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+  });
+
+  it('a busy footer at the check keeps it running', async () => {
+    const s = await turn();
+    s.tmux.setCapture('%2', BUSY);
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(3_600_000);
+    expect(s.source.get('k-1')?.status).toBe('running');
+  });
+
+  it('a prompt on screen at the check, or a failed capture, keeps it running', async () => {
+    const s = await turn();
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    s.tmux.setCapture('%2', IDLE);
+    s.tmux.failCaptures = 1;
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+  });
+
+  it('a turn end while done arms nothing (the records after a Stop)', async () => {
+    const s = await turn();
+    s.hooks.fire(hook('Stop', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    s.tmux.setCapture('%2', IDLE);
+    // stop_hook_summary and turn_duration land after the Stop.
+    const captures = s.tmux.captureCalls.length;
+    s.tails[0]?.turnEnd();
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(5000);
+    await flush();
+    expect(s.tmux.captureCalls.length).toBe(captures);
+    expect(s.source.get('k-1')?.status).toBe('done');
+  });
+
+  it('a fallback done pings like a Stop: from running, after 60 s of work', async () => {
+    const s = await turn();
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: s.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      options: { ...NOTIFY_DEFAULTS, onDone: true },
+      log: () => {},
+    });
+    notifier.start();
+    await vi.advanceTimersByTimeAsync(61_000);
+    s.tmux.setCapture('%2', IDLE);
+    s.tails[0]?.turnEnd();
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    await vi.advanceTimersByTimeAsync(3500);
+    expect(pings).toEqual(['shop is done']);
+    notifier.stop();
+  });
+
+  it('a resume over a transcript ending in an interrupt stays Starting Claude…', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kage-ls-'));
+    try {
+      const path = join(dir, 's-1.jsonl');
+      const r = (o: unknown) => `${JSON.stringify(o)}\n`;
+      writeFileSync(
+        path,
+        r({ type: 'user', message: { role: 'user', content: 'Run the tests' } }) +
+          r({
+            type: 'assistant',
+            message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Running.' }] },
+          }) +
+          r({ type: 'user', message: { content: '[Request interrupted by user]' } }),
+      );
+      const starts: Promise<void>[] = [];
+      const s = setup({
+        records: [rec({ sessionId: 's-1', transcriptPath: path })],
+        tail: (p) => {
+          const t = new TranscriptTail(p, { watch: false });
+          const start = t.start.bind(t);
+          t.start = () => {
+            const started = start();
+            starts.push(started);
+            return started;
+          };
+          return t;
+        },
+      });
+      await s.source.start();
+      await Promise.all(starts);
+      expect(s.source.get('k-1')?.status).toBe('ended');
+      const from = s.updates('k-1').length;
+      vi.setSystemTime(T0 + 60_000);
+      s.source.resumed('k-1', 's-1');
+      await Promise.all(starts);
+      await vi.advanceTimersByTimeAsync(500);
+      await flush();
+      expect(s.source.get('k-1')).toMatchObject({ status: 'running', now: 'Starting Claude…' });
+      expect(
+        s
+          .updates('k-1')
+          .slice(from)
+          .map((u) => u.status),
+      ).not.toContain('done');
+      await vi.advanceTimersByTimeAsync(600);
+      expect(s.store.saves.at(-1)?.find((x) => x.kageId === 'k-1')?.doneAt).toBeNull();
+      await s.source.stop();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  describe('B26: an Esc inside the reply window', () => {
+    async function prompted() {
+      const s = setup({ windows: [kageWin()], records: [rec()] });
+      s.tmux.setCapture('%2', pane('permission-bash'));
+      await s.source.start();
+      s.hooks.fire(hook('SessionStart', '%2'));
+      s.hooks.fire(hook('PreToolUse', '%2'));
+      s.hooks.fire(hook('PermissionRequest', '%2'));
+      await flush();
+      expect(s.source.get('k-1')?.status).toBe('needs-you');
+      return s;
+    }
+    async function replied() {
+      const s = await prompted();
+      s.source.markReplying('k-1');
+      s.source.markReplied('k-1');
+      expect(s.source.get('k-1')?.status).toBe('running');
+      return s;
+    }
+
+    it('an Esc swallowed by the reply window still ends in done when the pane is idle', async () => {
+      const s = await replied();
+      s.tmux.setCapture('%2', IDLE);
+      await vi.advanceTimersByTimeAsync(1000);
+      // The user's own Esc in the terminal: taken for Kage's, so no done at once.
+      s.tails[0]?.interrupt();
+      expect(s.source.get('k-1')?.status).toBe('running');
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+      expect(s.source.get('k-1')?.status).toBe('done');
+    });
+
+    it("Kage's own Escape, with Claude busy on the reply, stays running", async () => {
+      const s = await replied();
+      s.tmux.setCapture('%2', BUSY);
+      await vi.advanceTimersByTimeAsync(300);
+      s.tails[0]?.interrupt();
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+      expect(s.source.get('k-1')?.status).toBe('running');
+    });
+
+    it("Kage's Escape before markReplied (still needs-you) arms nothing", async () => {
+      const s = await prompted();
+      s.source.markReplying('k-1');
+      s.tails[0]?.interrupt();
+      s.tmux.setCapture('%2', IDLE);
+      const captures = s.tmux.captureCalls.length;
+      await vi.advanceTimersByTimeAsync(2000);
+      await flush();
+      expect(s.tmux.captureCalls.length).toBe(captures);
+      expect(s.source.get('k-1')?.status).toBe('needs-you');
+    });
   });
 });

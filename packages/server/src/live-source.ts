@@ -53,7 +53,7 @@ export type HookServerLike = Pick<HookServer, 'on'>;
 export type StateStoreLike = Pick<StateStore, 'load' | 'save'>;
 export type TailLike = Pick<
   TranscriptTail,
-  'start' | 'stop' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt'
+  'start' | 'stop' | 'lines' | 'question' | 'now' | 'on' | 'onInterrupt' | 'onTurnEnd'
 >;
 
 /** What LiveSource tells the preview tracker. */
@@ -169,6 +169,11 @@ const FIRST_PROMPT_MS = 10_000;
 const FIRST_PROMPT_RETRY_MS = 2000;
 /** Claude's footer while a turn runs. */
 const BUSY_FOOTER = /esc to interrupt/i;
+/**
+ * I2: a hooks-mode session the transcript says finished its turn, still running (its Stop lost),
+ * has its pane looked at this much later: no busy footer and no prompt there means done.
+ */
+const TURN_END_CHECK_MS = 2000;
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -218,7 +223,8 @@ type TimerName =
   | 'startup'
   | 'answered'
   | 'replying'
-  | 'firstPrompt';
+  | 'firstPrompt'
+  | 'turnEnd';
 
 interface Live extends SessionView {
   /** 'activity': status from pane activity (no hooks yet); 'hooks': from hooks and the transcript. */
@@ -1397,7 +1403,8 @@ export class LiveSource implements SessionSource {
     st.claudeExited = false;
     // A compaction (auto-compact can run mid-turn) is the same turn going on (R21 exception).
     const compact = e.event === 'SessionStart' && e.source === 'compact';
-    this.#clearTimers(st, ['startup']);
+    // I2: a hook says what Claude is doing; a turn-end check armed before it is moot.
+    this.#clearTimers(st, ['startup', 'turnEnd']);
     if (e.event === 'PreToolUse' || e.event === 'PermissionRequest') st.pending = true;
     if (
       e.event === 'PostToolUse' ||
@@ -1590,7 +1597,11 @@ export class LiveSource implements SessionSource {
       tail.onInterrupt(() => {
         if (st.tail !== tail) return;
         // Kage's reply at a prompt starts with Escape, whose interrupt record lands after it.
-        if (this.#replying(st)) return;
+        // B26: a real Esc meanwhile looks the same, so the pane decides a moment later.
+        if (this.#replying(st)) {
+          this.#armTurnEndCheck(st);
+          return;
+        }
         // R11: No or Esc fires no hook; the transcript shows it.
         if (st.status !== 'ended') this.#setStatus(st, 'done');
         st.question = null;
@@ -1598,11 +1609,57 @@ export class LiveSource implements SessionSource {
         st.now = tail.now();
         this.#emitNow(st);
       }),
+      tail.onTurnEnd(() => {
+        if (st.tail !== tail) return;
+        this.#armTurnEndCheck(st);
+      }),
     ];
     this.#emitLines(st, [], true);
     try {
       await tail.start();
     } catch {}
+  }
+
+  /**
+   * I2: the transcript says the turn ended (or B26: an interrupt taken for Kage's own Escape)
+   * while a hooks-mode session is running. Its Stop may be lost (`kage hook` gives up after
+   * 1.5 s), and nothing else would move it, so one check looks at the pane TURN_END_CHECK_MS
+   * later. Any hook cancels it. One timer per session, armed only then.
+   */
+  #armTurnEndCheck(st: Live): void {
+    if (!this.#running || st.mode !== 'hooks' || st.status !== 'running') return;
+    this.#clearTimers(st, ['turnEnd']);
+    const gen = st.gen;
+    const hooks = st.hookCount;
+    st.timers.turnEnd = setTimeout(() => {
+      delete st.timers.turnEnd;
+      void this.#turnEndCheck(st, gen, hooks);
+    }, TURN_END_CHECK_MS);
+  }
+
+  /**
+   * Done, through #setStatus (doneAt, the done ping and auto-archive follow), only when the pane
+   * agrees: no busy footer ("esc to interrupt": a tool or a turn still runs) and no prompt or
+   * startup screen. A failed capture, a status change or a hook meanwhile leaves it as it is.
+   */
+  async #turnEndCheck(st: Live, gen: number, hooks: number): Promise<void> {
+    const still = () =>
+      this.#running &&
+      this.#sessions.get(st.id) === st &&
+      st.gen === gen &&
+      st.hookCount === hooks &&
+      st.mode === 'hooks' &&
+      st.status === 'running';
+    if (!still()) return;
+    const text = await this.#capture(st);
+    if (!still() || text === null || BUSY_FOOTER.test(text) || showsPrompt(text)) return;
+    this.#clearTimers(st, ['idle']);
+    st.pending = false;
+    this.#setStatus(st, 'done');
+    st.now = st.tail?.now() ?? null;
+    this.#emitNow(st);
+    // As at a Stop: the files and ports refresh.
+    this.#preview?.touch(st.id, 'turn-end');
   }
 
   #onTailChange(st: Live, tail: TailLike): void {

@@ -58,6 +58,12 @@ export class TranscriptTail {
 
   #listeners = new Set<Listener>();
   #interruptListeners = new Set<() => void>();
+  #turnEndListeners = new Set<() => void>();
+  /**
+   * M1: true during start()'s first read. Records read then are history (a resume or an attach
+   * replays them), so they fire no interrupt or turn-end listener.
+   */
+  #quiet = false;
 
   #running = false;
   #watcher: FSWatcher | null = null;
@@ -93,7 +99,12 @@ export class TranscriptTail {
   async start(): Promise<void> {
     if (this.#running) return;
     this.#running = true;
-    await this.#check();
+    this.#quiet = true;
+    try {
+      await this.#check();
+    } finally {
+      this.#quiet = false;
+    }
   }
 
   /** Stops following; closes the watcher and clears every timer. */
@@ -127,6 +138,15 @@ export class TranscriptTail {
     return () => this.#interruptListeners.delete(fn);
   }
 
+  /**
+   * Called for each record that ends the turn (lines.ts endsTurn: an end_turn reply, a
+   * stop_hook_summary or a turn_duration), whether or not it adds a display line (I2).
+   */
+  onTurnEnd(fn: () => void): () => void {
+    this.#turnEndListeners.add(fn);
+    return () => this.#turnEndListeners.delete(fn);
+  }
+
   /** Runs a check now, or once more after the one in progress. */
   #check(): Promise<void> {
     if (this.#busy) {
@@ -138,6 +158,8 @@ export class TranscriptTail {
         do {
           this.#again = false;
           await this.#checkOnce();
+          // Only the first look is start()'s first read; a look requested meanwhile reads new records.
+          this.#quiet = false;
         } while (this.#again && this.#running);
       } finally {
         this.#busy = null;
@@ -311,8 +333,10 @@ export class TranscriptTail {
       this.#questionId = null;
     }
 
-    if (endsTurn(r)) this.#now = null;
-    else {
+    if (endsTurn(r)) {
+      this.#now = null;
+      this.#fire(this.#turnEndListeners);
+    } else {
       const now = nowLine(r);
       if (now !== null) this.#now = now;
     }
@@ -335,11 +359,17 @@ export class TranscriptTail {
       this.#afterRejection = rejection;
       // A denial writes the rejected tool_result and then the interrupt text: one event.
       if (!rejection && wasAfterRejection) return;
-      for (const fn of [...this.#interruptListeners]) {
-        try {
-          fn();
-        } catch {}
-      }
+      this.#fire(this.#interruptListeners);
+    }
+  }
+
+  /** Calls listeners for a record read after the first read (M1); history fires none. */
+  #fire(listeners: Set<() => void>): void {
+    if (this.#quiet) return;
+    for (const fn of [...listeners]) {
+      try {
+        fn();
+      } catch {}
     }
   }
 

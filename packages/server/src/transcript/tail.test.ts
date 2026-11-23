@@ -516,3 +516,63 @@ describe('TranscriptTail: turn end (fix wave)', () => {
     expect(t.now()).toBeNull();
   });
 });
+
+describe('TranscriptTail: only records read after the first read fire (M1, I2)', () => {
+  const rec = (r: unknown) => `${JSON.stringify(r)}\n`;
+  const ended = rec({ type: 'system', subtype: 'turn_duration', durationMs: 1200 });
+  const endTurn = rec({
+    type: 'assistant',
+    message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Done.' }] },
+  });
+
+  it("interrupts and turn ends in the first read don't fire; ones appended later do", async () => {
+    const path = join(dir, 's.jsonl');
+    writeFileSync(path, `${prompt('[Request interrupted by user]')}${endTurn}${ended}`);
+    const t = tail(path);
+    let interrupts = 0;
+    let ends = 0;
+    // Listeners attached before start(), as LiveSource attaches them.
+    t.onInterrupt(() => interrupts++);
+    const off = t.onTurnEnd(() => ends++);
+    await t.start();
+    expect(interrupts).toBe(0);
+    expect(ends).toBe(0);
+    expect(t.now()).toBeNull();
+
+    const fired = new Promise<void>((resolve) => {
+      t.onInterrupt(() => resolve());
+    });
+    appendFileSync(path, prompt('[Request interrupted by user]'));
+    await fired;
+    expect(interrupts).toBe(1);
+
+    // A turn end with no display line (stop_hook_summary) still fires.
+    const turnEnded = new Promise<void>((resolve) => {
+      t.onTurnEnd(() => resolve());
+    });
+    appendFileSync(path, rec({ type: 'system', subtype: 'stop_hook_summary' }));
+    await turnEnded;
+    expect(ends).toBe(1);
+    off();
+    appendFileSync(path, ended);
+    await wait(300);
+    expect(ends).toBe(1);
+  });
+
+  it('a file created after start() is all new: its interrupt fires', async () => {
+    const path = join(dir, 's.jsonl');
+    const t = tail(path);
+    let interrupts = 0;
+    let ends = 0;
+    t.onInterrupt(() => interrupts++);
+    t.onTurnEnd(() => ends++);
+    await t.start();
+    const fired = new Promise<void>((resolve) => {
+      t.onTurnEnd(() => resolve());
+    });
+    writeFileSync(path, `${prompt('[Request interrupted by user]')}${ended}`);
+    await fired;
+    expect(interrupts).toBe(1);
+    expect(ends).toBe(1);
+  });
+});

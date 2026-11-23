@@ -59,6 +59,7 @@ const quietTail: TailLike = {
   now: () => null,
   on: () => () => {},
   onInterrupt: () => () => {},
+  onTurnEnd: () => () => {},
 };
 
 describe.runIf(hasTmux && process.platform !== 'win32' && hasScript())(
