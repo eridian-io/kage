@@ -68,7 +68,22 @@ function io(e: NodeJS.ProcessEnv, over: Partial<Io> = {}): Io {
   };
 }
 
-const port = () => 43_000 + Math.floor(Math.random() * 2000);
+/**
+ * A free port on 127.0.0.1 (R132): the system picks one by binding port 0, then it is released for
+ * serve to take. A random port in Linux's ephemeral range (32768–60999) could be held by another
+ * test file's outgoing socket.
+ */
+async function port(): Promise<number> {
+  const { createServer } = await import('node:net');
+  const s = createServer();
+  await new Promise<void>((resolve, reject) => {
+    s.once('error', reject);
+    s.listen(0, '127.0.0.1', () => resolve());
+  });
+  const { port: p } = s.address() as { port: number };
+  await new Promise<void>((resolve) => s.close(() => resolve()));
+  return p;
+}
 
 describe('kage serve: live-mode checks', () => {
   it('live mode with a token goes on to the next check: the B8 refusal is gone (B13)', async () => {
@@ -89,7 +104,7 @@ describe('kage serve: live-mode checks', () => {
 
   it('--demo with a token runs without a warning, and the API needs the cookie', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    const p = port();
+    const p = await port();
     writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
     expect(typeof r).toBe('object');
@@ -117,7 +132,7 @@ describe('kage serve: live-mode checks', () => {
 
   it('--demo with a token: the snapshot says so, and logout closes that login stream (I1, F6)', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    const p = port();
+    const p = await port();
     writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
     expect(typeof r).toBe('object');
@@ -160,7 +175,7 @@ describe('kage serve: live-mode checks', () => {
   it('the demo needs no token', async () => {
     // No allowNoToken, no flag: the demo starts, with no refusal and no token warning (R53).
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    const p = port();
+    const p = await port();
     writeConfig(e, { port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
     expect(typeof r).toBe('object');
@@ -174,7 +189,7 @@ describe('kage serve: live-mode checks', () => {
 
   it('--demo: the terminal WebSocket refuses a bad Origin with 403, else closes with 4501 (Task 12)', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    const p = port();
+    const p = await port();
     writeConfig(e, { port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
     expect(typeof r).toBe('object');
@@ -242,7 +257,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
   };
 
   it('live mode with no token and no opt-out exits 1 with the refusal, before tmux starts', async () => {
-    const p = port();
+    const p = await port();
     const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p) });
     const cfg = join(e.XDG_CONFIG_HOME as string, 'kage', 'config.json');
     for (const config of [null, { token: '' }, { token: '', allowNoToken: false }]) {
@@ -283,7 +298,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
       [['serve', '--allow-no-token'], {}],
       [['serve', '--allow-no-token'], { allowNoToken: false }],
     ] as const) {
-      const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()) });
+      const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(await port()) });
       writeConfig(e, config);
       out.length = 0;
       err.length = 0;
@@ -299,7 +314,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
   });
 
   it('a token needs no opt-out; --allow-no-token in demo mode is accepted and changes nothing', async () => {
-    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()) });
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(await port()) });
     writeConfig(e, { token: 'a-secret-of-16-chars' });
     const t = recorder();
     const r = await main(
@@ -307,7 +322,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
       io(e, { dist: makeDist(), signal: t.ac.signal, tmuxExec: t.tmuxExec }),
     );
     expect(r).toBe(130);
-    const p = port();
+    const p = await port();
     const d = env({ KAGE_HOST: '127.0.0.1' });
     writeConfig(d, { port: p });
     out.length = 0;
@@ -335,7 +350,7 @@ describe('kage serve: no token, no live mode (security I3)', () => {
 
 describe('kage serve: startup interrupts and late errors (B15)', () => {
   it('a signal while startup waits on ensureSession unwinds, says so and returns 130', async () => {
-    const p = port();
+    const p = await port();
     const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p) });
     const ac = new AbortController();
     const calls: string[] = [];
@@ -364,7 +379,7 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
 
   it('a signal that is already aborted stops before anything starts', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    writeConfig(e, { port: port() });
+    writeConfig(e, { port: await port() });
     const ac = new AbortController();
     ac.abort();
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), signal: ac.signal }));
@@ -375,7 +390,7 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
 
   it('a failing loadAssets prints one line with no stack trace', async () => {
     const e = env({ KAGE_HOST: '127.0.0.1' });
-    writeConfig(e, { port: port() });
+    writeConfig(e, { port: await port() });
     const loadAssets = async () => {
       throw new Error('EACCES: permission denied, open dist/app.js\n    at readFile (x.js:1:1)');
     };
@@ -712,7 +727,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
   });
 
   it('starts, shows a tmux window as an external session, and shuts down cleanly', async () => {
-    const p = port();
+    const p = await port();
     const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p), KAGE_TMUX_SOCKET: socket });
     const r = await main(
       ['serve', '--allow-no-token'],
@@ -802,7 +817,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     });
 
   it('starts live mode with a token set (B13), and guards the API with it', async () => {
-    const p = port();
+    const p = await port();
     const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p), KAGE_TMUX_SOCKET: socket });
     const token = 'a-secret-of-16-chars';
     writeConfig(e, { token });
@@ -852,7 +867,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
       git('init', '-q', '-b', 'main');
       git('commit', '-q', '--allow-empty', '-m', 'init');
       for (const claude of [null, fake]) {
-        const p = port();
+        const p = await port();
         const e = env({
           KAGE_HOST: '127.0.0.1',
           KAGE_PORT: String(p),
@@ -907,7 +922,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
   });
 
   it('a hook socket that cannot open: exit 1, one stderr line, nothing left running', async () => {
-    const p = port();
+    const p = await port();
     const blocker = join(root, 'not-a-dir');
     writeFileSync(blocker, 'x');
     const e = env({
@@ -925,7 +940,7 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
 
   it('a port in use: exit 1, one stderr line, and the hook socket is closed again', async () => {
     const { createServer } = await import('node:net');
-    const p = port();
+    const p = await port();
     const taken = createServer();
     await new Promise<void>((r) => taken.listen(p, '127.0.0.1', r));
     try {
@@ -1012,7 +1027,7 @@ describe('kage serve: the service environment (R105, F7)', () => {
     process.env.KAGE_SERVICE = '1';
     process.env.MALLOC_ARENA_MAX = '2';
     process.env.NODE_OPTIONS = '--v8-pool-size=1';
-    const p = port();
+    const p = await port();
     const e = env({
       KAGE_HOST: '127.0.0.1',
       KAGE_PORT: String(p),
@@ -1052,7 +1067,7 @@ describe('kage serve: the service environment (R105, F7)', () => {
     extra: Record<string, string>,
     platform: NodeJS.Platform,
   ): Promise<{ cmd: string; args: string[] }[]> {
-    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()), ...extra });
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(await port()), ...extra });
     const ac = new AbortController();
     const calls: { cmd: string; args: string[] }[] = [];
     const tmuxExec: ExecFn = async (cmd, args) => {
