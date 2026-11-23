@@ -1,4 +1,4 @@
-import type { Session, SessionStatus } from '@kage/shared';
+import type { Cause, Session, SessionStatus } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SourceEvent } from '../source.ts';
 import { boardLink, NOTIFY_DEFAULTS, Notifier, type NotifierOptions, pingFor } from './notifier.ts';
@@ -32,12 +32,15 @@ function session(id: string, status: SessionStatus, over: Partial<Session> = {})
   };
 }
 
-/** A source with `list()` and `subscribe()`; `emit` plays an event to the subscriber. */
+/**
+ * A source with `get()` and `subscribe()`. `set` stores the session and, when its status changes,
+ * plays a `session.transition` with the cause (live by default), then its `session.updated`.
+ */
 class FakeSource {
-  sessions: Session[] = [];
+  sessions = new Map<string, Session>();
   listener: ((e: SourceEvent) => void) | null = null;
-  list(): Session[] {
-    return this.sessions;
+  get(id: string): Session | undefined {
+    return this.sessions.get(id);
   }
   subscribe(fn: (e: SourceEvent) => void): () => void {
     this.listener = fn;
@@ -45,10 +48,20 @@ class FakeSource {
       this.listener = null;
     };
   }
-  set(id: string, status: SessionStatus, over: Partial<Session> = {}): void {
-    this.listener?.({ type: 'session.updated', session: session(id, status, over) });
+  set(id: string, status: SessionStatus, over: Partial<Session> = {}, cause: Cause = 'live'): void {
+    const from = this.sessions.get(id)?.status ?? null;
+    const s = session(id, status, over);
+    this.sessions.set(id, s);
+    if (from !== status) {
+      this.listener?.({
+        type: 'session.transition',
+        transition: { id, from, to: status, cause, at: Date.now() },
+      });
+    }
+    this.listener?.({ type: 'session.updated', session: s });
   }
   remove(id: string): void {
+    this.sessions.delete(id);
     this.listener?.({ type: 'session.removed', id });
   }
 }
@@ -63,8 +76,11 @@ let sent: Sent[];
 let logs: string[];
 let notifier: Notifier;
 
+/**
+ * Starts the notifier, then plays `seed` as the source's start does: each session goes on the
+ * board by a reconcile transition from null.
+ */
 function start(options: Partial<NotifierOptions> = {}, seed: Session[] = []): Notifier {
-  source.sessions = seed;
   notifier = new Notifier({
     source,
     send: async (ping, stillWanted) => {
@@ -77,6 +93,7 @@ function start(options: Partial<NotifierOptions> = {}, seed: Session[] = []): No
     log: (line) => logs.push(line),
   });
   notifier.start();
+  for (const x of seed) source.set(x.id, x.status, x, 'reconcile');
   return notifier;
 }
 
@@ -372,12 +389,20 @@ describe('Notifier: done (ntfyOnDone)', () => {
     expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
   });
 
-  it('a session seen running at start() counts from start', () => {
+  it('a turn already running at start gets no done ping when it ends (Q17)', () => {
+    // Replaces "a session seen running at start() counts from start": a reconcile move starts
+    // no stretch (ADR 0001), so a turn that spans a restart or a reattach earns no done ping.
     start({ onDone: true }, [session('s1', 'running')]);
     at(61_000);
     source.set('s1', 'done');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    // Its next turn, started live out of done, counts again.
+    source.set('s1', 'running');
+    at(61_000);
+    source.set('s1', 'done');
     at(3000);
-    expect(sent).toHaveLength(1);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo is done']);
   });
 
   it('without onDone → none', () => {
@@ -447,32 +472,16 @@ describe('Notifier: done (ntfyOnDone)', () => {
   });
 });
 
-describe('Notifier: seeding before the source starts (startup gap)', () => {
-  function listen(options: Partial<NotifierOptions> = {}): Notifier {
-    source.sessions = [];
-    notifier = new Notifier({
-      source,
-      send: async (ping, stillWanted) => {
-        sent.push({ ping, stillWanted });
-        return true;
-      },
-      link: (id) => boardLink(LINK_HOST, 8080, id),
-      hostName: 'box',
-      options: { ...NOTIFY_DEFAULTS, ...options },
-      log: (line) => logs.push(line),
-    });
-    notifier.listen();
-    return notifier;
-  }
-
-  it('the source’s first emits are seeds; changes replayed after seeded() are pinged', () => {
-    listen({ onDone: true });
+describe('Notifier: at start (reconcile transitions, no seeding)', () => {
+  it('the source’s reconcile moves at start ping nothing; the live moves replayed after them do', () => {
+    // Was "the source’s first emits are seeds; changes replayed after seeded() are pinged":
+    // start() subscribes before source.start(), and the cause replaces listen()/seeded().
+    start({ onDone: true });
     // source.start(): the loaded state, one session already waiting and one running.
-    source.set('waiting', 'needs-you');
-    source.set('busy', 'running');
+    source.set('waiting', 'needs-you', {}, 'reconcile');
+    source.set('busy', 'running', {}, 'reconcile');
     expect(vi.getTimerCount()).toBe(0);
-    notifier.seeded();
-    // The early hooks replayed: busy now asks for permission; a new session appears waiting.
+    // The early hooks replayed (live): busy now asks for permission; a new session appears waiting.
     source.set('busy', 'needs-you');
     source.set('new', 'needs-you');
     at(3000);
@@ -486,14 +495,161 @@ describe('Notifier: seeding before the source starts (startup gap)', () => {
     expect(sent).toHaveLength(2);
   });
 
-  it('a seeded running session counts its active time from the seed (done)', () => {
-    listen({ onDone: true });
+  it('a running session loaded at start starts no stretch: its done pings nothing (Q17)', () => {
+    // Was "a seeded running session counts its active time from the seed (done)": ADR 0001
+    // deliberately drops that ping; a reconcile move never starts the stretch.
+    start({ onDone: true });
+    source.set('s1', 'running', {}, 'reconcile');
+    at(61_000);
+    source.set('s1', 'done');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+  });
+});
+
+describe('Notifier: causes and the stretch (ADR 0001)', () => {
+  it('a live move into needs-you pings after the hold; a reconcile or act one never does', () => {
+    start({ quietMs: 0 });
+    source.set('r', 'running', {}, 'reconcile');
+    source.set('r', 'needs-you', {}, 'reconcile');
+    source.set('a', 'running');
+    source.set('a', 'needs-you', {}, 'act');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+    source.set('l', 'running');
+    source.set('l', 'needs-you');
+    at(2999);
+    expect(sent).toHaveLength(0);
+    at(1);
+    expect(sent.map((s) => s.ping.click)).toEqual(['http://box.tail1.ts.net:8080/#s=l']);
+  });
+
+  it('a reconcile or act move cancels a live hold: it is a new episode', () => {
+    start();
+    source.set('s1', 'needs-you');
+    at(1000);
+    source.set('s1', 'running', {}, 'act');
+    source.set('s1', 'needs-you', {}, 'reconcile');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('an act done never pings; a live needs-you right after it does', () => {
+    start({ onDone: true, quietMs: 0 });
     source.set('s1', 'running');
-    notifier.seeded();
+    at(61_000);
+    source.set('s1', 'done', {}, 'act');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    source.set('s1', 'needs-you');
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
+    // Kage's own No (answer-denied, act): needs-you → done pings nothing, as before; Claude's
+    // next prompt found by the same check is live and pings.
+    source.set('s1', 'done', {}, 'act');
+    at(10_000);
+    source.set('s1', 'needs-you');
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you', 'demo needs you']);
+  });
+
+  it('a live done from running after 60 s of a stretch pings; a reconcile done never does', () => {
+    start({ onDone: true, quietMs: 0 });
+    source.set('r', 'running');
+    at(61_000);
+    source.set('r', 'done', {}, 'reconcile');
+    source.set('l', 'running');
+    at(59_999);
+    source.set('l', 'done'); // under 60 s
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    source.set('l', 'running');
+    at(60_000);
+    source.set('l', 'done'); // exactly 60 s
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo is done']);
+  });
+
+  it('the stretch starts at a live or act move out of done or ended; a reconcile move starts none (R141)', () => {
+    start({ onDone: true, quietMs: 0 });
+    // Off the board → running by reconcile (a restart): no stretch.
+    source.set('s1', 'running', {}, 'reconcile');
+    at(61_000);
+    source.set('s1', 'done');
+    at(10_000);
+    expect(sent).toHaveLength(0);
+    // done → running by act (a reply sent from the board): a stretch.
+    source.set('s1', 'running', {}, 'act');
     at(61_000);
     source.set('s1', 'done');
     at(3000);
-    expect(sent.map((s) => s.ping.title)).toEqual(['demo is done']);
+    expect(sent).toHaveLength(1);
+    // done → running by reconcile (a reattach): none.
+    source.set('s1', 'running', {}, 'reconcile');
+    at(61_000);
+    source.set('s1', 'done');
+    at(10_000);
+    expect(sent).toHaveLength(1);
+    // ended → needs-you → running, live: a stretch from the first move.
+    source.set('s1', 'ended');
+    source.set('s1', 'needs-you');
+    at(3000);
+    source.set('s1', 'running');
+    at(58_000);
+    source.set('s1', 'done');
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual([
+      'demo is done',
+      'demo needs you',
+      'demo is done',
+    ]);
+  });
+
+  it("moving between running and needs-you doesn't restart the stretch", () => {
+    start({ onDone: true, quietMs: 0 });
+    source.set('s1', 'running');
+    at(40_000);
+    source.set('s1', 'needs-you');
+    at(10_000);
+    source.set('s1', 'running', {}, 'act'); // answered from the board
+    at(5_000);
+    source.set('s1', 'needs-you', {}, 'reconcile');
+    source.set('s1', 'running');
+    at(6_000);
+    source.set('s1', 'done'); // 61 s since the stretch began, 6 s since the last move
+    at(3000);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you', 'demo is done']);
+  });
+
+  it("the ping text comes from the session when the hold ends; an external session's is the fixed text", () => {
+    start();
+    source.set('s1', 'needs-you', { task: 'Old task' });
+    at(1000);
+    source.set('s1', 'needs-you', { project: 'web', task: 'New task' }); // no move
+    source.set('w7', 'needs-you', { external: true, project: 'prod-db', task: 'ssh prod-db' });
+    at(3000);
+    expect(sent.map((s) => s.ping)).toEqual([
+      {
+        title: 'web needs you',
+        message: 'New task',
+        priority: 4,
+        click: 'http://box.tail1.ts.net:8080/#s=s1',
+      },
+      {
+        title: 'Claude needs you',
+        message: 'A Claude session needs you on box',
+        priority: 4,
+        click: 'http://box.tail1.ts.net:8080/#s=w7',
+      },
+    ]);
+    expect(JSON.stringify(sent)).not.toContain('prod-db');
+    // A session that is gone when the hold ends sends nothing.
+    source.set('s2', 'needs-you');
+    source.sessions.delete('s2');
+    at(3000);
+    expect(sent).toHaveLength(2);
   });
 });
 
@@ -549,7 +705,6 @@ describe('Notifier: timers', () => {
   });
 
   it('a send that rejects is ignored', async () => {
-    source.sessions = [];
     notifier = new Notifier({
       source,
       send: async () => {

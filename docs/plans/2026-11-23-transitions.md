@@ -23,7 +23,7 @@ Terms: [`GLOSSARY.md`](../../GLOSSARY.md). Use Session, Record, External session
 4. **One transition event on the server.** LiveSource emits it; the notifier, auto-archive and done-time consume it. On the board, `cause` rides on the existing `session.updated`, and browser notifications follow the same rule. The notifier and the board store stop diffing snapshots.
 5. **Migration.** Group by group, behaviour identical, the existing live-source tests green at every commit. New table tests come with each group. A timer-faking test is pruned only once a named table test covers the same rule.
 6. **FinishActions keeps policy:** the 403/409 refusals, the still-idle check and the per-session lock. LiveSource offers archive, restore and stop as whole operations owning kill → end → save → emit. A tmux listing can't remove a session while its archive is in flight.
-7. **Transition shape:** `{ id, from, to, cause, at }`. The notifier's ≥ 60 s rule is measured from the move into running (see Task 7 for the exact stretch). `doneAt` and the auto-archive age come from the transition into done.
+7. **Transition shape:** `{ id, from, to, cause, at }`. The done ping's 60 s are measured from the stretch start: a live or act transition from done, ended or off the board into running or needs-you; a reconcile transition never starts one (Q17, F5). `doneAt` and the auto-archive age come from the transition into done.
 8. **Timers and checks stay in LiveSource.** The turn-end check, the startup checks and the idle checks feed Observations ("the screen confirms the turn ended") instead of setting status.
 9. **External sessions** use the same module, with no record facts.
 10. **Auto-archive and Kage's own Escape are cause act.**

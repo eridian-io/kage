@@ -152,9 +152,8 @@ describe.runIf(hasTmux && process.platform !== 'win32' && hasScript())(
       });
       let attacher: ReturnType<typeof spawn> | null = null;
       try {
-        notifier.listen();
+        notifier.start();
         await source.start();
-        notifier.seeded();
         expect(await until(() => watched.some((e) => e.type === 'up'))).toBe(true);
         const fire = (event: HookEvent['event']) => {
           const e: HookEvent = {

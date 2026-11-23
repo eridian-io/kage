@@ -295,8 +295,6 @@ async function startLive(
   };
   // B37: untracked files' line counts, re-read only when their size or mtime changed.
   const untracked = new UntrackedCache();
-  // Built after the source and listening before source.start(); late-bound for onLoaded.
-  let notifier: Notifier | null = null;
   const source = new LiveSource({
     tmux,
     watcher,
@@ -338,8 +336,6 @@ async function startLive(
     isTerminalOpen,
     // A failed resume (R63) is reported on the card and here.
     log: (line) => io.err(line),
-    // The loaded sessions were emitted: the notifier's seeds end before early hooks replay.
-    onLoaded: () => notifier?.seeded(),
   });
   // A control-mode client on the same tmux server and session, only while a terminal is open.
   const termBridge = new TerminalBridge({
@@ -367,7 +363,8 @@ async function startLive(
   });
   // stop() also stops the watcher, and is safe on a source that failed part-way through start.
   cleanups.push(() => source.stop());
-  if (pingHost !== null) notifier = startNotifier(cfg, pingHost, source, io, cleanups);
+  // Subscribed before source.start(): the start's reconcile moves ping nothing (ADR 0001).
+  if (pingHost !== null) startNotifier(cfg, pingHost, source, io, cleanups);
   try {
     await source.start();
   } catch (err) {
@@ -393,8 +390,8 @@ async function startLive(
 
 /**
  * Phone pings (spec §5.9): live mode with an `ntfyTopic` only. The notifier subscribes before
- * `source.start()` in seeding mode, so hook events replayed at startup are pinged and sessions
- * already waiting are not; links use `linkHost`. Nothing about ntfy reaches the browser or
+ * `source.start()` and pings only live transitions, so hook events replayed at startup are
+ * pinged and sessions already waiting (reconcile) are not; links use `linkHost`. Nothing about ntfy reaches the browser or
  * the snapshot; the startup line (printed by startServer) names the server's host only. `KAGE_NOTIFY_DONE_AFTER_MS` (whole ms) is a test-only override
  * of the done threshold for the e2e, not documented in USAGE.
  */
@@ -404,7 +401,7 @@ function startNotifier(
   source: LiveSource,
   io: Io,
   cleanups: Cleanup[],
-): Notifier {
+): void {
   const client = new NtfyClient({
     config: { server: cfg.ntfyServer, topic: cfg.ntfyTopic, token: cfg.ntfyToken },
     log: (line) => io.err(line),
@@ -422,12 +419,11 @@ function startNotifier(
     },
     log: (line) => io.err(line),
   });
-  notifier.listen();
+  notifier.start();
   cleanups.push(() => {
     notifier.stop();
     client.close();
   });
-  return notifier;
 }
 
 /** What serve needs from main.ts, passed in: serve.ts must not import main.ts at runtime. */

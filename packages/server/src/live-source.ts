@@ -140,11 +140,6 @@ export interface LiveSourceDeps {
   isTerminalOpen?: (id: string) => boolean;
   /** One line for Kage's log (serve passes stderr): a failed resume (R63). */
   log?: (line: string) => void;
-  /**
-   * Called once in start(), after the loaded sessions are emitted and before the hook events
-   * that came in meanwhile replay: the notifier's seeds end here (Task 6 fix round).
-   */
-  onLoaded?: () => void;
 }
 
 /** At most one activity-driven update and one pane capture per session per this many ms. */
@@ -996,11 +991,8 @@ export class LiveSource implements SessionSource {
     // record saved before phase 4 thereby gets the load time as its doneAt.
     for (const st of this.#sessions.values()) if (!st.placed) this.#apply(st, { kind: 'loaded' });
     for (const st of this.#sessions.values()) this.#emitNow(st);
-    try {
-      this.#d.onLoaded?.();
-    } catch {
-      // a broken listener must not stop the source
-    }
+    // Hooks that came in meanwhile replay below as live transitions; the start's own are
+    // reconcile, so the notifier pings only the former (ADR 0001).
     this.#ready = true;
     if (this.#viewed.size > 0) this.#preview?.setViewed(this.#viewed);
     const early = this.#early;

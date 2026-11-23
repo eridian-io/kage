@@ -1,17 +1,19 @@
 /**
- * The notifier (N3): when to ping the owner's phone. A session that moves into needs-you is
- * pinged after a short hold (a prompt answered at the board sends nothing), once per episode and
- * then not again for `quietMs`; with `onDone`, a session that worked for `doneAfterMs` or more
- * and stopped is pinged too, only from running (never for ended, nor for needs-you → done,
- * which is No or Esc at the board: both are the user's own act, R84). The active time counts
- * from the start of the active stretch, so a prompt inside it counts. At most
- * `maxPerWindow` pings go in any `windowMs`.
+ * The notifier (N3): when to ping the owner's phone. It follows the source's transitions and
+ * their cause (ADR 0001): only a live transition pings. A live move into needs-you is pinged
+ * after a short hold (a prompt answered at the board sends nothing), once per episode and then
+ * not again for `quietMs`; with `onDone`, a live move into done from running is pinged too when
+ * the stretch began `doneAfterMs` or more ago (never for ended, nor for needs-you → done, which
+ * is No or Esc at the board: both are the user's own act, R84). The stretch begins at a live or
+ * act move from off the board, done or ended into running or needs-you, so a prompt inside it
+ * counts; a reconcile move never begins one, so a restart or a reattach pings nothing (R141,
+ * Q17). At most `maxPerWindow` pings go in any `windowMs`.
  *
  * Event driven: no polling. Its only timers are one per session (the hold, or the wait for the
  * quiet period's end of a deferred needs-you, R94) and, while the window is full, one for the
  * "skipped" line; idle, it owns none (spec §5.5, PF5 F16).
  */
-import type { Session, SessionStatus } from '@kage/shared';
+import type { Session, SessionStatus, Transition } from '@kage/shared';
 import type { SessionSource, SourceEvent } from '../source.ts';
 import { type Ping, pingText } from './ntfy.ts';
 
@@ -75,21 +77,22 @@ export function boardLink(host: string, port: number, id: string): string {
 
 interface Tracked {
   status: SessionStatus;
-  /** Bumped on every status change: a hold or a retry belongs to one episode. */
+  /** Bumped on every transition: a hold or a retry belongs to one episode. */
   episode: number;
-  /** When the current active stretch began (first sighting, or leaving done or ended); null while not active. */
+  /**
+   * When the stretch began: a live or act move from off the board, done or ended into running
+   * or needs-you. Kept between running and needs-you; null after done or ended, and after a
+   * reconcile move that would have begun one.
+   */
   activeFrom: number | null;
   lastPingAt: number | null;
   hold: ReturnType<typeof setTimeout> | null;
-  project: string;
-  task: string;
-  external: boolean;
 }
 
-const isActive = (s: SessionStatus) => s === 'running' || s === 'needs-you';
+const isActive = (s: SessionStatus | null) => s === 'running' || s === 'needs-you';
 
 export class Notifier {
-  readonly #source: Pick<SessionSource, 'list' | 'subscribe'>;
+  readonly #source: Pick<SessionSource, 'get' | 'subscribe'>;
   readonly #send: (p: Ping, stillWanted: () => boolean) => Promise<boolean>;
   readonly #link: (id: string) => string | null;
   readonly #host: string;
@@ -102,11 +105,9 @@ export class Notifier {
   #skipped = 0;
   #skipTimer: ReturnType<typeof setTimeout> | null = null;
   #unsubscribe: (() => void) | null = null;
-  /** Between listen() and seeded(): updates are recorded, never pinged. */
-  #seeding = false;
 
   constructor(d: {
-    source: Pick<SessionSource, 'list' | 'subscribe'>;
+    source: Pick<SessionSource, 'get' | 'subscribe'>;
     send: (p: Ping, stillWanted: () => boolean) => Promise<boolean>;
     link: (id: string) => string | null;
     /** The name in an external session's fixed text (cfg.name). */
@@ -128,28 +129,14 @@ export class Notifier {
     this.#log = d.log;
   }
 
-  /** Seeds statuses from list(): nothing already waiting is pinged. */
+  /**
+   * Subscribes; serve calls it before `source.start()`. The start's moves are reconcile, so
+   * sessions already waiting ping nothing, while hook events replayed once the source is ready
+   * are live and ping (the startup gap).
+   */
   start(): void {
     if (this.#unsubscribe) return;
-    const now = this.#clock();
-    for (const s of this.#source.list()) this.#sessions.set(s.id, this.#track(s, now));
     this.#unsubscribe = this.#source.subscribe((e) => this.#onEvent(e));
-  }
-
-  /**
-   * Subscribes before the source has started, in seeding mode: updates only record each
-   * session's status, so the source's first emits (sessions already waiting) ping nothing.
-   * `seeded()` ends it, before the source replays hook events that came in while it loaded:
-   * those are real changes and are pinged (the startup gap).
-   */
-  listen(): void {
-    if (this.#unsubscribe) return;
-    this.#seeding = true;
-    this.#unsubscribe = this.#source.subscribe((e) => this.#onEvent(e));
-  }
-
-  seeded(): void {
-    this.#seeding = false;
   }
 
   /** Clears holds; with nothing pending it owns no timer. */
@@ -161,19 +148,6 @@ export class Notifier {
     this.#flushSkipped();
   }
 
-  #track(s: Session, now: number): Tracked {
-    return {
-      status: s.status,
-      episode: 0,
-      activeFrom: isActive(s.status) ? now : null,
-      lastPingAt: null,
-      hold: null,
-      project: s.project,
-      task: s.task,
-      external: s.external,
-    };
-  }
-
   #onEvent(e: SourceEvent): void {
     if (e.type === 'session.removed') {
       const t = this.#sessions.get(e.id);
@@ -181,50 +155,43 @@ export class Notifier {
       this.#sessions.delete(e.id);
       return;
     }
-    if (e.type !== 'session.updated') return;
-    const s = e.session;
+    if (e.type === 'session.transition') this.#onTransition(e.transition);
+  }
+
+  /**
+   * Every transition is a new episode (a pending hold is dropped); only a live one may hold.
+   * It reads nothing but the transition and, for a done, whether the session is external (a
+   * stable field); the ping text is read when the hold ends.
+   */
+  #onTransition({ id, from, to, cause }: Transition): void {
     const now = this.#clock();
-    let t = this.#sessions.get(s.id);
-    if (this.#seeding) {
-      // Seeding: the state as the source loaded it, with no hold.
-      if (t?.hold) clearTimeout(t.hold);
-      this.#sessions.set(s.id, this.#track(s, now));
-      return;
-    }
+    let t = this.#sessions.get(id);
     if (t === undefined) {
-      // A first sighting after start: needs-you is an episode of its own.
-      t = this.#track(s, now);
-      this.#sessions.set(s.id, t);
-      if (s.status === 'needs-you') this.#hold(s.id, t, 'needs-you');
-      return;
-    }
-    t.project = s.project;
-    t.task = s.task;
-    t.external = s.external;
-    if (s.status === t.status) return;
-    const from = t.status;
-    const activeFor = t.activeFrom === null ? 0 : now - t.activeFrom;
-    t.status = s.status;
-    t.episode += 1;
-    if (t.hold) {
-      clearTimeout(t.hold);
-      t.hold = null;
-    }
-    if (isActive(s.status)) {
-      if (t.activeFrom === null) t.activeFrom = now;
+      t = { status: to, episode: 0, activeFrom: null, lastPingAt: null, hold: null };
+      this.#sessions.set(id, t);
     } else {
-      t.activeFrom = null;
+      t.status = to;
+      t.episode += 1;
+      if (t.hold) {
+        clearTimeout(t.hold);
+        t.hold = null;
+      }
     }
-    if (s.status === 'needs-you') {
-      this.#hold(s.id, t, 'needs-you');
+    const activeFor = t.activeFrom === null ? null : now - t.activeFrom;
+    if (!isActive(to)) t.activeFrom = null;
+    else if (!isActive(from)) t.activeFrom = cause === 'reconcile' ? null : now;
+    if (cause !== 'live') return;
+    if (to === 'needs-you') {
+      this.#hold(id, t, 'needs-you');
     } else if (
-      s.status === 'done' &&
+      to === 'done' &&
       this.#o.onDone &&
       from === 'running' &&
+      activeFor !== null &&
       activeFor >= this.#o.doneAfterMs &&
-      !t.external
+      this.#source.get(id)?.external === false
     ) {
-      this.#hold(s.id, t, 'done');
+      this.#hold(id, t, 'done');
     }
   }
 
@@ -232,7 +199,8 @@ export class Notifier {
    * Waits holdMs, then pings if the session is still in this episode (F3a for done). A
    * needs-you episode that ends its hold inside the quiet period is deferred, not dropped
    * (R94): the same timer slot waits for the quiet period's end and checks again. A done
-   * ping inside the quiet period is dropped.
+   * ping inside the quiet period is dropped. The text comes from the session as it is then
+   * (its project and task, or the fixed text if external); a session that is gone sends nothing.
    */
   #hold(id: string, t: Tracked, kind: Kind): void {
     const episode = t.episode;
@@ -243,6 +211,8 @@ export class Notifier {
     const fire = () => {
       t.hold = null;
       if (!wanted()) return;
+      const s = this.#source.get(id);
+      if (s === undefined) return;
       const now = this.#clock();
       if (t.lastPingAt !== null && now - t.lastPingAt < this.#o.quietMs) {
         if (kind === 'needs-you') t.hold = setTimeout(fire, t.lastPingAt + this.#o.quietMs - now);
@@ -252,9 +222,7 @@ export class Notifier {
       t.lastPingAt = now;
       this.#sentAt.push(now);
       const link = this.#link(id);
-      const ping = t.external
-        ? externalPing(this.#host, link)
-        : pingFor(kind, { id, project: t.project, task: t.task }, link);
+      const ping = s.external ? externalPing(this.#host, link) : pingFor(kind, s, link);
       this.#send(ping, wanted).catch(() => {});
     };
     t.hold = setTimeout(fire, this.#o.holdMs);

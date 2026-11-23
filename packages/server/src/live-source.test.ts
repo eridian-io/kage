@@ -396,7 +396,6 @@ function setup(
     tail?: (path: string) => TailLike;
     /** A real auto-archiver instead of FakeAuto. */
     auto?: (host: AutoArchiveHost) => AutoArchiverLike;
-    onLoaded?: () => void;
     /** Every FakeTail's start() waits while its `wait` is set. */
     tailGate?: TailGate;
     /** Kage's log lines. */
@@ -435,7 +434,6 @@ function setup(
       return opts.auto ? opts.auto(host) : auto;
     },
     isTerminalOpen: (id) => terminals.has(id),
-    ...(opts.onLoaded ? { onLoaded: opts.onLoaded } : {}),
     ...(opts.log ? { log: opts.log } : {}),
   });
   const events: SourceEvent[] = [];
@@ -3448,27 +3446,84 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     expect(auto.host?.autoCandidates()).toEqual([]);
   });
 
-  it('onLoaded runs once, after the loaded sessions are emitted and before early hooks replay', async () => {
-    let atLoaded: Session[] | null = null;
-    let calls = 0;
+  it('sessions already waiting at start ping nothing; a hook that arrived while they loaded does', async () => {
+    // Replaces "onLoaded runs once, after the loaded sessions are emitted and before early hooks
+    // replay" (F7): onLoaded and seeded() are gone; notifier.start() runs before source.start(),
+    // and the cause tells the start's moves (reconcile) from the replayed hooks (live).
     const ctx = setup({
-      windows: [kageWin()],
-      records: [rec()],
-      onLoaded: () => {
-        calls += 1;
-        atLoaded = ctx.updates('k-1');
-      },
+      windows: [kageWin(), kageWin({ windowId: '@3', kageId: 'k-2', paneId: '%3' })],
+      records: [rec(), rec({ kageId: 'k-2', windowId: '@3', worktree: `${ROOT}/shop/.wt/two` })],
     });
+    ctx.tmux.setCapture('%2', pane('permission-bash'));
+    ctx.tmux.setCapture('%3', pane('permission-bash'));
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: ctx.source,
+      send: async (p) => {
+        pings.push(p.click ?? '');
+        return true;
+      },
+      link: (id) => id,
+      hostName: 'box',
+      options: NOTIFY_DEFAULTS,
+      log: () => {},
+    });
+    notifier.start();
     const started = ctx.source.start();
-    // Hooks that arrive while start() loads are kept and replayed once it is ready.
+    // Hooks that arrive while start() loads are kept and replayed once it is ready: k-2 asks.
+    ctx.hooks.fire(hook('SessionStart', '%3'));
+    ctx.hooks.fire(hook('PreToolUse', '%3'));
+    ctx.hooks.fire(hook('PermissionRequest', '%3'));
+    await started;
+    await flush();
+    // k-1's prompt was already on its pane at start: reconcile, so no hold.
+    expect(ctx.source.get('k-1')?.status).toBe('needs-you');
+    expect(ctx.source.get('k-2')?.status).toBe('needs-you');
+    const moves = ctx.events.flatMap((e) =>
+      e.type === 'session.transition' ? [e.transition] : [],
+    );
+    expect(moves.filter((t) => t.id === 'k-1').map((t) => t.cause)).not.toContain('live');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings).toEqual(['k-2']);
+    notifier.stop();
+    await ctx.source.stop();
+  });
+
+  it('tmux down and up while a session waits: no second ping', async () => {
+    const ctx = setup({ windows: [kageWin()], records: [rec()] });
+    ctx.tmux.setCapture('%2', pane('permission-bash'));
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: ctx.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      // No quiet period: only the cause keeps the second ping away.
+      options: { ...NOTIFY_DEFAULTS, quietMs: 0 },
+      log: () => {},
+    });
+    notifier.start();
+    await ctx.source.start();
     ctx.hooks.fire(hook('SessionStart', '%2'));
     ctx.hooks.fire(hook('PreToolUse', '%2'));
-    await started;
-    expect(calls).toBe(1);
-    const seen = atLoaded as Session[] | null;
-    expect(seen?.length).toBeGreaterThan(0);
-    expect(seen?.some((x) => x.status === 'running')).toBe(false);
-    expect(ctx.updates('k-1').at(-1)?.status).toBe('running');
+    ctx.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(3000);
+    expect(pings).toEqual(['shop needs you']);
+    ctx.watcher.emit({ type: 'down' });
+    expect(ctx.source.get('k-1')?.status).toBe('ended');
+    ctx.watcher.emit({ type: 'up' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(ctx.source.get('k-1')?.status).toBe('needs-you');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings).toEqual(['shop needs you']);
+    notifier.stop();
+    await ctx.source.stop();
   });
 
   it('no touch or sync while start() reconciles (only start, once it is ready)', async () => {
@@ -4375,9 +4430,10 @@ describe('LiveSource: a turn that ends without a Stop (hardening Task 7: I2, M1,
   const BUSY = ['✻ Thinking… (esc to interrupt)', '', RULE, '❯ ', RULE, ''].join('\n');
   const DONE_LINE: DisplayLine = { kind: 'say', text: 'Fixed the total.' };
 
-  /** A hooked turn whose tool ran; no Stop comes. */
-  async function turn() {
+  /** A hooked turn whose tool ran; no Stop comes. `before` runs before the source starts. */
+  async function turn(before?: (s: ReturnType<typeof setup>) => void) {
     const s = setup({ windows: [kageWin()], records: [rec()] });
+    before?.(s);
     await s.source.start();
     s.hooks.fire(hook('SessionStart', '%2'));
     s.hooks.fire(hook('UserPromptSubmit', '%2'));
@@ -4488,20 +4544,24 @@ describe('LiveSource: a turn that ends without a Stop (hardening Task 7: I2, M1,
   });
 
   it('a fallback done pings like a Stop: from running, after 60 s of work', async () => {
-    const s = await turn();
+    // Task 7: the notifier starts before the source, as serve does; it used to start after the
+    // turn began and seed the stretch from list(), which start() no longer does.
     const pings: string[] = [];
-    const notifier = new Notifier({
-      source: s.source,
-      send: async (p) => {
-        pings.push(p.title);
-        return true;
-      },
-      link: () => null,
-      hostName: 'box',
-      options: { ...NOTIFY_DEFAULTS, onDone: true },
-      log: () => {},
+    let notifier: Notifier | null = null;
+    const s = await turn((x) => {
+      notifier = new Notifier({
+        source: x.source,
+        send: async (p) => {
+          pings.push(p.title);
+          return true;
+        },
+        link: () => null,
+        hostName: 'box',
+        options: { ...NOTIFY_DEFAULTS, onDone: true },
+        log: () => {},
+      });
+      notifier.start();
     });
-    notifier.start();
     await vi.advanceTimersByTimeAsync(61_000);
     s.tmux.setCapture('%2', IDLE);
     s.tails[0]?.turnEnd();
@@ -4510,7 +4570,7 @@ describe('LiveSource: a turn that ends without a Stop (hardening Task 7: I2, M1,
     expect(s.source.get('k-1')?.status).toBe('done');
     await vi.advanceTimersByTimeAsync(3500);
     expect(pings).toEqual(['shop is done']);
-    notifier.stop();
+    (notifier as Notifier | null)?.stop();
   });
 
   it('a resume over a transcript ending in an interrupt stays Starting Claude…', async () => {
@@ -5101,19 +5161,20 @@ describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Ta
     await s.source.stop();
   });
 
-  it('a restart of a done session its pane redrew within 5 s stays done: no running blink, no done ping, doneAt kept (R141)', async () => {
+  it('a restart with a done session whose pane drew pings nothing (R141, through transitions)', async () => {
+    // Was "a restart of a done session its pane redrew within 5 s stays done: no running blink,
+    // no done ping, doneAt kept (R141)": the same assertions, with onLoaded, listen() and
+    // seeded() replaced by notifier.start() before source.start().
     const doneAt = T0 - 10_000;
-    let notifier: Notifier | null = null;
     const s = setup({
       // Done before the restart; the pane drew within the last 5 s; the transcript's turn ended.
       windows: [kageWin({ activity: Math.floor(T0 / 1000) - 1 })],
       records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT, doneAt })],
       tails: { [TRANSCRIPT]: { now: null } },
-      onLoaded: () => notifier?.seeded(),
     });
     s.tmux.setCapture('%2', IDLE);
     const pings: string[] = [];
-    notifier = new Notifier({
+    const notifier = new Notifier({
       source: s.source,
       send: async (p) => {
         pings.push(p.title);
@@ -5124,7 +5185,7 @@ describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Ta
       options: { ...NOTIFY_DEFAULTS, onDone: true, doneAfterMs: 1000 },
       log: () => {},
     });
-    notifier.listen();
+    notifier.start();
     await s.source.start();
     await flush();
     expect(s.updates('k-1').map((u) => u.status)).not.toContain('running');
@@ -5134,6 +5195,43 @@ describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Ta
     expect(s.source.get('k-1')?.status).toBe('done');
     expect(pings).toEqual([]);
     expect(s.source.finishTarget('k-1')?.record?.doneAt).toBe(doneAt);
+    notifier.stop();
+    await s.source.stop();
+  });
+
+  it('a restart within 5 s of a lost Stop pings nothing: the rebuild and its turn-end check are reconcile (Q17)', async () => {
+    const s = setup({
+      windows: [kageWin({ activity: Math.floor(T0 / 1000) - 1 })],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      tails: { [TRANSCRIPT]: { now: null } },
+    });
+    s.tmux.setCapture('%2', IDLE);
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: s.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      options: { ...NOTIFY_DEFAULTS, onDone: true, doneAfterMs: 1000 },
+      log: () => {},
+    });
+    notifier.start();
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    const moves = s.events.flatMap((e) => (e.type === 'session.transition' ? [e.transition] : []));
+    expect(moves.map((t) => [t.from, t.to, t.cause])).toEqual([
+      [null, 'running', 'reconcile'],
+      ['running', 'done', 'reconcile'],
+    ]);
+    await vi.advanceTimersByTimeAsync(8000);
+    expect(pings).toEqual([]);
     notifier.stop();
     await s.source.stop();
   });
