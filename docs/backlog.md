@@ -94,6 +94,7 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 - **B63** `assertSafeOut` in `release/build.ts` compares resolved paths, not real ones, so a symlink to the home folder or the repo passes as `--out`. Use `realpath` for the parts that exist.
 - **B64** When `systemd-run --user --scope` fails, Kage starts tmux inside the unit (one log line, R123), and then a service restart, `kage update` or `kage uninstall` ends every Claude session. Doctor could say so: a warn line when the service runs but the tmux server isn't in a `kage-tmux-*.scope` (`tmux display -p '#{pid}'` on Kage's socket, then `/proc/<pid>/cgroup`).
 - **B65** `systemd-run --user --scope` was checked on systemd 257 only (the reboot container). Check it on systemd 255 (Ubuntu 24.04) and on a host without `dbus-user-session`.
+- **B66** On macOS the launchd agent appends stdout and stderr to `~/Library/Logs/kage.log` forever: launchd doesn't rotate it (the journal does on Linux). Rotate it, for example with a `newsyslog.d` entry (that needs root, so setup would print it) or by Kage writing a size-capped log itself, and say so in the README.
 
 ## Later
 

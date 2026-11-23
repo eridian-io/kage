@@ -126,16 +126,16 @@ On Windows, clone inside WSL's own file system (for example `~/kage`), not under
 - **`kage status`** shows the version, the service, the board's address and how many sessions need you.
 - **`kage doctor`** checks everything again (the tools, Claude's sign-in, Tailscale, the config, the service, the board, your `PATH`) and says what to fix. It changes nothing.
 - **`kage update`** installs the latest release, checked against its SHA-256 like the installer does, and restarts the service if it was running. It runs only when you ask: Kage never checks for updates on its own. The old program stays next to the new one as `kage.previous`, and if the new one doesn't answer, update prints the command that goes back. `--force` installs the release even if it isn't newer. An npm or checkout install is updated with npm, or with `git pull` and `pnpm build`.
-- **`kage uninstall`** asks, then removes the service, the program and Kage's hooks file. It keeps your projects, their worktrees and branches, the tmux session `kage` with its windows, and Kage's config and state folders; `--purge` removes those two folders too. It never edits your shell's start-up file: it names the lines the installer added, for you to remove. `--yes` skips the question.
+- **`kage uninstall`** asks, then removes the service, the program and Kage's hooks file. It keeps your projects, their worktrees and branches, the tmux session (`kage`, or the `tmuxSession` you set) with its windows, and Kage's config and state folders; `--purge` removes those two folders too. It never edits your shell's start-up file: it names the lines the installer added, for you to remove. `--yes` skips the question.
 
 ## The service
 
 `kage setup` installs Kage as a service, so it starts on boot and comes back if it stops:
 
-- **Linux:** a systemd user unit, `~/.config/systemd/user/kage.service`. Logs: `journalctl --user -u kage`.
+- **Linux:** a systemd user unit, `~/.config/systemd/user/kage.service` (or under the `XDG_CONFIG_HOME` of systemd's user manager, if it has one; one set only in your shell doesn't count). Logs: `journalctl --user -u kage`.
 - **macOS:** a launchd agent, `~/Library/LaunchAgents/io.eridian.kage.plist`. Logs: `~/Library/Logs/kage.log`. (Documented, not observed: see "On macOS".)
 
-The unit holds no secrets: just the program, a `PATH` and two settings. The token stays in the config.
+The unit holds no secrets: just the program and what it adds to the user manager's environment, a `PATH` and two settings, plus these when they are set where you run setup: `KAGE_CLAUDE_BIN`, `CLAUDE_CONFIG_DIR`, `XDG_CONFIG_HOME`, `XDG_STATE_HOME` and `KAGE_TMUX_SOCKET`. The token stays in the config. An `ANTHROPIC_API_KEY` set in your shell never goes into the unit, so Claude in Kage's windows needs its own sign-in (run `claude` once); `kage doctor` reminds you.
 
 **Linger.** A user unit normally stops when you log out, and starts only when you log in. With linger on, systemd starts it at boot and keeps it running. Setup asks to turn it on (`--yes` turns it on; `--no-linger` leaves it off) and says so when it does. To turn it off again: `loginctl disable-linger`. `kage uninstall` leaves linger as it is and reminds you if it is on.
 
@@ -145,7 +145,7 @@ The unit holds no secrets: just the program, a `PATH` and two settings. The toke
 
 **After a reboot**, sessions show as "ended", and you resume the ones you want with `U`.
 
-**The `PATH` the service sees** is the one setup ran with. If you move `claude`, `tmux` or `git` later, run `kage setup` again; `kage doctor` tells you when the service can't find one.
+**The `PATH` the service sees** is the one setup ran with, and so are the settings above. If you move `claude`, `tmux` or `git` later, or change one of those settings, run `kage setup` again; `kage doctor` tells you when the service can't find a program.
 
 ### On WSL
 
