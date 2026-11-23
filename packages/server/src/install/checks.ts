@@ -110,7 +110,7 @@ export async function detectPackageManager(
         ? [['brew', 'brew']]
         : [];
   for (const [cmd, pm] of candidates) {
-    if (!(await run(cmd, ['--version'])).missing) return pm;
+    if (!(await run(cmd, ['--version'], PROBE)).missing) return pm;
   }
   return null;
 }

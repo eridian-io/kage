@@ -133,7 +133,7 @@ On Windows, clone inside WSL's own file system (for example `~/kage`), not under
 `kage setup` installs Kage as a service, so it starts on boot and comes back if it stops:
 
 - **Linux:** a systemd user unit, `~/.config/systemd/user/kage.service`. Logs: `journalctl --user -u kage`.
-- **macOS:** a launchd agent, `~/Library/LaunchAgents/io.eridian.kage.plist`. Logs: `~/Library/Logs/kage.log`.
+- **macOS:** a launchd agent, `~/Library/LaunchAgents/io.eridian.kage.plist`. Logs: `~/Library/Logs/kage.log`. (Documented, not observed: see "On macOS".)
 
 The unit holds no secrets: just the program, a `PATH` and two settings. The token stays in the config.
 
@@ -141,7 +141,7 @@ The unit holds no secrets: just the program, a `PATH` and two settings. The toke
 
 **Waiting for Tailscale.** Kage listens on your Tailscale address. Until Tailscale has one, Kage stops and the service starts it again every 5 seconds; `kage status` says "starting (waiting for Tailscale?)" meanwhile.
 
-**Your sessions outlive the service.** Under systemd, Kage starts tmux in a scope of its own (`systemd-run --user --scope`), so restarting, updating or uninstalling Kage leaves tmux and every Claude session running. If that doesn't work on your machine, Kage logs one line, "couldn't start tmux in a scope of its own", and starts tmux inside the service. Then a restart, `kage update` or `kage uninstall` ends the tmux session and every Claude in it. On macOS the agent is set so launchd leaves tmux running when Kage stops.
+**Your sessions outlive the service.** Under systemd, Kage starts tmux in a scope of its own (`systemd-run --user --scope`), so restarting, updating or uninstalling Kage leaves tmux and every Claude session running. If that doesn't work on your machine, Kage logs one line, "couldn't start tmux in a scope of its own", and starts tmux inside the service. Then a restart, `kage update` or `kage uninstall` ends the tmux session and every Claude in it. On macOS the agent is set so launchd leaves tmux running when Kage stops (documented, not observed).
 
 **After a reboot**, sessions show as "ended", and you resume the ones you want with `U`.
 
@@ -319,7 +319,7 @@ The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `nam
 - Each task runs in its own git worktree, so agents don't trip over each other or over your own work.
 - Claude Code can run commands on your PC. Only add devices you trust to your tailnet.
 - Nothing installs or runs as root. A step that needs root is printed for you to run.
-- The running Kage contacts nothing outside your machine except your ntfy server, and only when you set a topic. `kage update` and the installer download from GitHub, only when you run them, over HTTPS, and check each file against the release's `SHA256SUMS`.
+- The running Kage contacts nothing outside your machine except your ntfy server, and only when you set a topic. `kage update` and the installer download from GitHub, only when you run them, over HTTPS, and check the program against the release's `SHA256SUMS`. `kage update` also runs the new program and checks that it reports the release's version. `kage ping` sends one test ping to your ntfy server.
 - The checksum catches a broken download, not a forged release. To check that a release was built from this repository, verify it with the GitHub CLI: `gh attestation verify kage-linux-x64.gz --repo eridian-io/kage`.
 
 ## Releasing
@@ -330,6 +330,8 @@ For maintainers, and only on the owner's go:
 2. Tag the commit `v<version>` and push the tag.
 
 The release workflow does the rest: it builds and smoke-tests the program for each platform, makes the npm package, `VERSION` and `SHA256SUMS`, attests them, creates the GitHub release and publishes to npm. A version with a `-` (`1.2.0-rc.1`) is a pre-release, which `kage update` and the installer don't pick up. `pnpm release:local` builds the same files for this machine into `dist/release`.
+
+The one-line install fetches `install.sh` from `main`, so the branch that holds it must be merged into `main` before the first tag.
 
 ## Roadmap
 

@@ -28,15 +28,16 @@ export const USAGE = `Usage:
   kage hook <Event>
       Forward one hook event to Kage (Claude runs this; it prints nothing).
   kage ping
-      Send a test ping through ntfy (ntfyTopic in ~/.config/kage/config.json).
+      Send a test ping through ntfy (ntfyTopic in your config file).
   kage doctor
       Check what Kage needs and how it runs, and say what to fix. It changes nothing.
   kage update [--force]
       Install the latest release, checked against its SHA-256, and restart the service.
       Kage never checks for updates on its own. --force installs the release even if it isn't newer.
   kage uninstall [--yes] [--purge]
-      Remove the service and the program. Your projects, worktrees, branches and the tmux
-      session stay. --purge also removes Kage's config and state folders.
+      Remove the service and the program.
+      Your projects, worktrees, branches and the tmux session stay.
+      --purge also removes Kage's config and state folders.
   kage --version
       Print Kage's version.
 

@@ -152,6 +152,19 @@ describe('detectPackageManager', () => {
     expect(await detectPackageManager(t.run, 'win32')).toBeNull();
     expect(t.calls).toEqual([]);
   });
+
+  it('gives each probe the same 5 s limit as the other probes', async () => {
+    const linux = tableRun({});
+    await detectPackageManager(linux.run, 'linux');
+    expect(linux.timeouts).toEqual({
+      'apt-get --version': 5000,
+      'dnf --version': 5000,
+      'pacman --version': 5000,
+    });
+    const mac = tableRun({});
+    await detectPackageManager(mac.run, 'darwin');
+    expect(mac.timeouts).toEqual({ 'brew --version': 5000 });
+  });
 });
 
 describe('installHint', () => {

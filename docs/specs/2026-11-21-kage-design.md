@@ -274,7 +274,7 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 - Kage never resumes sessions by itself after a reboot; the developer chooses which ones to resume.
 - **Resume, as built** (amended 2026-11-22, phase 4): `POST /api/sessions/:id/resume`, 204. It runs under the same per-session action lock as archive and delete (409, "Kage is still finishing the last action on this session."). It checks the same **containment** as delete (B7): the worktree below `<project>/<worktreeDir>`, on its own branch (R71), the branch under `branchPrefix`. 403 for a window Kage didn't create; 409 for an archived session ("Restore the session before resuming it."), one that is still running, one that already has a window, or a worktree that is gone; 503 with no `claude`.
 - The systemd user unit starts Kage after the network and Tailscale are up. Kage owns starting the tmux session, so no tmux unit is needed.
-- **As built** (amended 2026-11-22, phase 6): a user unit can't order itself after `tailscaled.service`, a system unit (host-integration §7.4). So Kage exits while Tailscale has no address, and the unit starts it again every 5 s, with no limit (`Restart=on-failure`, `RestartSec=5`, `StartLimitIntervalSec=0`). Meanwhile `kage status` says "starting (waiting for Tailscale?)". launchd retries at most every 10 s (`ThrottleInterval`).
+- **As built** (amended 2026-11-22, phase 6): a user unit can't order itself after `tailscaled.service`, a system unit (host-integration §7.4). So Kage exits while Tailscale has no address, and the unit starts it again every 5 s, with no limit (`Restart=on-failure`, `RestartSec=5`, `StartLimitIntervalSec=0`). Meanwhile `kage status` says "starting (waiting for Tailscale?)". launchd retries at most every 10 s (`ThrottleInterval`; documented, not observed).
 - **tmux outlives the service** (amended 2026-11-22, phase 6, R122). Under the systemd service, Kage starts a new tmux server in a user scope of its own (`systemd-run --user --scope`), so stopping or restarting `kage.service` (update, setup again, uninstall) leaves tmux and Claude running. If `systemd-run` fails, Kage logs one line and starts tmux the plain way, inside the unit; then a restart, an update or an uninstall ends the tmux session and every Claude in it. The plist sets `AbandonProcessGroup`, so launchd doesn't kill what the job leaves behind (documented, not observed).
 
 ### 5.9 Notifications
@@ -308,19 +308,27 @@ Kage can run commands on the machine, so the defaults are strict:
   - A 401 anywhere returns the board to the login screen.
   - **There is no server-side expiry.** The cookie lasts its 30 days. To sign out every device, change the token and restart Kage.
   - **Without a token**, live mode prints one line on stderr at startup: "No token set: anyone on your tailnet can start and approve tasks." The demo mode doesn't print it.
-- **Outbound calls** (amended 2026-11-22, phase 6, F9). The running server makes one: the ntfy `POST` below. The commands make three more, each only when you run them:
-  - `kage update` downloads `VERSION`, `SHA256SUMS` and the program from the release (HTTPS, verified, §5.13). It runs only on request. Kage never checks for updates in the background.
-  - `install.sh` downloads `SHA256SUMS` and the program the same way (HTTPS, redirects HTTPS too, verified).
+- **Outbound calls** (amended 2026-11-22, phase 6, F9). The running server makes one: the ntfy `POST` below. The commands make the others, each only when you run them:
+  - `kage ping` posts one test ping to the same ntfy server (§5.9).
+  - `kage update` downloads `VERSION`, `SHA256SUMS` and the program from the release (HTTPS; the program checked, §5.13). It runs only on request. Kage never checks for updates in the background.
+  - `install.sh` downloads `SHA256SUMS` and the program the same way (HTTPS, redirects HTTPS too, the program checked).
   - `kage doctor` and `kage setup` send one `GET /` to Kage's own listen address (R105), to see whether the board answers.
+  - `kage setup` looks up a host name you type, through the system's resolver (DNS), to check it is this machine's Tailscale or loopback address.
 - **ntfy** (amended 2026-11-22, phase 5): the ntfy `POST` of §5.9 is the only request the server makes to anything outside the machine, and only when `ntfyTopic` is set. Redirects are refused. The server must be `https:`, or `http:` only on this machine (`localhost`, `127.0.0.0/8`, `[::1]`) or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name), and may carry no user name. The client checks this again before every send, so a bad value can never put the topic on the internet in clear text. A `.ts.net` name is accepted for `http:` without proof that it is on your tailnet: Tailscale Funnel names under `.ts.net` resolve publicly, so use plain `http:` only for a machine on your own tailnet. The tests never call ntfy.sh: they run against a fake server on loopback.
 - **Hook socket:** a Unix socket with `0600` permissions, owned by the user.
 - **Install safety** (amended 2026-11-22, phase 6):
   - **No root.** `install.sh`, `kage setup`, `update` and `uninstall` refuse to run as root, and nothing calls `sudo`. A step that needs root (linger without the polkit right, installing a missing tool) is printed for you to run.
-  - **Checksums over HTTPS.** Every download is checked against its line in the release's `SHA256SUMS`, and nothing is installed on a mismatch or a missing line. That protects against corruption and truncation, not against a compromised release host. To check a release's authenticity, verify its build provenance by hand: `gh attestation verify <file> --repo eridian-io/kage`.
+  - **Checksums over HTTPS.** The program is checked against its line in the release's `SHA256SUMS`, and nothing is installed on a mismatch or a missing line. `VERSION` and `SHA256SUMS` themselves come over HTTPS unchecked; `kage update` runs the new program's `--version`, which must print the release's `VERSION`, before it swaps the file. That protects against corruption and truncation, not against a compromised release host. To check a release's authenticity, verify its build provenance by hand: `gh attestation verify <file> --repo eridian-io/kage`.
   - **HTTPS only.** `KAGE_RELEASE_BASE` must be `https:` (plain `http:` only on loopback, for tests), and so must every redirect. `kage update` also refuses a compressed reply and a body shorter than its length.
   - **No secrets in units.** The unit and the plist hold the program, `PATH`, `MALLOC_ARENA_MAX=2` and `KAGE_SERVICE=1`, nothing else. The token and the ntfy keys stay in the config (`0600` in a `0700` folder).
   - **Kage's files only.** The unit and the plist carry a marker line (`Written by kage setup`). Setup and uninstall refuse a same-name file without it. Kage never writes Claude's configuration (R25): it checks that `~/.claude/.credentials.json` exists and never reads it.
-  - **What doctor may call:** `tmux -V`, `git --version`, `claude --version` and `tailscale status --json` (5 s each), the service manager's read-only state commands, Kage's own socket (`GET /status`) and Kage's own address (`GET /`). Doctor changes nothing.
+  - **What doctor may call**, all of it:
+    - `tmux -V`, `git --version`, `claude --version` and `tailscale status --json`;
+    - `<package manager> --version` (`apt-get`, `dnf` and `pacman` on Linux, `brew` on macOS), to choose the install hint for a missing tool;
+    - the service manager's read-only commands: `systemctl --user is-active kage.service` and `loginctl show-user <uid> -p Linger --value` on Linux, `launchctl version` and `launchctl print gui/<uid>/io.eridian.kage` on macOS;
+    - Kage's own socket (`GET /status`) and Kage's own address (`GET /`).
+
+    The tool and package-manager probes get 5 s each. Doctor also reads the config, the unit or plist and Kage's hooks file, and checks that Claude's credentials file exists. It changes nothing.
 - **Shell safety:** all tmux and git calls use `execFile` with argument arrays, never a shell string. Task text reaches `claude` as a single argument.
 - **Ownership:** stop, pin, archive, delete and resume are refused unless the target window's `@kage_id` matches one of Kage's records (§5.2). Answer and reply also work on external windows.
 
@@ -460,6 +468,7 @@ curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | s
   # Written by kage setup
   [Unit]
   Description=Kage: a dashboard for your Claude Code sessions
+  # User units can't wait for tailscaled.service; Kage exits while Tailscale has no address and systemd starts it again.
   StartLimitIntervalSec=0
 
   [Service]
@@ -643,7 +652,7 @@ The same rule as §6.6 and §6.7: every new sentence a user can read, and a chan
   - "Couldn't download <url>. Nothing was installed."; "Checksum check failed for <file>. Nothing was installed.";
   - "Added <dir> to your PATH in <file>."; "<file> already adds <dir> to your PATH."; "To add <dir> to your PATH, add this line to <file>: <line>"; "Couldn't change <file>. Add this line to it: <line>"; "Open a new terminal to run kage by name.";
   - "Installed <dir>/kage."; “Installed <dir>/kage. Run "kage setup" in a terminal to finish.”.
-- **Usage**, new entries: "Check what Kage needs, ask for its settings, then install and start its service."; "Run it again to change a setting. --yes takes every default and asks nothing."; "Show the service, Kage's address and how many sessions it has."; "Check what Kage needs and how it runs, and say what to fix. It changes nothing."; "Install the latest release, checked against its SHA-256, and restart the service."; "Kage never checks for updates on its own. --force installs the release even if it isn't newer."; "Remove the service and the program. Your projects, worktrees, branches and the tmux…"; "Where kage update downloads from (https; the latest GitHub release by default).".
+- **Usage**, new entries: "Check what Kage needs, ask for its settings, then install and start its service."; "Run it again to change a setting. --yes takes every default and asks nothing."; "Show the service, Kage's address and how many sessions it has."; "Check what Kage needs and how it runs, and say what to fix. It changes nothing."; "Install the latest release, checked against its SHA-256, and restart the service."; "Kage never checks for updates on its own. --force installs the release even if it isn't newer."; "Remove the service and the program."; "Your projects, worktrees, branches and the tmux session stay."; "--purge also removes Kage's config and state folders."; "Where kage update downloads from (https; the latest GitHub release by default)."; and the `kage ping` entry now says "Send a test ping through ntfy (ntfyTopic in your config file).".
 
 ## 7. Performance budgets
 
