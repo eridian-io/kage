@@ -19,6 +19,7 @@ import {
   newTaskOpen,
   now,
   selected,
+  tooManyBoards,
 } from './store.ts';
 import { installView } from './view.ts';
 
@@ -54,7 +55,11 @@ function ReconnectBar() {
   if (c === 'live' || (c === 'connecting' && !hadSnapshot.value)) return null;
   return (
     <div class="k-reconnect" role="status">
-      {hadSnapshot.value ? <>Reconnecting to {host.value}…</> : 'Connecting to Kage…'}
+      {tooManyBoards.value
+        ? 'Too many open boards from this address. Close a board tab and try again.'
+        : hadSnapshot.value
+          ? <>Reconnecting to {host.value}…</>
+          : 'Connecting to Kage…'}
     </div>
   );
 }

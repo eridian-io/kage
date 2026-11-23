@@ -1220,7 +1220,9 @@ describe.runIf(hasTmux && !isWin)('kage serve: live, against a private tmux serv
     try {
       const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(p), KAGE_TMUX_SOCKET: socket });
       expect(await main(['serve', '--allow-no-token'], liveIo(e))).toBe(1);
-      expect(err).toEqual([`Port ${p} is already in use.`]);
+      expect(err).toEqual([
+        `Port ${p} is already in use. Stop the other Kage, or pass --port N.`,
+      ]);
       expect(existsSync(join(e.XDG_RUNTIME_DIR as string, 'kage.sock'))).toBe(false);
     } finally {
       await new Promise<void>((r) => taken.close(() => r()));

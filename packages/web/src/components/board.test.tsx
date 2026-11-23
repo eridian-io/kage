@@ -30,6 +30,7 @@ import {
   termNote,
   termNoteCalm,
   toast,
+  tooManyBoards,
 } from '../store.ts';
 import { installView } from '../view.ts';
 import { Row } from './SessionList.tsx';
@@ -631,6 +632,21 @@ describe('store', () => {
 });
 
 describe('reconnect bar', () => {
+  it('says what to do when this address has too many boards open (429)', async () => {
+    const { container } = render(<Board />);
+    connection.value = 'reconnecting';
+    tooManyBoards.value = true;
+    await Promise.resolve();
+    const bar = q(container, '.k-reconnect');
+    expect(bar.textContent).toBe(
+      'Too many open boards from this address. Close a board tab and try again.',
+    );
+    expect(bar.getAttribute('role')).toBe('status');
+    tooManyBoards.value = false;
+    await Promise.resolve();
+    expect(q(container, '.k-reconnect').textContent).toBe('Reconnecting to my-pc…');
+  });
+
   it('is absent while live', () => {
     const { container } = render(<Board />);
     expect(container.querySelector('.k-reconnect')).toBeNull();

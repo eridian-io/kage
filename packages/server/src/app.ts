@@ -69,7 +69,8 @@ export interface AppDeps {
  */
 export const DEMO =
   'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
-const TOO_MANY_BOARDS = 'Too many open boards from this address.';
+const TOO_MANY_BOARDS =
+  'Too many open boards from this address. Close a board tab and try again.';
 /** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
 const WHOLE = /^\d{1,9}$/;
 
@@ -221,9 +222,6 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
       'Cache-Control': 'no-cache, no-transform',
       'X-Accel-Buffering': 'no',
     };
-    // Hono routes HEAD here too, and a HEAD body is dropped without cancel: a stream
-    // would leave its client (heartbeat and queue) in the hub forever.
-    if (c.req.method === 'HEAD') return new Response(null, { headers });
     // The stream belongs to its session: signing out, or the session's end, closes it (F6).
     const owner = c.get('session');
     if (owner !== '' && !auth.sessions.has(owner)) return c.json({ error: SIGN_IN }, 401);
@@ -232,6 +230,10 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     if (hub.streamsFrom(peer) >= MAX_STREAMS_PER_PEER) {
       return c.json({ error: TOO_MANY_BOARDS }, 429);
     }
+    // Hono routes HEAD here too, and a HEAD body is dropped without cancel: a stream
+    // would leave its client (heartbeat and queue) in the hub forever. The board's check after
+    // a failed stream is a HEAD, so it gets the 401 and 429 above and opens nothing.
+    if (c.req.method === 'HEAD') return new Response(null, { headers });
     return new Response(hub.stream(owner === '' ? null : owner, peer), { headers });
   });
 

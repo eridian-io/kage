@@ -762,7 +762,12 @@ describe('token login (B13)', () => {
     expect(hub.streamsFrom('100.64.0.9')).toBe(16);
     const refused = await record(await from(a, withCookie(req('/api/events'), mine), '100.64.0.9'));
     expect(refused.status).toBe(429);
-    expect(await refused.json()).toEqual({ error: 'Too many open boards from this address.' });
+    expect(await refused.json()).toEqual({
+      error: 'Too many open boards from this address. Close a board tab and try again.',
+    });
+    // The board's check after a failed stream (HEAD) gets the same answer, and opens nothing.
+    const head = new Request(withCookie(req('/api/events'), mine), { method: 'HEAD' });
+    expect((await from(a, head, '100.64.0.9')).status).toBe(429);
     expect(hub.clientCount).toBe(16);
     const other = await from(a, withCookie(req('/api/events'), theirs), '100.64.0.10');
     expect(other.status).toBe(200);

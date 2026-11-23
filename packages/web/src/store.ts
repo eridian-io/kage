@@ -31,6 +31,8 @@ export const selectedId: Signal<string | null> = signal(null);
 export const connection: Signal<'connecting' | 'live' | 'reconnecting'> = signal('connecting');
 /** True when the server answered 401: the board shows the login screen (spec §5.10, F18). */
 export const authRequired: Signal<boolean> = signal(false);
+/** The stream check answered 429: this address holds too many boards (security M3). */
+export const tooManyBoards: Signal<boolean> = signal(false);
 /** A token is set (the snapshot's `auth`): the palette offers Sign out. */
 export const tokenSet: Signal<boolean> = signal(false);
 /** This is the demo (the snapshot's `demo`): the top bar shows a quiet badge (usability U6). */

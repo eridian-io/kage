@@ -1,7 +1,6 @@
 import type { ServerEvent } from '@kage/shared';
 import { batch } from '@preact/signals';
-import { authStatus } from './api.ts';
-import { applyEvent, authRequired, connection } from './store.ts';
+import { applyEvent, authRequired, connection, tooManyBoards } from './store.ts';
 
 const TYPES: ServerEvent['type'][] = [
   'snapshot',
@@ -31,9 +30,11 @@ let active: (() => void) | null = null;
  * or last spoke. Coming back to a visible tab whose last event is older than a heartbeat counts
  * too, and reconnects at once, without the backoff's wait.
  *
- * Each error also asks `GET /api/auth`: a 401 means the board needs signing in, so the stream
- * stops and `authRequired` shows the login screen; signing in calls connect() again. One stream
- * at a time: a new connect() stops the previous one.
+ * Each error also asks `HEAD /api/events`, which opens no stream: a 401 means the board needs
+ * signing in, so the stream stops and `authRequired` shows the login screen; signing in calls
+ * connect() again. A 429 means this address holds too many boards (security M3): `tooManyBoards`
+ * says so until another answer or a snapshot, and the retries go on. One stream at a time: a new
+ * connect() stops the previous one.
  */
 export function connect(
   url = '/api/events',
@@ -74,6 +75,7 @@ export function connect(
     batch(() => {
       if (e.type === 'snapshot') {
         connection.value = 'live';
+        tooManyBoards.value = false;
         delay = retryMs;
       }
       applyEvent(e);
@@ -99,9 +101,11 @@ export function connect(
       retry = setTimeout(open, delay);
       delay = Math.min(delay * 2, maxRetryMs);
     }
-    authStatus().then(
-      (status) => {
-        if (status !== 401 || stopped) return;
+    fetch(url, { method: 'HEAD' }).then(
+      ({ status }) => {
+        if (stopped) return;
+        tooManyBoards.value = status === 429;
+        if (status !== 401) return;
         stop();
         authRequired.value = true;
       },

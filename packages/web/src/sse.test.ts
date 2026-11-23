@@ -9,6 +9,7 @@ import {
   host,
   selectedId,
   sessions,
+  tooManyBoards,
 } from './store.ts';
 
 type Listener = (e: MessageEvent) => void;
@@ -55,12 +56,13 @@ beforeEach(() => {
   selectedId.value = null;
   connection.value = 'connecting';
   authRequired.value = false;
+  tooManyBoards.value = false;
   authStatus = 204;
   authCalls = [];
   vi.stubGlobal(
     'fetch',
-    vi.fn(async (url: string) => {
-      authCalls.push(url);
+    vi.fn(async (url: string, init?: RequestInit) => {
+      authCalls.push(`${init?.method ?? 'GET'} ${url}`);
       return new Response(null, { status: authStatus });
     }),
   );
@@ -71,21 +73,21 @@ afterEach(() => {
   authRequired.value = false;
 });
 
-/** What GET /api/auth answers, and the URLs fetched. */
+/** What the stream check (HEAD /api/events) answers, and the requests made. */
 let authStatus = 204;
 let authCalls: string[] = [];
 
 describe('connect: sign-in (B13)', () => {
-  it('on a stream error asks GET /api/auth; a 401 sets authRequired and stops retrying', async () => {
+  it('on a stream error asks HEAD /api/events; a 401 sets authRequired and stops retrying', async () => {
     authStatus = 401;
     const stop = connect('/api/events', { retryMs: 100 });
     latest().fail();
-    expect(authCalls).toEqual(['/api/auth']);
+    expect(authCalls).toEqual(['HEAD /api/events']);
     await vi.advanceTimersByTimeAsync(0);
     expect(authRequired.value).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(FakeEventSource.all).toHaveLength(1);
-    expect(authCalls).toEqual(['/api/auth']);
+    expect(authCalls).toEqual(['HEAD /api/events']);
     stop();
   });
 
@@ -135,7 +137,7 @@ describe('connect: sign-in (B13)', () => {
     const stop = connect('/api/events', { retryMs: 100 });
     latest().fail();
     await vi.advanceTimersByTimeAsync(0);
-    expect(authCalls).toEqual(['/api/auth']);
+    expect(authCalls).toEqual(['HEAD /api/events']);
     expect(authRequired.value).toBe(false);
     await vi.advanceTimersByTimeAsync(100);
     expect(FakeEventSource.all).toHaveLength(2);
@@ -154,6 +156,49 @@ describe('connect: sign-in (B13)', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(authRequired.value).toBe(false);
     expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('a 429 (too many boards from this address) says so, keeps retrying, and clears on a snapshot', async () => {
+    authStatus = 429;
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tooManyBoards.value).toBe(true);
+    expect(authRequired.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    // Still full: it stays said, no flicker back to plain reconnecting.
+    latest().fail();
+    expect(tooManyBoards.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(FakeEventSource.all).toHaveLength(3);
+    latest().emit('snapshot', {
+      type: 'snapshot',
+      auth: true,
+      demo: false,
+      host: 'my-pc',
+      streamId: 's1',
+      projectsRoot: '/p',
+      archived: 0,
+      sessions: demoSessions(NOW),
+    });
+    expect(tooManyBoards.value).toBe(false);
+    expect(connection.value).toBe('live');
+    stop();
+  });
+
+  it('another answer after a 429 clears it', async () => {
+    authStatus = 429;
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tooManyBoards.value).toBe(true);
+    authStatus = 200;
+    await vi.advanceTimersByTimeAsync(100);
+    latest().fail();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(tooManyBoards.value).toBe(false);
     stop();
   });
 
@@ -403,7 +448,7 @@ describe('the watchdog (reliability I3)', () => {
     expect(connection.value).toBe('reconnecting');
     expect(first.closed).toBe(true);
     // Through the error path: the auth check, then the backoff's retry.
-    expect(authCalls).toEqual(['/api/auth']);
+    expect(authCalls).toEqual(['HEAD /api/events']);
     await vi.advanceTimersByTimeAsync(100);
     expect(FakeEventSource.all).toHaveLength(2);
     expect(connection.value).toBe('reconnecting');
@@ -476,7 +521,7 @@ describe('the watchdog (reliability I3)', () => {
     expect(first.closed).toBe(true);
     expect(FakeEventSource.all).toHaveLength(2);
     expect(connection.value).toBe('reconnecting');
-    expect(authCalls).toEqual(['/api/auth']);
+    expect(authCalls).toEqual(['HEAD /api/events']);
     latest().emit('snapshot', { ...snapshot, streamId: 's2' });
     expect(connection.value).toBe('live');
     stop();

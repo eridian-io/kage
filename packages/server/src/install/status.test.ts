@@ -152,7 +152,7 @@ describe('kage status', () => {
     write({ token: '' });
     const p = io();
     expect(await statusCommand(p.io, deps(manager('starting'), null))).toBe(1);
-    expect(p.out[2]).toBe('Access token: off');
+    expect(p.out[2]).toBe("Access token: off, so Kage won't start. Run kage setup to set one.");
     expect(p.out.at(-1)).toBe('Run kage doctor to see why.');
     write({ token: '', allowNoToken: true });
     const q = io();

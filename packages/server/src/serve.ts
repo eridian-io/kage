@@ -718,7 +718,8 @@ async function startServer(
   } catch (e) {
     await unwind(cleanups);
     const err = e as NodeJS.ErrnoException;
-    if (err.code === 'EADDRINUSE') io.err(`Port ${cfg.port} is already in use.`);
+    if (err.code === 'EADDRINUSE')
+      io.err(`Port ${cfg.port} is already in use. Stop the other Kage, or pass --port N.`);
     else if (err.code === 'EADDRNOTAVAIL')
       io.err(`Can't listen on ${listen.address}: no such address here.`);
     else io.err(`Couldn't start the server: ${oneLine(err)}`);

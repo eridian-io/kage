@@ -117,7 +117,8 @@ async function serviceWords(
  * Whether the config holds an access token (security I3), never the token itself. null
  * without a config file, or with one Kage can't read (doctor says what's wrong with it).
  */
-async function tokenOn(env: NodeJS.ProcessEnv): Promise<boolean | null> {
+/** The access token line: on, off by choice (allowNoToken), or off so live mode won't start. */
+async function tokenLine(env: NodeJS.ProcessEnv): Promise<string | null> {
   const path = configPath(env);
   if (
     !(await stat(path).then(
@@ -127,7 +128,11 @@ async function tokenOn(env: NodeJS.ProcessEnv): Promise<boolean | null> {
   )
     return null;
   try {
-    return (await loadConfig({ env, path })).token !== '';
+    const cfg = await loadConfig({ env, path });
+    if (cfg.token !== '') return 'Access token: on';
+    return cfg.allowNoToken
+      ? 'Access token: off'
+      : "Access token: off, so Kage won't start. Run kage setup to set one.";
   } catch (err) {
     if (err instanceof ConfigError) return null;
     throw err;
@@ -143,8 +148,8 @@ export async function statusCommand(io: Io, deps: CheckDeps): Promise<number> {
   const service = await serviceWords(deps.manager);
   io.out(`Service: ${service.words}`);
   // An old tokenless config stops the service, so this line says so even when nothing answers.
-  const token = await tokenOn(deps.env);
-  if (token !== null) io.out(token ? 'Access token: on' : 'Access token: off');
+  const token = await tokenLine(deps.env);
+  if (token !== null) io.out(token);
   const socket = socketPath(deps.env, deps.platform);
   const status = await deps.status(socket);
   if (status === null) {
