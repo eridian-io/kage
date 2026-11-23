@@ -849,12 +849,14 @@ describe('kage (no command, help, unknown)', () => {
     expect(err).toEqual(['kage restart takes no arguments.']);
     err.length = 0;
     expect(await main(['logs', '-n', '5'], io(env()))).toBe(1);
-    expect(err).toEqual(['kage logs takes no arguments.']);
+    expect(err).toEqual(['kage logs takes only -f (or --follow).']);
     expect(out).toEqual([]);
     expect(USAGE).toContain(
       "  kage restart\n      Restart Kage's service and check that it answers.",
     );
-    expect(USAGE).toContain("  kage logs\n      Follow Kage's log.");
+    expect(USAGE).toContain(
+      "  kage logs [-f]\n      Show the last 100 lines of Kage's log. -f keeps following it.",
+    );
   });
   it('the hooks-path usage line starts Claude in the mode where it asks (U2)', () => {
     expect(USAGE).toContain(

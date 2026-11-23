@@ -375,7 +375,7 @@ Kage can run commands on the machine, so the defaults are strict:
     The tool and package-manager probes get 5 s each. Doctor also reads the config, the unit or plist and Kage's hooks file, and checks that Claude's credentials file exists. It changes nothing.
   - **What `kage restart` and `kage logs` call** (amended 2026-11-23, hardening; usability U9, F20), each only when you run it:
     - `kage restart`: the service manager's availability check and state (as doctor), then its restart (`systemctl --user restart kage.service`, or `launchctl kickstart -k gui/<uid>/io.eridian.kage`), and `GET /status` on Kage's own socket, before and after, until the new process answers (up to 15 s). Nothing goes over the network.
-    - `kage logs`: `journalctl --user -u kage -n 100 -f` on Linux, or `tail -n 100 -f ~/Library/Logs/kage.log` on macOS, with your terminal as its output. Kage's log holds no secret: the token and the ntfy keys never reach it, and ntfy errors are redacted (N1).
+    - `kage logs`: `journalctl --user -u kage -n 100 --no-pager` on Linux, or `tail -n 100 ~/Library/Logs/kage.log` on macOS, with `-f` added only for `kage logs -f` (amended 2026-11-23, hardening, R144), and your terminal as its output. Kage's log holds no secret: the token and the ntfy keys never reach it, and ntfy errors are redacted (N1).
 - **Shell safety:** all tmux and git calls use `execFile` with argument arrays, never a shell string. Task text reaches `claude` as a single argument.
 - **Ownership:** stop, pin, archive, delete and resume are refused unless the target window's `@kage_id` matches one of Kage's records (§5.2). Answer and reply also work on external windows.
 
@@ -467,7 +467,7 @@ curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | s
 4. installs and starts a service: a systemd user unit on Linux (and offers `loginctl enable-linger`, so Kage runs without a login), or a launchd agent on macOS;
 5. prints the address to open, for example `http://my-pc.tail1234.ts.net:8080`, and checks that it answers.
 
-**Other commands:** `kage status` (the service, the address, the session count), `kage update` (downloads the latest release the same verified way, then restarts the service), `kage uninstall` (removes the service and the program; it keeps sessions, worktrees and the config unless `--purge` is given), and `kage doctor` (runs the requirement checks again). (amended 2026-11-23, hardening; usability U9): `kage restart` restarts the installed service (it starts a stopped one too) and waits up to 15 s for the new process to answer `GET /status`, then prints its address; without a service it says to run `kage setup`, or `kage serve` yourself. `kage logs` follows the service's log: `journalctl --user -u kage -n 100 -f`, or `tail -n 100 -f ~/Library/Logs/kage.log` on macOS (`-f` and `--follow` are taken; it follows anyway). Doctor and update point at `kage restart` wherever the service needs a restart.
+**Other commands:** `kage status` (the service, the address, the session count), `kage update` (downloads the latest release the same verified way, then restarts the service), `kage uninstall` (removes the service and the program; it keeps sessions, worktrees and the config unless `--purge` is given), and `kage doctor` (runs the requirement checks again). (amended 2026-11-23, hardening; usability U9): `kage restart` restarts the installed service (it starts a stopped one too) and waits up to 15 s for the new process to answer `GET /status`, then prints its address; without a service it says to run `kage setup`, or `kage serve` yourself. `kage logs` prints the service log's last 100 lines and exits: `journalctl --user -u kage -n 100 --no-pager`, or `tail -n 100 ~/Library/Logs/kage.log` on macOS. `kage logs -f` (or `--follow`) adds `-f` and keeps following (R144). Doctor and update point at `kage restart` wherever the service needs a restart.
 
 **Release artifacts** (built by GitHub Actions for every tag `v*`):
 - a single-executable `kage` for each platform, made with Node's single executable applications (SEA) from the esbuild bundle, with the UI files embedded as assets;
@@ -743,7 +743,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
   - with no service: "Kage's service isn't installed. Run kage setup, or run kage serve yourself."; where a service can't run, the manager's own sentence (§6.8, the services);
   - when the manager refuses: "Couldn't restart the <service name>: <reason>" with "Run kage setup again, or run kage doctor to see why.";
   - "kage restart takes no arguments."; and as root, "Run Kage as your own user, not root.".
-- **`kage logs`** (usability U9; §5.13): with no service, the same sentence as `kage restart`; a log program that won't run: "Couldn't run <command> (<code>)." with "Run kage doctor to see why."; "kage logs takes no arguments.".
+- **`kage logs`** (usability U9; §5.13): with no service, the same sentence as `kage restart`; a log program that won't run: "Couldn't run <command> (<code>)." with "Run kage doctor to see why."; any argument but -f or --follow: "kage logs takes only -f (or --follow)." (R144).
 - **Setup without Tailscale** (usability U14; §5.13): "Tailscale isn't up, so only this machine can open Kage." after the checks when `--host` is loopback; with a terminal and no `--host`, the question "Tailscale isn't up, so only this machine can open Kage. Continue on 127.0.0.1?" (default No), and after yes, "When Tailscale is up, run kage setup again to open Kage from your phone." The Tailscale check itself prints as ! with its own fix in both cases. On a loopback host the token question is "Set an access token? Anyone using this machine can reach Kage." (fix round 1, R145).
 - **Setup, phone pings** (usability U7; §5.13):
   - the question "Send pings to your phone through ntfy?" (default No);
@@ -752,7 +752,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
   - after the test ping: "Sent a test ping. Did it arrive?" (default Yes); no prints "Check the topic in the ntfy app, then run kage ping to try again.";
   - a ping that can't be sent: "Couldn't send the test ping (<reason>). Run kage ping to try again.";
   - with `--yes`, a ping sent: "Sent a test ping to <host>." (§6.7's `kage ping` line).
-- **Usage** (usability U2, U9): the `kage hooks-path` entry now ends “Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default”, so Claude asks before it acts and Kage sees each prompt; new entries "Restart Kage's service and check that it answers." and "Follow Kage's log.".
+- **Usage** (usability U2, U9): the `kage hooks-path` entry now ends “Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default”, so Claude asks before it acts and Kage sees each prompt; new entries "Restart Kage's service and check that it answers." and, under `kage logs [-f]`, "Show the last 100 lines of Kage's log. -f keeps following it." (R144).
 
 ## 7. Performance budgets
 

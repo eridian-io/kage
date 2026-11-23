@@ -204,21 +204,20 @@ describe('kage restart (usability U9)', () => {
   });
 });
 
-describe('kage logs (usability U9)', () => {
-  it('logsArgv: journalctl for the unit, or tail of the plist log file, following', () => {
+describe('kage logs (usability U9, R144)', () => {
+  const JOURNAL = ['--user', '-u', 'kage', '-n', '100', '--no-pager'];
+
+  it('logsArgv: the last 100 lines of the unit or the plist log file; -f only when asked', () => {
     const { m } = manager();
-    expect(logsArgv(m, '/home/u')).toEqual([
-      'journalctl',
-      ['--user', '-u', 'kage', '-n', '100', '-f'],
-    ]);
+    expect(logsArgv(m, '/home/u')).toEqual(['journalctl', JOURNAL]);
+    expect(logsArgv(m, '/home/u', true)).toEqual(['journalctl', [...JOURNAL, '-f']]);
     const l = manager('active', { kind: 'launchd' }).m;
-    expect(logsArgv(l, '/Users/u')).toEqual([
-      'tail',
-      ['-n', '100', '-f', join('/Users/u', 'Library', 'Logs', 'kage.log')],
-    ]);
+    const file = join('/Users/u', 'Library', 'Logs', 'kage.log');
+    expect(logsArgv(l, '/Users/u')).toEqual(['tail', ['-n', '100', file]]);
+    expect(logsArgv(l, '/Users/u', true)).toEqual(['tail', ['-n', '100', '-f', file]]);
   });
 
-  it('logs runs journalctl with inherited output', async () => {
+  it('logs runs journalctl with inherited output: the last lines, then -f or --follow follows', async () => {
     const { m } = manager();
     const spawned: [string, string[]][] = [];
     const spawn = async (cmd: string, args: string[]) => {
@@ -227,13 +226,15 @@ describe('kage logs (usability U9)', () => {
     };
     const o = io();
     expect(await logsCommand([], o.io, { manager: m, home, spawn })).toBe(0);
-    expect(spawned).toEqual([['journalctl', ['--user', '-u', 'kage', '-n', '100', '-f']]]);
-    expect(o.out).toEqual([]);
-    expect(o.err).toEqual([]);
-    // -f and --follow are what it does anyway.
     expect(await logsCommand(['-f'], o.io, { manager: m, home, spawn })).toBe(0);
     expect(await logsCommand(['--follow'], o.io, { manager: m, home, spawn })).toBe(0);
-    expect(spawned).toHaveLength(3);
+    expect(spawned).toEqual([
+      ['journalctl', JOURNAL],
+      ['journalctl', [...JOURNAL, '-f']],
+      ['journalctl', [...JOURNAL, '-f']],
+    ]);
+    expect(o.out).toEqual([]);
+    expect(o.err).toEqual([]);
   });
 
   it("the program's exit code is kage logs' own", async () => {
@@ -247,9 +248,9 @@ describe('kage logs (usability U9)', () => {
     const spawn = async () => {
       throw Object.assign(new Error('spawn journalctl ENOENT'), { code: 'ENOENT' });
     };
-    expect(await logsCommand([], o.io, { manager: m, home, spawn })).toBe(1);
+    expect(await logsCommand(['-f'], o.io, { manager: m, home, spawn })).toBe(1);
     expect(o.err).toEqual([
-      "Couldn't run journalctl --user -u kage -n 100 -f (ENOENT).",
+      "Couldn't run journalctl --user -u kage -n 100 --no-pager -f (ENOENT).",
       'Run kage doctor to see why.',
     ]);
   });
@@ -270,10 +271,21 @@ describe('kage logs (usability U9)', () => {
     expect(spawned).toEqual([]);
   });
 
-  it('refuses other arguments', async () => {
-    const o = io();
-    const spawn = async () => 0;
-    expect(await logsCommand(['-n', '5'], o.io, { manager: manager().m, home, spawn })).toBe(1);
-    expect(o.err).toEqual(['kage logs takes no arguments.']);
+  it('refuses any other argument, and -f given twice is still one -f', async () => {
+    const spawned: string[][] = [];
+    const spawn = async (_c: string, a: string[]) => {
+      spawned.push(a);
+      return 0;
+    };
+    for (const args of [['-n', '5'], ['now'], ['-f', 'x']]) {
+      const o = io();
+      expect(await logsCommand(args, o.io, { manager: manager().m, home, spawn })).toBe(1);
+      expect(o.err).toEqual(['kage logs takes only -f (or --follow).']);
+    }
+    expect(spawned).toEqual([]);
+    expect(
+      await logsCommand(['-f', '--follow'], io().io, { manager: manager().m, home, spawn }),
+    ).toBe(0);
+    expect(spawned).toEqual([[...JOURNAL, '-f']]);
   });
 });

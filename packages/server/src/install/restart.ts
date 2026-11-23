@@ -4,8 +4,9 @@
  *
  * - restart asks the service manager to restart the unit or agent (it starts a stopped one too),
  *   then waits for `GET /status` on the hook socket to answer from the new process, as setup does.
- * - logs runs `journalctl --user -u kage` (systemd) or `tail` of ~/Library/Logs/kage.log (launchd),
- *   following, with this terminal as its output. Kage's log holds no secret: the token and the
+ * - logs prints the last 100 lines of `journalctl --user -u kage` (systemd) or of
+ *   ~/Library/Logs/kage.log (launchd) and exits; with -f it keeps following (R144). This terminal
+ *   is its output. Kage's log holds no secret: the token and the
  *   ntfy keys never reach it, and ntfy errors are redacted (N1).
  *
  * Both are argument arrays, never a shell; nothing runs as root.
@@ -19,12 +20,12 @@ import { type CheckDeps, logHint } from './checks.ts';
 import type { ServiceManager } from './service.ts';
 
 export const RESTART_NO_ARGS = 'kage restart takes no arguments.';
-export const LOGS_NO_ARGS = 'kage logs takes no arguments.';
+export const LOGS_ONLY_FOLLOW = 'kage logs takes only -f (or --follow).';
 const NOT_INSTALLED = "Kage's service isn't installed. Run kage setup, or run kage serve yourself.";
 /** How long the restarted service has to answer (as setup's last check). */
 const WAIT_MS = 15_000;
 const POLL_MS = 200;
-/** The lines `kage logs` shows before it follows. */
+/** The lines `kage logs` shows (before it follows, with -f). */
 const LOG_LINES = '100';
 
 function firstLine(err: unknown): string {
@@ -87,11 +88,25 @@ export async function restartCommand(
   return 1;
 }
 
-/** The command that follows the service's log: journalctl for the unit, tail for the agent's file. */
-export function logsArgv(m: ServiceManager, home: string): [cmd: string, args: string[]] {
+/**
+ * The command that shows the service's log: the last lines of journalctl for the unit (no pager,
+ * so it prints and exits) or tail of the agent's file; `follow` adds -f.
+ */
+export function logsArgv(
+  m: ServiceManager,
+  home: string,
+  follow = false,
+): [cmd: string, args: string[]] {
+  const f = follow ? ['-f'] : [];
   return m.kind === 'systemd'
-    ? ['journalctl', ['--user', '-u', 'kage', '-n', LOG_LINES, '-f']]
-    : ['tail', ['-n', LOG_LINES, '-f', join(home, 'Library', 'Logs', 'kage.log')]];
+    ? ['journalctl', ['--user', '-u', 'kage', '-n', LOG_LINES, '--no-pager', ...f]]
+    : ['tail', ['-n', LOG_LINES, ...f, join(home, 'Library', 'Logs', 'kage.log')]];
+}
+
+/** kage logs' arguments: { follow } for none, -f or --follow (either, any number of times); null otherwise. */
+export function parseLogsArgs(args: string[]): { follow: boolean } | null {
+  if (args.some((a) => a !== '-f' && a !== '--follow')) return null;
+  return { follow: args.length > 0 };
 }
 
 /**
@@ -115,7 +130,7 @@ function spawnInherit(cmd: string, args: string[]): Promise<number> {
   });
 }
 
-/** kage logs; see the file comment. `-f` and `--follow` are taken: it follows anyway. */
+/** kage logs [-f]; see the file comment. */
 export async function logsCommand(
   args: string[],
   io: Io,
@@ -125,8 +140,9 @@ export async function logsCommand(
     spawn?: (cmd: string, args: string[]) => Promise<number>;
   },
 ): Promise<number> {
-  if (args.some((a) => a !== '-f' && a !== '--follow')) {
-    io.err(LOGS_NO_ARGS);
+  const parsed = parseLogsArgs(args);
+  if (parsed === null) {
+    io.err(LOGS_ONLY_FOLLOW);
     return 1;
   }
   const m = deps.manager;
@@ -135,7 +151,7 @@ export async function logsCommand(
     io.err(NOT_INSTALLED);
     return 1;
   }
-  const [cmd, argv] = logsArgv(m, deps.home);
+  const [cmd, argv] = logsArgv(m, deps.home, parsed.follow);
   try {
     return await (deps.spawn ?? spawnInherit)(cmd, argv);
   } catch (err) {

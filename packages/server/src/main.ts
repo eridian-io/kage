@@ -22,8 +22,8 @@ export const USAGE = `Usage:
       Show the service, Kage's address and how many sessions it has.
   kage restart
       Restart Kage's service and check that it answers.
-  kage logs
-      Follow Kage's log.
+  kage logs [-f]
+      Show the last 100 lines of Kage's log. -f keeps following it.
   kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]
       Run the board: live tmux sessions, or the demo sessions with --demo.
       --allow-no-token runs live mode without an access token.
@@ -172,11 +172,12 @@ async function restartMain(args: string[], io: Io): Promise<number> {
   return restartCommand(args, io, await checkDeps(io));
 }
 
-/** `kage logs` (U9): follows the service's log in this terminal. */
+/** `kage logs [-f]` (U9, R144): the service's last lines, or follows them with -f. */
 async function logsMain(args: string[], io: Io): Promise<number> {
-  const { logsCommand, LOGS_NO_ARGS } = await import('./install/restart.ts');
-  if (args.some((a) => a !== '-f' && a !== '--follow')) {
-    io.err(LOGS_NO_ARGS);
+  const { logsCommand, LOGS_ONLY_FOLLOW, parseLogsArgs } = await import('./install/restart.ts');
+  // Refused before checkDeps, so a typo never probes the service manager.
+  if (parseLogsArgs(args) === null) {
+    io.err(LOGS_ONLY_FOLLOW);
     return 1;
   }
   const d = await checkDeps(io);
