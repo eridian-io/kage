@@ -31,6 +31,12 @@ export const USAGE = `Usage:
       Send a test ping through ntfy (ntfyTopic in ~/.config/kage/config.json).
   kage doctor
       Check what Kage needs and how it runs, and say what to fix. It changes nothing.
+  kage update [--force]
+      Install the latest release, checked against its SHA-256, and restart the service.
+      Kage never checks for updates on its own. --force installs the release even if it isn't newer.
+  kage uninstall [--yes] [--purge]
+      Remove the service and the program. Your projects, worktrees, branches and the tmux
+      session stay. --purge also removes Kage's config and state folders.
   kage --version
       Print Kage's version.
 
@@ -39,7 +45,8 @@ Environment:
                     Kage refuses a directory that belongs to another user.
   KAGE_TMUX_SOCKET  Use a separate tmux server (tmux -L <name>).
   KAGE_CLAUDE_BIN   The claude program for new tasks (default: the first claude on PATH).
-  KAGE_HOST, KAGE_PORT, KAGE_NAME  Override the config's host, port and name.`;
+  KAGE_HOST, KAGE_PORT, KAGE_NAME  Override the config's host, port and name.
+  KAGE_RELEASE_BASE  Where kage update downloads from (https; the latest GitHub release by default).`;
 
 export interface Io {
   env: NodeJS.ProcessEnv;
@@ -187,6 +194,35 @@ async function setupMain(args: string[], io: Io): Promise<number> {
   }
 }
 
+/** `kage update`: only when asked, never in the background. */
+async function updateMain(args: string[], io: Io): Promise<number> {
+  const { updateCommand } = await import('./install/update.ts');
+  const d = await checkDeps(io);
+  return updateCommand(args, io, { fetch: d.fetch, mode: d.mode, manager: d.manager, uid: d.uid });
+}
+
+/** `kage uninstall`: asks in this terminal unless --yes. */
+async function uninstallMain(args: string[], io: Io): Promise<number> {
+  const { uninstallCommand } = await import('./install/uninstall.ts');
+  const { ttyPrompter } = await import('./install/prompt.ts');
+  const d = await checkDeps(io);
+  const isTty = (io.stdin as { isTTY?: boolean }).isTTY === true;
+  const asks = !args.includes('--yes') && !args.includes('-y');
+  const prompt = isTty && asks ? ttyPrompter(io.stdin, process.stdout) : null;
+  try {
+    return await uninstallCommand(args, io, {
+      mode: d.mode,
+      manager: d.manager,
+      prompt,
+      uid: d.uid,
+      home: d.home,
+      env: io.env,
+    });
+  } finally {
+    prompt?.close();
+  }
+}
+
 /** Runs one command; a number is the exit code, a Running is a server still up. */
 export async function main(argv: string[], io: Io): Promise<number | Running> {
   const [command, ...rest] = argv;
@@ -219,6 +255,10 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
       return setupMain(rest, io);
     case 'status':
       return statusMain(rest, io);
+    case 'update':
+      return updateMain(rest, io);
+    case 'uninstall':
+      return uninstallMain(rest, io);
     case 'version':
     case '--version':
       io.out(KAGE_VERSION);

@@ -11,7 +11,7 @@ import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
-import { type Io, main, type Running, serveSignals } from './main.ts';
+import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
 
@@ -483,6 +483,25 @@ describe('kage (no command, help, unknown)', () => {
     expect(await main(['doctor', '--fix'], io(env()))).toBe(1);
     expect(err).toEqual(['kage doctor takes no arguments.']);
     expect(out).toEqual([]);
+  });
+  it('kage update and kage uninstall are wired (their option checks, before anything runs)', async () => {
+    expect(await main(['update', '--now'], io(env()))).toBe(1);
+    expect(err).toEqual(['kage update has no option "--now". Run kage --help to see its options.']);
+    err.length = 0;
+    expect(await main(['uninstall', '--all'], io(env()))).toBe(1);
+    expect(err).toEqual([
+      'kage uninstall has no option "--all". Run kage --help to see its options.',
+    ]);
+    expect(out).toEqual([]);
+    expect(USAGE).toContain('kage update [--force]');
+    expect(USAGE).toContain('kage uninstall [--yes] [--purge]');
+    expect(USAGE).toContain('KAGE_RELEASE_BASE');
+  });
+  it('kage update from the sources says how to update a checkout, and downloads nothing', async () => {
+    expect(await main(['update'], io(env()))).toBe(1);
+    expect(err).toEqual([
+      'This Kage runs from a checkout. Update it with git pull and pnpm build.',
+    ]);
   });
   it('an unknown command exits 1', async () => {
     expect(await main(['frobnicate'], io(env()))).toBe(1);
