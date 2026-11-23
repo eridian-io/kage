@@ -103,4 +103,6 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 - **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, and pin the apt packages it installs (tmux, git, iproute2 and procps are unpinned), so `pnpm test:linux` is reproducible.
 - **B19** Split `live-source.ts`: it carries tmux events, hooks, transcripts and pane checks. Pull the pane-capture decision out as a pure function first.
 
+- **B67** (from hardening Task 2, R130) Warn at startup, on stderr, when an explicit `host` is a single label or a `.local` name: Kage then trusts everyone on the local network to answer for that name (spec §5.10).
+- **B68** (from hardening Task 2, R130) Print one stderr line when `--unsafe-listen-all` starts with Tailscale down and no configured host name: the allow-list is then empty, so every request gets 403.
 - **B11** Small hardening and tidying, each optional: per-encoding or weak ETags (one ETag now covers every encoding); case-insensitive `q=` parsing in Accept-Encoding; pixelmatch `includeAA` in the visual tests; CI `cancel-in-progress` only off `main`; add esbuild to `onlyBuiltDependencies` (the owner's call).

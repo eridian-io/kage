@@ -83,11 +83,6 @@ function urlHost(ip: string, p: Parsed): string {
   return p.v === 6 ? `[${bare}]` : bare;
 }
 
-/** The MagicDNS short name: the first label of the MagicDNS name ("box.tail1.ts.net" → "box"). */
-function firstLabel(dnsName: string): string {
-  return dnsName.split('.')[0] ?? '';
-}
-
 function isLoopback(p: Parsed): boolean {
   return p.v === 4 ? inV4(p.n, 0x7f000000, 8) : p.n === 1n;
 }
@@ -95,10 +90,11 @@ function isLoopback(p: Parsed): boolean {
 /**
  * The names the Host and Origin guards trust (security I2): an explicitly configured `host`
  * (a name the user chose is trusted even when it is `.local` or one label), the MagicDNS name
- * and its first label, the bound IP, and `localhost` on a loopback bind only (a browser resolves
- * `localhost` itself, so nobody on the network can answer for it). Never `os.hostname()`, a
- * `.local` name or a single label Kage picked itself: a device on the local network can answer
- * for those over mDNS or LLMNR and rebind them. `cfg.name` is the host pill's label only.
+ * (the full name only, R130), the bound IP, and `localhost` on a loopback bind only (a browser
+ * resolves `localhost` itself, so nobody on the network can answer for it). Never
+ * `os.hostname()`, a `.local` name or a single label Kage picked itself, the MagicDNS first label
+ * included: a device on the local network can answer for those over mDNS or LLMNR and rebind
+ * them. `cfg.name` is the host pill's label only.
  */
 export function hostNamesFor(cfg: KageConfig, address: string, dnsName: string | null): string[] {
   const names: string[] = [];
@@ -108,7 +104,7 @@ export function hostNamesFor(cfg: KageConfig, address: string, dnsName: string |
     if (p === null) names.push(configured);
     else if (p.n !== 0n) names.push(configured.replace(/^\[|\]$/g, ''));
   }
-  if (dnsName) names.push(dnsName, firstLabel(dnsName));
+  if (dnsName) names.push(dnsName);
   const bound = parseIp(address);
   if (bound !== null && bound.n !== 0n) {
     names.push(address.replace(/^\[|\]$/g, ''));
@@ -120,15 +116,15 @@ export function hostNamesFor(cfg: KageConfig, address: string, dnsName: string |
 type Listening = { address: string; dnsName: string | null; tailscaleIp?: string | null };
 
 /**
- * The host to print in "Kage is running at …" (F11): the configured host name; else the
- * MagicDNS first label; else the bound IP (IPv6 bracketed), or for an all-interfaces bind the
+ * The host to print in "Kage is running at …" (F11, R130): the configured host name; else the
+ * MagicDNS name (in full); else the bound IP (IPv6 bracketed), or for an all-interfaces bind the
  * Tailscale IP when known. Each is in hostNamesFor, so the printed address passes its own guard.
  * Never cfg.name and never os.hostname().
  */
 export function displayHost(cfg: KageConfig, listen: Listening): string {
   const configured = cfg.host?.trim() ?? '';
   if (configured !== '' && parseIp(configured) === null) return configured;
-  if (listen.dnsName) return firstLabel(listen.dnsName);
+  if (listen.dnsName) return listen.dnsName;
   const p = parseIp(listen.address);
   if (p === null || p.n === 0n) {
     const ts = listen.tailscaleIp ? parseIp(listen.tailscaleIp) : null;

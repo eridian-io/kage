@@ -236,7 +236,7 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
   (amended 2026-11-22, phase 5): the sentences end in a full stop. **Exception:** the plain-text HTTP refusal of the upgrade "Not found" stays a bare word, the same as the static files' "Not found". A browser's WebSocket can't read it, and the board never shows it, so it is not copy. (amended 2026-11-23, hardening; security I2): a refused Host or Origin, on the upgrade and on the HTTP guards alike, is a whole sentence that says what to set (§5.10, §6.9), because someone who opens Kage under a name it doesn't trust reads it in the browser. The JSON `/api/*` refusals do end in a full stop ("Not found.").
 
   The browser reconnects after 1011 (after 1 s, then 3 s) and then gives up. Every other close ends the terminal and shows the reason, or "The terminal closed." when there is none.
-- **Any `Connection: Upgrade` request is handled by the terminal server**, which refuses every one that isn't a valid terminal upgrade, so no other path can be upgraded. The Host check compares names case-insensitively, with the port. (amended 2026-11-23, hardening): one trailing dot is dropped on both sides, so the trailing-dot FQDN (`my-pc.tailXXXX.ts.net.`) is the same name as `my-pc.tailXXXX.ts.net` and passes.
+- **Any `Connection: Upgrade` request is handled by the terminal server**, which refuses every one that isn't a valid terminal upgrade, so no other path can be upgraded. The Host check compares names case-insensitively, with the port. (amended 2026-11-23, hardening; R130): for a multi-label name one trailing dot is dropped on both sides, so the trailing-dot FQDN (`my-pc.tailXXXX.ts.net.`) is the same name as `my-pc.tailXXXX.ts.net` and passes. A single label keeps its dot and is refused: `box.` skips the MagicDNS search domain and can fall to LLMNR, and `localhost.` is a DNS lookup, not the browser's own `localhost`.
 
 ### 5.7 Preview ports and changed files
 
@@ -302,13 +302,14 @@ Kage can run commands on the machine, so the defaults are strict:
 - **DNS rebinding:** reject requests whose `Host` header isn't the configured host name or IP.
   - **The allow-list** (amended 2026-11-23, hardening; security I2, replaces B12). The `Host` guard, the `Origin` check and the terminal's upgrade trust only:
     - the bound IP (an IPv6 literal written in brackets, `[fd7a:115c:a1e0::1]`);
-    - the MagicDNS name (`tailscale status`, for a Tailscale or all-interfaces bind) and its first label (`box.tail1234.ts.net` and `box`);
+    - the MagicDNS name in full (`tailscale status`, for a Tailscale or all-interfaces bind; `box.tail1234.ts.net`). Not its first label (`box`) by default (R130, security first): a single label can fall to LLMNR on a device whose Tailscale DNS is off. Set `host` to `box` to be reached by it, which trusts the local network like any single label;
     - `host` from the config when it is set: a name you chose there is trusted as written, even a `.local` name or a single label;
     - `localhost`, on a loopback bind only (`127.0.0.0/8` or `::1`). A browser resolves `localhost` itself, so nobody on the network can answer for it.
-  - With `--unsafe-listen-all` the bound address names nothing, so the list is the configured host, the MagicDNS names and the Tailscale IP when it is known.
-  - Names are compared case-insensitively, with the port, and one trailing dot is dropped.
+  - With `--unsafe-listen-all` the bound address names nothing, so the list is the configured host, the MagicDNS name and the Tailscale IP when it is known.
+  - Names are compared case-insensitively, with the port. One trailing dot is dropped for a multi-label name only (§5.6).
+  - Even the MagicDNS name relies on the client device using Tailscale DNS; only the bound IP can't be rebound.
   - **Not trusted:** `os.hostname()` and its short form, any other `.local` name or single label, and `name` from the config (the host pill's label only). On a café or office network a device can answer for those names over mDNS (`.local`) or LLMNR and NBT-NS (single labels, on Windows), point one at its own page, then rebind it to Kage's address and act as a page on Kage's origin. B12 reasoned only about public DNS. Setting `host` to such a name means trusting everyone on your local network.
-  - Kage prints `http://<configured host name, else the MagicDNS first label, else the bound IP>:<port>`, so the address it prints always passes its own guard. `kage setup`'s "didn't answer" line uses the configured host, else the MagicDNS first label, else the Tailscale IP.
+  - Kage prints `http://<configured host name, else the MagicDNS name, else the bound IP>:<port>` (`kage status` and `kage doctor` show the same address), so the address it prints always passes its own guard. The ping links use the configured host, else the MagicDNS name, else the bound IP. `kage setup` offers the MagicDNS name as the host question's default; typing it or its first label leaves `host` unset, and its "didn't answer" line uses the configured host, else the MagicDNS name, else the Tailscale IP.
   - A refused `Host` or `Origin` gets 403 and a sentence that says what to set (§6.9).
 - **CSRF:** every POST and WebSocket needs the header `X-Kage: 1` and a matching `Origin`. As built (amended 2026-11-22, phase 4): a browser can't add `X-Kage` to a WebSocket, so the terminal's upgrade is checked **before it happens**, in this order: the path, `GET` with `Upgrade: websocket`, the `Host` (403), the **exact** `Origin` (`http://<allowed name>:<port>`; a missing one is refused, 403), a live login session from the same address when a token is set (401; amended 2026-11-23, hardening), the sub-protocol `kage.term.v1` (400) and the size in the query (400). A page on another origin can't open a terminal.
 - **Optional token** (as built, amended 2026-11-21, phase 3; sessions amended 2026-11-23, hardening): `token` in the config, at least 16 characters (a shorter one stops Kage at start). When set, every `/api/*` route and the terminal's upgrade need a live login session, except `GET /api/auth`, `POST /api/login` and `POST /api/logout`.
@@ -679,8 +680,8 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
 
 - **Command palette:** "Sign out", in the general group while a token is set. It ends this browser's login and shows the login screen.
 - **Refused Host and Origin** (403, plain text; the HTTP guards and the terminal's upgrade; security I2). They replace the bare words of §5.6 and §6.6:
-  - a refused Host: “Kage doesn't answer to this name. Open the address "kage status" shows, or set "host" in Kage's config file to this name.”
-  - a refused or missing Origin: “Kage only takes requests from a page on its own address. Open the address "kage status" shows, or set "host" in Kage's config file to the name you use.”
+  - a refused Host: “Open the address "kage status" shows. Kage doesn't answer to this name. To use this name, set "host" to it in Kage's config file (this trusts everyone on your local network).”
+  - a refused or missing Origin: “Open the address "kage status" shows. Kage only takes requests from a page on its own address. To use this page's name, set "host" to it in Kage's config file (this trusts everyone on your local network).”
 - **No token, no live mode** (security I3; §5.10):
   - `kage serve` refuses live mode without a token or the opt-out, on one line: "No access token is set, so anyone who can reach Kage could run commands as you." followed by “Run kage setup to set one, or add "allowNoToken": true to <config path>.”;
   - with the opt-out, the startup warning stays as it was: "No token set: anyone on your tailnet can start and approve tasks.";

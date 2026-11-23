@@ -124,27 +124,36 @@ function guarded(hostNames: string[]) {
 }
 
 describe('the Host and Origin allow-list (security I2)', () => {
-  it('trusts the bound IP, the MagicDNS name and its first label, and an explicit host only', async () => {
+  it('trusts the bound IP, the MagicDNS name and an explicit host only (not its first label, R130)', async () => {
     // os.hostname() is "Owners-MacBook.local" here (the mock above); cfg.name is the pill only.
     const r = await resolveListenAddress(
       { ...DEFAULT_CONFIG, host: null, name: 'box' },
       { ...base(), tailscaleDnsName: async () => 'studio.tail1234.ts.net' },
     );
-    expect(r.hostNames).toEqual(['studio.tail1234.ts.net', 'studio', '100.64.0.9']);
-    for (const name of ['owners-macbook.local', 'owners-macbook', 'box']) {
+    expect(r.hostNames).toEqual(['studio.tail1234.ts.net', '100.64.0.9']);
+    for (const name of ['owners-macbook.local', 'owners-macbook', 'box', 'studio']) {
       expect(r.hostNames).not.toContain(name);
     }
     const g = guarded(r.hostNames);
-    // A rebinding attempt: an mDNS (.local), LLMNR (single label) or os.hostname() name.
-    for (const name of ['owners-macbook.local', 'owners-macbook', 'box', 'localhost']) {
+    // A rebinding attempt: an mDNS (.local), LLMNR (single label, the MagicDNS first label and
+    // a trailing-dot label too) or os.hostname() name.
+    for (const name of [
+      'owners-macbook.local',
+      'owners-macbook',
+      'box',
+      'box.',
+      'studio',
+      'studio.',
+      'localhost',
+    ]) {
       expect(await g.host(`${name}:8080`), name).toBe(403);
       expect(await g.origin(name), name).toBe(403);
     }
-    for (const name of ['studio.tail1234.ts.net', 'STUDIO', 'studio', '100.64.0.9']) {
+    for (const name of ['studio.tail1234.ts.net', 'STUDIO.Tail1234.TS.NET', '100.64.0.9']) {
       expect(await g.host(`${name}:8080`), name).toBe(200);
       expect(await g.origin(name), name).toBe(200);
     }
-    // A trailing dot is the same name, and the port is still checked.
+    // A trailing dot on a multi-label name is the same name, and the port is still checked.
     expect(await g.host('studio.tail1234.ts.net.:8080')).toBe(200);
     expect(await g.origin('Studio.Tail1234.ts.net.')).toBe(200);
     expect(await g.host('studio.tail1234.ts.net:9999')).toBe(403);
@@ -163,6 +172,10 @@ describe('the Host and Origin allow-list (security I2)', () => {
     expect(await g6.host('localhost:8080')).toBe(200);
     expect(await g6.origin('[::1]')).toBe(200);
     expect(await g6.origin('localhost')).toBe(200);
+    // localhost. is a DNS lookup, not the browser's own localhost (R130).
+    expect(await g4.host('localhost.:8080')).toBe(403);
+    expect(await g4.origin('localhost.')).toBe(403);
+    expect(await g6.host('localhost.:8080')).toBe(403);
     const ts = await resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base());
     expect(ts.hostNames).not.toContain('localhost');
     expect(await guarded(ts.hostNames).host('localhost:8080')).toBe(403);
@@ -190,14 +203,15 @@ describe('the Host and Origin allow-list (security I2)', () => {
       expect(await g.host(`${typed}:8080`), host).toBe(200);
       expect(await g.origin(typed), host).toBe(200);
     }
+    // A configured single label still refuses its trailing-dot form (R130).
+    const r = await resolveListenAddress({ ...DEFAULT_CONFIG, host: 'box' }, { ...base(), lookup });
+    expect(await guarded(r.hostNames).host('box.:8080')).toBe(403);
+    expect(await guarded(r.hostNames).origin('box.')).toBe(403);
   });
 
   it('hostNamesFor: an all-interfaces bind trusts the configured host and the MagicDNS names', () => {
     const cfg = { ...DEFAULT_CONFIG, host: '0.0.0.0', name: 'box' };
-    expect(hostNamesFor(cfg, '0.0.0.0', 'studio.tail1.ts.net')).toEqual([
-      'studio.tail1.ts.net',
-      'studio',
-    ]);
+    expect(hostNamesFor(cfg, '0.0.0.0', 'studio.tail1.ts.net')).toEqual(['studio.tail1.ts.net']);
     expect(hostNamesFor({ ...cfg, host: '' }, '', null)).toEqual([]);
   });
 
@@ -206,8 +220,8 @@ describe('the Host and Origin allow-list (security I2)', () => {
       { ...DEFAULT_CONFIG, host: '0.0.0.0' },
       { ...base({ unsafeListenAll: true }), tailscaleDnsName: async () => 'studio.tail1.ts.net' },
     );
-    expect(r.hostNames).toEqual(['studio.tail1.ts.net', 'studio', '100.64.0.9']);
-    expect(displayHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, r)).toBe('studio');
+    expect(r.hostNames).toEqual(['studio.tail1.ts.net', '100.64.0.9']);
+    expect(displayHost({ ...DEFAULT_CONFIG, host: '0.0.0.0' }, r)).toBe('studio.tail1.ts.net');
     const noDns = await resolveListenAddress(
       { ...DEFAULT_CONFIG, host: '0.0.0.0' },
       base({ unsafeListenAll: true }),
@@ -230,13 +244,13 @@ describe('displayHost', () => {
       'box.tail.ts.net',
     );
   });
-  it('displayHost prints the MagicDNS first label, else the IP', () => {
+  it('displayHost prints the MagicDNS name in full, else the IP (R130)', () => {
     expect(displayHost(cfg({ host: null, name: 'box' }), at('100.64.0.9', 'studio.t.ts.net'))).toBe(
-      'studio',
+      'studio.t.ts.net',
     );
     expect(
       displayHost(cfg({ host: '100.64.0.7', name: 'box' }), at('100.64.0.7', 'studio.t.ts.net')),
-    ).toBe('studio');
+    ).toBe('studio.t.ts.net');
     expect(displayHost(cfg({ host: null, name: 'box' }), at('100.64.0.9'))).toBe('100.64.0.9');
     expect(
       displayHost(cfg({ host: 'fd7a:115c:a1e0::1', name: 'box' }), at('fd7a:115c:a1e0::1')),

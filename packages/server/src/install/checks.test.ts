@@ -851,12 +851,12 @@ describe('installChecks', () => {
     it("the address doesn't answer here: a warning (it may still open on the phone)", async () => {
       const d = deps(tableRun({}).run, {
         fetch: recordingFetch(new Error('ENOTFOUND')).fetch,
-        status: async () => ({ ...STATUS, url: 'http://box:8080' }),
+        status: async () => ({ ...STATUS, url: 'http://box.tail1234.ts.net:8080' }),
       });
       expect(one(await installChecks(d), 'server')).toEqual({
         id: 'server',
         level: 'warn',
-        label: "Kage is running, but http://box:8080 doesn't answer from here.",
+        label: "Kage is running, but http://box.tail1234.ts.net:8080 doesn't answer from here.",
         fix: "If the board opens on your phone, all is well. If it doesn't, check Tailscale on both devices.",
       });
     });

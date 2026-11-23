@@ -72,7 +72,7 @@ const BUNDLE: RunMode = {
 const PATH = '/home/tester/.local/bin:/usr/local/bin:/usr/bin:/bin';
 const UP: ServerStatus = {
   version: KAGE_VERSION,
-  url: 'http://box:8080',
+  url: 'http://box.tail1234.ts.net:8080',
   sessions: 0,
   needsYou: 0,
   pid: 4242,
@@ -166,7 +166,7 @@ function harness(over: Partial<SetupDeps> = {}, table = GOOD) {
     // The unit answers on the port the config now holds.
     status: async () => ({
       ...UP,
-      url: `http://box:${existsSync(cfgFile) ? readCfg().port : 8080}`,
+      url: `http://box.tail1234.ts.net:${existsSync(cfgFile) ? readCfg().port : 8080}`,
     }),
     fetch: (async (input: string | URL | Request) => {
       urls.push(String(input));
@@ -284,7 +284,10 @@ describe('kage setup --yes on a fresh home', () => {
       },
     ]);
     expect(h.settings).toHaveLength(1);
-    expect(h.out.slice(-2)).toEqual(['Kage is running at http://box:8080', CLAUDE_LINE]);
+    expect(h.out.slice(-2)).toEqual([
+      'Kage is running at http://box.tail1234.ts.net:8080',
+      CLAUDE_LINE,
+    ]);
     // The token is shown once, with where it lives.
     const tokenLines = h.out.filter((l) => l.includes(cfg.token as string));
     expect(tokenLines).toEqual([
@@ -294,7 +297,7 @@ describe('kage setup --yes on a fresh home', () => {
     expect(h.out).toContain('Installed the systemd user unit kage.service.');
     expect(h.out).toContain('Saved your settings in ~/.config/kage/config.json.');
     // One request to Kage's own address (R105).
-    expect(h.urls).toEqual(['http://box:8080/']);
+    expect(h.urls).toEqual(['http://box.tail1234.ts.net:8080/']);
     expect(h.err).toEqual([]);
   });
 
@@ -472,7 +475,7 @@ describe('kage setup: the questions', () => {
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
     expect(s.asked).toEqual([
       'Projects folder [~/code]:',
-      'Host name [box]:',
+      'Host name [box.tail1234.ts.net]:',
       'Port [8080]:',
       'Set an access token? Anyone on your tailnet can reach Kage. [Y/n]',
       "Keep Kage running when you're logged out? [Y/n]",
@@ -514,10 +517,19 @@ describe('kage setup: the questions', () => {
   it('a host name that resolves to a Tailscale address is written as typed', async () => {
     const h = harness({
       lookup: async (n) =>
-        n === 'box.tail1234.ts.net' ? [{ address: '100.101.102.103', family: 4 }] : [],
+        n === 'kage.example.ts.net' ? [{ address: '100.101.102.103', family: 4 }] : [],
     });
+    expect(await setupCommand(['--yes', '--host', 'kage.example.ts.net'], h.io, h.deps)).toBe(0);
+    expect(readCfg().host).toBe('kage.example.ts.net');
+  });
+
+  it('the default is the full MagicDNS name (R130); typing it unsets a configured host', async () => {
+    mkdirSync(join(home, '.config', 'kage'), { recursive: true });
+    mkdirSync(join(home, 'projects'));
+    writeFileSync(cfgFile, JSON.stringify({ host: '127.0.0.1' }));
+    const h = harness();
     expect(await setupCommand(['--yes', '--host', 'box.tail1234.ts.net'], h.io, h.deps)).toBe(0);
-    expect(readCfg().host).toBe('box.tail1234.ts.net');
+    expect(readCfg().host).toBeNull();
   });
 
   it('the MagicDNS short name is never written (it may not resolve, and the service would loop); typing it unsets a host', async () => {
@@ -698,7 +710,7 @@ describe('kage setup: the service', () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(await done).toBe(1);
     expect(h.out.at(-1)).toBe(
-      "Kage didn't answer at http://box:8080. See: journalctl --user -u kage -e",
+      "Kage didn't answer at http://box.tail1234.ts.net:8080. See: journalctl --user -u kage -e",
     );
     expect(poll.count()).toBeGreaterThanOrEqual(4);
     expect(poll.count()).toBeLessThanOrEqual(6);
@@ -735,7 +747,7 @@ describe('kage setup: the service', () => {
     await vi.advanceTimersByTimeAsync(1000);
     expect(await done).toBe(1);
     expect(h.out.at(-1)).toBe(
-      "Kage didn't answer at http://box:8080. See: ~/Library/Logs/kage.log",
+      "Kage didn't answer at http://box.tail1234.ts.net:8080. See: ~/Library/Logs/kage.log",
     );
   });
 
@@ -745,7 +757,7 @@ describe('kage setup: the service', () => {
     });
     expect(await setupCommand(['--yes'], h.io, h.deps)).toBe(1);
     expect(h.out.at(-1)).toBe(
-      'Kage is running, but http://box:8080 answers HTTP 500. See: journalctl --user -u kage -e',
+      'Kage is running, but http://box.tail1234.ts.net:8080 answers HTTP 500. See: journalctl --user -u kage -e',
     );
   });
 });
@@ -846,7 +858,7 @@ describe('kage setup, fix round 1', () => {
           vi.useFakeTimers();
           first();
         }
-        return UP; // http://box:8080
+        return UP; // http://box.tail1234.ts.net:8080
       },
     });
     const done = setupCommand(['--yes', '--port', '9090'], h.io, h.deps);
@@ -854,7 +866,7 @@ describe('kage setup, fix round 1', () => {
     await vi.advanceTimersByTimeAsync(1500);
     expect(await done).toBe(1);
     expect(h.out.at(-1)).toBe(
-      'A Kage at http://box:8080 answers instead, not on port 9090. Another kage serve may be running: stop it, then run kage setup again.',
+      'A Kage at http://box.tail1234.ts.net:8080 answers instead, not on port 9090. Another kage serve may be running: stop it, then run kage setup again.',
     );
     expect(h.urls).toEqual([]);
     expect(polled).toBeGreaterThan(2);

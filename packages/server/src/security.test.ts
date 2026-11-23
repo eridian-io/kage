@@ -9,7 +9,10 @@ import {
   UNKNOWN_HOST,
 } from './security.ts';
 
-const allowed = { hostNames: ['my-pc', '100.64.0.7', 'fd7a:115c::1'], port: 8080 };
+const allowed = {
+  hostNames: ['my-pc', '100.64.0.7', 'fd7a:115c::1', 'box.tail1.ts.net', 'localhost'],
+  port: 8080,
+};
 
 describe('hostGuard', () => {
   const app = new Hono().use(hostGuard(allowed)).get('/', (c) => c.text('ok'));
@@ -72,7 +75,11 @@ const HOSTS: [string | undefined, boolean][] = [
   ['100.64.0.7:8080', true],
   ['[fd7a:115c::1]:8080', true],
   ['[FD7A:115C:0::1]:8080', true],
-  ['my-pc.:8080', true],
+  ['my-pc.:8080', false],
+  ['localhost.:8080', false],
+  ['box.:8080', false],
+  ['box.tail1.ts.net.:8080', true],
+  ['BOX.tail1.ts.net:8080', true],
   ['my-pc..:8080', false],
   ['fd7a:115c::1:8080', false],
   ['evil.example', false],
@@ -86,7 +93,10 @@ const ORIGINS: [string | undefined, boolean][] = [
   ['http://my-pc:8080', true],
   ['http://100.64.0.7:8080', true],
   ['http://[fd7a:115c::1]:8080', true],
-  ['http://MY-PC.:8080', true],
+  ['http://MY-PC.:8080', false],
+  ['http://box.:8080', false],
+  ['http://localhost.:8080', false],
+  ['http://box.tail1.ts.net.:8080', true],
   ['http://my-pc', false],
   ['http://evil.example', false],
   ['http://my-pc:9999', false],
@@ -138,10 +148,12 @@ describe('a rebinding name is refused, with what to set (security I2)', () => {
     expect(await origin.text()).toBe(BAD_ORIGIN);
   });
 
-  it('the refusals are calm sentences that name "host" in the config file', () => {
+  it('the refusals lead with the address to open, then the host hint and what it trusts', () => {
     for (const text of [UNKNOWN_HOST, BAD_ORIGIN]) {
       expect(text).toMatch(/\.$/);
-      expect(text).toContain(`set "host" in Kage's config file`);
+      expect(text.startsWith('Open the address "kage status" shows.')).toBe(true);
+      expect(text).toContain(`set "host" to it in Kage's config file`);
+      expect(text).toContain('(this trusts everyone on your local network)');
       expect(text).not.toMatch(/!|^Error/);
     }
   });

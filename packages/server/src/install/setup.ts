@@ -499,8 +499,12 @@ async function askProjects(
 
 /**
  * The host (F8): taking the default (the MagicDNS name shown) leaves `host` as it is, unset
- * meaning the Tailscale address; typing that short name again unsets a configured one. Any
- * other typed value is written only once Kage could listen on it. undefined: setup must stop.
+ * meaning the Tailscale address. The default shows the full MagicDNS name (R130: Kage no
+ * longer answers to its first label unless `host` names it). Typing the MagicDNS name or its
+ * short name also unsets a configured host: neither is written, because it may not resolve when the
+ * service starts and the service would loop. To be reached by the short name, write it into the
+ * config by hand (§5.10: that trusts the local network). Any other typed value is written only
+ * once Kage could listen on it. undefined: setup must stop.
  */
 async function askHost(
   io: Io,
@@ -519,15 +523,16 @@ async function askHost(
   });
   const own = ownTailscaleIps(statusJson);
   const short = dns?.split('.')[0] ?? null;
-  const def = cur ?? short ?? 'the Tailscale address';
-  // Where Kage is when host is unset, for setup's "didn't answer" line (security I2: never
-  // os.hostname()): the MagicDNS short name, else this machine's Tailscale IP.
-  const at = short ?? own.find((ip) => isIP(ip) === 4) ?? own[0] ?? null;
+  const def = cur ?? dns ?? 'the Tailscale address';
+  // Where Kage is when host is unset, for setup's "didn't answer" line (security I2, R130:
+  // never os.hostname() nor the bare first label): the MagicDNS name, else the Tailscale IP.
+  const at = dns ?? own.find((ip) => isIP(ip) === 4) ?? own[0] ?? null;
   const lookup = deps.lookup ?? ((n: string) => dnsLookup(n, { all: true }));
   for (;;) {
     const answer = f.host ?? (await ask('Host name', def));
     if (answer === def && cur !== null) return { value: cur, change: false, at };
-    if (answer === def || (short !== null && answer.toLowerCase() === short)) {
+    const typed = answer.toLowerCase().replace(/\.$/, '');
+    if (answer === def || (dns !== null && (typed === short || typed === dns))) {
       // The Tailscale address: a configured host goes back to unset (null).
       return { value: null, change: cur !== null || current?.host === '', at };
     }
@@ -647,7 +652,7 @@ function portOf(url: string): number | null {
 }
 
 /**
- * Where Kage should be, for the "didn't answer" line: the host set, else the MagicDNS short
+ * Where Kage should be, for the "didn't answer" line: the host set, else the MagicDNS
  * name, else the Tailscale IP. Each passes Kage's Host guard; os.hostname() doesn't (security
  * I2). With none of them Kage can't have started ("Tailscale isn't running", in the log).
  */

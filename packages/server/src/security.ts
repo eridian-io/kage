@@ -10,20 +10,22 @@ export interface Allowed {
  * Only the bound IP, the MagicDNS names, an explicit `host` and, on loopback, `localhost` pass
  * (security I2); any other name could be answered by a device on the local network.
  */
-export const UNKNOWN_HOST = `Kage doesn't answer to this name. Open the address "kage status" shows, or set "host" in Kage's config file to this name.`;
+export const UNKNOWN_HOST = `Open the address "kage status" shows. Kage doesn't answer to this name. To use this name, set "host" to it in Kage's config file (this trusts everyone on your local network).`;
 
 /** The body of a refused Origin (csrfGuard and the terminal upgrade). */
-export const BAD_ORIGIN = `Kage only takes requests from a page on its own address. Open the address "kage status" shows, or set "host" in Kage's config file to the name you use.`;
+export const BAD_ORIGIN = `Open the address "kage status" shows. Kage only takes requests from a page on its own address. To use this page's name, set "host" to it in Kage's config file (this trusts everyone on your local network).`;
 
 /**
  * Parse a Host header or Origin into bracket-free lowercase hostname and port. One trailing
- * dot is dropped: `box.tail1.ts.net.` is the same DNS name as `box.tail1.ts.net`.
+ * dot is dropped from a multi-label name: `box.tail1.ts.net.` is the same DNS name as
+ * `box.tail1.ts.net`. A single label keeps it (R130): `box.` skips the MagicDNS search domain
+ * and can fall to LLMNR, so it is a different name, and `localhost.` isn't `localhost`.
  */
 function parseAuthority(value: string, scheme = 'http'): { hostname: string; port: string } | null {
   try {
     const u = new URL(`${scheme}://${value}`);
     if (u.username || u.password || u.pathname !== '/' || u.search || u.hash) return null;
-    return { hostname: u.hostname.replace(/^\[|\]$/g, '').replace(/\.$/, ''), port: u.port };
+    return { hostname: dropRootDot(u.hostname.replace(/^\[|\]$/g, '')), port: u.port };
   } catch {
     return null;
   }
@@ -31,7 +33,12 @@ function parseAuthority(value: string, scheme = 'http'): { hostname: string; por
 
 function normalizeName(name: string): string {
   const p = parseAuthority(name.includes(':') ? `[${name.replace(/^\[|\]$/g, '')}]` : name);
-  return p?.hostname ?? name.toLowerCase().replace(/\.$/, '');
+  return p?.hostname ?? dropRootDot(name.toLowerCase());
+}
+
+/** Drops one trailing dot, only when the rest still holds a dot (a multi-label name). */
+function dropRootDot(name: string): string {
+  return /\..*\.$/.test(name) ? name.slice(0, -1) : name;
 }
 
 type Matcher = (hostname: string, p: string, allowNoPort: boolean) => boolean;
