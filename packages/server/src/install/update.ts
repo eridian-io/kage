@@ -31,7 +31,7 @@ import { socketPath } from '../hooks/cli.ts';
 import type { ServerStatus } from '../hooks/server.ts';
 import type { Io } from '../main.ts';
 import { LAUNCHD_LABEL } from './launchd.ts';
-import { KAGE_VERSION, type RunMode } from './runtime.ts';
+import { checkoutOf, KAGE_VERSION, type RunMode } from './runtime.ts';
 import type { ServiceManager, ServiceState } from './service.ts';
 import { fetchStatus } from './status.ts';
 import { SYSTEMD_UNIT } from './systemd.ts';
@@ -64,7 +64,19 @@ const WAIT_MS = 15_000;
 const POLL_MS = 250;
 const ROOT = 'Run Kage as your own user, not root.';
 const BUNDLE = `This Kage came from npm or a build. Update it with: npm install -g ${NPM_NAME}@latest`;
-const SOURCE = 'This Kage runs from a checkout. Update it with git pull and pnpm build.';
+/** Usability U3: a checkout updates with git and a build, then restarts the service. */
+const checkoutUpdate = (dir: string) =>
+  `This Kage runs from a checkout in ${dir}. Update it with: cd ${shellWord(dir)} && git pull && pnpm install && pnpm build, then kage restart.`;
+
+/**
+ * The folder a non-SEA Kage updates in: its checkout; for the sources without `.git`, the
+ * folder that holds packages/ all the same; null for a bundle outside a checkout (npm).
+ */
+function checkoutFor(mode: Exclude<RunMode, { kind: 'sea' }>): string | null {
+  const dir = checkoutOf(mode);
+  if (dir !== null || mode.kind === 'bundle') return dir;
+  return join(dirname(mode.script), '..', '..', '..');
+}
 
 function loopback(host: string): boolean {
   const h = host.replace(/^\[|\]$/g, '');
@@ -524,7 +536,8 @@ export async function updateCommand(args: string[], io: Io, deps: UpdateDeps): P
   // Not a SEA: nothing to replace here, so this comes before anything else.
   const mode = deps.mode;
   if (mode.kind !== 'sea') {
-    io.err(mode.kind === 'bundle' ? BUNDLE : SOURCE);
+    const dir = checkoutFor(mode);
+    io.err(dir === null ? BUNDLE : checkoutUpdate(dir));
     return 1;
   }
   if (deps.uid === 0) {

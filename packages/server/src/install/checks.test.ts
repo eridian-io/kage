@@ -633,11 +633,7 @@ describe('installChecks', () => {
 
     it.each([
       ['missing', "The service isn't installed.", 'Run kage setup to install the service.'],
-      [
-        'inactive',
-        "The service is installed but isn't running.",
-        'Run kage setup again to start it.',
-      ],
+      ['inactive', "The service is installed but isn't running.", 'Start it with: kage restart'],
       [
         'failed',
         'The service has stopped after an error.',
@@ -811,19 +807,35 @@ describe('installChecks', () => {
         id: 'server',
         level: 'fail',
         label: "Kage isn't running.",
-        fix: 'Start it with kage serve, or see the service log: journalctl --user -u kage -e',
+        fix: 'Start it with kage restart, or see the service log: journalctl --user -u kage -e',
       });
       expect(f.urls).toEqual([]);
     });
 
-    it('no answer and no service installed: the fix is kage serve', async () => {
-      expect(one(await installChecks(deps(tableRun({}).run)), 'server').fix).toBe(
-        'Start it with kage serve.',
-      );
+    it('no answer, no config and no service (a fresh machine): a warning that points at setup (U8)', async () => {
+      const notSetUp = {
+        id: 'server',
+        level: 'warn',
+        label: "Kage isn't running.",
+        fix: 'Run kage setup.',
+      };
+      expect(one(await installChecks(deps(tableRun({}).run)), 'server')).toEqual(notSetUp);
       const m = fakeManager('missing', null);
-      expect(one(await installChecks(deps(tableRun({}).run, { manager: m })), 'server').fix).toBe(
-        'Start it with kage serve.',
+      expect(one(await installChecks(deps(tableRun({}).run, { manager: m })), 'server')).toEqual(
+        notSetUp,
       );
+    });
+
+    it('no answer with a config but no service (--no-service): fails, the fix is kage serve', async () => {
+      writeConfig({ projectsRoot: dir, token: 'invented-token-0123456789' });
+      for (const manager of [null, fakeManager('missing', null)]) {
+        expect(one(await installChecks(deps(tableRun({}).run, { manager })), 'server')).toEqual({
+          id: 'server',
+          level: 'fail',
+          label: "Kage isn't running.",
+          fix: 'Start it with kage serve.',
+        });
+      }
     });
 
     it('the address answers something else: fail with the status', async () => {
@@ -880,7 +892,7 @@ describe('installChecks', () => {
       const status = async () => ({ ...STATUS, url: 'ftp://x' });
       const systemd = deps(tableRun({}).run, { status, manager: fakeManager('active', null) });
       expect(one(await installChecks(systemd), 'server').fix).toBe(
-        'Restart it with systemctl --user restart kage, then run kage doctor again.',
+        'Restart it with kage restart, then run kage doctor again.',
       );
       const launchd = deps(tableRun({}).run, {
         status,
@@ -889,7 +901,7 @@ describe('installChecks', () => {
         manager: fakeManager('active', null, { kind: 'launchd', name: 'launchd agent' }),
       });
       expect(one(await installChecks(launchd), 'server').fix).toBe(
-        'Restart it with launchctl kickstart -k gui/501/io.eridian.kage, then run kage doctor again.',
+        'Restart it with kage restart, then run kage doctor again.',
       );
     });
 
@@ -1016,6 +1028,35 @@ describe('installChecks', () => {
         },
       ]);
     });
+
+    it.each([
+      ['kage-hook.mjs beside kage.mjs (F17)', true],
+      ['kage.mjs (an older build)', false],
+    ])(
+      "a checkout's build: ✓, with what to do if the checkout moves (U4): %s",
+      async (_n, light) => {
+        // A versioned folder name, which would otherwise read as "may not stay there".
+        const checkout = join(dir, 'v1.2.3', 'kage');
+        mkdirSync(join(checkout, '.git'), { recursive: true });
+        const dist = join(checkout, 'packages', 'server', 'dist');
+        const script = fakeTool(dist, 'kage.mjs');
+        if (light) fakeTool(dist, 'kage-hook.mjs');
+        const d = deps(tableRun({}).run);
+        await writeHooksSettings(
+          stateDir(d.env),
+          hookArgv({ kind: 'bundle', node: '/usr/bin/node', script }),
+        );
+        const program = light ? join(dist, 'kage-hook.mjs') : script;
+        expect(byId(await installChecks(d), 'install-path')).toEqual([
+          {
+            id: 'install-path',
+            level: 'ok',
+            label: `Claude's hooks run this checkout's build (${program}). If you move the checkout, run kage setup again.`,
+            fix: null,
+          },
+        ]);
+      },
+    );
 
     it('the hooks settings file naming a program that is gone warns', async () => {
       const exe = join(dir, "it's gone", 'kage');

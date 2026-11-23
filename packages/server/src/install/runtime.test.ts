@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  checkoutOf,
   ENTRY,
   entryFor,
   hookArgv,
@@ -313,5 +314,43 @@ describe('tmuxServerScope (R122)', () => {
   it('from a terminal, or under launchd (AbandonProcessGroup instead): none', () => {
     expect(tmuxServerScope(false, 'linux')).toBeUndefined();
     expect(tmuxServerScope(true, 'darwin')).toBeUndefined();
+  });
+});
+
+describe('checkoutOf (usability U3)', () => {
+  const at = (...p: string[]) => join('/w', 'kage', ...p);
+  const layout = (files: string[]) => (p: string) => files.includes(p);
+  const git = at('.git');
+  const dist = (name: string) => at('packages', 'server', 'dist', name);
+
+  it.each([
+    ['the bundle', { kind: 'bundle', node: '/n', script: dist('kage.mjs') }],
+    ['the light hook entry (F17)', { kind: 'bundle', node: '/n', script: dist('kage-hook.mjs') }],
+    [
+      'the sources',
+      { kind: 'source', node: '/n', script: at('packages', 'server', 'src', 'main.ts') },
+    ],
+  ] as const)('%s in <dir>/packages/server with <dir>/.git: <dir>', (_name, m) => {
+    expect(checkoutOf(m, layout([git]))).toBe(at());
+  });
+
+  it('no .git two levels above packages/server: not a checkout (the npm package, a copy)', () => {
+    expect(checkoutOf({ kind: 'bundle', node: '/n', script: dist('kage.mjs') }, layout([]))).toBe(
+      null,
+    );
+  });
+
+  it('a bundle elsewhere, or a SEA: null, whatever .git is near', () => {
+    const npm = join('/g', 'node_modules', '@eridian-io', 'kage', 'kage.mjs');
+    expect(checkoutOf({ kind: 'bundle', node: '/n', script: npm }, () => true)).toBeNull();
+    const web = at('packages', 'web', 'dist', 'kage.mjs');
+    expect(checkoutOf({ kind: 'bundle', node: '/n', script: web }, () => true)).toBeNull();
+    expect(checkoutOf({ kind: 'sea', exe: at('kage') }, () => true)).toBeNull();
+  });
+
+  it('by default it looks at the file system: this repository, run from the sources', () => {
+    expect(checkoutOf({ kind: 'source', node: '/n', script: MAIN })).toBe(
+      join(MAIN, '..', '..', '..', '..'),
+    );
   });
 });

@@ -20,12 +20,16 @@ export const USAGE = `Usage:
       Run it again to change a setting. --yes takes every default and asks nothing.
   kage status
       Show the service, Kage's address and how many sessions it has.
+  kage restart
+      Restart Kage's service and check that it answers.
+  kage logs
+      Follow Kage's log.
   kage serve [--demo] [--unsafe-listen-all] [--allow-no-token] [--port N]
       Run the board: live tmux sessions, or the demo sessions with --demo.
       --allow-no-token runs live mode without an access token.
   kage hooks-path
       Write the Claude settings that send hook events to Kage, and print the file's path.
-      Start Claude with: claude --settings "$(kage hooks-path)"
+      Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default
   kage hook <Event>
       Forward one hook event to Kage (Claude runs this; it prints nothing).
   kage ping
@@ -94,7 +98,7 @@ export function currentSettings(env: NodeJS.ProcessEnv): Promise<string | null> 
  * the server's path (N1, PF5 F15). The modules load here, so `kage hook` stays light.
  */
 async function pingCommand(io: Io): Promise<number> {
-  const { ConfigError, configPath, displayPath, loadConfig } = await import('./config.ts');
+  const { ConfigError, loadConfig } = await import('./config.ts');
   const { NtfyClient, redact } = await import('./notify/ntfy.ts');
   let cfg: Awaited<ReturnType<typeof loadConfig>>;
   try {
@@ -107,8 +111,7 @@ async function pingCommand(io: Io): Promise<number> {
     throw err;
   }
   if (cfg.ntfyTopic === '') {
-    const home = io.env.HOME || io.env.USERPROFILE || homedir();
-    io.err(`No ntfyTopic in ${displayPath(configPath(io.env), home)}.`);
+    io.err('No ntfyTopic yet. Run kage setup to set up phone pings.');
     return 1;
   }
   // The client never says why a try failed, so the fetch it uses remembers it.
@@ -183,6 +186,27 @@ async function statusMain(args: string[], io: Io): Promise<number> {
   }
   const { statusCommand } = await import('./install/status.ts');
   return statusCommand(io, await checkDeps(io));
+}
+
+/** `kage restart` (U9): its argument check comes before the service manager is looked up. */
+async function restartMain(args: string[], io: Io): Promise<number> {
+  const { restartCommand, RESTART_NO_ARGS } = await import('./install/restart.ts');
+  if (args.length > 0) {
+    io.err(RESTART_NO_ARGS);
+    return 1;
+  }
+  return restartCommand(args, io, await checkDeps(io));
+}
+
+/** `kage logs` (U9): follows the service's log in this terminal. */
+async function logsMain(args: string[], io: Io): Promise<number> {
+  const { logsCommand, LOGS_NO_ARGS } = await import('./install/restart.ts');
+  if (args.some((a) => a !== '-f' && a !== '--follow')) {
+    io.err(LOGS_NO_ARGS);
+    return 1;
+  }
+  const d = await checkDeps(io);
+  return logsCommand(args, io, { manager: d.manager, home: d.home });
 }
 
 /** `kage setup`: its questions go to this terminal, when stdin is one. */
@@ -264,6 +288,10 @@ export async function main(argv: string[], io: Io): Promise<number | Running> {
       return setupMain(rest, io);
     case 'status':
       return statusMain(rest, io);
+    case 'restart':
+      return restartMain(rest, io);
+    case 'logs':
+      return logsMain(rest, io);
     case 'update':
       return updateMain(rest, io);
     case 'uninstall':

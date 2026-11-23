@@ -3,7 +3,13 @@
  * about anything that isn't right. It changes nothing; see checks.ts for what it may call.
  */
 import type { Io } from '../main.ts';
-import { type CheckDeps, formatChecks, installChecks, requirementChecks } from './checks.ts';
+import {
+  type CheckDeps,
+  formatChecks,
+  installChecks,
+  NO_CONFIG,
+  requirementChecks,
+} from './checks.ts';
 import { KAGE_VERSION } from './runtime.ts';
 
 /** 0 when nothing failed (warnings are fine), else 1. */
@@ -28,6 +34,11 @@ export async function doctorCommand(args: string[], io: Io, deps: CheckDeps): Pr
   if (all.some((c) => c.level === 'fail')) {
     io.out('Fix the ✗ lines, then run kage doctor again.');
     return 1;
+  }
+  // U8: before setup, the next step is setup, not a look at the ! lines.
+  if (all.some((c) => c.id === 'config' && c.label === NO_CONFIG)) {
+    io.out('Run kage setup to finish.');
+    return 0;
   }
   io.out(
     all.some((c) => c.level === 'warn')

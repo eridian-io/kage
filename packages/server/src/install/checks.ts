@@ -19,10 +19,9 @@ import { SETTINGS_FILE } from '../hooks/settings.ts';
 import { stateDir } from '../state/store.ts';
 import { tailscaleCommand } from '../tailscale.ts';
 import { parseTmuxVersion } from '../tmux/client.ts';
-import { LAUNCHD_LABEL } from './launchd.ts';
 import { pathAdvice, pathRcFiles } from './path-rc.ts';
 import type { Run, RunResult } from './run.ts';
-import type { RunMode } from './runtime.ts';
+import { checkoutOf, type RunMode } from './runtime.ts';
 import type { ServiceManager, ServiceState } from './service.ts';
 
 export type CheckLevel = 'ok' | 'warn' | 'fail';
@@ -363,12 +362,12 @@ export async function installChecks(d: CheckDeps): Promise<Check[]> {
 
   const service = await serviceChecks(d);
   checks.push(...service.checks);
-  checks.push(await serverCheck(d, service.installed));
+  checks.push(await serverCheck(d, service.installed, cfgCheck?.label !== NO_CONFIG));
   checks.push(...(await installPathChecks(d)));
   return checks;
 }
 
-const NO_CONFIG = 'No config yet. Run kage setup.';
+export const NO_CONFIG = 'No config yet. Run kage setup.';
 
 async function configCheck(cfg: KageConfig, file: string, shown: string): Promise<Check> {
   let mode: number;
@@ -414,7 +413,8 @@ async function findOnPath(name: string, pathVar: string): Promise<string | null>
   return null;
 }
 
-function logHint(m: ServiceManager): string {
+/** Where the service's log is, as a user reads or runs it (doctor, kage restart). */
+export function logHint(m: ServiceManager): string {
   return m.kind === 'systemd' ? 'journalctl --user -u kage -e' : '~/Library/Logs/kage.log';
 }
 
@@ -468,7 +468,7 @@ async function serviceChecks(d: CheckDeps): Promise<{ checks: Check[]; installed
         warn(
           'service',
           "The service is installed but isn't running.",
-          'Run kage setup again to start it.',
+          'Start it with: kage restart',
         ),
       );
       break;
@@ -517,31 +517,37 @@ function firstLine(text: string): string {
   return line.length > 160 ? `${line.slice(0, 159)}…` : line;
 }
 
-/** How to restart Kage: its service when one is installed, else kage serve. */
+/** How to restart Kage: kage restart when its service is installed (U9), else kage serve. */
 function restartHint(d: CheckDeps, serviceInstalled: boolean): string {
-  const m = d.manager;
-  if (m && serviceInstalled) {
-    const how =
-      m.kind === 'systemd'
-        ? 'systemctl --user restart kage'
-        : `launchctl kickstart -k gui/${d.uid ?? '$(id -u)'}/${LAUNCHD_LABEL}`;
-    return `Restart it with ${how}, then run kage doctor again.`;
-  }
-  return 'Restart Kage (kage serve) and run kage doctor again.';
+  return d.manager && serviceInstalled
+    ? 'Restart it with kage restart, then run kage doctor again.'
+    : 'Restart Kage (kage serve) and run kage doctor again.';
 }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-async function serverCheck(d: CheckDeps, serviceInstalled: boolean): Promise<Check> {
+/**
+ * Usability U8: one answer to "how do I start Kage". With its service, kage restart; with a config
+ * but no service (setup --no-service), kage serve; with neither, Kage isn't set up yet, so that is
+ * a warning whose fix is setup, not a ✗ that points away from it.
+ */
+async function serverCheck(
+  d: CheckDeps,
+  serviceInstalled: boolean,
+  configured: boolean,
+): Promise<Check> {
   const status = await d.status(socketPath(d.env, d.platform));
   if (status === null) {
-    return fail(
-      'server',
-      "Kage isn't running.",
-      d.manager && serviceInstalled
-        ? `Start it with kage serve, or see the service log: ${logHint(d.manager)}`
-        : 'Start it with kage serve.',
-    );
+    if (d.manager && serviceInstalled) {
+      return fail(
+        'server',
+        "Kage isn't running.",
+        `Start it with kage restart, or see the service log: ${logHint(d.manager)}`,
+      );
+    }
+    return configured
+      ? fail('server', "Kage isn't running.", 'Start it with kage serve.')
+      : warn('server', "Kage isn't running.", 'Run kage setup.');
   }
   let url: URL | null = null;
   try {
@@ -656,6 +662,15 @@ async function installPathChecks(d: CheckDeps): Promise<Check[]> {
           'install-path',
           `Claude's hooks run ${program}, which isn't there anymore.`,
           'Restart Kage so it writes them again: run kage serve, or kage setup for the service.',
+        ),
+      );
+    } else if (checkoutOf({ kind: 'bundle', node: '', script: program }) !== null) {
+      // U4: a checkout's build lasts as long as the checkout stays where it is (F17: the light
+      // hook entry beside kage.mjs counts too).
+      checks.push(
+        ok(
+          'install-path',
+          `Claude's hooks run this checkout's build (${program}). If you move the checkout, run kage setup again.`,
         ),
       );
     } else if (mayNotLast(program, d.env.TMPDIR)) {

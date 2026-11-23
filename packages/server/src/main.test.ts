@@ -11,6 +11,7 @@ import { HOOK_EVENTS } from './hooks/event.ts';
 import { hookCommand, SettingsWriteError } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
+import { shellWord } from './install/update.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
 import {
   limitServer,
@@ -679,9 +680,7 @@ describe('kage ping (against the fake ntfy, R85)', () => {
     writeConfig(e, { name: 'box' });
     expect(await main(['ping'], io(e))).toBe(1);
     expect(out).toEqual([]);
-    expect(err).toEqual([
-      `No ntfyTopic in ${join(e.XDG_CONFIG_HOME as string, 'kage', 'config.json')}.`,
-    ]);
+    expect(err).toEqual(['No ntfyTopic yet. Run kage setup to set up phone pings.']);
   });
 
   it('a refused ping: the redacted reason and exit 1, without the topic', async () => {
@@ -810,11 +809,29 @@ describe('kage (no command, help, unknown)', () => {
     expect(USAGE).toContain('kage uninstall [--yes] [--purge]');
     expect(USAGE).toContain('KAGE_RELEASE_BASE');
   });
-  it('kage update from the sources says how to update a checkout, and downloads nothing', async () => {
+  it('kage update from the sources says how to update this checkout, and downloads nothing', async () => {
+    const checkout = join(MAIN, '..', '..', '..', '..');
     expect(await main(['update'], io(env()))).toBe(1);
     expect(err).toEqual([
-      'This Kage runs from a checkout. Update it with git pull and pnpm build.',
+      `This Kage runs from a checkout in ${checkout}. Update it with: cd ${shellWord(checkout)} && git pull && pnpm install && pnpm build, then kage restart.`,
     ]);
+  });
+  it('kage restart and kage logs are wired (their argument checks, before anything runs)', async () => {
+    expect(await main(['restart', 'now'], io(env()))).toBe(1);
+    expect(err).toEqual(['kage restart takes no arguments.']);
+    err.length = 0;
+    expect(await main(['logs', '-n', '5'], io(env()))).toBe(1);
+    expect(err).toEqual(['kage logs takes no arguments.']);
+    expect(out).toEqual([]);
+    expect(USAGE).toContain(
+      "  kage restart\n      Restart Kage's service and check that it answers.",
+    );
+    expect(USAGE).toContain("  kage logs\n      Follow Kage's log.");
+  });
+  it('the hooks-path usage line starts Claude in the mode where it asks (U2)', () => {
+    expect(USAGE).toContain(
+      'Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default',
+    );
   });
   it('an unknown command exits 1', async () => {
     expect(await main(['frobnicate'], io(env()))).toBe(1);

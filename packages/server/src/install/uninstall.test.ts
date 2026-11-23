@@ -306,6 +306,28 @@ describe('kage uninstall', () => {
     ]);
   });
 
+  it.each([
+    ['the bundle', join('packages', 'server', 'dist', 'kage.mjs'), 'bundle'],
+    ['the sources', join('packages', 'server', 'src', 'main.ts'), 'source'],
+  ] as const)(
+    'a checkout (%s): the program is the folder, which stays (usability U3)',
+    async (_n, rel, kind) => {
+      const checkout = join(home, 'src', 'kage');
+      mkdirSync(join(checkout, '.git'), { recursive: true });
+      const script = join(checkout, rel);
+      mkdirSync(dirname(script), { recursive: true });
+      writeFileSync(script, '');
+      const o = io();
+      const mode: RunMode = { kind, node: '/usr/bin/node', script };
+      expect(await uninstallCommand(['--yes'], o.io, deps({ mode }))).toBe(0);
+      expect(o.out).toContain(
+        'The program is this checkout, ~/src/kage. Delete the folder if you no longer need it.',
+      );
+      expect(o.out.join('\n')).not.toContain('npm');
+      expect(existsSync(script)).toBe(true);
+    },
+  );
+
   it('nothing installed: says so, and still says what it keeps', async () => {
     rmSync(unit);
     rmSync(exe);

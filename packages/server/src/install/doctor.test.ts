@@ -196,6 +196,37 @@ describe('kage doctor', () => {
     expect(o.out.at(-1)).toBe('Fix the ✗ lines, then run kage doctor again.');
   });
 
+  it("a fresh machine's doctor has no ✗ for a Kage that isn't set up yet", async () => {
+    rmSync(join(home, '.config', 'kage'), { recursive: true, force: true });
+    const { d } = passing(GOOD, {
+      manager: manager({ state: async () => 'missing', pathOfInstalled: async () => null }),
+      status: async () => null,
+    });
+    const o = io();
+    expect(await doctorCommand([], o.io, d)).toBe(0);
+    expect(o.out.filter((l) => l.startsWith('✗ '))).toEqual([]);
+    expect(o.out).toContain('! No config yet. Run kage setup.');
+    const at = o.out.indexOf("! Kage isn't running.");
+    expect(o.out[at + 1]).toBe('  Run kage setup.');
+    expect(o.out.at(-1)).toBe('Run kage setup to finish.');
+  });
+
+  it('a stopped service: kage restart is the one answer, in the service and server lines (U8, U9)', async () => {
+    const { d } = passing(GOOD, {
+      manager: manager({ state: async () => 'inactive' }),
+      status: async () => null,
+    });
+    const o = io();
+    expect(await doctorCommand([], o.io, d)).toBe(1);
+    const service = o.out.indexOf("! The service is installed but isn't running.");
+    expect(o.out[service + 1]).toBe('  Start it with: kage restart');
+    const server = o.out.indexOf("✗ Kage isn't running.");
+    expect(o.out[server + 1]).toBe(
+      '  Start it with kage restart, or see the service log: journalctl --user -u kage -e',
+    );
+    expect(o.out.join('\n')).not.toContain('kage serve');
+  });
+
   it('Windows: one line, exit 1, nothing else checked', async () => {
     const { d, calls, urls } = passing(GOOD, { platform: 'win32', uid: undefined, manager: null });
     const o = io();

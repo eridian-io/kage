@@ -8,8 +8,8 @@
  * - bundle: `node dist/kage.mjs`, the npm package and `pnpm build`;
  * - source: `node src/main.ts`, for development only.
  */
-import { realpathSync, statSync } from 'node:fs';
-import { delimiter, dirname, isAbsolute, join, posix, resolve } from 'node:path';
+import { existsSync, realpathSync, statSync } from 'node:fs';
+import { basename, delimiter, dirname, isAbsolute, join, posix, resolve } from 'node:path';
 import { isSea } from 'node:sea';
 import { fileURLToPath } from 'node:url';
 
@@ -112,6 +112,28 @@ export function runMode(probe?: { isSea: boolean; execPath: string; entry: strin
   return script.endsWith('.ts')
     ? { kind: 'source', node, script }
     : { kind: 'bundle', node, script };
+}
+
+/**
+ * The checkout folder of a bundle or source run (its script under <dir>/packages/server/{dist,src}
+ * with <dir>/.git), else null (usability U3). Any script there counts: kage.mjs, the light hook
+ * entry kage-hook.mjs (F17) or main.ts. `.git` may be a folder or a worktree's file; `exists` is a
+ * test seam.
+ */
+export function checkoutOf(m: RunMode, exists: (p: string) => boolean = existsSync): string | null {
+  if (m.kind === 'sea') return null;
+  const folder = dirname(m.script);
+  const server = dirname(folder);
+  const packages = dirname(server);
+  if (
+    !['dist', 'src'].includes(basename(folder)) ||
+    basename(server) !== 'server' ||
+    basename(packages) !== 'packages'
+  ) {
+    return null;
+  }
+  const dir = dirname(packages);
+  return exists(join(dir, '.git')) ? dir : null;
 }
 
 /** The light hook entry's file name, beside the bundle (bundle.ts HOOK_BUNDLE, stageNpm). */

@@ -18,7 +18,7 @@ import {
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -804,15 +804,44 @@ describe('kage update', UNDER_LOAD, () => {
       await updateCommand(
         [],
         s.io,
-        deps({ mode: { kind: 'source', node: '/usr/bin/node', script: '/x/src/main.ts' } }),
+        deps({
+          mode: {
+            kind: 'source',
+            node: '/usr/bin/node',
+            script: join('/x', 'packages', 'server', 'src', 'main.ts'),
+          },
+        }),
       ),
     ).toBe(1);
     expect(s.err).toEqual([
-      'This Kage runs from a checkout. Update it with git pull and pnpm build.',
+      `This Kage runs from a checkout in ${join('/x')}. Update it with: cd ${shellWord(join('/x'))} && git pull && pnpm install && pnpm build, then kage restart.`,
     ]);
     expect(hits).toEqual([]);
     expectUntouched();
   });
+
+  it.each([
+    ['the bundle', join('packages', 'server', 'dist', 'kage.mjs'), 'bundle'],
+    ['the sources', join('packages', 'server', 'src', 'main.ts'), 'source'],
+  ] as const)(
+    'a checkout (%s) is told the checkout steps, ending in kage restart (usability U3)',
+    async (_n, rel, kind) => {
+      release();
+      const checkout = join(dir, 'kage');
+      mkdirSync(join(checkout, '.git'), { recursive: true });
+      const script = join(checkout, rel);
+      mkdirSync(dirname(script), { recursive: true });
+      writeFileSync(script, '');
+      const o = io();
+      const mode: RunMode = { kind, node: '/usr/bin/node', script };
+      expect(await updateCommand([], o.io, deps({ mode }))).toBe(1);
+      expect(o.err).toEqual([
+        `This Kage runs from a checkout in ${checkout}. Update it with: cd ${shellWord(checkout)} && git pull && pnpm install && pnpm build, then kage restart.`,
+      ]);
+      expect(hits).toEqual([]);
+      expectUntouched();
+    },
+  );
 
   it('refuses root, unknown options, and a machine without a release', async () => {
     const r = io();

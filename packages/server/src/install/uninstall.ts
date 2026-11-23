@@ -14,7 +14,7 @@ import { stateDir } from '../state/store.ts';
 import { readConfigObject } from './config-file.ts';
 import { markedPathLines, rcCandidates } from './path-rc.ts';
 import { isStopped, type Prompter } from './prompt.ts';
-import type { RunMode } from './runtime.ts';
+import { checkoutOf, type RunMode } from './runtime.ts';
 import type { ServiceManager } from './service.ts';
 import { NPM_NAME } from './targets.ts';
 
@@ -136,8 +136,16 @@ export async function uninstallCommand(
         notes.push(`Couldn't remove ${shown(file)}: ${firstLine(err)}`);
       }
     }
-  } else if (deps.mode.kind === 'bundle') {
-    notes.push(`Remove the program with: npm uninstall -g ${NPM_NAME}`);
+  } else {
+    // Usability U3: a checkout is the user's own folder; uninstall never deletes it.
+    const checkout = checkoutOf(deps.mode);
+    if (checkout !== null) {
+      notes.push(
+        `The program is this checkout, ${shown(checkout)}. Delete the folder if you no longer need it.`,
+      );
+    } else if (deps.mode.kind === 'bundle') {
+      notes.push(`Remove the program with: npm uninstall -g ${NPM_NAME}`);
+    }
   }
 
   // 3. Kage's own hooks file (R119-6): Claude never reads it once the program is gone.
