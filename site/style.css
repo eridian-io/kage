@@ -1017,3 +1017,14 @@ kbd {
 .nw {
   white-space: nowrap;
 }
+
+.card h4 {
+  margin: 18px 0 8px;
+  font-size: 14px;
+  font-weight: 500;
+  color: var(--fg-strong);
+}
+.code.wrapcode pre span {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}

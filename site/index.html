@@ -51,7 +51,7 @@
 <main id="main">
   <section class="hero" aria-labelledby="hero-title">
     <div class="wrap">
-      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development · phases 1–5 built</span>
+      <span class="chip live"><i class="dot d-run" aria-hidden="true"></i>In development · phases 1–6 built</span>
       <h1 id="hero-title">Your Claude Code agents, <span>working in the shadows.</span></h1>
       <p class="lede">Kage is a small web dashboard that runs on your server or home PC. It shows every Claude Code session in one place, so you can start, watch, answer and stop them from your laptop or phone.</p>
       <div class="actions">
@@ -232,7 +232,7 @@
       </div>
       <div class="note">
         <p>Anyone who can reach Kage can run Claude Code on your machine. Only add devices you trust to your tailnet, and set a token if others share it.</p>
-        <p>One outbound call, only if you set it: the ntfy ping.</p>
+        <p>The running Kage contacts nothing outside your machine except your ntfy server, and only when you set a topic. <code>kage update</code> and the installer download from GitHub, only when you run them, over HTTPS, and check each file against the release's <code>SHA256SUMS</code>.</p>
         <p>Found a problem? <a href="https://github.com/eridian-io/kage/blob/main/SECURITY.md">Report it privately</a>.</p>
       </div>
     </div>
@@ -246,15 +246,15 @@
       <div class="start">
         <div class="card">
           <h3>Run from source</h3>
-          <p>You need Node 24.2 or newer, and Tailscale up. The newest work lives on the <code>phase-5</code> branch until it's merged into main.</p>
+          <p>You need Node 24.2 or newer, and Tailscale up. The newest work lives on the <code>phase-6</code> branch until it's merged into main.</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
-            <pre><code><span>git clone --branch phase-5 https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
+            <pre><code><span>git clone --branch phase-6 https://github.com/eridian-io/kage.git</span><span>cd kage</span><span>corepack enable</span><span>pnpm install</span><span>pnpm dev</span></code></pre>
           </div>
           <p>Then open the address it prints. No Tailscale on this machine? Stay on loopback instead:</p>
           <div class="code"><div class="code-bar"><span>shell</span></div>
             <pre><code><span>KAGE_HOST=127.0.0.1 pnpm dev</span></code></pre>
           </div>
-          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage/tree/phase-5#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
+          <p>To run real sessions, follow <a href="https://github.com/eridian-io/kage/tree/phase-6#try-it-with-real-sessions">Try it with real sessions</a> in the README.</p>
         </div>
         <div class="stack">
           <div class="card">
@@ -268,8 +268,19 @@
             </ul>
           </div>
           <div class="card later">
-            <h3>One-line installer <span class="chip soon">coming</span></h3>
-            <p>One command will install Kage, check the requirements, set it up and start it on boot. It lands in phase 6, with single-file releases.</p>
+            <h3>One-line installer <span class="chip soon">with the first release</span></h3>
+            <div class="code wrapcode"><div class="code-bar"><span>shell</span></div>
+              <pre><code><span>curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | sh</span></code></pre>
+            </div>
+            <p>Works once the first release is published. Until then, install from a checkout.</p>
+            <h4>What the installer does</h4>
+            <ul class="reqs">
+              <li><span>Detects your platform</span></li>
+              <li><span>Verifies the download's checksum</span></li>
+              <li><span>Installs to <code>~/.local/bin</code> without sudo</span></li>
+              <li><span>Runs <code>kage setup</code>, which asks before it changes anything</span></li>
+              <li><span>Starts Kage on boot</span></li>
+            </ul>
           </div>
         </div>
       </div>
@@ -313,11 +324,12 @@
           <p class="meas">Measured, against the budget: first load 26.7 KB gzipped of 30, a usable board in 75–80 ms of 300, hook to screen 5.7–7.1 ms of 150, idle CPU 0.13% of 1%, idle memory 75.8–76.6 MB of 80.</p>
           <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
-        <li class="later">
+        <li class="done">
           <span class="n">06</span>
           <h3>Install and release</h3>
-          <p>A one-line installer, <code>kage setup</code>, services that start on boot, and single-file releases.</p>
-          <span class="chip soon">next</span>
+          <p>A one-line installer, <code>kage setup</code>, <code>status</code>, <code>doctor</code>, <code>update</code> and <code>uninstall</code>, services that start on boot, and single-file releases with checksums. No release is published yet.</p>
+          <p class="meas">Measured: the single-file build idles at about 72 MB of server memory, and downloads as 44.9 MB gzipped.</p>
+          <span class="chip"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m5 12 5 5 9-10"/></svg>built, not merged yet</span>
         </li>
       </ol>
     </div>
