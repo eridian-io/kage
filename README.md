@@ -26,7 +26,7 @@ git clone https://github.com/eridian-io/kage.git && cd kage && corepack enable &
 pnpm build && node packages/server/dist/kage.mjs setup
 ```
 
-Then open the address setup prints and press `N` to start a task. You need Node 24.2 or newer (see Requirements). No release exists yet, so this checkout is the way in for now.
+`pnpm demo` keeps running until you press Ctrl+C, so stop it before the second line. Then open the address setup prints and press `N` to start a task. You need Node 24.2 or newer (see Requirements). No release exists yet, so this checkout is the way in for now.
 
 ---
 
@@ -387,12 +387,12 @@ The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `nam
 Phases 2 to 6 and hardening are built on their branches and not merged into `main` yet. No release exists.
 
 - [x] **Phase 1, skeleton:** dashboard served over Tailscale
-- [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts
-- [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
-- [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser
-- [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets
-- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases (built; waiting for the first release)
-- [ ] **Hardening:** a login for each browser with sign-out, only your tailnet names trusted, no live mode without a token, `kage restart` and `kage logs`, `pnpm demo`, pings set up by `kage setup`, a lighter and faster Kage (built; not merged yet)
+- [x] **Phase 2, sessions:** live tmux sessions with status from hooks and output from transcripts (built on its branch)
+- [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login (built on its branch)
+- [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser (built on its branch)
+- [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets (built on its branch)
+- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases (built on its branch; waiting for the first release)
+- [ ] **Hardening:** a login for each browser with sign-out, only your tailnet names trusted, no live mode without a token, `kage restart` and `kage logs`, `pnpm demo`, pings set up by `kage setup`, a lighter and faster Kage (built on its branch)
 - [ ] **Later:** a phone layout
 
 ## Contributing

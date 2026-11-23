@@ -148,6 +148,9 @@ Left out of hardening by its scope ruling (R126), or parked by its reviews. None
 - **B79** Parked from the setup review (hardening Task 17): an error thrown, not returned, after the config is written skips showing the saved ntfy topic, so a saved topic may never be shown. Handle it like a returned failure.
 - **B80** (hardening Task 19, R150) A unit folder with a space can't be read from systemd's `UnitPath`, which is space-separated. Such a home gives a unit that doesn't load, which doctor shows.
 - **B81** `pnpm test:install` checks the SEA's one V8 worker but not the service's `--max-semi-space-size=1`. Add it.
+- **B82** (hardening final review) The session cookie reaches every port on the same host, since cookies aren't bound to a port, so another local web app on that host could be sent it. Fix later with HTTPS and a `__Host-` cookie, or by asking Tailscale whois who is calling.
+- **B83** (hardening final review) The MagicDNS name is asked once, at start. If that lookup fails, the full name gets 403 for the rest of that run (the short name and the address still work). Ask again later, or on a refused Host.
+- **B84** (hardening final review, theoretical) An `XDG_RUNTIME_DIR` that isn't under /run is used as it is. Check its owner and mode before putting the socket there.
 
 ## Later, small
 
