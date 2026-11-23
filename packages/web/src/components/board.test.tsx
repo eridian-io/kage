@@ -28,6 +28,7 @@ import {
   stopArmed,
   stopSent,
   termNote,
+  termNoteCalm,
   toast,
 } from '../store.ts';
 import { installView } from '../view.ts';
@@ -197,7 +198,7 @@ describe('top bar', () => {
 
 describe('the demo (usability U6)', () => {
   const SENTENCE =
-    'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
+    'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
   const line = (c: Element) => c.querySelector('.k-err');
 
   it("a 501 shows the sentence alone, without Couldn't", async () => {
@@ -228,16 +229,18 @@ describe('the demo (usability U6)', () => {
     expect(line(container)?.getAttribute('role')).toBe('alert');
   });
 
-  it("the demo's terminal close shows the sentence alone, as a note", async () => {
+  it('the note role follows the refusal, not the demo: a real failure in the demo is an alert (R147)', async () => {
     const { container } = render(<Board />);
     fireEvent.click(row(container, 'docs'));
     demo.value = true;
+    termNoteCalm.value = true;
     termNote.value = SENTENCE;
     await waitFor(() => expect(line(container)?.textContent).toBe(SENTENCE));
     expect(line(container)?.getAttribute('role')).toBe('status');
-    // Outside the demo a close reason stays an alert.
-    demo.value = false;
+    termNoteCalm.value = false;
+    termNote.value = "Couldn't load the terminal.";
     await waitFor(() => expect(line(container)?.getAttribute('role')).toBe('alert'));
+    demo.value = false;
   });
 });
 

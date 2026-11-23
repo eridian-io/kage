@@ -321,7 +321,7 @@ describe('the diff view', () => {
 
   it("the demo's 501 shows its sentence alone, as a note, with no Try again (usability U6)", async () => {
     const sentence =
-      'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
+      'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
     pages.set(0, [501, sentence]);
     const c = await openDiff();
     const note = q(c, '.k-dv .k-err');

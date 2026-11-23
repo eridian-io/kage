@@ -11,6 +11,7 @@ import {
   busy,
   confirmingDelete,
   connection,
+  demo,
   hadSnapshot,
   linesById,
   mainView,
@@ -284,6 +285,22 @@ describe('the terminal view', () => {
     fireEvent.click(q(c, '[data-act="term"]'));
     await waitFor(() => expect(mounts).toHaveLength(2));
     expect(c.querySelector('.k-err')).toBeNull();
+  });
+
+  it("the demo's 4501 close is a note; any other close stays an alert, in the demo too (R147)", async () => {
+    const sentence =
+      'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
+    const c = await open();
+    demo.value = true;
+    last().o.onEnd(sentence, 4501);
+    await waitFor(() => expect(q(c, '.k-err').textContent).toBe(sentence));
+    expect(q(c, '.k-err').getAttribute('role')).toBe('status');
+    fireEvent.click(q(c, '[data-act="term"]'));
+    await waitFor(() => expect(mounts).toHaveLength(2));
+    last().o.onEnd('tmux stopped.', 1011);
+    await waitFor(() => expect(q(c, '.k-err').textContent).toBe('tmux stopped.'));
+    expect(q(c, '.k-err').getAttribute('role')).toBe('alert');
+    demo.value = false;
   });
 
   it('a handshake failure asks /api/auth: signed in, the error line', async () => {

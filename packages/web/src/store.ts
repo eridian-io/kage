@@ -66,6 +66,8 @@ const markCounts = (id: string) => {
 export const mainView: Signal<'output' | 'diff' | 'terminal'> = signal('output');
 /** The terminal's last close reason or load error, shown in the error line; cleared on select and open. */
 export const termNote: Signal<string | null> = signal(null);
+/** termNote is the demo's refusal (a 4501 close): shown as a calm note, not an alert (U6, R147). */
+export const termNoteCalm: Signal<boolean> = signal(false);
 /**
  * Bumped when a removal this page asked for (archive, delete) arrives: the list then focuses the
  * newly selected row, since the button that had focus went away with the session (R77).

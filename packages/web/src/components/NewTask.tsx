@@ -2,7 +2,7 @@ import { LIMITS, type NewTaskResponse, type Project, type ProjectsResponse } fro
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { apiGet, apiPost, errorOf, NO_ANSWER } from '../api.ts';
 import { couldnt } from '../copy.ts';
-import { connection, demo, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
+import { connection, newTaskOpen, projectsRoot, selectStarted } from '../store.ts';
 
 const COUNT_FROM = 3600;
 const fmt = (n: number) => n.toLocaleString('en-US');
@@ -30,6 +30,8 @@ export function NewTask() {
   const [acceptEdits, setAcceptEdits] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The error is the demo's 501 (U6, R147): its sentence alone, as a calm note, not an alert.
+  const [note, setNote] = useState(false);
   const areaRef = useRef<HTMLTextAreaElement>(null);
   // Read by the document listener and by submit before a re-render has happened.
   const busyRef = useRef(false);
@@ -46,6 +48,7 @@ export function NewTask() {
           const message = await errorOf(res);
           if (alive.current) {
             setProjects([]);
+            setNote(res.status === 501);
             setError(message);
           }
           return;
@@ -59,6 +62,7 @@ export function NewTask() {
       } catch {
         if (alive.current) {
           setProjects([]);
+          setNote(false);
           setError(NO_ANSWER);
         }
       }
@@ -99,6 +103,7 @@ export function NewTask() {
     setBusy(true);
     setError(null);
     let failure: string | null = null;
+    let calm = false;
     try {
       const res = await apiPost('/api/sessions', {
         project,
@@ -117,7 +122,10 @@ export function NewTask() {
         return;
       }
       // A 401 has already sent the board to the login screen; anything else is shown here.
-      if (res.status !== 401) failure = couldnt('start', await errorOf(res));
+      if (res.status === 501) {
+        failure = await errorOf(res);
+        calm = true;
+      } else if (res.status !== 401) failure = couldnt('start', await errorOf(res));
     } catch {
       failure = couldnt('start', NO_ANSWER);
     } finally {
@@ -125,6 +133,7 @@ export function NewTask() {
     }
     if (!alive.current) return;
     setBusy(false);
+    setNote(calm);
     setError(failure);
   };
 
@@ -253,9 +262,8 @@ export function NewTask() {
           Cancel<kbd>Esc</kbd>
         </button>
       </div>
-      {/* In the demo the only error is its one sentence (U6): a calm note, not an alert. */}
       {error && (
-        <p class="k-nt-err" role={demo.value ? 'status' : 'alert'}>
+        <p class="k-nt-err" role={note ? 'status' : 'alert'}>
           {error}
         </p>
       )}

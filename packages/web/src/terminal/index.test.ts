@@ -296,10 +296,10 @@ describe('mountTerminal', () => {
     last().open();
     last().end(
       4501,
-      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+      'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.',
     );
     expect(ends).toEqual([
-      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+      'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.',
     ]);
   });
 

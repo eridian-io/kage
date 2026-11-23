@@ -527,6 +527,10 @@ async function startServer(
 ): Promise<number | Running> {
   checkSignal(io);
   const demo = values.demo === true;
+  // R147: the demo never asks for a token (it has no real sessions): no login, and the snapshot's
+  // auth is off. KAGE_TEST_DEMO_TOKEN=1 keeps the config's token in the demo, for the login e2e
+  // only (it can only add a sign-in, never remove one); it is test-only and not in USAGE.
+  const token = demo && io.env.KAGE_TEST_DEMO_TOKEN !== '1' ? '' : cfg.token;
   if (demo) {
     for (const warning of startupWarnings(cfg)) io.err(warning);
   } else {
@@ -648,12 +652,12 @@ async function startServer(
 
   // Logins live in memory only (R127): a restart signs every browser out (security I1).
   const auth: Auth = {
-    token: cfg.token,
+    token,
     sessions: new SessionStore(),
     cookie: authCookieName(cfg.port),
   };
   const hub = new EventHub(source, cfg.name, cfg.projectsRoot, {
-    auth: cfg.token !== '',
+    auth: token !== '',
     demo,
   });
   cleanups.push(() => hub.close());

@@ -18,8 +18,9 @@ export interface TermOptions {
    * The terminal ended by itself (it disposes itself first): the server's close reason to show,
    * '' to end quietly (the tab was hidden too long), or null when the socket never opened (the
    * board then asks /api/auth whether the user must sign in).
+   * `code` is the close code when the server closed it (4501: the demo, a note, not an alert).
    */
-  onEnd: (reason: string | null) => void;
+  onEnd: (reason: string | null, code?: number) => void;
   /** F3: the pane's mode from each reset; 'ro' (an external window, R54) takes no input or size. */
   onMode?: (mode: 'rw' | 'ro') => void;
 }
@@ -152,10 +153,11 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
     };
   };
 
-  const end = (reason: string | null) => {
+  const end = (reason: string | null, code?: number) => {
     if (ended) return;
     dispose();
-    o.onEnd(reason);
+    if (code === undefined) o.onEnd(reason);
+    else o.onEnd(reason, code);
   };
 
   const connect = () => {
@@ -212,7 +214,10 @@ export function mountTerminal(el: HTMLElement, o: TermOptions): TermHandle {
         retry = setTimeout(connect, wait);
         return;
       }
-      end(e.reason !== '' ? e.reason : !opened ? null : e.code === 1009 ? TOO_MUCH : CLOSED);
+      end(
+        e.reason !== '' ? e.reason : !opened ? null : e.code === 1009 ? TOO_MUCH : CLOSED,
+        e.code,
+      );
     };
     ws = s;
   };

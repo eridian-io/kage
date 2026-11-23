@@ -9,7 +9,6 @@ import {
   closeTerminal,
   confirmingDelete,
   countsKnown,
-  demo,
   mainView,
   now,
   openTerminal,
@@ -17,6 +16,7 @@ import {
   stopArmed,
   stopPending,
   termNote,
+  termNoteCalm,
 } from '../store.ts';
 import { Ask } from './Ask.tsx';
 import { FollowUp } from './FollowUp.tsx';
@@ -207,9 +207,9 @@ export function SessionPanel({ session: s }: { session: Session }) {
   const worktree = shortWorktree(s.worktree, projectsRoot.value);
   const failed = actionError.value?.id === s.id ? actionError.value : null;
   const error = failed ? failed.text : termNote.value;
-  // The demo's refusal (U6) is a calm note, not an alert: an action's 501, or a terminal the demo
-  // can't open.
-  const note = failed ? failed.note === true : demo.value;
+  // The demo's refusal (U6) is a calm note, not an alert: an action's 501, or the terminal's 4501
+  // close (R147: keyed on the refusal, so a real failure in the demo is still an alert).
+  const note = failed ? failed.note === true : termNoteCalm.value;
   // Every action waits for a live stream (its result arrives as an event) and for the last one.
   const off = !canAct(s.id);
   return (

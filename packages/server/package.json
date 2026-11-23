@@ -17,7 +17,7 @@
   },
   "scripts": {
     "build": "tsc -b && node src/bundle.ts",
-    "dev": "node --watch src/main.ts serve --demo"
+    "dev": "node --watch src/main.ts serve --demo --host 127.0.0.1"
   },
   "dependencies": {
     "@hono/node-server": "^2.1.11",

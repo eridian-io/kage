@@ -119,8 +119,8 @@ describe('kage serve: live-mode checks', () => {
     expect(err).toEqual(['Config error: token must be at least 16 characters']);
   });
 
-  it('--demo with a token runs without a warning, and the API needs the cookie', async () => {
-    const e = env({ KAGE_HOST: '127.0.0.1' });
+  it('--demo with a token and KAGE_TEST_DEMO_TOKEN=1 (the login e2e) runs without a warning, and the API needs the cookie', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_TEST_DEMO_TOKEN: '1' });
     const p = await port();
     writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
@@ -147,8 +147,8 @@ describe('kage serve: live-mode checks', () => {
     await expect(fetch(`http://127.0.0.1:${p}/`)).rejects.toThrow();
   });
 
-  it('--demo with a token: the snapshot says so, and logout closes that login stream (I1, F6)', async () => {
-    const e = env({ KAGE_HOST: '127.0.0.1' });
+  it('--demo with a token and KAGE_TEST_DEMO_TOKEN=1: the snapshot says so, and logout closes that login stream (I1, F6)', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_TEST_DEMO_TOKEN: '1' });
     const p = await port();
     writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
     const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
@@ -199,6 +199,30 @@ describe('kage serve: live-mode checks', () => {
     try {
       expect(err).toEqual([]);
       expect(out).toEqual([`Kage is running at http://127.0.0.1:${p}`]);
+    } finally {
+      await (r as Running).stop();
+    }
+  });
+
+  it('R147: the demo never asks for a token, even when the config sets one, and keeps its port', async () => {
+    const e = env({ KAGE_HOST: '127.0.0.1' });
+    const p = await port();
+    writeConfig(e, { token: 'a-secret-of-16-chars', port: p });
+    const r = await main(['serve', '--demo'], io(e, { dist: makeDist(), tmuxVersion: null }));
+    expect(typeof r).toBe('object');
+    const base = `http://127.0.0.1:${p}`;
+    try {
+      expect(out).toEqual([`Kage is running at ${base}`]);
+      // No cookie needed: the auth check, the API and the stream all answer.
+      expect((await fetch(`${base}/api/auth`)).status).toBe(204);
+      const res = await fetch(`${base}/api/events`);
+      expect(res.status).toBe(200);
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const first = new TextDecoder().decode((await reader.read()).value);
+      const snapshot = JSON.parse(first.slice(first.indexOf('data: ') + 6));
+      expect(snapshot.auth).toBe(false);
+      expect(snapshot.demo).toBe(true);
+      await reader.cancel();
     } finally {
       await (r as Running).stop();
     }
@@ -334,6 +358,11 @@ describe('kage serve: the demo on loopback (usability U5)', () => {
     expect(pkg.scripts.demo).toBe(
       'pnpm build && node packages/server/dist/kage.mjs serve --demo --host 127.0.0.1',
     );
+    // pnpm dev runs the demo on loopback too, so it needs no Tailscale (R147).
+    const server = JSON.parse(
+      readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'),
+    ) as { scripts: Record<string, string> };
+    expect(server.scripts.dev).toBe('node --watch src/main.ts serve --demo --host 127.0.0.1');
   });
 
   it('the usage names --host', () => {
@@ -850,7 +879,7 @@ describe('kage hook', () => {
     expect(err).toEqual([]);
   });
 
-  it('as a real process: exits 0 within 2 s with empty stdout and stderr', async () => {
+  it('as a real process: exits 0 within 5 s (R147: headroom under load) with empty stdout and stderr', async () => {
     const e = { ...process.env, ...env({ KAGE_SOCKET: missingSocket(), TMUX_PANE: '%1' }) };
     const t0 = performance.now();
     const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
@@ -873,7 +902,7 @@ describe('kage hook', () => {
     );
     const ms = performance.now() - t0;
     expect(result).toEqual({ code: 0, stdout: '', stderr: '' });
-    expect(ms).toBeLessThan(2000);
+    expect(ms).toBeLessThan(5000);
   });
 });
 

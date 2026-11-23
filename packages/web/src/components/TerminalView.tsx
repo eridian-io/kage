@@ -1,7 +1,7 @@
 import type { Session } from '@kage/shared';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { authStatus } from '../api.ts';
-import { authRequired, closeTerminal, selectedId, termNote } from '../store.ts';
+import { authRequired, closeTerminal, selectedId, termNote, termNoteCalm } from '../store.ts';
 import { loadTerminal } from '../term-loader.ts';
 
 const LOAD_FAILED = "Couldn't load the terminal.";
@@ -11,7 +11,7 @@ const OPEN_FAILED = "Couldn't open the terminal.";
  * The terminal ended by itself: back to the output, with the server's reason in the error line.
  * A socket that never opened asks /api/auth whether the user must sign in first.
  */
-async function ended(id: string, reason: string | null): Promise<void> {
+async function ended(id: string, reason: string | null, code?: number): Promise<void> {
   closeTerminal();
   if (reason === null) {
     let status = 0;
@@ -25,7 +25,11 @@ async function ended(id: string, reason: string | null): Promise<void> {
     reason = OPEN_FAILED;
   }
   // A note for a session the user has since left would land on another one.
-  if (reason !== '' && selectedId.value === id) termNote.value = reason;
+  if (reason !== '' && selectedId.value === id) {
+    // The demo's 4501 is its one sentence, a calm note (U6); any other close is an alert.
+    termNoteCalm.value = code === 4501;
+    termNote.value = reason;
+  }
 }
 
 /**
@@ -47,9 +51,9 @@ export function TerminalView({ session: s }: { session: Session }) {
         handle = m.mountTerminal(el, {
           id: s.id,
           onMode: (mode) => setRo(mode === 'ro'),
-          onEnd: (reason) => {
+          onEnd: (reason, code) => {
             handle = null;
-            void ended(s.id, reason);
+            void ended(s.id, reason, code);
           },
         });
         handle.focus();
@@ -57,6 +61,7 @@ export function TerminalView({ session: s }: { session: Session }) {
       () => {
         if (gone) return;
         closeTerminal();
+        termNoteCalm.value = false;
         termNote.value = LOAD_FAILED;
       },
     );

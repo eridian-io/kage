@@ -239,7 +239,7 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 | 4404 | No such session | No session with id <id>. |
 | 4409 | The session ended, or its window closed | This session has ended. / The session's window has closed. |
 | 4429 | Too many terminals | Too many terminals are open. Close one and try again. |
-| 4501 | Demo mode | This is the demo, so nothing here changes. Install Kage to run your own sessions. (amended 2026-11-23, hardening; usability U6) |
+| 4501 | Demo mode | This is the demo, so nothing here is saved. Set up Kage to run your own sessions. (amended 2026-11-23, hardening; usability U6) |
 
   (amended 2026-11-22, phase 5): the sentences end in a full stop. **Exception:** the plain-text HTTP refusal of the upgrade "Not found" stays a bare word, the same as the static files' "Not found". A browser's WebSocket can't read it, and the board never shows it, so it is not copy. (amended 2026-11-23, hardening; security I2): a refused Host or Origin, on the upgrade and on the HTTP guards alike, is a whole sentence that says what to set (§5.10, §6.9), because someone who opens Kage under a name it doesn't trust reads it in the browser. The JSON `/api/*` refusals do end in a full stop ("Not found.").
 
@@ -316,7 +316,7 @@ Two channels tell the developer that a session needs them: ntfy on the phone, an
 ### 5.10 Security
 
 Kage can run commands on the machine, so the defaults are strict:
-- **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed. (amended 2026-11-23, hardening; usability U5): `kage serve --host ADDR` overrides the config's host and `KAGE_HOST` for one run, checked the same way (loopback or Tailscale only, unless `--unsafe-listen-all`). `pnpm demo` runs `pnpm build`, then `kage serve --demo --host 127.0.0.1`: the demo on loopback, with no Tailscale and no token needed (R127: `localhost` is trusted only on a loopback bind). It reads the config file and never writes one; it starts no tmux, opens no hook socket and writes no settings or state file.
+- **Network:** listen on the Tailscale IPv4 address only (from `tailscale ip -4`, or `host` in the config). Refuse to start on `0.0.0.0` unless `--unsafe-listen-all` is passed. (amended 2026-11-23, hardening; usability U5): `kage serve --host ADDR` overrides the config's host and `KAGE_HOST` for one run, checked the same way (loopback or Tailscale only, unless `--unsafe-listen-all`). `pnpm demo` runs `pnpm build`, then `kage serve --demo --host 127.0.0.1`: the demo on loopback, with no Tailscale and no token needed (R127: `localhost` is trusted only on a loopback bind). It reads the config file and never writes one; it starts no tmux, opens no hook socket and writes no settings or state file. (R147): the demo never asks for a token, even when the config sets one: no login, and the snapshot's `auth` is false. It keeps the config's port unless `--port` is given. `KAGE_TEST_DEMO_TOKEN=1`, test-only and not in the usage, keeps the config's token in the demo for the login e2e (it can only add a sign-in). `pnpm dev` serves the demo on 127.0.0.1 too (`--host 127.0.0.1` in the server package's dev script).
 - **DNS rebinding:** reject requests whose `Host` header isn't the configured host name or IP.
   - **The allow-list** (amended 2026-11-23, hardening; security I2, replaces B12). The `Host` guard, the `Origin` check and the terminal's upgrade trust only:
     - the bound IP (an IPv6 literal written in brackets, `[fd7a:115c:a1e0::1]`);
@@ -444,7 +444,7 @@ Kage can run commands on the machine, so the defaults are strict:
 - 401: no live session: never signed in, signed out, expired, another address or a restart (amended 2026-11-23, hardening). 403: a window or origin Kage doesn't own. 404: no such session, project or branch.
 - 409: the session isn't in the state the action needs (the question changed, still working, ended, text still in the input box).
 - 413: a body over 16 KB. 422: git or tmux refused. 426: the terminal path needs a WebSocket (amended 2026-11-22, phase 4). 429: too many logins, or two diff requests already running (amended 2026-11-22, phase 4). 503: no `claude`.
-- 501: demo mode has no tasks or controls. (amended 2026-11-23, hardening; usability U6): every 501 has the one demo sentence, "This is the demo, so nothing here changes. Install Kage to run your own sessions."
+- 501: demo mode has no tasks or controls. (amended 2026-11-23, hardening; usability U6): every 501 has the one demo sentence, "This is the demo, so nothing here is saved. Set up Kage to run your own sessions."
 
 ### 5.13 Install and distribution
 
@@ -753,7 +753,7 @@ The same rule as §6.6–§6.8: every new sentence a user can read, and a change
   - after the test ping: "Sent a test ping. Did it arrive?" (default Yes); no prints "Check the topic in the ntfy app, then run kage ping to try again.";
   - a ping that can't be sent: "Couldn't send the test ping (<reason>). Run kage ping to try again.";
   - with `--yes`, a ping sent: "Sent a test ping to <host>." (§6.7's `kage ping` line).
-- **The demo** (usability U5, U6; §5.10, §6.5): every refusal of the demo, each 501 and the terminal's 4501 close, is one sentence: "This is the demo, so nothing here changes. Install Kage to run your own sessions." It replaces the four demo sentences of phases 3 and 4 (start tasks, run tasks, show diffs, no terminal), which also named the wrong action for pin, archive and Stop. The board shows it alone, as a note. The top bar's badge reads `demo`. Usage, under `kage serve`: "--host ADDR listens on ADDR instead of the config's host."
+- **The demo** (usability U5, U6; §5.10, §6.5): every refusal of the demo, each 501 and the terminal's 4501 close, is one sentence: "This is the demo, so nothing here is saved. Set up Kage to run your own sessions." It replaces the four demo sentences of phases 3 and 4 (start tasks, run tasks, show diffs, no terminal), which also named the wrong action for pin, archive and Stop. The board shows it alone, as a note. The top bar's badge reads `demo`. Usage, under `kage serve`: "--host ADDR listens on ADDR instead of the config's host."
 - **Usage** (usability U2, U9): the `kage hooks-path` entry now ends “Start Claude with: claude --settings "$(kage hooks-path)" --permission-mode default”, so Claude asks before it acts and Kage sees each prompt; new entries "Restart Kage's service and check that it answers." and, under `kage logs [-f]`, "Show the last 100 lines of Kage's log. -f keeps following it." (R144).
 
 ## 7. Performance budgets

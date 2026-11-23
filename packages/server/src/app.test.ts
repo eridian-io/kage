@@ -403,7 +403,7 @@ describe('API', () => {
 
   it('every demo refusal is the one demo sentence (usability U6)', async () => {
     expect(DEMO).toBe(
-      'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+      'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.',
     );
     const demo = app(true);
     for (const r of [

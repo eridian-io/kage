@@ -34,6 +34,8 @@ test.beforeAll(async () => {
   const env = {
     ...rest,
     ...SERVER_ENV,
+    // R147: the demo asks for no token; this test-only switch keeps the config's token for this spec.
+    KAGE_TEST_DEMO_TOKEN: '1',
     HOME: join(root, 'home'),
     USERPROFILE: join(root, 'home'),
     XDG_CONFIG_HOME: join(root, 'config'),

@@ -194,7 +194,7 @@ describe('opening the New task form', () => {
       json(
         {
           error:
-            'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+            'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.',
         },
         501,
       ),
@@ -203,12 +203,26 @@ describe('opening the New task form', () => {
     fireEvent.click(q(container, '.k-side > .k-new'));
     await waitFor(() =>
       expect(q(container, '.k-nt-err').textContent).toBe(
-        'This is the demo, so nothing here changes. Install Kage to run your own sessions.',
+        'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.',
       ),
     );
+    // The demo's refusal is a calm note (R147: keyed on the 501 itself).
+    expect(q(container, '.k-nt-err').getAttribute('role')).toBe('status');
     expect(container.querySelector('.k-nt-none')).toBeNull();
     type(area(container), 'fix it');
     expect(start(container).disabled).toBe(true);
+  });
+
+  it('any other failed projects fetch stays an alert (R147)', async () => {
+    vi.mocked(apiGet).mockImplementation(async () =>
+      json({ error: "git couldn't list the projects." }, 500),
+    );
+    const { container } = render(<Board />);
+    fireEvent.click(q(container, '.k-side > .k-new'));
+    await waitFor(() =>
+      expect(q(container, '.k-nt-err').textContent).toBe("git couldn't list the projects."),
+    );
+    expect(q(container, '.k-nt-err').getAttribute('role')).toBe('alert');
   });
 
   it('shows the copy: labels, checkbox, hint and buttons', async () => {

@@ -68,7 +68,7 @@ export interface AppDeps {
  * calm sentence: what the demo is, and how to try Kage for real. The board shows it alone, as a note.
  */
 export const DEMO =
-  'This is the demo, so nothing here changes. Install Kage to run your own sessions.';
+  'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
 const TOO_MANY_BOARDS = 'Too many open boards from this address.';
 /** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
 const WHOLE = /^\d{1,9}$/;
