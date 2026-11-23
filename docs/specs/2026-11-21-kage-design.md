@@ -45,7 +45,7 @@ Kage is a small web app that runs on a developer's home PC or server. It lets th
 ## 3. Constraints
 
 - **Platform:** Linux (primary, with systemd) and macOS. Windows through WSL only.
-- **Runtime:** Node 24 LTS, built into the released `kage` program, so users don't install Node themselves. Node 20 reached end of life in April 2026.
+- **Runtime:** Node 24 LTS, built into the released `kage` program, so users don't install Node themselves. Node 20 reached end of life in April 2026. As built (amended 2026-11-22, phase 6): the release Node is the version in `.node-version` (24.22.3). The release workflow builds every executable from that Node, fetched from nodejs.org and checked against its signed `SHASUMS256.txt`. The npm package and a checkout need Node 24.2 or newer.
 - **Needs on the machine:** tmux 3.2 or newer, git 2.40 or newer, Claude Code, Tailscale.
 - **Licence:** AGPL-3.0. Contributions need a CLA, because commercial licences may be sold.
 - **Naming:** the product is "Kage"; avoid "Claude" in the product name (Anthropic's brand guidelines).
@@ -274,6 +274,8 @@ Opening Terminal (`T`) loads xterm.js the first time (about 90 KB gzipped, then 
 - Kage never resumes sessions by itself after a reboot; the developer chooses which ones to resume.
 - **Resume, as built** (amended 2026-11-22, phase 4): `POST /api/sessions/:id/resume`, 204. It runs under the same per-session action lock as archive and delete (409, "Kage is still finishing the last action on this session."). It checks the same **containment** as delete (B7): the worktree below `<project>/<worktreeDir>`, on its own branch (R71), the branch under `branchPrefix`. 403 for a window Kage didn't create; 409 for an archived session ("Restore the session before resuming it."), one that is still running, one that already has a window, or a worktree that is gone; 503 with no `claude`.
 - The systemd user unit starts Kage after the network and Tailscale are up. Kage owns starting the tmux session, so no tmux unit is needed.
+- **As built** (amended 2026-11-22, phase 6): a user unit can't order itself after `tailscaled.service`, a system unit (host-integration §7.4). So Kage exits while Tailscale has no address, and the unit starts it again every 5 s, with no limit (`Restart=on-failure`, `RestartSec=5`, `StartLimitIntervalSec=0`). Meanwhile `kage status` says "starting (waiting for Tailscale?)". launchd retries at most every 10 s (`ThrottleInterval`).
+- **tmux outlives the service** (amended 2026-11-22, phase 6, R122). Under the systemd service, Kage starts a new tmux server in a user scope of its own (`systemd-run --user --scope`), so stopping or restarting `kage.service` (update, setup again, uninstall) leaves tmux and Claude running. If `systemd-run` fails, Kage logs one line and starts tmux the plain way, inside the unit; then a restart, an update or an uninstall ends the tmux session and every Claude in it. The plist sets `AbandonProcessGroup`, so launchd doesn't kill what the job leaves behind (documented, not observed).
 
 ### 5.9 Notifications
 
@@ -306,8 +308,19 @@ Kage can run commands on the machine, so the defaults are strict:
   - A 401 anywhere returns the board to the login screen.
   - **There is no server-side expiry.** The cookie lasts its 30 days. To sign out every device, change the token and restart Kage.
   - **Without a token**, live mode prints one line on stderr at startup: "No token set: anyone on your tailnet can start and approve tasks." The demo mode doesn't print it.
-- **One outbound call** (amended 2026-11-22, phase 5): the ntfy `POST` of §5.9 is the only request Kage makes to anything outside the machine, and only when `ntfyTopic` is set. Redirects are refused. The server must be `https:`, or `http:` only on this machine (`localhost`, `127.0.0.0/8`, `[::1]`) or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name), and may carry no user name. The client checks this again before every send, so a bad value can never put the topic on the internet in clear text. A `.ts.net` name is accepted for `http:` without proof that it is on your tailnet: Tailscale Funnel names under `.ts.net` resolve publicly, so use plain `http:` only for a machine on your own tailnet. The tests never call ntfy.sh: they run against a fake server on loopback.
+- **Outbound calls** (amended 2026-11-22, phase 6, F9). The running server makes one: the ntfy `POST` below. The commands make three more, each only when you run them:
+  - `kage update` downloads `VERSION`, `SHA256SUMS` and the program from the release (HTTPS, verified, §5.13). It runs only on request. Kage never checks for updates in the background.
+  - `install.sh` downloads `SHA256SUMS` and the program the same way (HTTPS, redirects HTTPS too, verified).
+  - `kage doctor` and `kage setup` send one `GET /` to Kage's own listen address (R105), to see whether the board answers.
+- **ntfy** (amended 2026-11-22, phase 5): the ntfy `POST` of §5.9 is the only request the server makes to anything outside the machine, and only when `ntfyTopic` is set. Redirects are refused. The server must be `https:`, or `http:` only on this machine (`localhost`, `127.0.0.0/8`, `[::1]`) or the tailnet (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`, a `.ts.net` name), and may carry no user name. The client checks this again before every send, so a bad value can never put the topic on the internet in clear text. A `.ts.net` name is accepted for `http:` without proof that it is on your tailnet: Tailscale Funnel names under `.ts.net` resolve publicly, so use plain `http:` only for a machine on your own tailnet. The tests never call ntfy.sh: they run against a fake server on loopback.
 - **Hook socket:** a Unix socket with `0600` permissions, owned by the user.
+- **Install safety** (amended 2026-11-22, phase 6):
+  - **No root.** `install.sh`, `kage setup`, `update` and `uninstall` refuse to run as root, and nothing calls `sudo`. A step that needs root (linger without the polkit right, installing a missing tool) is printed for you to run.
+  - **Checksums over HTTPS.** Every download is checked against its line in the release's `SHA256SUMS`, and nothing is installed on a mismatch or a missing line. That protects against corruption and truncation, not against a compromised release host. To check a release's authenticity, verify its build provenance by hand: `gh attestation verify <file> --repo eridian-io/kage`.
+  - **HTTPS only.** `KAGE_RELEASE_BASE` must be `https:` (plain `http:` only on loopback, for tests), and so must every redirect. `kage update` also refuses a compressed reply and a body shorter than its length.
+  - **No secrets in units.** The unit and the plist hold the program, `PATH`, `MALLOC_ARENA_MAX=2` and `KAGE_SERVICE=1`, nothing else. The token and the ntfy keys stay in the config (`0600` in a `0700` folder).
+  - **Kage's files only.** The unit and the plist carry a marker line (`Written by kage setup`). Setup and uninstall refuse a same-name file without it. Kage never writes Claude's configuration (R25): it checks that `~/.claude/.credentials.json` exists and never reads it.
+  - **What doctor may call:** `tmux -V`, `git --version`, `claude --version` and `tailscale status --json` (5 s each), the service manager's read-only state commands, Kage's own socket (`GET /status`) and Kage's own address (`GET /`). Doctor changes nothing.
 - **Shell safety:** all tmux and git calls use `execFile` with argument arrays, never a shell string. Task text reaches `claude` as a single argument.
 - **Ownership:** stop, pin, archive, delete and resume are refused unless the target window's `@kage_id` matches one of Kage's records (§5.2). Answer and reply also work on external windows.
 
@@ -366,6 +379,7 @@ Kage can run commands on the machine, so the defaults are strict:
 | `GET /api/sessions/:id/diff?from=<n>` | One page of the unified diff (§5.7). `from` is a whole number, 0 by default; 400 if not. 429 when two are already running (amended 2026-11-22, phase 4) |
 | `GET /api/sessions/:id/terminal` | WebSocket (§5.6). A plain GET answers 426 "Open the terminal with a WebSocket." (amended 2026-11-22, phase 4) |
 | `POST /hook` (Unix socket only) | Hook events from `kage hook` |
+| `GET /status` (Unix socket only) | `{version, url, sessions, needsYou, pid}`: no token and no config values. `kage status`, `kage doctor`, setup's last check and `kage update` read it. 503 until the server is up, 405 for another method (amended 2026-11-22, phase 6) |
 
 **Status codes** (amended 2026-11-21, phase 3): a failure's body is `{error}`, one plain sentence.
 - 400: a bad body (exact keys only; control characters, length and prefix rules).
@@ -403,6 +417,85 @@ curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | s
 - the npm package `@eridian-io/kage` as a second way in, for people who already use Node (`npm install -g @eridian-io/kage`, then `kage setup`).
 
 **Risk:** SEA on macOS needs code signing (ad-hoc signing at least, and notarisation for a smooth first run). The plan starts with a spike that builds and runs a SEA binary on Linux and macOS. If it fails there, the fallback is the npm package with the same `kage setup`.
+
+**As built** (amended 2026-11-22, phase 6). Phase 6 is built on its branch and not released: no tag, release or npm package exists yet (R107), so the one-line install works only once the first release is out. The spike held on Linux; macOS follows the documentation and the workflow's smoke jobs, and the owner's run after the first release is its real check (R105).
+
+- **Run modes** (`install/runtime.ts`):
+  - `sea`: the single executable a release installs (`~/.local/bin/kage`);
+  - `bundle`: `node dist/kage.mjs`, which is the npm package and `pnpm build`;
+  - `source`: `node src/main.ts`, for development only. It can't install a service: setup says "Install Kage from a release, or run "pnpm build" and use node packages/server/dist/kage.mjs." and goes on without one.
+- **The hook command names a path that lasts** (R110-5). In a SEA it is the `kage` you ran (a path, or the first `kage` on `PATH` in a folder owned by you or root and not writable by others), when that leads to the same file as `process.execPath`. Otherwise it is `process.execPath`, the link's target. An update replaces that file in place, so the hooks keep working. The edge: a SEA run through a link Kage can't trust writes hooks that name the target. If that target sits in a versioned folder, a package store or a temporary folder, doctor warns that it "may not stay there"; if it is gone, doctor says so and tells you to restart Kage. In bundle mode the hooks run `node --no-warnings <kage.mjs>`.
+- **Release files** (`install/targets.ts`, `release/build.ts`):
+  - `kage-<target>.gz` for `linux-x64`, `linux-arm64`, `darwin-x64` and `darwin-arm64`. There is no Windows build;
+  - `eridian-io-kage-<version>.tgz`, the npm package;
+  - `VERSION`, one line: `<version>`;
+  - `SHA256SUMS`, `<sha256>  <name>` lines sorted by name, over the other six.
+- **The single executable:** `node --experimental-sea-config` plus `postject` 1.0.0-alpha.6 (Node 24.22.3 has no `--build-sea`). A CommonJS entry, the board embedded as assets with a manifest, `useCodeCache: true` (built natively on each target's runner) and `execArgv: ['--v8-pool-size=1']` (R91). Never stripped. On macOS it is ad-hoc signed (`codesign --sign -`). About 128 MB, 45 MB gzipped. Every file but the executable builds byte for byte the same; the executable differs by its V8 code cache, so `SHA256SUMS` and the attestation vouch for it, not a rebuild (R117).
+- **The version** is `packages/server/package.json`'s, set into both bundles at build time. `kage --version` prints it (`0.0.0-dev` from the sources).
+- **Environment:**
+  - `KAGE_RELEASE_BASE`: where `install.sh` and `kage update` download from. Default `https://github.com/eridian-io/kage/releases/latest/download`, which never points at a pre-release. Point it at `…/releases/download/v<version>` to reach one release on purpose, a pre-release included. `https:` only, or `http:` on loopback for tests;
+  - `KAGE_INSTALL_DIR`: the install folder (default `~/.local/bin`);
+  - `KAGE_NO_SETUP=1`: `install.sh` installs and doesn't run setup;
+  - `KAGE_NO_MODIFY_PATH=1`: `install.sh` prints the `PATH` line instead of writing it.
+- **`install.sh`**, as built. All of it runs inside `main`, called on the last line, so a download cut short runs nothing. It:
+  1. refuses root;
+  2. maps `uname` to a target; a shell under Rosetta on Apple silicon gets the arm64 build; Windows shells get the WSL line;
+  3. checks for `curl`, `gunzip` and `sha256sum` (or `shasum`);
+  4. checks `KAGE_RELEASE_BASE` and `KAGE_INSTALL_DIR`;
+  5. downloads `SHA256SUMS` and `kage-<target>.gz` with `curl --proto '=https' --proto-redir '=https' --tlsv1.2`, and stops unless the sum on the line for exactly that file matches;
+  6. unpacks next to the old program and renames it over `<dir>/kage` in one step (mode 0755);
+  7. if the folder isn't on `PATH`, adds `export PATH="<dir>:$PATH"` under a `# Added by the Kage installer.` line, once, to the shell's own start-up file (R114): `${ZDOTDIR:-~}/.zshrc` for zsh; `~/.bashrc` plus `~/.bash_profile` if it exists, else `~/.profile`, for bash; `~/.profile` otherwise;
+  8. runs `kage setup` with your terminal and any arguments given after `sh -s --`. With no terminal, it says how to finish.
+- **`kage setup [--yes] [--projects DIR] [--host NAME] [--port N] [--token | --no-token] [--no-service] [--linger | --no-linger]`**:
+  1. refuses root, and without `--yes` needs a terminal;
+  2. runs doctor's requirement checks and stops on a failure;
+  3. asks for the projects folder, the host, the port, the token and (systemd only, when it is off) linger. `--yes` takes every default. Accepting the host shown leaves `host` unset, so Kage uses the Tailscale address (F8). A typed host must be this machine's Tailscale or loopback address;
+  4. checks the whole merged config **before** writing anything, then writes it (`0600`, in a `0700` folder), creates the projects folder, writes the hooks file and installs the service. A first install enables and starts it; a reinstall restarts it;
+  5. turns linger on when asked (or with `--yes`; R116), and says how to undo it (`loginctl disable-linger`). If `loginctl` refuses, it prints the `sudo` line instead;
+  6. waits up to 15 s for `GET /status` on the socket to answer with the configured port, then sends one `GET /` to that address;
+  7. prints how to start Claude with Kage watching. Setup never writes Claude's configuration (R25).
+- **The service's command and environment** (R91, R105): `<kage> serve` in a SEA, or `<node> --v8-pool-size=1 <kage.mjs> serve` in bundle mode. The environment is exactly `PATH` (the absolute folders of setup's own `PATH`, plus Node's folder in bundle mode and `KAGE_CLAUDE_BIN`'s folder), `MALLOC_ARENA_MAX=2` and `KAGE_SERVICE=1`. `KAGE_SERVICE=1` tells `kage serve` it runs under the service: before anything else it removes `MALLOC_ARENA_MAX`, `NODE_OPTIONS` and `KAGE_SERVICE` from its environment, so tmux and Claude don't inherit the tuning. On Linux it also starts the tmux server in its own scope (§5.8a). Every tmux call passes `-u`, because tmux writes the tabs of a format as `_` when no UTF-8 locale is set, as under a service.
+- **The systemd user unit** is `${XDG_CONFIG_HOME:-~/.config}/systemd/user/kage.service`:
+  ```
+  # Written by kage setup
+  [Unit]
+  Description=Kage: a dashboard for your Claude Code sessions
+  StartLimitIntervalSec=0
+
+  [Service]
+  ExecStart="/home/you/.local/bin/kage" "serve"
+  Environment="PATH=…" "MALLOC_ARENA_MAX=2" "KAGE_SERVICE=1"
+  Restart=on-failure
+  RestartSec=5
+
+  [Install]
+  WantedBy=default.target
+  ```
+  It is written atomically (a temporary file renamed over it, `0644`). Then `daemon-reload` runs, then `enable --now`, or `enable` and `restart` for a reinstall. Logs go to `journalctl --user -u kage`.
+- **The launchd agent** is `~/Library/LaunchAgents/io.eridian.kage.plist`, with the marker comment on its third line, `ProgramArguments`, the same three `EnvironmentVariables`, `RunAtLoad`, `KeepAlive` `{SuccessfulExit: false}`, `ThrottleInterval` 10, `AbandonProcessGroup` (R122), and stdout and stderr in `~/Library/Logs/kage.log`. Install runs `bootout`, `enable` and `bootstrap`, retrying the bootstrap for up to 90 s while launchd finishes the bootout. Documented, not observed.
+- **`kage update [--force]`**, as built (R119). It runs only on request.
+  1. Only a SEA updates itself. The npm package and a checkout are told how to update instead.
+  2. It refuses root and takes a lock in the program's folder (one update at a time; a stale lock is taken over).
+  3. It reads `VERSION`. If that isn't newer, it says Kage is the latest, unless `--force`.
+  4. It downloads `SHA256SUMS` and the program, with a 30 s idle limit and a 15-minute cap, refusing compression and short bodies, and checks the sum.
+  5. It unpacks next to the program, runs the new file's `--version`, which must print the release's version, and then renames it over the old one. The old file stays as `kage.previous`.
+  6. A running (or starting) service is restarted and must answer with the new version within 15 s. If it doesn't, update prints the `mv` that goes back. A stopped service stays stopped, and update says how to start it.
+
+  Any failure before the rename leaves the program and the service as they were ("Update failed: <reason>. Nothing was changed.").
+- **`kage uninstall [--yes] [--purge]`**, as built (R119, R120). It asks first unless `--yes`. It removes:
+  - the unit or plist, refusing one without the marker;
+  - the program, a link's target and `kage.previous` (the npm package prints its `npm uninstall` line instead);
+  - Kage's hooks file;
+  - with `--purge`, the config and state folders too.
+
+  It keeps your projects, worktrees, branches and the tmux session `kage` with its windows. It never edits a shell start-up file: it names the lines the installer added. If linger is on, it says how to turn it off, and never changes it.
+- **The npm package** `@eridian-io/kage`: `kage.mjs` (the bundle, with its shebang), `web/` (the board), `README.md`, `LICENSE` and `package.json` (`bin: {kage: kage.mjs}`, `engines.node >=24.2`, AGPL-3.0-only). It needs Node on the machine.
+- **Releasing** (`.github/workflows/release.yml`, written and never run, R107): the owner bumps the version in `packages/server/package.json` and pushes the tag `v<version>`.
+  - `build` makes and smoke-tests one executable per target, each on its own runner, from the verified release Node.
+  - `stage` checks that the tag matches the version, then makes the npm package, `VERSION` and `SHA256SUMS`.
+  - `publish` (a pushed tag only) checks the files against `SHA256SUMS`, attests them, creates the GitHub release and publishes to npm through trusted publishing.
+  - A version with a `-` is a pre-release (npm tag `next`).
+  - `pnpm release:local` builds the same files for this machine into `dist/release`.
 
 ## 6. The UI, exactly as designed
 
@@ -500,6 +593,58 @@ The same rule as §6.6: every new sentence a user can read, and a change here is
 - **Files changed:** "No files changed yet." (no View diff then); for an external window with nothing to list, "Kage didn't start this window, so there's no branch to compare."
 - **API refusals** now end in a full stop like the rest: "No session with id <id>.", "Unknown stream.", "Not found.", "Request too large."
 
+### 6.8 Copy added in phase 6 (amended 2026-11-22, phase 6)
+
+The same rule as §6.6 and §6.7: every new sentence a user can read, and a change here is a change in the code. `packages/web/src/spec-copy.test.ts` checks that each quoted sentence below is in the code or in `install.sh`. A sentence that holds straight double quotes is set in curly quotes. `<…>` stands for what the code fills in. A doctor line is a sentence with a full stop, except a label that only names a thing (`Linux`, `tmux 3.4`, `Config at <path>`).
+
+- **`kage --version`** prints the version alone. Usage: "Print Kage's version."
+- **Source mode, asked for a service:** “Install Kage from a release, or run "pnpm build" and use node packages/server/dist/kage.mjs.”
+- **`kage serve`** with no Tailscale address now names the config file it read: “Tailscale isn't running. Start it with "tailscale up", or set "host" in <config path>.” (B52).
+- **`kage setup`:**
+  - refusals: "Run Kage as your own user, not root."; "kage setup needs a terminal for its questions. Run it in one, or pass --yes to take the defaults."; “kage setup has no option "<arg>". Run kage --help to see its options.”; "<flag> needs a value."; "Fix the items above, then run kage setup again.";
+  - the config file: "<path> isn't valid JSON. Fix it or move it away, then run kage setup again."; "<path> must hold a JSON object. Fix it or move it away, then run kage setup again."; "<path> is a link to a file that isn't there. Fix it or move it away, then run kage setup again."; "Kage can't read <path> (<code>)."; "Config error: <message>" with "Fix <path>, then run kage setup again.";
+  - the questions, each with its default in brackets: "Projects folder"; "Create <dir>?"; "Host name"; "Port"; "Set an access token? Anyone on your tailnet can reach Kage."; "Keep Kage running when you're logged out?"; "Please answer y or n.";
+  - the answers: "<dir> isn't a folder."; "Kage needs a projects folder. Run kage setup again with one that exists."; "Kage can't find the address of <name>."; "<name> isn't a Tailscale or loopback address, so Kage won't listen there."; "<name> is another machine on your tailnet (<address>), not this one."; "Press Enter for the Tailscale address, or type another name or IP."; "The port must be a whole number from 1 to 65535.";
+  - the writes: "Couldn't create <dir>: <reason>"; "Created <dir>."; "Saved your settings in <path>."; "Saved the <settings> in <path>." (the settings joined with commas and "and"); "Your settings in <path> are already set."; "Couldn't write <path>: <reason>"; "Your token: <token>. Kage asks for it once per browser. It's saved in <path>.";
+  - the service: "Installed the <service name>."; "Updated and restarted the <service name>."; "Couldn't install the <service name>: <reason>" with "Fix that, then run kage setup again."; "Start Kage with: kage serve";
+  - linger: "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger"; or, when `loginctl` refuses, "Run this to allow it: sudo loginctl enable-linger <user>";
+  - the last check: "Kage is running at <url>" (no full stop, as serve prints it, so the address copies cleanly); "Kage didn't answer at <url>. See: <log>"; "Kage is running, but <url> answers HTTP <code>. See: <log>"; "A Kage at <url> answers instead, not on port <port>. Another kage serve may be running: stop it, then run kage setup again."; "Kage is running, but <url> doesn't answer from here." with doctor's advice below;
+  - the end: “To start Claude yourself with Kage watching: claude --settings "$(kage hooks-path)" --permission-mode default”; and on Ctrl+C, "Setup stopped.".
+- **`kage status`:** "Kage <version>"; "Service: <words>", where the words are "running (<name>)", "starting (waiting for Tailscale?)", "stopped", "failed", "not installed", "can't run here. <sentence>" or "unknown (Kage couldn't read its state)"; "Address: <url>"; "Sessions: N", followed by how many need you, in brackets, when some do; "Kage isn't answering on <socket path>."; "kage status takes no arguments.".
+- **`kage doctor`**, the lines (✓, ! or ✗) with their fixes below them:
+  - this machine: "Kage runs on Linux or macOS. On Windows, install it inside WSL."; the labels `Linux`, `macOS` and "Running as your own user (uid <n>)"; "Run Kage as your own user, not root.";
+  - the tools: "tmux isn't installed."; "tmux <version> is too old: Kage needs 3.2 or newer."; "git isn't installed."; "git <version> is too old: Kage needs 2.40 or newer."; "Claude Code isn't installed."; "<cmd> didn't answer." with "Run <cmd> yourself to see what's wrong."; the install fixes "Install tmux 3.2 or newer." and "Install git 2.40 or newer." where no package manager is found (else the `apt`, `dnf`, `pacman` or `brew` line);
+  - Claude's sign-in: "Claude Code is signed in."; "Claude Code may not be signed in. Run claude once and sign in."; "Kage can't tell whether Claude Code is signed in on macOS. Run claude once to check.";
+  - Tailscale: "Tailscale isn't installed."; "Tailscale is up (<name>)."; "Tailscale isn't up."; "tailscale status didn't answer." with "Run tailscale status yourself to see what's wrong."; the fixes "Open the Tailscale app and sign in.", "Install the Tailscale app from tailscale.com, then sign in." and "Then: sudo tailscale up";
+  - the config: "No config yet. Run kage setup."; "Config at <path>"; "Config error: <message>" with "Fix <path>, then run kage doctor again."; "<path> can be read by other users. Run chmod 600 <path>.";
+  - projects: "Projects in <path>"; "The projects folder <path> doesn't exist." with "Create it, or set projectsRoot in <path>.";
+  - the service: "Kage's service can't run here."; "Kage couldn't read the service's state< (the first line of the error)>." with "Run kage doctor again. If it keeps happening, run kage setup again."; "The service is running (<name>)."; "The service is running, but it stops when you log out." with "To keep it running, run: loginctl enable-linger"; "The service is starting (waiting for Tailscale?)."; "The service has stopped after an error."; "See its log: <log>"; "The service is installed but isn't running." with "Run kage setup again to start it."; "The service isn't installed." with "Run kage setup to install the service.";
+  - the service's `PATH`: "The service finds tmux, git, claude and tailscale (claude is <path>)."; "The service can't find <tool> on its PATH. Run kage setup again to update it.";
+  - Kage itself: "Kage <version> is running at <url> (pid <n>): <counts>." (for example `3 sessions, 1 needs you`); "Kage isn't running." with "Start it with kage serve." or "Start it with kage serve, or see the service log: <log>"; "Kage answers, but its address <url> isn't one Kage can serve."; "Kage is running, but <url> answers HTTP <code>." with "See the service log: <log>"; "Kage is running, but <url> doesn't answer from here." with "If the board opens on your phone, all is well. If it doesn't, check Tailscale on both devices."; the restart fixes "Restart Kage (kage serve) and run kage doctor again." and "Restart it with <command>, then run kage doctor again.";
+  - the install: "<dir> is on your PATH."; "<dir> isn't on your PATH." with "Add <dir> to your PATH: <command>" (an `echo` into the R114 start-up files); "Claude's hooks run <path>, which isn't there anymore." with "Restart Kage so it writes them again: run kage serve, or kage setup for the service."; "Claude's hooks run <path>, which may not stay there." with "Install Kage with its install script, so the hooks name a path that lasts.";
+  - the summary: "Everything looks good."; "Kage can run. The ! lines are worth a look."; "Fix the ✗ lines, then run kage doctor again."; and "kage doctor takes no arguments.".
+- **The services:**
+  - where they can't run: “systemd isn't running in this WSL distribution. Add "[boot]" and "systemd=true" to /etc/wsl.conf, then run "wsl --shutdown" in Windows and open WSL again.”; “systemctl --user doesn't answer, so Kage can't install its service. Run "kage serve" yourself, or log in with a full session.”; “launchctl isn't on PATH, so Kage can't install its service. Run "kage serve" yourself.”; “"<command>" is not installed.”;
+  - a file Kage didn't write: "<file> wasn't written by kage setup, so Kage leaves it alone. Another tool may have rewritten it. Move it away, then try again."; "Kage can't read <file> (<code>), so it leaves it alone. Move it away, then try again.";
+  - values a unit can't hold: “The service's program must be an absolute path, not "<path>".”; "A service value can't hold a control character or a lone surrogate: <value>" (the value in JSON quotes); "systemd can't run a program whose path holds a quote or a backslash: <path>. Install Kage in another folder.";
+  - in Kage's log, under the service, when `systemd-run` fails (R122, R123; once per process): "kage: couldn't start tmux in a scope of its own (<why>), so a restart of the service will close its windows." Kage then starts tmux inside the unit, so a service restart, `kage update` or `kage uninstall` ends the tmux session and every Claude in it, and uninstall's "Kept: … the tmux session" line doesn't hold.
+- **`kage update`:**
+  - "This Kage came from npm or a build. Update it with: npm install -g <package>@latest" (`@eridian-io/kage`); "This Kage runs from a checkout. Update it with git pull and pnpm build."; “kage update has no option "<arg>". Run kage --help to see its options.”; "Kage has no single program for this machine, so kage update has nothing to install."; "Another kage update is running.";
+  - "Kage <version> is the latest."; "Downloading Kage <version> for <target>."; "Updated Kage <old> → <new>.";
+  - "Update failed: <reason>. Nothing was changed.", with the reasons `couldn't reach the release server`, `HTTP <status>`, `no checksum for <name>`, `checksum mismatch`, `download too large`, `timed out`, `the download was cut short`, `the download didn't decompress`, `the server sent a compressed reply`, `the release's VERSION isn't a version`, `the new program didn't run`, `a redirect away from HTTPS`, `KAGE_RELEASE_BASE must be an https URL` and `couldn't replace <exe> (<code>)`; also "Update failed: couldn't write next to <exe> (<code>). Nothing was changed." and "Update failed: couldn't find the installed program (<code>). Nothing was changed.";
+  - the restart: "Restarted the service."; "Restart Kage to use it."; "The service isn't running, so it stays stopped. To start it: <command>"; "Couldn't restart the <service name>: <reason>"; "Restarted the service, but Kage <new> isn't answering." with "To go back to Kage <old>: mv <kept file> <exe> && <command>" (the kept file is `<exe>.previous`) or "Run kage doctor to see why."; "Kage wasn't answering before the update either. kage doctor says why.".
+- **`kage uninstall`:**
+  - "Remove the Kage service and program?" (default No); "kage uninstall needs a terminal to ask first. Run it in one, or pass --yes to remove Kage without asking."; “kage uninstall has no option "<arg>". Run kage --help to see its options.”; "Nothing was removed."; "Uninstall stopped. Nothing was removed."; "Couldn't remove the <service name>: <reason>" with "Kage removed nothing else.";
+  - "Removed: <what>." (the unit or plist with its file, the program, `kage.previous`, the hooks file, and with `--purge` the two folders); "Removed: nothing. Kage's service and program weren't there."; "Remove the program with: npm uninstall -g <package>"; "Couldn't remove <path>: <reason>";
+  - “Kept: your projects, their worktrees and branches, and the tmux session "kage" with its windows.”; "Kept: <config path> and <state dir> (kage uninstall --purge removes them)."; "Kept: lines <a>-<b> of <file>, which the installer added for your PATH. Remove them by hand if you like."; "Linger is still on. If nothing else needs it, turn it off with: loginctl disable-linger".
+- **`install.sh`:**
+  - "Run the installer as your own user, not root."; "On Windows, install Kage inside WSL: https://learn.microsoft.com/windows/wsl/install"; "Kage has no build for <os> <arch>."; "Install <tools>, then run the installer again.";
+  - "KAGE_RELEASE_BASE must be an https URL."; "Give KAGE_INSTALL_DIR as a full path."; "The install folder can't contain a quote, $, a backtick, a backslash, a colon or a line break."; "Kage can't be installed into /."; "<dir>/kage is a folder. Move it away, then run the installer again.";
+  - "Couldn't download <url>. Nothing was installed."; "Checksum check failed for <file>. Nothing was installed.";
+  - "Added <dir> to your PATH in <file>."; "<file> already adds <dir> to your PATH."; "To add <dir> to your PATH, add this line to <file>: <line>"; "Couldn't change <file>. Add this line to it: <line>"; "Open a new terminal to run kage by name.";
+  - "Installed <dir>/kage."; “Installed <dir>/kage. Run "kage setup" in a terminal to finish.”.
+- **Usage**, new entries: "Check what Kage needs, ask for its settings, then install and start its service."; "Run it again to change a setting. --yes takes every default and asks nothing."; "Show the service, Kage's address and how many sessions it has."; "Check what Kage needs and how it runs, and say what to fix. It changes nothing."; "Install the latest release, checked against its SHA-256, and restart the service."; "Kage never checks for updates on its own. --force installs the release even if it isn't newer."; "Remove the service and the program. Your projects, worktrees, branches and the tmux…"; "Where kage update downloads from (https; the latest GitHub release by default).".
+
 ## 7. Performance budgets
 
 These are checked in CI (§8):
@@ -519,6 +664,7 @@ These are checked in CI (§8):
 - **Idle memory, and the start-up compression (R100):** at start Kage compresses each file of the board once (gzip and brotli level 11) and keeps the results. Doing that for every file at once left 3 to 4.5 MB of freed memory resident, differing from run to run (idle runs of 71 to 76.5 MB). Now one file and one encoder at a time: 71.5 to 72.1 MB over 10 runs on an empty server, 3.7 MB lower and steady. It costs about 110 ms once at start (about 500 to 580 ms in all).
 - **Rendering:** under a flood of 2,000 lines the DOM never holds more than 500 line nodes and no line element is re-created; a 3,000-line diff keeps at most 1,000 line elements.
 - **SSE under load** (B3): 30 windows each write transcript records and post tool hooks for 10.5 s. A session's now line goes out at most 4 times a second (§5.5), so the limit is the leading frame plus one per 250 ms: **43 frames per session** and **1,290 in all**. Measured: 41 per session and 1,218 in all (it was 101 and 2,923 before the coalescing), about 48 KB a second of the 200 KB budget, and the longest main-thread task under 100 ms.
+- **The single executable** (amended 2026-11-22, phase 6). With `KAGE_PERF_SEA=<path to the unpacked kage>`, the perf project also measures the SEA the same way and records `Idle server RSS (SEA)` and `Idle server CPU (SEA, 30 s)` against the same limits. In WSL (two runs) the SEA idled at **72.2 to 72.5 MB** and 0% CPU, about 8 MB below the bundle in the same session. `pnpm test:linux` doesn't set `KAGE_PERF_SEA`, so it measures the bundle only: 76.9 MB at the end of phase 6. `kage hook`'s wall time, recorded and not asserted (median of 10, WSL): **33.9 ms from the SEA** against 63.5 ms from the bundle, because the SEA carries a V8 code cache.
 - **Every budget passes outright.** A budget that was known to fail while the phase ran carried an `allowFail` marker; none remains, and `packages/web/perf-markers.test.ts` fails if one comes back.
 
 ## 8. Making sure it matches the design
@@ -537,7 +683,11 @@ The phases follow the owner's whiteboard. Each phase ends with a check that prov
 3. **Control:** new task (worktree), answer, reply, stop, ports and files. Check: start, answer and stop a task from the laptop.
 4. **Finish and terminal:** pin, archive, auto-archive, delete with warning, diff view, and the lazy terminal. Check: the full lifecycle, and the terminal works with Claude's interface.
 5. **Polish:** notifications, the command palette, and the budget checks. Check: Kage pings the phone, and every budget in §7 passes.
-6. **Install and release:** `kage setup`, `status`, `update`, `uninstall` and `doctor`; the systemd and launchd services; `install.sh`; SEA builds, checksums and the npm package in a release workflow. Check: on a clean Linux machine and a clean Mac, the one-line install leads to a working board, and Kage survives a reboot.
+6. **Install and release:** `kage setup`, `status`, `update`, `uninstall` and `doctor`; the systemd and launchd services; `install.sh`; SEA builds, checksums and the npm package in a release workflow. Check: on a clean Linux machine and a clean Mac, the one-line install leads to a working board, and Kage survives a reboot. As built (amended 2026-11-22, phase 6):
+   - **Clean Linux:** `pnpm test:install`, a fresh Debian container: the one-line install from a local release server, the service (a fake `systemctl` that runs the unit's own command), a hooked Claude, `kage update`, a bad checksum refused, then `kage uninstall` and `--purge`. With it, `pnpm test:linux` all green.
+   - **Real systemd and a reboot:** `pnpm test:reboot`, systemd as PID 1 in a container: the install, a task from the board, the tmux server surviving a service restart, stop and start (R122), then `docker restart`, after which the service and the board are back within 30 s and the task shows as ended.
+   - **WSL:** a real user unit, without linger, installed and removed in the same step. The owner's WSL is never terminated and its linger never changed (R106).
+   - **Clean Mac:** the owner's step, after the first release (R105). Until then the launchd facts are documented, not observed.
 
 ## 10. Left to the builder
 

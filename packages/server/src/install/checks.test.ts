@@ -835,7 +835,7 @@ describe('installChecks', () => {
       expect(one(await installChecks(on), 'install-path')).toEqual({
         id: 'install-path',
         level: 'ok',
-        label: `${bin} is on your PATH`,
+        label: `${bin} is on your PATH.`,
         fix: null,
       });
       const off = deps(tableRun({}).run, { mode: { kind: 'sea', exe } });

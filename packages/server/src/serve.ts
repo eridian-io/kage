@@ -1,13 +1,20 @@
 import { existsSync, watch } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
-import { hostname } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
 import { serve } from '@hono/node-server';
 import type { ArchivedSession, ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, type BoardFiles, boardFor, dirFiles, loadAssets } from './assets.ts';
-import { ConfigError, type KageConfig, loadConfig, startupWarnings } from './config.ts';
+import {
+  ConfigError,
+  configPath,
+  displayPath,
+  type KageConfig,
+  loadConfig,
+  startupWarnings,
+} from './config.ts';
 import { ActionLock, attachCommand, SessionControls } from './control/actions.ts';
 import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
@@ -438,6 +445,7 @@ async function startServer(
       tailscaleIp: defaultTailscaleIp,
       tailscaleDnsName: () => tailscaleDnsName(),
       hostname,
+      configFile: displayPath(configPath(io.env), io.env.HOME || io.env.USERPROFILE || homedir()),
     });
   } catch (err) {
     if (err instanceof ListenError) {

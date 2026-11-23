@@ -31,7 +31,7 @@ export function assertOurs(path: string, isOurs: (lines: string[]) => boolean): 
   }
   if (!isOurs(text.split(/\r?\n/))) {
     throw new Error(
-      `${path} wasn't written by kage setup, so Kage leaves it alone. Move it away, then try again.`,
+      `${path} wasn't written by kage setup, so Kage leaves it alone. Another tool may have rewritten it. Move it away, then try again.`,
     );
   }
 }

@@ -280,7 +280,7 @@ describe('kage uninstall', () => {
     const o = io();
     expect(await uninstallCommand(['--yes', '--purge'], o.io, deps())).toBe(1);
     expect(o.err[0]).toBe(
-      `Couldn't remove the systemd user unit kage.service: ${unit} wasn't written by kage setup, so Kage leaves it alone. Move it away, then try again.`,
+      `Couldn't remove the systemd user unit kage.service: ${unit} wasn't written by kage setup, so Kage leaves it alone. Another tool may have rewritten it. Move it away, then try again.`,
     );
     expect(o.err[1]).toBe('Kage removed nothing else.');
     expect(existsSync(unit)).toBe(true);

@@ -33,7 +33,16 @@ describe('resolveListenAddress', () => {
     const p = resolveListenAddress({ ...DEFAULT_CONFIG, host: null }, base({ ip: null }));
     await expect(p).rejects.toBeInstanceOf(ListenError);
     await expect(p).rejects.toThrow(
-      'Tailscale isn\'t running. Start it with "tailscale up", or set "host" in ~/.config/kage/config.json.',
+      'Tailscale isn\'t running. Start it with "tailscale up", or set "host" in config.json.',
+    );
+  });
+  it('names the config file it is given when tailscale is not running (B52)', async () => {
+    const p = resolveListenAddress(
+      { ...DEFAULT_CONFIG, host: null },
+      { ...base({ ip: null }), configFile: '/srv/conf/kage/config.json' },
+    );
+    await expect(p).rejects.toThrow(
+      'Tailscale isn\'t running. Start it with "tailscale up", or set "host" in /srv/conf/kage/config.json.',
     );
   });
   it('refuses 0.0.0.0 unless unsafeListenAll', async () => {

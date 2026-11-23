@@ -73,9 +73,27 @@ Deferred from the phase 4 reviews. None blocks use.
 - **B49** Pings can be quieter. Skip a ping while a board tab for that session is visible and focused (the board already says so with the title count). Collect a burst of pings (several sessions at once) into one, "3 sessions need you".
 - **B50** A sign-out action on the board. It needs to know whether a token is set, which the API doesn't say today, so the button can be hidden when there is none.
 - **B51** A phone layout for the page a ping opens: the link `#s=<id>` lands on the desktop layout (at least 1100 px), which is cramped on a phone.
-- **B52** `kage ping` names a fixed path, "No ntfyTopic in ~/.config/kage/config.json." (`main.ts`, and the spec §6.7 copy), even when `XDG_CONFIG_HOME` puts the config elsewhere. Fix: print the path the config was actually read from.
+- **B52** (done, phase 6 Tasks 0 and 10: `kage ping` and serve's "Tailscale isn't running" line both name the config file Kage actually reads) `kage ping` names a fixed path, "No ntfyTopic in ~/.config/kage/config.json." (`main.ts`, and the spec §6.7 copy), even when `XDG_CONFIG_HOME` puts the config elsewhere. Fix: print the path the config was actually read from.
 - **B53** `tailQuestionKey` can stay null when the attach guard (`live-source.ts`, `st.hookCount === hooks`) skips `#rebuildFromTail` because a hook landed while the tail started; then the transcript's open question at that moment is not remembered, and the next tail change that still shows it is taken for a new question. Fix: record the key even when the rebuild is skipped.
 - **B54** `resumeAborted` sets the status back to ended through `#setStatus`, which resets `statusSince`, the clock auto-archive measures an ended session's age by: a resume whose window failed to open restarts the 14 days. Fix: keep the `statusSince` the session had before `resumed()`.
+
+B53 and B54 are still open after phase 6.
+
+## Found in phase 6
+
+Deferred from the phase 6 plan and reviews. None blocks the first release.
+
+- **B55** macOS notarisation. The SEA is ad-hoc signed, which is enough for a binary `curl` fetched (no quarantine attribute), but a browser download meets Gatekeeper. Notarising needs an Apple developer account, the owner's call.
+- **B56** A Homebrew tap (`brew install eridian-io/tap/kage`), as a third way in on macOS.
+- **B57** `kage update` checks only `SHA256SUMS`, fetched over HTTPS from the same release: that catches corruption, not a compromised release host. Check the build provenance attestation too, as `gh attestation verify` does by hand, without needing `gh`.
+- **B58** Pin `node:<version>-trixie-slim` in `Dockerfile.install` and `Dockerfile.reboot` by digest, not only by tag, with their apt packages (see B18), so `pnpm test:install` and `pnpm test:reboot` are reproducible.
+- **B59** WSL doesn't start at Windows boot, so neither does Kage in it, linger or not. It is out of Kage's hands; the README says so. A documented way (a Task Scheduler entry that runs `wsl.exe -d <distro> --exec true` at logon) would help WSL users.
+- **B60** If someone deletes Kage's unit file by hand while the service runs, `kage uninstall` can't tell the running unit is Kage's and leaves it running. `systemctl --user stop kage.service` is the manual fix, and doctor shows the state.
+- **B61** Smaller things in `kage update` and `kage uninstall`, each optional: two updates that both find a stale lock can both take it over (at worst a duplicate download); an empty lock left by a failed write blocks updates for 10 s, then counts as stale; uninstall could check locally that the file it removes is `process.execPath`'s target (belt and braces; `installedExe` already guarantees it).
+- **B62** A test that the fingerprints in `.github/node-release-keys.asc` match the keys in it (skipped without `gpg`).
+- **B63** `assertSafeOut` in `release/build.ts` compares resolved paths, not real ones, so a symlink to the home folder or the repo passes as `--out`. Use `realpath` for the parts that exist.
+- **B64** When `systemd-run --user --scope` fails, Kage starts tmux inside the unit (one log line, R123), and then a service restart, `kage update` or `kage uninstall` ends every Claude session. Doctor could say so: a warn line when the service runs but the tmux server isn't in a `kage-tmux-*.scope` (`tmux display -p '#{pid}'` on Kage's socket, then `/proc/<pid>/cgroup`).
+- **B65** `systemd-run --user --scope` was checked on systemd 257 only (the reboot container). Check it on systemd 255 (Ubuntu 24.04) and on a host without `dbus-user-session`.
 
 ## Later
 

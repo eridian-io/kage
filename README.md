@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/kage-banner.jpg" alt="Kage: a ninja directing several AI coding agents from the shadows" width="100%">
+  <img src="https://raw.githubusercontent.com/eridian-io/kage/main/assets/kage-banner.jpg" alt="Kage: a ninja directing several AI coding agents from the shadows" width="100%">
 </p>
 
 <h1 align="center">kage</h1>
@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
+  <a href="https://github.com/eridian-io/kage/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue" alt="License: AGPL-3.0"></a>
   <img src="https://img.shields.io/badge/node-%E2%89%A524.2-brightgreen" alt="Node 24.2 or newer">
   <img src="https://img.shields.io/badge/status-early%20development-orange" alt="Status: early development">
 </p>
@@ -41,7 +41,7 @@ It is a thin layer over tools you already trust: **tmux** keeps the sessions ali
 ## How it works
 
 <p align="center">
-  <img src="assets/kage-how-it-works.jpg" alt="The ninja on the couch checks a phone; a private encrypted link runs through a tunnel to the home PC, where the agents are working" width="100%">
+  <img src="https://raw.githubusercontent.com/eridian-io/kage/main/assets/kage-how-it-works.jpg" alt="The ninja on the couch checks a phone; a private encrypted link runs through a tunnel to the home PC, where the agents are working" width="100%">
 </p>
 
 ```mermaid
@@ -61,15 +61,135 @@ Kage listens on your Tailscale address only, so the dashboard can't be reached f
 ## Requirements
 
 - A server or home PC that stays on (Linux or macOS; on Windows, use WSL)
-- [Node.js](https://nodejs.org) 24.2 or newer
-- [tmux](https://github.com/tmux/tmux)
-- [git](https://git-scm.com)
+- [tmux](https://github.com/tmux/tmux) 3.2 or newer
+- [git](https://git-scm.com) 2.40 or newer
 - [Claude Code](https://docs.claude.com/en/docs/claude-code), signed in on the PC
 - [Tailscale](https://tailscale.com) on the PC and on every device you connect from
+- [Node.js](https://nodejs.org) 24.2 or newer, only for the npm package or a checkout. A release install brings its own.
 
-## Quick start
+`kage setup` checks each of these and says how to install what's missing.
 
-Kage is in early development, and the installer comes in a later phase. For now, run it from a checkout in demo mode, with sample sessions and no tmux needed:
+## Install
+
+**The one-line install works once the first release is out.** No release exists yet. Until then, install from a checkout (below).
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/eridian-io/kage/main/install.sh | sh
+```
+
+`install.sh` is short and plain POSIX shell, so read it before you run it: open the same URL in your browser, or save it first with `curl -fsSL … -o install.sh`. It:
+
+1. refuses to run as root, and never calls `sudo`;
+2. picks the build for your machine: Linux or macOS, x64 or arm64 (a shell under Rosetta gets the arm64 build). On Windows it tells you to use WSL;
+3. downloads that build and `SHA256SUMS` from the latest release, over HTTPS only, and stops unless the checksum matches;
+4. puts the program at `~/.local/bin/kage` in one step, replacing an older one;
+5. if that folder isn't on your `PATH`, adds an `export PATH=…` line, marked `# Added by the Kage installer.`, to your shell's start-up file: `~/.zshrc` for zsh; `~/.bashrc` and `~/.bash_profile` (or `~/.profile`) for bash; `~/.profile` otherwise. It says what it changed;
+6. runs `kage setup` in your terminal, which asks before it changes anything.
+
+To pass setup's options, put them after `sh -s --`, for example `… | sh -s -- --yes --no-linger`. These variables change what the installer does:
+
+| Variable | Effect |
+|---|---|
+| `KAGE_INSTALL_DIR` | Install into this folder instead of `~/.local/bin` |
+| `KAGE_NO_MODIFY_PATH=1` | Print the `PATH` line instead of writing it |
+| `KAGE_NO_SETUP=1` | Install only; run `kage setup` yourself later |
+
+**With npm**, once the first release is out, if you already use Node 24.2 or newer:
+
+```sh
+npm install -g @eridian-io/kage
+kage setup
+```
+
+**From a checkout**, which works today:
+
+```sh
+git clone https://github.com/eridian-io/kage.git
+cd kage
+corepack enable
+pnpm install
+pnpm build
+node packages/server/dist/kage.mjs setup
+```
+
+The service then runs this checkout's build with this Node. To use `kage` by name, add a shell function to your shell's start-up file (adjust the path):
+
+```sh
+kage() { node "$HOME/kage/packages/server/dist/kage.mjs" "$@"; }
+```
+
+On Windows, clone inside WSL's own file system (for example `~/kage`), not under `/mnt/c`.
+
+## Commands
+
+- **`kage setup`** checks what Kage needs, asks for the projects folder, the host name, the port and whether to set an access token, saves them in the config, and installs and starts the service. Then it checks that the board answers and prints its address. Run it again any time to change a setting. `--yes` takes every default and asks nothing; `--projects DIR`, `--host NAME`, `--port N`, `--token` or `--no-token`, `--no-service`, and `--linger` or `--no-linger` answer one question each.
+- **`kage status`** shows the version, the service, the board's address and how many sessions need you.
+- **`kage doctor`** checks everything again (the tools, Claude's sign-in, Tailscale, the config, the service, the board, your `PATH`) and says what to fix. It changes nothing.
+- **`kage update`** installs the latest release, checked against its SHA-256 like the installer does, and restarts the service if it was running. It runs only when you ask: Kage never checks for updates on its own. The old program stays next to the new one as `kage.previous`, and if the new one doesn't answer, update prints the command that goes back. `--force` installs the release even if it isn't newer. An npm or checkout install is updated with npm, or with `git pull` and `pnpm build`.
+- **`kage uninstall`** asks, then removes the service, the program and Kage's hooks file. It keeps your projects, their worktrees and branches, the tmux session `kage` with its windows, and Kage's config and state folders; `--purge` removes those two folders too. It never edits your shell's start-up file: it names the lines the installer added, for you to remove. `--yes` skips the question.
+
+## The service
+
+`kage setup` installs Kage as a service, so it starts on boot and comes back if it stops:
+
+- **Linux:** a systemd user unit, `~/.config/systemd/user/kage.service`. Logs: `journalctl --user -u kage`.
+- **macOS:** a launchd agent, `~/Library/LaunchAgents/io.eridian.kage.plist`. Logs: `~/Library/Logs/kage.log`.
+
+The unit holds no secrets: just the program, a `PATH` and two settings. The token stays in the config.
+
+**Linger.** A user unit normally stops when you log out, and starts only when you log in. With linger on, systemd starts it at boot and keeps it running. Setup asks to turn it on (`--yes` turns it on; `--no-linger` leaves it off) and says so when it does. To turn it off again: `loginctl disable-linger`. `kage uninstall` leaves linger as it is and reminds you if it is on.
+
+**Waiting for Tailscale.** Kage listens on your Tailscale address. Until Tailscale has one, Kage stops and the service starts it again every 5 seconds; `kage status` says "starting (waiting for Tailscale?)" meanwhile.
+
+**Your sessions outlive the service.** Under systemd, Kage starts tmux in a scope of its own (`systemd-run --user --scope`), so restarting, updating or uninstalling Kage leaves tmux and every Claude session running. If that doesn't work on your machine, Kage logs one line, "couldn't start tmux in a scope of its own", and starts tmux inside the service. Then a restart, `kage update` or `kage uninstall` ends the tmux session and every Claude in it. On macOS the agent is set so launchd leaves tmux running when Kage stops.
+
+**After a reboot**, sessions show as "ended", and you resume the ones you want with `U`.
+
+**The `PATH` the service sees** is the one setup ran with. If you move `claude`, `tmux` or `git` later, run `kage setup` again; `kage doctor` tells you when the service can't find one.
+
+### On WSL
+
+- The service needs systemd. Add this to `/etc/wsl.conf`, then run `wsl --shutdown` in Windows and open WSL again:
+  ```
+  [boot]
+  systemd=true
+  ```
+  Without it, setup says so and skips the service; run `kage serve` yourself instead.
+- WSL starts only when you open it, not when Windows boots, so neither does Kage, linger or not.
+- A user unit doesn't read `~/.bashrc`, where tools such as `claude` are often put on the `PATH`. Run `kage setup` from a shell where `claude` works, so it captures that `PATH`.
+
+### On macOS
+
+These notes follow Apple's and Node's documentation. Kage hasn't been run on a Mac yet.
+
+- The agent starts when you log in, not at boot. For Kage to run after a reboot with nobody at the Mac, turn on automatic login.
+- If `tailscale` isn't on your `PATH`, Kage uses the Tailscale app's own command line.
+- Kage can't tell whether Claude Code is signed in on macOS, so doctor asks you to run `claude` once to check.
+- The program is ad-hoc signed. `curl` doesn't mark downloads as quarantined, so the installer's copy runs. A copy downloaded in a browser needs `xattr -d com.apple.quarantine kage` first.
+
+## Start Claude sessions
+
+Start a task from the board with `N` (see Control), or start Claude yourself in the tmux session `kage` with Kage watching. In your project's folder:
+
+```sh
+tmux new-window -t kage -c ~/projects/my-app "exec claude --settings '$(kage hooks-path)' --permission-mode default"
+```
+
+Or attach (`tmux attach -t kage`), open a new window (`Ctrl-b c`) and run `claude --settings "$(kage hooks-path)" --permission-mode default` there.
+
+`kage hooks-path` writes the settings that send Claude's hook events to Kage, and prints the file's path (`$XDG_STATE_HOME/kage/claude-settings.json`, or `~/.local/state/kage/claude-settings.json`). Kage never changes Claude's own settings. Pass `--permission-mode default` too: Claude Code 2.1.330 starts in auto mode, which never asks, so Kage would never see a prompt.
+
+The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes or waits for your next prompt. The first run in a new folder shows Claude's folder-trust screen, and Kage reads it from the pane and shows it as "needs you" too. Answer it from the board, or in the terminal.
+
+The tmux session's first window only holds the session open, so the board hides it while it sits at a shell.
+
+To run Kage without the service, start it yourself with `kage serve` (add `KAGE_HOST=127.0.0.1` to stay on loopback) and open the address it prints.
+
+Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default; `kage serve` sets `KAGE_SOCKET` in the tmux session, so Claude in its windows finds the same socket. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
+
+## Try the demo
+
+To look around first, run the board with sample sessions and no tmux, from a checkout:
 
 ```sh
 git clone https://github.com/eridian-io/kage.git
@@ -79,35 +199,7 @@ pnpm install
 pnpm dev
 ```
 
-Then open the address it prints. You need Node 24.2 or newer, and Tailscale up (or run `KAGE_HOST=127.0.0.1 pnpm dev` to stay on loopback). To serve a built checkout instead, run `pnpm build` and then `node packages/server/src/main.ts serve --demo`.
-
-## Try it with real sessions
-
-Live sessions need Linux or macOS with tmux 3.2 or newer. On Windows, use WSL and clone the repo inside WSL's own file system (for example `~/kage`), not under `/mnt/c`. There is no installer yet: it comes in phase 6, so for now run the command from the checkout. A shell function makes the steps below shorter:
-
-```sh
-kage() { node "$HOME/kage/packages/server/src/main.ts" "$@"; }
-```
-
-Adjust the path to where you cloned the repo.
-
-1. Install and build the board, once: `corepack enable && pnpm install && pnpm build`.
-2. Start Kage on loopback: `KAGE_HOST=127.0.0.1 kage serve`. Without `KAGE_HOST` it listens on your Tailscale address. Open the address it prints, for example `http://127.0.0.1:8080`, in any browser that can reach it.
-3. `kage serve` creates the tmux session `kage`. Its first window only holds the session open, so the board hides it while it sits at a shell. From a second terminal, start Claude in a new window of that session, in your project's folder:
-
-```sh
-tmux new-window -t kage -c ~/projects/my-app "exec claude --settings '$(kage hooks-path)' --permission-mode default"
-```
-
-Or attach (`tmux attach -t kage`), open a new window (`Ctrl-b c`) and run `claude --settings "$(kage hooks-path)" --permission-mode default` there. Either way, `kage` must be defined in the shell you type it in: the shell function above, in your shell's startup file.
-
-`kage hooks-path` writes the settings that send Claude's hook events to Kage, and prints the file's path (`$XDG_STATE_HOME/kage/claude-settings.json`, or `~/.local/state/kage/claude-settings.json`). Pass `--permission-mode default` too: Claude Code 2.1.330 starts in auto mode, which never asks, so Kage would never see a prompt.
-
-The session appears on the board with live status and output. It turns amber when Claude asks for permission or asks a question, and done when Claude finishes or waits for your next prompt. The first run in a new folder shows Claude's folder-trust screen, and Kage reads it from the pane and shows it as "needs you" too. Answer it from the board, or in the terminal.
-
-`kage serve --demo` still runs the sample sessions with no tmux.
-
-Hook events travel over a Unix socket, `$XDG_RUNTIME_DIR/kage.sock` by default; `kage serve` sets `KAGE_SOCKET` in the tmux session, so Claude in its windows finds the same socket. To move it, set `KAGE_SOCKET`; the directory it sits in must be owned by you, and Kage refuses a shared one such as `/tmp`. Set `KAGE_TMUX_SOCKET` to use a separate tmux server (`tmux -L <name>`).
+Then open the address it prints. You need Node 24.2 or newer, and Tailscale up (or run `KAGE_HOST=127.0.0.1 pnpm dev` to stay on loopback). An installed Kage shows the same with `kage serve --demo`.
 
 ## Control
 
@@ -178,7 +270,7 @@ Press `⌘K` on a Mac, or `Ctrl+K` elsewhere (or click the hint at the top right
 
 ## Configuration
 
-Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. It lives outside the checkout, so hostnames and secrets never end up in the repo.
+Kage reads `~/.config/kage/config.json`, or `$XDG_CONFIG_HOME/kage/config.json` when `XDG_CONFIG_HOME` is set. The file is optional: every key has a default, and unknown keys are ignored. `kage setup` writes the keys it asks about, readable by you only, and keeps the rest. It lives outside the checkout, so hostnames and secrets never end up in the repo.
 
 ```json
 {
@@ -220,16 +312,24 @@ The environment variables `KAGE_NAME`, `KAGE_HOST` and `KAGE_PORT` override `nam
 
 `pnpm dev` needs Tailscale to be up. Without it, run it on loopback instead: `KAGE_HOST=127.0.0.1 pnpm dev`.
 
-## Run on boot
-
-There is no command for this yet. The installer and the systemd and launchd services come in phase 6. Until then, start Kage yourself with `kage serve`. After a reboot, sessions show as "ended", and you resume the ones you want with `U`.
-
 ## Safety
 
 - Kage binds to your Tailscale IP only, so only devices on your tailnet can reach it.
 - It never kills tmux windows it didn't create.
 - Each task runs in its own git worktree, so agents don't trip over each other or over your own work.
 - Claude Code can run commands on your PC. Only add devices you trust to your tailnet.
+- Nothing installs or runs as root. A step that needs root is printed for you to run.
+- The running Kage contacts nothing outside your machine except your ntfy server, and only when you set a topic. `kage update` and the installer download from GitHub, only when you run them, over HTTPS, and check each file against the release's `SHA256SUMS`.
+- The checksum catches a broken download, not a forged release. To check that a release was built from this repository, verify it with the GitHub CLI: `gh attestation verify kage-linux-x64.gz --repo eridian-io/kage`.
+
+## Releasing
+
+For maintainers, and only on the owner's go:
+
+1. Set the new version in `packages/server/package.json`.
+2. Tag the commit `v<version>` and push the tag.
+
+The release workflow does the rest: it builds and smoke-tests the program for each platform, makes the npm package, `VERSION` and `SHA256SUMS`, attests them, creates the GitHub release and publishes to npm. A version with a `-` (`1.2.0-rc.1`) is a pre-release, which `kage update` and the installer don't pick up. `pnpm release:local` builds the same files for this machine into `dist/release`.
 
 ## Roadmap
 
@@ -238,7 +338,7 @@ There is no command for this yet. The installer and the systemd and launchd serv
 - [x] **Phase 3, control:** start, answer and stop tasks; preview links; token login
 - [x] **Phase 4, finish and terminal:** pin, archive, auto-archive, delete with a warning, resume, a diff view and a terminal in the browser
 - [x] **Phase 5, polish:** notifications through ntfy and the browser, a command palette, performance budgets
-- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases
+- [ ] **Phase 6, install and release:** `kage setup`, services that start on boot, single-file releases (built; waiting for the first release)
 
 ## Contributing
 
@@ -246,7 +346,7 @@ Issues and pull requests are welcome. Before your first pull request is merged, 
 
 ## License
 
-Kage is licensed under the [GNU Affero General Public License v3.0](LICENSE). You may use, change and share it freely. Any version you distribute or run as a network service must stay open source under the same license.
+Kage is licensed under the [GNU Affero General Public License v3.0](https://github.com/eridian-io/kage/blob/main/LICENSE). You may use, change and share it freely. Any version you distribute or run as a network service must stay open source under the same license.
 
 If you want to use Kage in a closed-source product, a commercial license is available. Open an issue to get in touch.
 

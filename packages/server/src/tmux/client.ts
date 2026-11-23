@@ -161,6 +161,8 @@ export class TmuxClient {
   readonly #launchCheckMs: number;
   readonly #serverScope: (() => string[]) | undefined;
   #warnedPlaceholder = false;
+  /** The scope fallback's warning, once per process (R123). */
+  #warnedScope = false;
 
   constructor(opts: {
     session: string;
@@ -246,9 +248,12 @@ export class TmuxClient {
       return await this.#exec(cmd, [...pre, 'tmux', ...tmuxArgs(this.#target, args)]);
     } catch (e) {
       if (/duplicate session/i.test(stderrOf(e))) throw e;
-      this.#warn(
-        `kage: couldn't start tmux in a scope of its own (${why(e)}), so a restart of the service will close its windows.`,
-      );
+      if (!this.#warnedScope) {
+        this.#warnedScope = true;
+        this.#warn(
+          `kage: couldn't start tmux in a scope of its own (${why(e)}), so a restart of the service will close its windows.`,
+        );
+      }
       return this.#run(args);
     }
   }

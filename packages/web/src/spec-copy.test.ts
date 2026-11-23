@@ -60,6 +60,11 @@ const SRC = sources();
 const CORPUS = SRC.map((s) => s.text)
   .join('\n')
   .replace(/\\(['"`])/g, '$1');
+/**
+ * The installer's sentences too (F10): install.sh at the repo root, with its shell escapes
+ * (`\"`, `\$`) read as the characters they stand for.
+ */
+const INSTALL_SH = readFileSync(join(ROOT, 'install.sh'), 'utf8').replace(/\\(["$`\\])/g, '$1');
 
 const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 /**
@@ -135,6 +140,44 @@ describe('spec §6.7 copy (phase 5) is in the code', () => {
     const sentences = quoted(section('6.7'));
     expect(sentences.length).toBeGreaterThan(5);
     expect(sentences.filter((s) => !pattern(s).test(CORPUS))).toEqual([]);
+  });
+});
+
+/**
+ * §6.8's sentences: the straight-quoted ones as in §6.6, plus the curly-quoted ones, which may
+ * hold straight double quotes (`“Run "kage serve" yourself.”`).
+ */
+function quoted68(body: string): string[] {
+  const curly = [...body.matchAll(/“([^”\n]+)”/g)].map((m) => m[1] as string);
+  const rest = body.replace(/“[^”\n]+”/g, '');
+  return [...curly, ...quoted(rest)];
+}
+
+describe('spec §6.8 copy (phase 6) is in the code or install.sh', () => {
+  const sentences = quoted68(section('6.8'));
+
+  it('finds the sentences (the section is there), the curly-quoted ones too', () => {
+    expect(sentences.length).toBeGreaterThan(150);
+    expect(sentences).toContain(
+      'launchctl isn\'t on PATH, so Kage can\'t install its service. Run "kage serve" yourself.',
+    );
+  });
+
+  it('every sentence occurs in packages/*/src outside tests, or in install.sh', () => {
+    const missing = sentences.filter(
+      (s) => !pattern(s).test(CORPUS) && !pattern(s).test(INSTALL_SH),
+    );
+    expect(missing).toEqual([]);
+  });
+
+  it("install.sh's own sentences are in §6.8", () => {
+    // Every message install.sh prints through die or say, as written, with $words as holes.
+    const said = [
+      ...INSTALL_SH.matchAll(/\b(?:die|say) (["'])(.+?)\1(?:\s*;|\s*$| &&| \|\|)/gm),
+    ].map((m) => (m[2] as string).replace(/\$\{?\w+\}?/g, '<x>'));
+    expect(said.length).toBeGreaterThan(15);
+    const spec = sentences.map((s) => s.replace(/<[^>]+>/g, '<x>'));
+    expect(said.filter((s) => !spec.includes(s))).toEqual([]);
   });
 });
 

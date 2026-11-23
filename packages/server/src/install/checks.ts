@@ -645,7 +645,7 @@ async function installPathChecks(d: CheckDeps): Promise<Check[]> {
     const dir = dirname(d.mode.exe);
     const onPath = (d.env.PATH ?? '').split(delimiter).some((p) => p !== '' && sameDir(p, dir));
     if (onPath) {
-      checks.push(ok('install-path', `${dir} is on your PATH`));
+      checks.push(ok('install-path', `${dir} is on your PATH.`));
     } else {
       // R114: the same files install.sh writes the line into.
       const files = pathRcFiles({

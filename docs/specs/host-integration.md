@@ -8,6 +8,13 @@ Fixtures: `packages/server/test/fixtures/ports/ss.txt` and `ps.txt` keep the obs
 
 §7 (the SEA, systemd user units, launchd and Claude's sign-in) was recorded on 2026-11-22 for phase 6, with Node 24.22.3 and systemd 255. Its "Read first" list comes first below.
 
+## Read first: what phase 6 built from §7
+
+The design spec records what phase 6 built from these facts (all amended 2026-11-22, phase 6): the run modes, the release files, the unit, the plist, `install.sh`, setup, update and uninstall in §5.13; the restart loop and the tmux scope in §5.8a; install safety and the outbound calls in §5.10; `GET /status` in §5.12; the new copy in §6.8; the SEA's idle memory and hook time in §7. Two facts were found after the spike, while building (Task 9):
+
+1. **tmux writes every tab of a `-F` format as `_` when no UTF-8 locale is set** (tmux 3.4 and 3.5a: `env -i tmux list-panes -F "#{window_id}<TAB>#{pane_id}"` gave `@0_%0`). A service has no `LANG`, so Kage passes `-u` on every tmux call.
+2. **With systemd's default `KillMode=control-group`, stopping or restarting `kage.service` killed the tmux server Kage had started**, and every Claude in it, because tmux lived in the unit's cgroup (real systemd 257, in the reboot container). `systemd-run --user --scope --quiet --collect --unit=kage-tmux-<pid>-<n> tmux …` puts the server in a scope of its own, and it then outlived `restart`, `stop` and `start` with the same pid. It worked there with and without a session bus (systemd 257 falls back to the manager's private socket). systemd 255 (Ubuntu 24.04) wasn't probed.
+
 ## Read first: where §7 differs from the phase 6 plan
 
 §7 (SEA, systemd user units, launchd and Claude's sign-in, recorded 2026-11-22) checked the plan's assumptions. Holds: a CommonJS entry, `execArgv` (so `NODE_OPTIONS` isn't needed), a manifest asset, user units restarted rather than ordered after Tailscale, and the credentials file check. The idle SEA is 77.1 to 77.2 MB, under the 80 MB gate. Where the plan must change:
@@ -633,6 +640,7 @@ Every line here is **documented, not observed**. The sources are Apple's "Creati
   - `ThrottleInterval`: the least time between starts, 10 s by default. A job that exits sooner is restarted only after the interval, so a failing start retries about every 10 s.
   - `EnvironmentVariables`: a dictionary of strings. It is the only environment the job gets beyond launchd's own; no shell profile is read.
   - `StandardOutPath` and `StandardErrorPath`: files for stdout and stderr. They are created if missing, but their folder must exist.
+  - `AbandonProcessGroup` `true` (added in phase 6, R122): when the job stops, launchd kills what is left in its process group unless this key is set. tmux daemonises into a process group of its own anyway, so the key only makes sure the tmux server, and Claude, outlive a stop of Kage.
 - **Default `PATH` of an agent:** launchd's standard path, `/usr/bin:/bin:/usr/sbin:/sbin`. Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), `~/.local/bin` and the Tailscale app's CLI are not on it, so the plist sets `PATH` in `EnvironmentVariables`, or Kage uses absolute paths.
 - **Codesigning a SEA:** the Node binary is signed. So `codesign --remove-signature kage` comes before the inject, then `npx postject kage NODE_SEA_BLOB kage.blob --sentinel-fuse NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2 --macho-segment-name NODE_SEA`, then `codesign --sign - kage` (an ad-hoc signature). On Apple silicon an arm64 binary without a valid signature is killed at start.
 - **Quarantine:** `curl` does not set the `com.apple.quarantine` extended attribute (only apps that opt in, such as browsers, AirDrop and Mail, do), so Gatekeeper doesn't check a binary that `install.sh` fetched with `curl`. A browser download carries it: `xattr -p com.apple.quarantine <file>` shows it, and `xattr -d com.apple.quarantine <file>` removes it.

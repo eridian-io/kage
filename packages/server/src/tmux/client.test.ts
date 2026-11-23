@@ -494,13 +494,19 @@ describe('TmuxClient.ensureSession: the server in a scope of its own (R122)', ()
     expect(calls.some((x) => x.cmd === 'systemd-run')).toBe(false);
   });
 
-  it('a scope that fails: one warning, then the plain way', async () => {
+  it('a scope that fails: one warning per process, then the plain way', async () => {
     const { c, calls, warnings } = scoped('error connecting to /tmp/tmux-1000/sock', (cmd) => {
       if (cmd === 'systemd-run') throw fail('Failed to connect to bus: No such file or directory');
     });
     await c.ensureSession();
     expect(calls.map((x) => x.cmd)).toEqual(['tmux', 'systemd-run', 'tmux', 'tmux']);
     expect(calls[2]?.args.slice(0, 4)).toEqual(['-u', '-L', 'sock', 'new-session']);
+    // The server is gone again (killed by hand): the second try fails the same way, silently.
+    await c.ensureSession();
+    expect(calls.map((x) => x.cmd)).toEqual([
+      ...['tmux', 'systemd-run', 'tmux', 'tmux'],
+      ...['tmux', 'systemd-run', 'tmux', 'tmux'],
+    ]);
     expect(warnings).toEqual([
       "kage: couldn't start tmux in a scope of its own (Failed to connect to bus: No such file or directory), so a restart of the service will close its windows.",
     ]);

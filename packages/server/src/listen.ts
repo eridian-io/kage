@@ -21,6 +21,8 @@ export interface ListenOptions {
   tailscaleDnsName?: () => Promise<string | null>;
   /** Resolves a host name to addresses; defaults to dns.lookup(name, { all: true }). */
   lookup?: (name: string) => Promise<{ address: string; family: number }[]>;
+  /** The config file as the user reads it (config.ts displayPath), named in the refusal. */
+  configFile?: string;
 }
 
 interface Parsed {
@@ -220,7 +222,7 @@ export async function resolveListenAddress(
     const ip = await opts.tailscaleIp();
     if (ip === null) {
       throw new ListenError(
-        'Tailscale isn\'t running. Start it with "tailscale up", or set "host" in ~/.config/kage/config.json.',
+        `Tailscale isn't running. Start it with "tailscale up", or set "host" in ${opts.configFile ?? 'config.json'}.`,
       );
     }
     address = ip;
