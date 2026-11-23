@@ -19,8 +19,13 @@ const CHUNK = 64 * 1024;
 const MISSING_POLL_MS = 1000;
 /** Fallback size poll while following, for filesystems where fs.watch misses events. */
 const FOLLOW_POLL_MS = 2000;
-/** Read-only and non-blocking: opening a FIFO returns at once instead of waiting for a writer (M1). Windows has no O_NONBLOCK. */
-const OPEN_FLAGS = constants.O_RDONLY | (constants.O_NONBLOCK ?? 0);
+/**
+ * Read-only and non-blocking: opening a FIFO returns at once instead of waiting for a writer (M1).
+ * O_NOCTTY: a terminal device put at the path never becomes Kage's controlling terminal. Windows
+ * has neither flag.
+ */
+export const OPEN_FLAGS =
+  constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0);
 
 type Listener = (added: DisplayLine[], reset: boolean) => void;
 

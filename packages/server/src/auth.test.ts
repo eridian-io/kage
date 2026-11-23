@@ -6,6 +6,7 @@ import {
   clearCookieHeader,
   LoginLimiter,
   normalizePeer,
+  peerKey,
   SESSION_IDLE_MS,
   SESSION_MAX,
   SESSION_MAX_MS,
@@ -249,6 +250,26 @@ describe('SessionStore and the session cookie (security I1)', () => {
     expect(sessionOf(auth, `x_kage_auth_8080=${id}`, PEER)).toBeNull();
     expect(sessionOf(auth, `kage_auth=${id}`, PEER)).toBeNull();
     expect(sessionOf(auth, cookie(id), OTHER_PEER)).toBeNull();
+  });
+});
+
+describe('peerKey (review of M2/M3: an IPv6 host holds a whole /64)', () => {
+  it('keeps IPv4 as it is and keys IPv6 by its /64', () => {
+    expect(peerKey('100.64.0.9')).toBe('100.64.0.9');
+    expect(peerKey('::ffff:100.64.0.9')).toBe('100.64.0.9');
+    expect(peerKey('fd7a:115c:a1e0:ab12:4843:cd96:6258:b240')).toBe('fd7a:115c:a1e0:ab12::/64');
+    expect(peerKey('FD7A:115C:A1E0:AB12::1')).toBe('fd7a:115c:a1e0:ab12::/64');
+    expect(peerKey('2001:db8::1')).toBe('2001:db8:0:0::/64');
+    expect(peerKey('2001:0db8:0000:0001:ffff::')).toBe('2001:db8:0:1::/64');
+    expect(peerKey('::1')).toBe('0:0:0:0::/64');
+    expect(peerKey('fe80::1%eth0')).toBe('fe80:0:0:0::/64');
+    expect(peerKey('64:ff9b::1.2.3.4')).toBe('64:ff9b:0:0::/64');
+    // Two addresses in one /64 are one key; another /64 is another.
+    expect(peerKey('2001:db8:1:2::a')).toBe(peerKey('2001:db8:1:2:ffff:ffff:ffff:ffff'));
+    expect(peerKey('2001:db8:1:2::a')).not.toBe(peerKey('2001:db8:1:3::a'));
+    // Not an address: kept as it is (tests without a socket share 'unknown').
+    expect(peerKey('unknown')).toBe('unknown');
+    expect(peerKey('1:2:3:4:5:6:7:8:9')).toBe('1:2:3:4:5:6:7:8:9');
   });
 });
 

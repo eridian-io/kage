@@ -670,6 +670,28 @@ describe('token login (B13)', () => {
     expect((await from(a, login({ token: TOKEN }), '100.64.0.9')).status).toBe(204);
   });
 
+  it('IPv6 addresses in one /64 share a limiter bucket and the stream cap; the cookie stays per address', async () => {
+    const a = app(false, TOKEN);
+    // Five failures spread over five addresses of one /64: the sixth address in it waits.
+    for (let i = 1; i <= 5; i++) {
+      const r = login({ token: `wrong-token-${i}-padding` });
+      expect((await from(a, r, `2001:db8:1:2::${i}`)).status).toBe(401);
+    }
+    expect((await from(a, login({ token: TOKEN }), '2001:db8:1:2::6')).status).toBe(429);
+    expect((await from(a, login({ token: TOKEN }), '2001:db8:1:3::1')).status).toBe(204);
+    const c = await signIn(a, '2001:db8:1:3::1');
+    // The session stays bound to its exact address.
+    expect((await from(a, withCookie(req('/api/auth'), c), '2001:db8:1:3::2')).status).toBe(401);
+    const open: ReadableStream<Uint8Array>[] = [];
+    for (let i = 0; i < 16; i++) {
+      const res = await from(a, withCookie(req('/api/events'), c), '2001:db8:1:3::1');
+      expect(res.status).toBe(200);
+      open.push(res.body as ReadableStream<Uint8Array>);
+    }
+    expect(hub.streamsFrom('2001:db8:1:3::/64')).toBe(16);
+    for (const s of open) await s.cancel();
+  });
+
   it('a 17th stream from one peer gets 429; another peer still connects', async () => {
     const a = app(false, TOKEN);
     const mine = await signIn(a, '100.64.0.9');

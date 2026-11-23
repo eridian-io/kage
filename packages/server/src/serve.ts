@@ -1,5 +1,6 @@
 import { existsSync, watch } from 'node:fs';
 import type { Server as HttpServer } from 'node:http';
+import type { Socket } from 'node:net';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { parseArgs } from 'node:util';
@@ -7,7 +8,7 @@ import { serve } from '@hono/node-server';
 import type { ArchivedSession, ProjectsResponse } from '@kage/shared';
 import { createApp } from './app.ts';
 import { type Asset, type BoardFiles, boardFor, dirFiles, loadAssets } from './assets.ts';
-import { type Auth, authCookieName, SessionStore } from './auth.ts';
+import { type Auth, authCookieName, peerKey, SessionStore } from './auth.ts';
 import {
   ConfigError,
   configPath,
@@ -73,13 +74,41 @@ export const STOPPED = 'Stopped before Kage was ready.';
 export const STOPPED_CODE = 130;
 
 /**
- * Security M3: at most 256 open connections, and 10 s for a request's headers (Node's default
- * is 60 s), so slow-header connections can't pile up. The per-address cap on event streams is
- * in app.ts (MAX_STREAMS_PER_PEER).
+ * Open connections one address (an IPv6 /64, peerKey) may hold. A browser keeps at most 6
+ * HTTP/1.1 connections to one host, event streams included, plus a WebSocket per open terminal,
+ * so 32 leaves room for two browsers and several terminals on one device.
  */
-export function limitServer(server: Pick<HttpServer, 'maxConnections' | 'headersTimeout'>): void {
-  server.maxConnections = 256;
+export const MAX_CONNECTIONS_PER_PEER = 32;
+/**
+ * Open connections in all: 32 addresses at their full cap. It only bounds file descriptors and
+ * socket memory; one address can never fill it, so it can't lock the owner out (review of M3).
+ */
+export const MAX_CONNECTIONS = 1024;
+
+/**
+ * Security M3: at most MAX_CONNECTIONS_PER_PEER open connections from one address (the rest are
+ * closed at once), MAX_CONNECTIONS in all, and 10 s for a request's headers (Node's default is
+ * 60 s), so slow-header connections can't pile up. The per-address cap on event streams is in
+ * app.ts (MAX_STREAMS_PER_PEER).
+ */
+export function limitServer(server: HttpServer, perPeer = MAX_CONNECTIONS_PER_PEER): void {
+  server.maxConnections = MAX_CONNECTIONS;
   server.headersTimeout = 10_000;
+  const open = new Map<string, number>();
+  server.on('connection', (socket: Socket) => {
+    const key = peerKey(socket.remoteAddress ?? 'unknown');
+    const n = open.get(key) ?? 0;
+    if (n >= perPeer) {
+      socket.destroy();
+      return;
+    }
+    open.set(key, n + 1);
+    socket.once('close', () => {
+      const left = (open.get(key) ?? 1) - 1;
+      if (left <= 0) open.delete(key);
+      else open.set(key, left);
+    });
+  });
 }
 
 /**

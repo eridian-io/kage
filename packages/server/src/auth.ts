@@ -34,6 +34,31 @@ export function normalizePeer(address: string): string {
   return mapped ? (mapped[1] as string) : a;
 }
 
+/**
+ * The key the per-address limits count by (the login limiter, the stream cap, the connection
+ * cap): an IPv4 address as it is, an IPv6 address by its /64 (`2001:db8:1:2::/64`). One host
+ * usually holds a whole /64 and can pick any address in it, so counting each address alone would
+ * let it multiply every limit. Sessions stay bound to the exact address (normalizePeer).
+ */
+export function peerKey(address: string): string {
+  const a = normalizePeer(address).replace(/%.*$/, '');
+  if (!a.includes(':')) return a;
+  const [head = '', tail] = a.split('::') as [string, string | undefined];
+  // An embedded IPv4 tail (::1.2.3.4) is two groups; only the first four groups matter here.
+  const split = (part: string) =>
+    part === '' ? [] : part.split(':').flatMap((g) => (g.includes('.') ? ['0', '0'] : [g]));
+  const left = split(head);
+  const right = tail === undefined ? [] : split(tail);
+  const fill = tail === undefined ? 0 : 8 - left.length - right.length;
+  if (fill < 0) return a;
+  const groups = [...left, ...Array<string>(fill).fill('0'), ...right];
+  if (groups.length !== 8 || !groups.every((g) => /^[0-9a-f]{1,4}$/.test(g))) return a;
+  return `${groups
+    .slice(0, 4)
+    .map((g) => Number.parseInt(g, 16).toString(16))
+    .join(':')}::/64`;
+}
+
 const digest = (s: string) => createHash('sha256').update(s).digest();
 
 /**
@@ -282,8 +307,9 @@ export function authGuard(auth: Auth): MiddlewareHandler<AuthEnv> {
  * Failed logins (ruling R31): `max` failures from one address within `windowMs` refuse that
  * address until its oldest failure leaves the window, and `globalMax` failures from all addresses
  * together refuse every address that has failed within the window. An address with no failure in
- * the window always gets its try (security M2): other peers' failures can't lock the owner out,
- * and each new address costs an attacker one guess a window while the ceiling is full. Only
+ * the window always gets its try (security M2): other peers' failures can't lock the owner out.
+ * While the ceiling is full, each address that hasn't failed still gets one guess a window, so
+ * the rate grows with the addresses an attacker holds; app.ts keys by peerKey (an IPv6 /64). Only
  * failures count. Memory is bounded: at most `max` timestamps per
  * address, `globalMax` overall, and `maxKeys` addresses (the least recently failed goes first).
  * allow() and fail() are synchronous, so a caller that runs them with no await in between can't

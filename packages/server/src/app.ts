@@ -9,6 +9,7 @@ import {
   authGuard,
   clearCookieHeader,
   LoginLimiter,
+  peerKey,
   remoteAddress,
   SIGN_IN,
   sameSecret,
@@ -186,11 +187,13 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     }
     // No await from here to fail(): parallel tries can't all pass allow() before one fails.
     const peer = remoteAddress(c.env);
-    if (!limiter.allow(peer)) {
+    // Counted by peerKey: an IPv6 /64 is one address to the limiter.
+    const key = peerKey(peer);
+    if (!limiter.allow(key)) {
       return c.json({ error: 'Too many tries. Wait a minute and try again.' }, 429);
     }
     if (!sameSecret(given, token)) {
-      limiter.fail(peer);
+      limiter.fail(key);
       return c.json({ error: "That token isn't right." }, 401);
     }
     // A session of its own for this login, bound to this address (security I1).
@@ -222,7 +225,7 @@ export function createApp(deps: AppDeps): Hono<AuthEnv> {
     const owner = c.get('session');
     if (owner !== '' && !auth.sessions.has(owner)) return c.json({ error: SIGN_IN }, 401);
     // Security M3: one address can't hold the server's memory with streams.
-    const peer = remoteAddress(c.env);
+    const peer = peerKey(remoteAddress(c.env));
     if (hub.streamsFrom(peer) >= MAX_STREAMS_PER_PEER) {
       return c.json({ error: TOO_MANY_BOARDS }, 429);
     }

@@ -14,7 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { DisplayLine } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { TranscriptTail, type TranscriptTailOptions } from './tail.ts';
+import { OPEN_FLAGS, TranscriptTail, type TranscriptTailOptions } from './tail.ts';
 
 const FIXTURES = join(import.meta.dirname, '../../test/fixtures/transcripts');
 const fixture = (file: string) => readFileSync(join(FIXTURES, file), 'utf8');
@@ -158,6 +158,17 @@ describe('TranscriptTail', () => {
     const got = next(t);
     writeFileSync(path, say('hello'));
     expect(await got).toEqual([{ kind: 'say', text: 'hello' }]);
+  });
+
+  it('opens read-only, non-blocking and without taking a controlling terminal (M1)', async () => {
+    const { constants } = await import('node:fs');
+    expect(OPEN_FLAGS).toBe(
+      constants.O_RDONLY | (constants.O_NONBLOCK ?? 0) | (constants.O_NOCTTY ?? 0),
+    );
+    if (process.platform !== 'win32') {
+      expect(OPEN_FLAGS & constants.O_NONBLOCK).toBe(constants.O_NONBLOCK);
+      expect(OPEN_FLAGS & constants.O_NOCTTY).toBe(constants.O_NOCTTY);
+    }
   });
 
   it('a path not ending in .jsonl is treated as missing', async () => {

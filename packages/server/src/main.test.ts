@@ -12,7 +12,13 @@ import { hookCommand } from './hooks/settings.ts';
 import { KAGE_VERSION } from './install/runtime.ts';
 import { fetchStatus } from './install/status.ts';
 import { type Io, main, type Running, serveSignals, USAGE } from './main.ts';
-import { limitServer, NO_TOKEN_REFUSAL, SERVER_OPTIONS } from './serve.ts';
+import {
+  limitServer,
+  MAX_CONNECTIONS,
+  MAX_CONNECTIONS_PER_PEER,
+  NO_TOKEN_REFUSAL,
+  SERVER_OPTIONS,
+} from './serve.ts';
 import type { ExecFn } from './tmux/client.ts';
 import { hasTmux } from './tmux/client.ts';
 import { testTmuxSocket } from './tmux/test-sockets.ts';
@@ -402,11 +408,56 @@ describe('kage serve: startup interrupts and late errors (B15)', () => {
 });
 
 describe('kage serve: connection caps (security M3)', () => {
-  it('limitServer caps connections at 256 and gives the headers 10 s', async () => {
+  it('one peer holding its cap does not stop another peer from connecting', async () => {
+    expect(MAX_CONNECTIONS_PER_PEER).toBe(32);
+    const { createServer } = await import('node:http');
+    const { connect } = await import('node:net');
+    type Sock = ReturnType<typeof connect>;
+    const s = createServer(SERVER_OPTIONS, (_q, r) => r.end('ok'));
+    limitServer(s, 3);
+    await new Promise<void>((r) => s.listen(0, '127.0.0.1', () => r()));
+    const port = (s.address() as { port: number }).port;
+    const held: Sock[] = [];
+    /** A keep-alive request from `localAddress`: 'ok' when answered (the socket stays open), else 'closed'. */
+    const talk = (localAddress: string) =>
+      new Promise<'ok' | 'closed'>((resolve) => {
+        const c = connect({ port, host: '127.0.0.1', localAddress }, () =>
+          c.write('GET / HTTP/1.1\r\nHost: x\r\n\r\n'),
+        );
+        held.push(c);
+        c.on('data', (d) => {
+          if (d.toString().startsWith('HTTP/1.1 200')) resolve('ok');
+        });
+        c.on('close', () => resolve('closed'));
+        c.on('error', () => {});
+      });
+    try {
+      for (let i = 0; i < 3; i++) expect(await talk('127.0.0.1')).toBe('ok');
+      // Its fourth is closed at once; another address still gets in.
+      expect(await talk('127.0.0.1')).toBe('closed');
+      expect(await talk('127.0.0.2')).toBe('ok');
+      // One of its own closed, and the first address may connect again.
+      const first = held[0] as Sock;
+      await new Promise<void>((r) => {
+        first.once('close', () => r());
+        first.destroy();
+      });
+      await new Promise((r) => setTimeout(r, 50));
+      expect(await talk('127.0.0.1')).toBe('ok');
+    } finally {
+      for (const c of held) c.destroy();
+      await new Promise<void>((r) => s.close(() => r()));
+    }
+  });
+
+  it('limitServer caps connections at 1024 in all and gives the headers 10 s', async () => {
     const { createServer } = await import('node:http');
     const s = createServer();
     limitServer(s);
-    expect(s.maxConnections).toBe(256);
+    expect(s.maxConnections).toBe(MAX_CONNECTIONS);
+    expect(MAX_CONNECTIONS).toBe(1024);
+    // One address can never fill the global cap.
+    expect(MAX_CONNECTIONS).toBeGreaterThan(MAX_CONNECTIONS_PER_PEER);
     expect(s.headersTimeout).toBe(10_000);
     // The request as a whole may take longer than its headers.
     expect(s.requestTimeout).toBeGreaterThanOrEqual(s.headersTimeout);
