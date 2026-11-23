@@ -23,6 +23,15 @@ export const MAX_STREAMS_PER_PEER = 16;
 
 export const frame = (e: ServerEvent): string => `event: ${e.type}\ndata: ${JSON.stringify(e)}\n\n`;
 
+/**
+ * The heartbeat: a named event, not a comment, because the page's script never sees a comment
+ * and its watchdog must (reliability I3). One shared frame for every stream.
+ */
+const HEARTBEAT: Uint8Array = encoder.encode(frame({ type: 'hb' }));
+
+/** An event's frame, encoded: one buffer that every stream it goes to shares (P9). */
+const encode = (e: ServerEvent): Uint8Array => encoder.encode(frame(e));
+
 export class EventHub {
   private readonly source: SessionSource;
   private readonly host: string;
@@ -75,14 +84,14 @@ export class EventHub {
           owner,
           peer,
           controller,
-          timer: setInterval(() => this.send(c, ': hb\n\n'), this.heartbeatMs),
+          timer: setInterval(() => this.send(c, HEARTBEAT), this.heartbeatMs),
         };
         client = c;
         this.clients.set(c.streamId, c);
         this.ensureSubscribed();
         this.send(
           c,
-          frame({
+          encode({
             type: 'snapshot',
             auth: this.auth,
             host: this.host,
@@ -108,7 +117,7 @@ export class EventHub {
     const lines = id === null ? null : this.source.lines(id);
     c.viewing = id;
     if (id !== null && lines !== null) {
-      this.send(c, frame({ type: 'session.lines', id, lines, reset: true }));
+      this.send(c, encode({ type: 'session.lines', id, lines, reset: true }));
     }
     // A session viewed already doesn't change the viewed set, so the source hears of it here.
     const already = id !== null && this.viewed.has(id);
@@ -147,16 +156,17 @@ export class EventHub {
   }
 
   private ensureSubscribed(): void {
+    // Each event is serialised and encoded once, for every stream it goes to (P9).
     this.unsubscribe ??= this.source.subscribe((e) => {
       if (e.type === 'session.lines') {
-        const text = frame({ ...e, reset: e.reset ?? false });
-        for (const c of [...this.clients.values()]) if (c.viewing === e.id) this.send(c, text);
+        const bytes = encode({ ...e, reset: e.reset ?? false });
+        for (const c of [...this.clients.values()]) if (c.viewing === e.id) this.send(c, bytes);
         return;
       }
-      const text = frame(e);
+      const bytes = encode(e);
       for (const c of [...this.clients.values()]) {
         if (e.type === 'session.removed' && c.viewing === e.id) c.viewing = null;
-        this.send(c, text);
+        this.send(c, bytes);
       }
       if (e.type === 'session.removed') this.syncViewed();
     });
@@ -171,9 +181,9 @@ export class EventHub {
     this.source.setViewed?.(new Set(ids));
   }
 
-  private send(c: Client, text: string): void {
+  private send(c: Client, bytes: Uint8Array): void {
     try {
-      c.controller.enqueue(encoder.encode(text));
+      c.controller.enqueue(bytes);
       // A tab that stops reading must not make the server buffer without limit.
       if ((c.controller.desiredSize ?? 0) < -this.maxQueue) {
         this.drop(c);

@@ -169,14 +169,64 @@ describe('EventHub', () => {
     hub.close();
     expect(hub.clientCount).toBe(0);
   });
-  it('sends heartbeat comments', async () => {
+  // Reliability I3: a comment never reaches the page's script, so the board's watchdog could not
+  // see it. The heartbeat is a named event the page hears.
+  it('the heartbeat is a named hb event every 30 s', async () => {
     vi.useFakeTimers();
-    const hub = new EventHub(new DemoSource(1), 'h', '/p', { heartbeatMs: 20 });
+    const hub = new EventHub(new DemoSource(1), 'h', '/p');
     const reader = hub.stream().getReader();
     await read(reader);
-    await vi.advanceTimersByTimeAsync(25);
-    expect(await read(reader)).toBe(': hb\n\n');
+    const hb = 'event: hb\ndata: {"type":"hb"}\n\n';
+    await vi.advanceTimersByTimeAsync(29_999);
+    let got = '';
+    const pending = read(reader).then((t) => {
+      got = t;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(got).toBe('');
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(got).toBe(hb);
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await read(reader)).toBe(hb);
     await reader.cancel();
+    hub.close();
+  });
+  it('the heartbeat is one shared frame for every stream', async () => {
+    vi.useFakeTimers();
+    const hub = new EventHub(new DemoSource(1), 'h', '/p', { heartbeatMs: 20 });
+    const a = hub.stream().getReader();
+    const b = hub.stream().getReader();
+    await a.read();
+    await b.read();
+    await vi.advanceTimersByTimeAsync(25);
+    const [ha, hbb] = [(await a.read()).value, (await b.read()).value];
+    expect(ha).toBeInstanceOf(Uint8Array);
+    expect(ha).toBe(hbb);
+    await a.cancel();
+    await b.cancel();
+    hub.close();
+  });
+  // P9 (F18): an event is serialised once, however many streams receive it.
+  it('encodes each event once for every client', async () => {
+    const source = new StubSource();
+    const hub = new EventHub(source, 'h', '/p');
+    const readers = [hub.stream(), hub.stream(), hub.stream()].map((s) => s.getReader());
+    for (const r of readers) await read(r);
+    const stringify = vi.spyOn(JSON, 'stringify');
+    try {
+      source.emit({ type: 'session.removed', id: 'x' });
+      expect(stringify).toHaveBeenCalledTimes(1);
+    } finally {
+      stringify.mockRestore();
+    }
+    const chunks = await Promise.all(readers.map(async (r) => (await r.read()).value));
+    expect(dec.decode(chunks[0])).toBe(
+      'event: session.removed\ndata: {"type":"session.removed","id":"x"}\n\n',
+    );
+    expect(chunks[1]).toBe(chunks[0]);
+    expect(chunks[2]).toBe(chunks[0]);
+    for (const r of readers) await r.cancel();
     hub.close();
   });
   it('cancelling drops clientCount to 0', async () => {

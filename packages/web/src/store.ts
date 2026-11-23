@@ -268,6 +268,8 @@ export function onApplied(fn: typeof appliedHook): void {
 }
 
 export function applyEvent(e: ServerEvent): void {
+  // The heartbeat only tells sse.ts's watchdog that the stream is alive.
+  if (e.type === 'hb') return;
   let was: SessionStatus | undefined;
   batch(() => {
     if (e.type === 'snapshot') {

@@ -355,3 +355,147 @@ describe('the kage:board mark (spec §7, time to a usable board)', () => {
     mark.mockRestore();
   });
 });
+
+describe('the watchdog (reliability I3)', () => {
+  const snapshot = {
+    type: 'snapshot',
+    auth: false,
+    host: 'my-pc',
+    streamId: 's',
+    projectsRoot: '/p',
+    archived: 0,
+    sessions: demoSessions(NOW),
+  };
+  let visibility: DocumentVisibilityState = 'visible';
+  beforeEach(() => {
+    visibility = 'visible';
+    Object.defineProperty(document, 'visibilityState', {
+      configurable: true,
+      get: () => visibility,
+    });
+  });
+  afterEach(() => {
+    Reflect.deleteProperty(document, 'visibilityState');
+  });
+  const turn = (to: DocumentVisibilityState) => {
+    visibility = to;
+    document.dispatchEvent(new Event('visibilitychange'));
+  };
+
+  it('75 s without an event: reconnecting and a new EventSource', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    const first = latest();
+    first.emit('snapshot', snapshot);
+    expect(connection.value).toBe('live');
+    // The PC lost power: no error, no frame, nothing.
+    await vi.advanceTimersByTimeAsync(74_999);
+    expect(connection.value).toBe('live');
+    expect(FakeEventSource.all).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(connection.value).toBe('reconnecting');
+    expect(first.closed).toBe(true);
+    // Through the error path: the auth check, then the backoff's retry.
+    expect(authCalls).toEqual(['/api/auth']);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    expect(connection.value).toBe('reconnecting');
+    latest().emit('snapshot', { ...snapshot, streamId: 's2' });
+    expect(connection.value).toBe('live');
+    stop();
+  });
+
+  it('hb events keep it live', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', snapshot);
+    for (let i = 0; i < 10; i++) {
+      await vi.advanceTimersByTimeAsync(30_000);
+      latest().emit('hb', { type: 'hb' });
+    }
+    await vi.advanceTimersByTimeAsync(74_999);
+    expect(connection.value).toBe('live');
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(authCalls).toEqual([]);
+    stop();
+  });
+
+  it('a stream that never answers is also given up after 75 s', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(connection.value).toBe('reconnecting');
+    expect(latest().closed).toBe(true);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    stop();
+  });
+
+  it('a watchdog reconnect backs off like an error, and a snapshot resets it', async () => {
+    const stop = connect('/api/events', { retryMs: 100, watchdogMs: 1000 });
+    await vi.advanceTimersByTimeAsync(1000); // gives up; retry in 100
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1000); // gives up again; retry in 200
+    await vi.advanceTimersByTimeAsync(199);
+    expect(FakeEventSource.all).toHaveLength(2);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(FakeEventSource.all).toHaveLength(3);
+    latest().emit('snapshot', snapshot);
+    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(FakeEventSource.all).toHaveLength(4);
+    stop();
+  });
+
+  it('a 401 after the watchdog gives up shows the login screen (Review Focus 1)', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', snapshot);
+    authStatus = 401;
+    await vi.advanceTimersByTimeAsync(75_000);
+    expect(authRequired.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeEventSource.all).toHaveLength(1);
+    stop();
+  });
+
+  it('back to visible with the last event over 30 s old reconnects', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    const first = latest();
+    first.emit('snapshot', snapshot);
+    turn('hidden');
+    await vi.advanceTimersByTimeAsync(30_001);
+    expect(FakeEventSource.all).toHaveLength(1);
+    turn('visible');
+    // At once: no backoff wait.
+    expect(first.closed).toBe(true);
+    expect(FakeEventSource.all).toHaveLength(2);
+    expect(connection.value).toBe('reconnecting');
+    expect(authCalls).toEqual(['/api/auth']);
+    latest().emit('snapshot', { ...snapshot, streamId: 's2' });
+    expect(connection.value).toBe('live');
+    stop();
+  });
+
+  it('back to visible with a recent event keeps the stream', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', snapshot);
+    turn('hidden');
+    await vi.advanceTimersByTimeAsync(20_000);
+    latest().emit('hb', { type: 'hb' });
+    await vi.advanceTimersByTimeAsync(20_000);
+    turn('visible');
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(connection.value).toBe('live');
+    stop();
+  });
+
+  it('stop ends the watchdog and the visibility listener', async () => {
+    const stop = connect('/api/events', { retryMs: 100 });
+    latest().emit('snapshot', snapshot);
+    stop();
+    await vi.advanceTimersByTimeAsync(31_000);
+    turn('visible');
+    await vi.advanceTimersByTimeAsync(200_000);
+    expect(FakeEventSource.all).toHaveLength(1);
+    expect(authCalls).toEqual([]);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+});

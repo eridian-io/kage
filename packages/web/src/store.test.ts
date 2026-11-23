@@ -8,6 +8,7 @@ import {
   endRemoval,
   lineKeyBase,
   linesById,
+  onApplied,
   projectsRoot,
   select,
   selectedId,
@@ -251,6 +252,34 @@ describe('the archive count', () => {
     expect(archivedCount.value).toBe(5);
     applyEvent({ type: 'archive', count: 6 });
     expect(archivedCount.value).toBe(6);
+  });
+});
+
+describe('the heartbeat (reliability I3)', () => {
+  it('applyEvent ignores hb', () => {
+    applyEvent({
+      type: 'snapshot',
+      auth: false,
+      host: 'h',
+      streamId: 's1',
+      projectsRoot: '/p',
+      sessions: demoSessions(1),
+      archived: 2,
+    });
+    select('shop');
+    const before = { s: sessions.value, l: linesById.value, sel: selectedId.value };
+    const heard: string[] = [];
+    onApplied((e) => heard.push(e.type));
+    try {
+      applyEvent({ type: 'hb' });
+    } finally {
+      onApplied(null);
+    }
+    expect(sessions.value).toBe(before.s);
+    expect(linesById.value).toBe(before.l);
+    expect(selectedId.value).toBe(before.sel);
+    expect(archivedCount.value).toBe(2);
+    expect(heard).toEqual([]);
   });
 });
 

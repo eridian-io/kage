@@ -82,7 +82,12 @@ export type ServerEvent =
   | { type: 'session.ports'; id: string; ports: Port[] }
   | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number; note?: string }
   /** The number of archived sessions changed. */
-  | { type: 'archive'; count: number };
+  | { type: 'archive'; count: number }
+  /**
+   * The heartbeat, every 30 s, so the board can tell a quiet stream from a dead one
+   * (amended 2026-11-23, hardening; reliability I3). The store ignores it.
+   */
+  | { type: 'hb' };
 
 export interface ArchivedSession {
   id: string;
