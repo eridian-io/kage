@@ -6,6 +6,11 @@ export interface PreviewTarget {
   id: string;
   /** The record's worktree, or an external window's pane cwd. */
   worktree: string;
+  /**
+   * The record's project folder, which its worktree's git is pinned to (security M4); null for an
+   * external window, whose own folder runs git as it is (F12).
+   */
+  repo: string | null;
   /** The branch the task started from; null for external sessions and old records. */
   base: string | null;
   /** The record's branch; null for external sessions (they get no branch counts). */
@@ -22,6 +27,8 @@ export interface PreviewPatch {
   ports?: Port[];
   files?: FileChange[];
   filesTotal?: number;
+  /** Why the list is empty though there may be work (UNPINNED); sent with every files value. */
+  filesNote?: string;
   /** Commits only the branch reaches; with uncommitted, refreshed with the files (records only). */
   unpushed?: number;
   uncommitted?: number;
@@ -36,6 +43,13 @@ export interface BranchCounts {
 
 export type TouchReason = 'edit' | 'turn-end';
 
+/** One file-list value: the files, how many in all, and a note when git was refused (M4). */
+export interface FilesResult {
+  files: FileChange[];
+  total: number;
+  note?: string;
+}
+
 export interface PreviewTrackerDeps {
   target: (id: string) => PreviewTarget | null;
   /**
@@ -45,13 +59,14 @@ export interface PreviewTrackerDeps {
   publish: (id: string, patch: PreviewPatch, always: boolean) => void;
   /** One scan of every listener and process; null where Kage can't scan (not Linux or macOS). */
   scan: (() => Promise<{ listeners: Listener[]; procs: Proc[] }>) | null;
-  files: (worktree: string, base: string | null) => Promise<{ files: FileChange[]; total: number }>;
+  /** The list, pinned to `repo` when there is one; `note` says why a refused pin listed nothing. */
+  files: (worktree: string, base: string | null, repo: string | null) => Promise<FilesResult>;
   /** The session is gone and no other refreshed this worktree: drop its untracked cache (B37). */
   forgetFiles?: (worktree: string) => void;
   /** A record's unpushed commits and uncommitted entries; rejects when git fails. */
   branch: (
     worktree: string,
-    o: { branch: string; base: string | null; baseCommit: string | null },
+    o: { branch: string; base: string | null; baseCommit: string | null; repo: string | null },
   ) => Promise<BranchCounts>;
   /** Port scan period while a viewed session is active (default 5000). */
   portEveryMs?: number;
@@ -321,11 +336,11 @@ export class PreviewTracker {
       branch === null
         ? null
         : this.#d
-            .branch(t.worktree, { branch, base: t.base, baseCommit: t.baseCommit })
+            .branch(t.worktree, { branch, base: t.base, baseCommit: t.baseCommit, repo: t.repo })
             .catch(() => null);
-    let r: { files: FileChange[]; total: number } | null;
+    let r: FilesResult | null;
     try {
-      r = await this.#d.files(t.worktree, t.base);
+      r = await this.#d.files(t.worktree, t.base, t.repo);
     } catch (err) {
       // Gone or no repository: nothing to show. A timeout or similar keeps the last good list.
       r = worktreeGone(err) ? { files: [], total: 0 } : null;
@@ -360,11 +375,12 @@ export class PreviewTracker {
     this.#d.publish(id, patch, false);
   }
 
-  #publishFiles(id: string, r: { files: FileChange[]; total: number }): void {
+  #publishFiles(id: string, r: FilesResult): void {
     const key = JSON.stringify(r);
     const always = this.#forceFiles.delete(id);
     if (!always && this.#lastFiles.get(id) === key) return;
     this.#lastFiles.set(id, key);
-    this.#d.publish(id, { files: r.files, filesTotal: r.total }, always);
+    const note = r.note !== undefined ? { filesNote: r.note } : {};
+    this.#d.publish(id, { files: r.files, filesTotal: r.total, ...note }, always);
   }
 }

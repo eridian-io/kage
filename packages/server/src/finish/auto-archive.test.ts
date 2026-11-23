@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionError } from '../control/actions.ts';
 import type { BranchState } from '../git/branch.ts';
+import { gitCommonDir } from '../git/exec.ts';
 import {
   type AutoArchiveDeps,
   AutoArchiver,
   type AutoCandidate,
-  gitCommonDir,
   watchFailed,
 } from './auto-archive.ts';
 

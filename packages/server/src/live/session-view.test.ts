@@ -54,6 +54,7 @@ describe('toSession v3', () => {
 });
 
 describe('previewTarget (F6)', () => {
+  const REPO = '/home/dev/projects/shop';
   const window: TmuxWindow = {
     windowId: '@1',
     kageId: null,
@@ -68,23 +69,53 @@ describe('previewTarget (F6)', () => {
   };
 
   it('an external window: the pane cwd, no base, its pane pid; active while running or needs you', () => {
-    expect(previewTarget(view({ window }))).toEqual({
+    expect(previewTarget(view({ window }), REPO)).toEqual({
       id: 'ext-@1',
       worktree: '/home/dev/projects/demo/sub',
+      repo: null,
       base: null,
       branch: null,
       baseCommit: null,
       panePid: 4100,
       active: true,
     });
-    expect(previewTarget(view({ window, status: 'needs-you' }))?.active).toBe(true);
-    expect(previewTarget(view({ window, status: 'done' }))?.active).toBe(false);
+    expect(previewTarget(view({ window, status: 'needs-you' }), REPO)?.active).toBe(true);
+    expect(previewTarget(view({ window, status: 'done' }), REPO)?.active).toBe(false);
   });
 
   it('no pane pid when ended or dead; null without a folder', () => {
-    expect(previewTarget(view({ window, status: 'ended' }))?.panePid).toBeNull();
-    expect(previewTarget(view({ window: { ...window, dead: true } }))?.panePid).toBeNull();
-    expect(previewTarget(view())).toBeNull();
+    expect(previewTarget(view({ window, status: 'ended' }), REPO)?.panePid).toBeNull();
+    expect(previewTarget(view({ window: { ...window, dead: true } }), REPO)?.panePid).toBeNull();
+    expect(previewTarget(view(), REPO)).toBeNull();
+  });
+
+  it("a record carries its project folder, which git is pinned to (M4); an external window doesn't", () => {
+    const record = {
+      kageId: 'k-1',
+      windowId: '@2',
+      project: 'shop',
+      task: 'Fix the cart total',
+      branch: 'kage/fix',
+      worktree: '/home/dev/projects/shop/.worktrees/fix',
+      createdAt: 5,
+      pinned: false,
+      archived: false,
+      sessionId: null,
+      transcriptPath: null,
+      base: 'main',
+      permissionMode: 'default' as const,
+      baseCommit: null,
+      doneAt: null,
+      archivedAt: null,
+      restoredAt: null,
+      unpinnedAt: null,
+    };
+    expect(previewTarget(view({ id: 'k-1', record }), REPO)).toMatchObject({
+      worktree: record.worktree,
+      repo: REPO,
+      branch: 'kage/fix',
+    });
+    expect(previewTarget(view({ window }), REPO)?.repo).toBeNull();
   });
 });
 

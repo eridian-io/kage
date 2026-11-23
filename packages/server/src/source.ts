@@ -11,7 +11,7 @@ export type SourceEvent =
   /** Appended lines; with `reset`, the session's whole line list (a pane snapshot, a new transcript). */
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset?: boolean }
   | { type: 'session.ports'; id: string; ports: Port[] }
-  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number }
+  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number; note?: string }
   /** The number of archived sessions changed. */
   | { type: 'archive'; count: number };
 

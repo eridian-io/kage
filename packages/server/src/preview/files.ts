@@ -2,7 +2,7 @@ import { constants } from 'node:fs';
 import { lstat, open, realpath } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { type FileChange, LIMITS } from '@kage/shared';
-import { type GitExec, gitExec } from '../git/exec.ts';
+import { type GitExec, type GitPin, gitExec, requirePin, UnpinnedError } from '../git/exec.ts';
 import { stripAnsi } from '../text/ansi.ts';
 
 /** Untracked files larger than this count 0 lines. */
@@ -183,6 +183,8 @@ export class UntrackedCache {
 export interface ListOptions {
   cache?: UntrackedCache;
   read?: typeof readUntracked;
+  /** Every git call runs with GIT_DIR and GIT_WORK_TREE from the record (security M4). */
+  pin?: GitPin | undefined;
 }
 
 /** An untracked file's line count, from the cache while its size and mtime are unchanged. */
@@ -217,11 +219,12 @@ export async function mergeBase(
   worktree: string,
   base: string | null,
   exec: GitExec = gitExec,
+  pin?: GitPin,
 ): Promise<string> {
   if (base === null) return 'HEAD';
   try {
     const out = (
-      await exec(['merge-base', `refs/heads/${base}`, 'HEAD'], { cwd: worktree })
+      await exec(['merge-base', `refs/heads/${base}`, 'HEAD'], { cwd: worktree, pin })
     ).stdout.trim();
     if (/^[0-9a-f]{7,64}$/.test(out)) return out;
   } catch {
@@ -243,8 +246,8 @@ export async function listChanges(
   exec: GitExec = gitExec,
   o: ListOptions = {},
 ): Promise<{ mb: string; changes: Change[] }> {
-  const opts = { cwd: worktree };
-  const mb = await mergeBase(worktree, base, exec);
+  const opts = { cwd: worktree, pin: o.pin };
+  const mb = await mergeBase(worktree, base, exec, o.pin);
   const [diff, others] = await Promise.all([
     exec(
       [
@@ -284,14 +287,23 @@ export async function listChanges(
  * diff list the same paths in the same order. `total` counts them all. Each path is shown, so
  * it is stripped of escapes, control and bidi characters (B36) as the diff strips its own; the
  * shared `listChanges` keeps git's raw path, which the diff passes back to git.
+ * With `o.repo` (a record's project folder) git is pinned to it, looked up on every call
+ * (security M4); a refused pin runs no git and gives an empty list whose `note` is UNPINNED.
  */
 export async function changedFiles(
   worktree: string,
   base: string | null,
   exec: GitExec = gitExec,
-  o: ListOptions = {},
-): Promise<{ files: FileChange[]; total: number }> {
-  const { changes } = await listChanges(worktree, base, exec, o);
+  o: ListOptions & { repo?: string | null } = {},
+): Promise<{ files: FileChange[]; total: number; note?: string }> {
+  let pin: GitPin | undefined;
+  try {
+    pin = await requirePin(o.repo, worktree, exec);
+  } catch (e) {
+    if (e instanceof UnpinnedError) return { files: [], total: 0, note: e.message };
+    throw e;
+  }
+  const { changes } = await listChanges(worktree, base, exec, { ...o, pin });
   return {
     files: changes.slice(0, LIMITS.files).map(({ path, added, removed }) => ({
       path: stripAnsi(path, { oneLine: true }),

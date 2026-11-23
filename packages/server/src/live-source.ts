@@ -399,7 +399,9 @@ export class LiveSource implements SessionSource {
   /** The folder, base and pane the tracker looks at (F6); null for an unknown id. */
   previewTarget(id: string): PreviewTarget | null {
     const st = this.#sessions.get(id);
-    return st ? previewTarget(st) : null;
+    if (!st) return null;
+    // The record's project folder: its worktree's git is pinned to it (security M4).
+    return previewTarget(st, st.record ? join(this.#d.projectsRoot, st.record.project) : null);
   }
 
   /**
@@ -421,15 +423,20 @@ export class LiveSource implements SessionSource {
       const total = patch.filesTotal ?? patch.files.length;
       const changed =
         total !== (st.filesTotal ?? 0) ||
-        JSON.stringify(patch.files) !== JSON.stringify(st.files ?? []);
+        JSON.stringify(patch.files) !== JSON.stringify(st.files ?? []) ||
+        patch.filesNote !== st.filesNote;
       st.files = patch.files.map((f) => ({ ...f }));
       st.filesTotal = total;
+      // The note goes with each files value: a list without one clears it.
+      if (patch.filesNote !== undefined) st.filesNote = patch.filesNote;
+      else delete st.filesNote;
       if (changed || always) {
         this.#emit({
           type: 'session.files',
           id,
           files: st.files.map((f) => ({ ...f })),
           filesTotal: total,
+          ...(st.filesNote !== undefined ? { note: st.filesNote } : {}),
         });
       }
     }

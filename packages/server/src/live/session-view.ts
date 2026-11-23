@@ -26,6 +26,8 @@ export interface SessionView {
   ports?: Port[];
   files?: FileChange[];
   filesTotal?: number;
+  /** Why the list is empty (UNPINNED, security M4); absent when git ran. */
+  filesNote?: string;
   /** A record's branch counts (Task 3), refreshed with the files; absent means none yet (0). */
   unpushed?: number;
   uncommitted?: number;
@@ -58,6 +60,7 @@ export function toSession(v: SessionView): Session {
     files: (v.files ?? []).map((f) => ({ ...f })),
     filesTotal: v.filesTotal ?? 0,
   };
+  if (v.filesNote !== undefined) s.filesNote = v.filesNote;
   if (v.question) {
     s.question = { text: v.question.text, options: v.question.options.slice() };
     if (v.question.startup) s.question.startup = true;
@@ -73,15 +76,17 @@ export function toSession(v: SessionView): Session {
 /**
  * What the preview tracker needs (F6): a record's worktree, base, branch and base commit, or an external window's pane
  * cwd with no base; the pane pid while the window is live; active while running or needs you.
- * Null when there is no folder to look at.
+ * `repo` is the record's project folder, which its git is pinned to (security M4); an external
+ * window gets null. Null when there is no folder to look at.
  */
-export function previewTarget(v: SessionView): PreviewTarget | null {
+export function previewTarget(v: SessionView, repo: string | null): PreviewTarget | null {
   const worktree = v.record ? v.record.worktree : (v.window?.cwd ?? '');
   if (worktree === '') return null;
   const live = v.window !== null && !v.window.dead && v.status !== 'ended';
   return {
     id: v.id,
     worktree,
+    repo: v.record ? repo : null,
     base: v.record?.base ?? null,
     branch: v.record?.branch ?? null,
     baseCommit: v.record?.baseCommit ?? null,
@@ -101,14 +106,23 @@ const sameQuestion = (a: Question | undefined, b: Question | undefined): boolean
     (a.startup ?? false) === (b.startup ?? false) &&
     (a.cut ?? false) === (b.cut ?? false));
 
+/** Session keys sameSession leaves out (the question is compared by value). */
+const OWN_EVENTS = new Set<keyof Session>([
+  'question',
+  'ports',
+  'files',
+  'filesTotal',
+  'filesNote',
+]);
+
 /**
- * Shallow compare of two sessions (the question by value; lines by length). Ports, files and
- * filesTotal are left out: they travel in their own events.
+ * Shallow compare of two sessions (the question by value; lines by length). Ports, files,
+ * filesTotal and filesNote are left out: they travel in their own events.
  */
 export function sameSession(a: Session | null, b: Session): boolean {
   if (!a) return false;
   for (const key of Object.keys(b) as (keyof Session)[]) {
-    if (key === 'question' || key === 'ports' || key === 'files' || key === 'filesTotal') continue;
+    if (OWN_EVENTS.has(key)) continue;
     const x = a[key];
     const y = b[key];
     if (Array.isArray(x) && Array.isArray(y)) {

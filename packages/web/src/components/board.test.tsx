@@ -2048,6 +2048,18 @@ describe('the right column: empty and external (phase 5, Task 9)', () => {
     expect(sec.textContent).not.toContain('Files changed ·');
   });
 
+  it("a files note (Kage won't run git there, M4) takes the place of the list, with no View diff", () => {
+    const note =
+      "This worktree's .git file no longer points at its repository, so Kage won't run git there.";
+    withSession({ files: [], filesTotal: 0, filesNote: note });
+    const { container } = render(<Board />);
+    fireEvent.click(row(container, 'docs'));
+    const sec = filesSec(container);
+    expect(q(sec, '.k-none').textContent).toBe(note);
+    expect(sec.querySelector('.k-diff')).toBeNull();
+    expect(sec.textContent).not.toContain('Files changed ·');
+  });
+
   it("an external session's folder work against HEAD is still listed, with View diff", () => {
     withSession({ external: true }, 'shop');
     const { container } = render(<Board />);

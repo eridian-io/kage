@@ -132,6 +132,16 @@ describe('protocol v3 store', () => {
     applyEvent({ type: 'session.files', id: 'a', files, filesTotal: 250 });
     expect(sessions.value[0]).toMatchObject({ files, filesTotal: 250 });
   });
+  it('session.files carries a note (M4); a value without one clears it, and session.updated keeps it', () => {
+    seed();
+    applyEvent({ type: 'session.files', id: 'a', files: [], filesTotal: 0, note: 'Refused.' });
+    expect(sessions.value[0]?.filesNote).toBe('Refused.');
+    const { filesNote: _held, ...bare } = sessions.value[0] as Session;
+    applyEvent({ type: 'session.updated', session: bare });
+    expect(sessions.value[0]?.filesNote).toBe('Refused.');
+    applyEvent({ type: 'session.files', id: 'a', files: [], filesTotal: 0 });
+    expect(sessions.value[0]?.filesNote).toBeUndefined();
+  });
   it('both are ignored for an unknown id', () => {
     seed();
     const before = sessions.value;

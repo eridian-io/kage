@@ -2820,6 +2820,7 @@ describe('LiveSource: preview data (Task 8)', () => {
     expect(preview.host?.previewTarget('k-1')).toEqual({
       id: 'k-1',
       worktree: `${ROOT}/shop/.worktrees/fix-the-cart-total`,
+      repo: join(ROOT, 'shop'),
       base: 'main',
       branch: 'kage/fix-the-cart-total',
       baseCommit: 'd'.repeat(40),
@@ -2865,6 +2866,20 @@ describe('LiveSource: preview data (Task 8)', () => {
     // Unknown sessions: nothing.
     source.setPreview('nope', { ports }, true);
     expect(events).toHaveLength(3);
+  });
+
+  it('a files value with a note carries it on session.files and the session; one without clears it (M4)', async () => {
+    const { source, events } = setup({ windows: [kageWin()], records: [rec()] });
+    await source.start();
+    events.length = 0;
+    source.setPreview('k-1', { files: [], filesTotal: 0, filesNote: 'Refused.' });
+    expect(events).toEqual([
+      { type: 'session.files', id: 'k-1', files: [], filesTotal: 0, note: 'Refused.' },
+    ]);
+    expect(source.get('k-1')?.filesNote).toBe('Refused.');
+    source.setPreview('k-1', { files: [], filesTotal: 0 });
+    expect(events.at(-1)).toEqual({ type: 'session.files', id: 'k-1', files: [], filesTotal: 0 });
+    expect(source.get('k-1')).not.toHaveProperty('filesNote');
   });
 
   it('toSession carries the latest ports and files (snapshots and updates)', async () => {

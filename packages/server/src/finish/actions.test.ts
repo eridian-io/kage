@@ -1,9 +1,10 @@
-import { mkdir, mkdtemp, realpath, rm, symlink } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, sep } from 'node:path';
 import type { SessionStatus } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ActionError, ActionLock } from '../control/actions.ts';
+import { UNPINNED } from '../git/exec.ts';
 import type { FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
 import { FinishActions } from './actions.ts';
@@ -438,7 +439,10 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
     repo = join(tmp, 'projects', 'shop');
     wt = join(repo, '.worktrees', 'x');
     await mkdir(wt, { recursive: true });
-    await mkdir(join(repo, '.git'));
+    // git's bookkeeping for the worktree, so its git can be pinned (security M4).
+    await mkdir(join(repo, '.git', 'worktrees', 'x'), { recursive: true });
+    await writeFile(join(repo, '.git', 'worktrees', 'x', 'gitdir'), `${join(wt, '.git')}\n`);
+    await writeFile(join(wt, '.git'), `gitdir: ${join(repo, '.git', 'worktrees', 'x')}\n`);
   });
   afterEach(() => rm(tmp, { recursive: true, force: true }));
 
@@ -494,10 +498,12 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
       if (args[0] === 'rev-list') return { stdout: g.revList, stderr: '' };
       if (args[0] === 'status') return { stdout: g.status, stderr: '' };
       if (line === 'worktree prune') return { stdout: '', stderr: '' };
+      if (line === 'rev-parse --git-common-dir') return { stdout: '.git\n', stderr: '' };
       throw new Error(`unexpected git ${line}`);
     };
     const fresh = [...(o.fresh ?? [{ unpushed: 1, uncommitted: 0, ignored: 0 }])];
     const published: string[] = [];
+    const projects: string[] = [];
     const tmux = new FakeTmux();
     tmux.log = log;
     const source = new FakeSource();
@@ -514,8 +520,9 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
       projectsRoot: join(tmp, 'projects'),
       worktreeDir: '.worktrees',
       branchPrefix: 'kage/',
-      counts: async (worktree, branch) => {
+      counts: async (worktree, branch, project) => {
         log.push(`counts ${worktree === wt ? '<wt>' : worktree} ${branch}`);
+        projects.push(project);
         if (o.countError) throw o.countError;
         return (fresh.length > 1 ? fresh.shift() : fresh[0]) as {
           unpushed: number;
@@ -529,7 +536,7 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
     const removals = () =>
       log.filter((l) => /^git (worktree (remove|prune)|branch )|^forget/.test(l));
     const kills = () => log.filter((l) => l.startsWith('kill'));
-    return { log, g, tmux, source, finish, published, removals, kills };
+    return { log, g, tmux, source, finish, published, projects, removals, kills };
   }
 
   it('confirmed {1, 0}: recount, kill, recount, worktree remove (no --force), branch -D, forget, in order', async () => {
@@ -807,6 +814,23 @@ describe('FinishActions.remove (delete with the warning, B10)', () => {
     await finish.remove('k-1', { unpushed: 0, uncommitted: 2, ignored: 1 });
     expect(log.some((l) => l.startsWith('git status'))).toBe(true);
     expect(removals()).toEqual([`git worktree remove --force -- ${wt}`, 'forget k-1']);
+  });
+
+  it('a redirected .git (M4): 409 with the refusal, no git in the worktree, nothing removed', async () => {
+    const { finish, g, log, removals, kills } = del();
+    g.branchExists = false;
+    await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
+    const e = await refusal(finish.remove('k-1', { unpushed: 0, uncommitted: 0, ignored: 0 }));
+    expect([e.status, e.message]).toEqual([409, UNPINNED]);
+    expect(log.some((l) => l.startsWith('git status'))).toBe(false);
+    expect(kills()).toEqual([]);
+    expect(removals()).toEqual([]);
+  });
+
+  it('the recount gets the project folder to pin to', async () => {
+    const { finish, projects } = del();
+    await finish.remove('k-1', { unpushed: 1, uncommitted: 0, ignored: 0 });
+    expect(projects).toEqual([repo, repo]);
   });
 
   it('no window (ended): no kill, the rest as confirmed', async () => {

@@ -3,7 +3,7 @@ import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'nod
 import type { DeleteBody } from '@kage/shared';
 import { ActionError, ActionLock, GONE_RE, isExecError } from '../control/actions.ts';
 import { SAFE_REF, worktreeCounts } from '../git/branch.ts';
-import { firstLine, type GitExec } from '../git/exec.ts';
+import { firstLine, type GitExec, requirePin, UnpinnedError } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
@@ -24,8 +24,11 @@ export interface FinishDeps {
   worktreeDir: string;
   /** R74: delete only touches branches with this prefix (a hand-edited record can't name others). */
   branchPrefix: string;
-  /** A record's unpushed commits, uncommitted and ignored entries (branchCounts), in its worktree. */
-  counts: (worktree: string, branch: string) => Promise<Counts>;
+  /**
+   * A record's unpushed commits, uncommitted and ignored entries (branchCounts), in its worktree,
+   * pinned to its project folder `repo` (security M4).
+   */
+  counts: (worktree: string, branch: string, repo: string) => Promise<Counts>;
   /** Fresh counts after a mismatch, so the board shows them (LiveSource.setPreview). */
   publish: (id: string, patch: Counts) => void;
   /** The project folder of a record; null when it is gone (default findProject). */
@@ -252,14 +255,20 @@ export class FinishActions {
     const plan = await this.#plan(r, repo);
     let fresh: Counts;
     try {
-      if (plan.folder && plan.branch) fresh = await this.#d.counts(plan.worktree, r.branch);
+      if (plan.folder && plan.branch) fresh = await this.#d.counts(plan.worktree, r.branch, repo);
       else {
         const w = plan.folder
-          ? await worktreeCounts(plan.worktree, this.#d.git)
+          ? await worktreeCounts(
+              plan.worktree,
+              this.#d.git,
+              await requirePin(repo, plan.worktree, this.#d.git),
+            )
           : { uncommitted: 0, ignored: 0 };
         fresh = { unpushed: plan.branch ? await this.#unpushedInRepo(repo, r.branch) : 0, ...w };
       }
     } catch (e) {
+      // A redirected .git (M4): refused, and git never ran in the worktree.
+      if (e instanceof UnpinnedError) throw new ActionError(409, e.message);
       throw new ActionError(422, `git couldn't count the work on the branch: ${firstLine(e)}`);
     }
     if (

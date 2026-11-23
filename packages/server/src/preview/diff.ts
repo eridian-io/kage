@@ -1,7 +1,15 @@
 import { realpath, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { type DiffFile, type DiffLineKind, type DiffPage, LIMITS } from '@kage/shared';
-import { firstLine, type GitExec, gitExec, gitStream } from '../git/exec.ts';
+import {
+  firstLine,
+  type GitExec,
+  type GitPin,
+  gitExec,
+  gitStream,
+  requirePin,
+  UnpinnedError,
+} from '../git/exec.ts';
 import { stripAnsi } from '../text/ansi.ts';
 import { plainLine } from '../text/bounds.ts';
 import { type Change, listChanges, looksBinary, readUntracked } from './files.ts';
@@ -329,6 +337,7 @@ async function trackedDiffs(
   tracked: readonly Change[],
   o: ParseOptions,
   stream: typeof gitStream,
+  pin: GitPin | undefined,
 ): Promise<{ files: Map<string, DiffFile>; cut: Set<string>; partial: Set<string> }> {
   const files = new Map<string, DiffFile>();
   const cut = new Set<string>();
@@ -376,7 +385,7 @@ async function trackedDiffs(
         '--',
         ...specs,
       ],
-      { cwd: worktree, maxBytes: bytes, timeoutMs: DIFF_TIMEOUT_MS },
+      { cwd: worktree, maxBytes: bytes, timeoutMs: DIFF_TIMEOUT_MS, pin },
     );
     bytes -= Buffer.byteLength(r.stdout, 'utf8');
     // A clip cuts mid-line: the partial last line is dropped.
@@ -401,14 +410,18 @@ async function trackedDiffs(
  * untrackedDiff. A page holds at most LIMITS.diffLines content lines in all and at most
  * LIMITS.diffBytes of git output. A later file that doesn't fit ends the page (`next` is its
  * index); only the first file is cut, and what it leaves out counts in its `clipped`. `base` is
- * null when there was no base to compare with (HEAD was used).
+ * null when there was no base to compare with (HEAD was used). With `t.repo` (a record's project
+ * folder) every git call is pinned to it (security M4); a refused pin rejects with UnpinnedError
+ * before any git runs in the worktree.
  */
 export async function diffPage(
-  t: { worktree: string; base: string | null; branch: string },
+  t: { worktree: string; base: string | null; branch: string; repo?: string | null },
   from: number,
   deps: { exec?: GitExec; stream?: typeof gitStream } = {},
 ): Promise<DiffPage> {
-  const { mb, changes } = await listChanges(t.worktree, t.base, deps.exec ?? gitExec);
+  const exec = deps.exec ?? gitExec;
+  const pin = await requirePin(t.repo, t.worktree, exec);
+  const { mb, changes } = await listChanges(t.worktree, t.base, exec, { pin });
   const head = {
     base: mb === 'HEAD' ? null : t.base,
     branch: t.branch,
@@ -425,6 +438,7 @@ export async function diffPage(
     page.filter((c) => !c.untracked),
     o,
     deps.stream ?? gitStream,
+    pin,
   );
   const root = await realpath(t.worktree).catch(() => resolve(t.worktree));
   let budget = LIMITS.diffLines;
@@ -483,12 +497,13 @@ export const STILL_WORKING = 'Kage is still working on the last diff.';
 const CANCELLED = 'The diff request was cancelled.';
 
 /**
- * A diff request that can't be answered: 404 (no such session), 422 (git or the folder, or a
- * cancelled request) or 429 (too many waiting for one session).
+ * A diff request that can't be answered: 404 (no such session), 409 (the worktree's .git no
+ * longer leads to its repository: UNPINNED), 422 (git or the folder, or a cancelled request) or
+ * 429 (too many waiting for one session).
  */
 export class DiffError extends Error {
-  readonly status: 404 | 422 | 429;
-  constructor(status: 404 | 422 | 429, message: string) {
+  readonly status: 404 | 409 | 422 | 429;
+  constructor(status: 404 | 409 | 422 | 429, message: string) {
     super(message);
     this.status = status;
   }
@@ -499,6 +514,8 @@ export interface DiffTarget {
   worktree: string;
   base: string | null;
   branch: string | null;
+  /** The record's project folder, which git is pinned to (security M4); null for an external window. */
+  repo: string | null;
 }
 
 export interface DiffServiceDeps {
@@ -591,10 +608,11 @@ export class DiffService {
     if (!isDir) throw new DiffError(422, "git couldn't show the diff: the folder is gone.");
     try {
       return await (this.#d.page ?? diffPage)(
-        { worktree: t.worktree, base: t.base, branch: t.branch ?? '' },
+        { worktree: t.worktree, base: t.base, branch: t.branch ?? '', repo: t.repo },
         from,
       );
     } catch (err) {
+      if (err instanceof UnpinnedError) throw new DiffError(409, err.message);
       throw new DiffError(422, `git couldn't show the diff: ${plainLine(firstLine(err), 300)}`);
     }
   }

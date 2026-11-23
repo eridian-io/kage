@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LIMITS } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { gitStream } from '../git/exec.ts';
+import { gitStream, UNPINNED, UnpinnedError } from '../git/exec.ts';
 import {
   DiffError,
   DiffService,
@@ -630,9 +630,9 @@ describe('DiffService', () => {
     const svc = new DiffService({
       target: (id) =>
         id === 'k'
-          ? { worktree: dir, base: null, branch: null }
+          ? { worktree: dir, base: null, branch: null, repo: null }
           : id === 'gone'
-            ? { worktree: join(root, 'nope'), base: null, branch: 'x' }
+            ? { worktree: join(root, 'nope'), base: null, branch: 'x', repo: null }
             : null,
       page: async () => {
         throw Object.assign(new Error('Command failed'), {
@@ -650,6 +650,22 @@ describe('DiffService', () => {
     });
   });
 
+  it("a redirected .git answers 409 with the refusal; the page gets the record's repo (M4)", async () => {
+    const dir = await repo('s-unpinned');
+    const got: unknown[] = [];
+    const svc = new DiffService({
+      target: () => ({ worktree: dir, base: null, branch: 'kage/x', repo: '/projects/app' }),
+      page: async (t) => {
+        got.push(t.repo);
+        throw new UnpinnedError();
+      },
+    });
+    const err = await svc.page('k', 0).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(DiffError);
+    expect(err).toMatchObject({ status: 409, message: UNPINNED });
+    expect(got).toEqual(['/projects/app']);
+  });
+
   it('a third pending request for one session gets 429; an aborted waiter never runs git', async () => {
     const dir = await repo('s-queue');
     const ran: number[] = [];
@@ -658,7 +674,7 @@ describe('DiffService', () => {
       open = r;
     });
     const svc = new DiffService({
-      target: () => ({ worktree: dir, base: null, branch: 'x' }),
+      target: () => ({ worktree: dir, base: null, branch: 'x', repo: null }),
       page: async (_t, from) => {
         ran.push(from);
         if (from === 0) await gate;
@@ -688,7 +704,7 @@ describe('DiffService', () => {
     let sessionPeak = 0;
     const releases: (() => void)[] = [];
     const svc = new DiffService({
-      target: (id) => ({ worktree: dir, base: null, branch: id }),
+      target: (id) => ({ worktree: dir, base: null, branch: id, repo: null }),
       page: async (t, from) => {
         running++;
         peak = Math.max(peak, running);

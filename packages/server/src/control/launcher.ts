@@ -13,7 +13,7 @@ import {
 import { basename, delimiter, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import type { NewTaskBody, NewTaskResponse } from '@kage/shared';
 import { BUSY, kageWorktree, notKageWorktree, OFF_BRANCH } from '../finish/actions.ts';
-import { firstLine, type GitExec } from '../git/exec.ts';
+import { firstLine, type GitExec, requirePin, UnpinnedError } from '../git/exec.ts';
 import { findProject } from '../git/projects.ts';
 import type { LiveSource } from '../live-source.ts';
 import { HEX_COMMIT, type SessionRecord } from '../state/store.ts';
@@ -257,7 +257,7 @@ export class TaskLauncher {
       if (!(await kageWorktree(r, project.path, d.worktreeDir, d.branchPrefix))) {
         throw new LaunchError(409, notKageWorktree(r.worktree));
       }
-      await this.#onBranch(r.worktree, r.branch);
+      await this.#onBranch(r.worktree, r.branch, project.path);
       // Resumed before the window exists (R101): a listing that attaches the new window, and its
       // first hooks, must find the resume under way, as a launch's adopt() comes before its window.
       d.source.resumed(r.kageId, resumeId(r.sessionId));
@@ -284,12 +284,19 @@ export class TaskLauncher {
     }
   }
 
-  /** The worktree's HEAD is the record's branch: else 409 (R71), or 422 when git fails. */
-  async #onBranch(worktree: string, branch: string): Promise<void> {
+  /**
+   * The worktree's HEAD is the record's branch: else 409 (R71), or 422 when git fails. git is
+   * pinned to the project folder (security M4): a redirected .git is 409 with UNPINNED.
+   */
+  async #onBranch(worktree: string, branch: string, repo: string): Promise<void> {
     let head: string;
     try {
-      head = (await this.#d.git(['symbolic-ref', '-q', 'HEAD'], { cwd: worktree })).stdout.trim();
+      const pin = await requirePin(repo, worktree, this.#d.git);
+      head = (
+        await this.#d.git(['symbolic-ref', '-q', 'HEAD'], { cwd: worktree, pin })
+      ).stdout.trim();
     } catch (e) {
+      if (e instanceof UnpinnedError) throw new LaunchError(409, e.message);
       // Exit 1: a detached HEAD.
       if ((e as { code?: unknown }).code === 1) throw new LaunchError(409, OFF_BRANCH);
       throw new LaunchError(422, `git couldn't read the branch: ${firstLine(e)}`);

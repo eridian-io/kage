@@ -62,6 +62,8 @@ export interface Session {
   files: FileChange[];
   /** How many files changed in all; may exceed `files.length`. */
   filesTotal: number;
+  /** Why the file list is empty though the branch may have work (Kage won't run git there). */
+  filesNote?: string;
 }
 export type ServerEvent =
   | {
@@ -78,7 +80,7 @@ export type ServerEvent =
   | { type: 'session.lines'; id: string; lines: DisplayLine[]; reset: boolean }
   | { type: 'session.removed'; id: string }
   | { type: 'session.ports'; id: string; ports: Port[] }
-  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number }
+  | { type: 'session.files'; id: string; files: FileChange[]; filesTotal: number; note?: string }
   /** The number of archived sessions changed. */
   | { type: 'archive'; count: number };
 

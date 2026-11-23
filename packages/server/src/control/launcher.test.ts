@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import type { NewTaskBody } from '@kage/shared';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { type GitExec, gitExec } from '../git/exec.ts';
+import { type GitExec, gitExec, UNPINNED } from '../git/exec.ts';
 import type { FinishTarget } from '../live-source.ts';
 import type { SessionRecord } from '../state/store.ts';
 import type { TmuxWindow } from '../tmux/format.ts';
@@ -902,6 +902,18 @@ describe('TaskLauncher.resume (B7)', () => {
     s = resumable();
     err = await launchError(s.launcher.resume('k-1'));
     expect(err.status).toBe(409);
+    expect(s.tmux.calls).toEqual([]);
+  });
+
+  it('a redirected .git is 409 with the refusal (M4): no git in the worktree, nothing opens', async () => {
+    await mkdir(join(wt, 'evil'));
+    // git hides the .git file on Windows, where writing over a hidden file is refused.
+    await rm(join(wt, '.git'));
+    await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
+    const s = resumable();
+    const err = await launchError(s.launcher.resume('k-1'));
+    expect([err.status, err.message]).toEqual([409, UNPINNED]);
+    expect(s.gitCalls.filter((a) => a[0] === 'symbolic-ref')).toEqual([]);
     expect(s.tmux.calls).toEqual([]);
   });
 

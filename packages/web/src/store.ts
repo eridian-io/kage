@@ -248,13 +248,14 @@ function keepSelection(): void {
 
 /**
  * Ports and files have their own events, so a session.updated or snapshot must not wipe what
- * they brought: the incoming session takes the held session's ports, files and filesTotal.
+ * they brought: the incoming session takes the held session's ports, files, filesTotal and
+ * filesNote.
  */
 function keepLive(incoming: Session): Session {
   const held = sessions.value.find((s) => s.id === incoming.id);
-  return held
-    ? { ...incoming, ports: held.ports, files: held.files, filesTotal: held.filesTotal }
-    : incoming;
+  if (!held) return incoming;
+  const { ports, files, filesTotal, filesNote } = held;
+  return { ...incoming, ports, files, filesTotal, filesNote };
 }
 
 /**
@@ -322,7 +323,8 @@ export function applyEvent(e: ServerEvent): void {
       markCounts(e.id);
       if (sessions.value.some((s) => s.id === e.id)) {
         sessions.value = sessions.value.map((s) =>
-          s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal } : s,
+          // A value without a note clears the last one.
+          s.id === e.id ? { ...s, files: e.files, filesTotal: e.filesTotal, filesNote: e.note } : s,
         );
       }
     } else if (e.type === 'archive') {

@@ -1,5 +1,5 @@
 import { HEX_COMMIT } from '../state/store.ts';
-import { type GitExec, gitExec } from './exec.ts';
+import { type GitExec, type GitPin, gitExec, requirePin } from './exec.ts';
 
 /**
  * A branch or base name Kage passes to git: no leading "-", no "..", no "@{", plain segments
@@ -32,6 +32,7 @@ export async function unpushedCount(
   cwd: string,
   branch: string,
   exec: GitExec = gitExec,
+  pin?: GitPin,
 ): Promise<number> {
   if (!SAFE_REF.test(branch)) return 0;
   const { stdout } = await exec(
@@ -46,7 +47,7 @@ export async function unpushedCount(
       '--remotes',
       '--tags',
     ],
-    { cwd },
+    { cwd, pin },
   );
   return toCount(stdout);
 }
@@ -64,6 +65,7 @@ export async function unpushedCount(
 export async function worktreeCounts(
   worktree: string,
   exec: GitExec = gitExec,
+  pin?: GitPin,
 ): Promise<{ uncommitted: number; ignored: number }> {
   const { stdout } = await exec(
     [
@@ -74,7 +76,7 @@ export async function worktreeCounts(
       '--ignored=matching',
       '--ignore-submodules=none',
     ],
-    { cwd: worktree },
+    { cwd: worktree, pin },
   );
   const fields = stdout.split('\0');
   let uncommitted = 0;
@@ -97,10 +99,13 @@ export async function uncommittedCount(worktree: string, exec: GitExec = gitExec
   return (await worktreeCounts(worktree, exec)).uncommitted;
 }
 
+/** Where a worktree's git runs: its folder, and the pin when it has a record (security M4). */
+type At = { cwd: string; pin?: GitPin | undefined };
+
 /** Runs a git command whose exit status is the answer: 0 is true, anything else false. */
-async function exitsZero(exec: GitExec, args: string[], cwd: string): Promise<boolean> {
+async function exitsZero(exec: GitExec, args: string[], at: At): Promise<boolean> {
   try {
-    await exec(args, { cwd });
+    await exec(args, at);
     return true;
   } catch {
     return false;
@@ -117,9 +122,9 @@ const DIFF_FLAGS = ['--no-ext-diff', '--no-textconv', '--no-renames', '--ignore-
  * The paths a tree-to-tree diff lists, as raw bytes (latin1: one char per byte), so non-UTF-8
  * names compare exactly.
  */
-async function changedPaths(exec: GitExec, cwd: string, from: string, to: string) {
+async function changedPaths(exec: GitExec, at: At, from: string, to: string) {
   const { stdout } = await exec(['diff', ...DIFF_FLAGS, '--name-only', '-z', from, to], {
-    cwd,
+    ...at,
     encoding: 'latin1',
   });
   return stdout.split('\0').filter((p) => p !== '');
@@ -129,13 +134,13 @@ async function changedPaths(exec: GitExec, cwd: string, from: string, to: string
  * The worktree is on the branch: its HEAD is `refs/heads/<b>`, or (detached) an ancestor of the
  * tip. A detached HEAD with commits of its own would lose them, so that is never merged.
  */
-async function onBranch(exec: GitExec, cwd: string, tip: string): Promise<boolean> {
-  const head = await exec(['symbolic-ref', '-q', 'HEAD'], { cwd }).then(
+async function onBranch(exec: GitExec, at: At, tip: string): Promise<boolean> {
+  const head = await exec(['symbolic-ref', '-q', 'HEAD'], at).then(
     (r) => r.stdout.trim(),
     () => null,
   );
   if (head === tip) return true;
-  return exitsZero(exec, ['merge-base', '--is-ancestor', 'HEAD', tip], cwd);
+  return exitsZero(exec, ['merge-base', '--is-ancestor', 'HEAD', tip], at);
 }
 
 /**
@@ -145,31 +150,33 @@ async function onBranch(exec: GitExec, cwd: string, tip: string): Promise<boolea
  * driver-free path-equal check of host-integration §5.5 (R59/R65), never `merge-tree`, which can
  * run a repository's merge driver. The check intersects two tree diffs in JS (no pathspec, so no
  * argument limit). False for a null baseCommit or base, a name failing SAFE_REF (no git call),
- * and whenever git fails (closed).
+ * and whenever git fails (closed). Every call carries `pin` (worktreePin) when given.
  */
 export async function isMerged(
   cwd: string,
   o: { branch: string; base: string | null; baseCommit: string | null },
   exec: GitExec = gitExec,
+  pin?: GitPin,
 ): Promise<boolean> {
   const { branch, base, baseCommit } = o;
   if (base === null || baseCommit === null) return false;
   if (!SAFE_REF.test(branch) || !SAFE_REF.test(base) || !HEX_COMMIT.test(baseCommit)) return false;
   const tip = `refs/heads/${branch}`;
+  const at: At = { cwd, pin };
   try {
-    if (!(await onBranch(exec, cwd, tip))) return false;
-    const past = await exec(['rev-list', '--count', tip, `^${baseCommit}`], { cwd });
+    if (!(await onBranch(exec, at, tip))) return false;
+    const past = await exec(['rev-list', '--count', tip, `^${baseCommit}`], at);
     if (toCount(past.stdout) === 0) return false;
-    const changed = new Set(await changedPaths(exec, cwd, baseCommit, tip));
+    const changed = new Set(await changedPaths(exec, at, baseCommit, tip));
     for (const target of [`refs/heads/${base}`, `refs/remotes/origin/${base}`]) {
       // R66: an ancestor counts as merged even when the base later reverted the merge; nothing
       // is lost, because the branch's commits stay reachable from the base.
-      if (await exitsZero(exec, ['merge-base', '--is-ancestor', tip, target], cwd)) return true;
+      if (await exitsZero(exec, ['merge-base', '--is-ancestor', tip, target], at)) return true;
       // No changed paths: nothing to compare ("n/a" in §5.5), so only ancestry can say merged.
       if (changed.size === 0) continue;
       let differs: string[];
       try {
-        differs = await changedPaths(exec, cwd, tip, target);
+        differs = await changedPaths(exec, at, tip, target);
       } catch {
         continue; // no such ref (no origin), or git failed: this target says nothing
       }
@@ -181,36 +188,51 @@ export async function isMerged(
   }
 }
 
-/**
- * The branch's unpushed commits and the worktree's uncommitted and ignored entries, in parallel.
- * A branch failing SAFE_REF gives zeros with no git call. Rejects when either git run fails.
- */
-export async function branchCounts(
+/** branchCounts' two parts with a pin already looked up. */
+async function countsAt(
   worktree: string,
   branch: string,
-  exec: GitExec = gitExec,
+  exec: GitExec,
+  pin: GitPin | undefined,
 ): Promise<{ unpushed: number; uncommitted: number; ignored: number }> {
-  if (!SAFE_REF.test(branch)) return { unpushed: 0, uncommitted: 0, ignored: 0 };
   const [unpushed, w] = await Promise.all([
-    unpushedCount(worktree, branch, exec),
-    worktreeCounts(worktree, exec),
+    unpushedCount(worktree, branch, exec, pin),
+    worktreeCounts(worktree, exec, pin),
   ]);
   return { unpushed, ...w };
 }
 
 /**
- * branchCounts and isMerged, all three parts in parallel. A branch failing SAFE_REF gives
- * counts 0 and merged false with no git call. Rejects when a count fails; merged fails closed.
+ * The branch's unpushed commits and the worktree's uncommitted and ignored entries, in parallel.
+ * With `repo` (a record's project folder) every call is pinned to it (requirePin): a redirected
+ * `.git` rejects with UNPINNED and runs no git in the worktree. A branch failing SAFE_REF gives
+ * zeros with no git call. Rejects when either git run fails.
+ */
+export async function branchCounts(
+  worktree: string,
+  branch: string,
+  exec: GitExec = gitExec,
+  repo: string | null = null,
+): Promise<{ unpushed: number; uncommitted: number; ignored: number }> {
+  if (!SAFE_REF.test(branch)) return { unpushed: 0, uncommitted: 0, ignored: 0 };
+  return countsAt(worktree, branch, exec, await requirePin(repo, worktree, exec));
+}
+
+/**
+ * branchCounts and isMerged, all three parts in parallel, pinned to `o.repo` as branchCounts is
+ * (one lookup for all three). A branch failing SAFE_REF gives counts 0 and merged false with no
+ * git call. Rejects when a count fails or the pin is refused; merged fails closed.
  */
 export async function branchState(
   worktree: string,
-  o: { branch: string; base: string | null; baseCommit: string | null },
+  o: { branch: string; base: string | null; baseCommit: string | null; repo?: string | null },
   exec: GitExec = gitExec,
 ): Promise<BranchState> {
   if (!SAFE_REF.test(o.branch)) return { unpushed: 0, uncommitted: 0, ignored: 0, merged: false };
+  const pin = await requirePin(o.repo, worktree, exec);
   const [counts, merged] = await Promise.all([
-    branchCounts(worktree, o.branch, exec),
-    isMerged(worktree, o, exec),
+    countsAt(worktree, o.branch, exec, pin),
+    isMerged(worktree, o, exec, pin),
   ]);
   return { ...counts, merged };
 }

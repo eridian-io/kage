@@ -21,9 +21,9 @@ import { resolveClaude, TaskLauncher } from './control/launcher.ts';
 import { DemoSource } from './demo-source.ts';
 import { EventHub } from './events.ts';
 import { FinishActions } from './finish/actions.ts';
-import { AutoArchiver, gitCommonDir } from './finish/auto-archive.ts';
+import { AutoArchiver } from './finish/auto-archive.ts';
 import { branchCounts, branchState } from './git/branch.ts';
-import { gitExec } from './git/exec.ts';
+import { gitCommonDir, gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
@@ -251,10 +251,12 @@ async function startLive(
         target: (id) => host.previewTarget(id),
         publish: (id, patch, always) => host.setPreview(id, patch, always),
         scan: makeScanner(io.platform ?? process.platform),
-        files: (worktree, base) => changedFiles(worktree, base, gitExec, { cache: untracked }),
+        // A record's git is pinned to its project folder, looked up on each refresh (M4).
+        files: (worktree, base, repo) =>
+          changedFiles(worktree, base, gitExec, { cache: untracked, repo }),
         forgetFiles: (worktree) => untracked.forget(worktree),
         // A record's unpushed and uncommitted counts, refreshed with its files (spec §5.8).
-        branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec),
+        branch: (worktree, o) => branchCounts(worktree, o.branch, gitExec, o.repo),
       }),
     // Auto-archive on merge and after afterDays (spec §5.8), through the same archive action.
     autoArchive: (host) =>
@@ -292,7 +294,7 @@ async function startLive(
     worktreeDir: cfg.worktreeDir,
     branchPrefix: cfg.branchPrefix,
     // Delete recounts what the confirmation showed; a mismatch reaches the board (B10).
-    counts: (worktree, branch) => branchCounts(worktree, branch, gitExec),
+    counts: (worktree, branch, repo) => branchCounts(worktree, branch, gitExec, repo),
     publish: (id, counts) => source.setPreview(id, counts),
     isTerminalOpen,
   });

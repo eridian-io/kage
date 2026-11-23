@@ -4,7 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { LIMITS } from '@kage/shared';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import type { GitExec } from '../git/exec.ts';
+import { branchCounts, branchState } from '../git/branch.ts';
+import { type GitExec, type GitPin, gitExec, gitStream, worktreePin } from '../git/exec.ts';
+import { diffPage } from './diff.ts';
 import {
   type Change,
   changedFiles,
@@ -367,5 +369,60 @@ describe("UntrackedCache: racy entries (git's rule)", () => {
     await listChanges(dir, 'main', undefined, { cache, read });
     await listChanges(dir, 'main', undefined, { cache, read });
     expect(reads).toEqual(['new.txt', 'new.txt']);
+  });
+});
+
+describe('the pin (security M4)', () => {
+  it('changedFiles, branchCounts, branchState and the diff pass the pin to git', {
+    timeout: 30_000,
+  }, async () => {
+    const dir = await repo('pinned');
+    git(dir, 'checkout', '-q', 'main');
+    const wt = join(dir, '.worktrees', 'p');
+    git(dir, 'worktree', 'add', '-q', '-b', 'kage/p', wt, 'main');
+    await writeFile(join(wt, 'a.txt'), 'one\ntwo\nthree\nfour\n');
+    const pin = await worktreePin(dir, wt);
+    expect(pin).not.toBeNull();
+    const seen: { args: string; pin: GitPin | undefined; cwd: string | undefined }[] = [];
+    const exec: GitExec = (args, opts) => {
+      seen.push({ args: args.join(' '), pin: opts?.pin, cwd: opts?.cwd });
+      return gitExec(args, opts);
+    };
+    const streamed: (GitPin | undefined)[] = [];
+    const stream: typeof gitStream = (args, o) => {
+      streamed.push(o.pin);
+      return gitStream(args, o);
+    };
+    const files = await changedFiles(wt, 'main', exec, { repo: dir });
+    expect(files.total).toBe(1);
+    await branchCounts(wt, 'kage/p', exec, dir);
+    await branchState(wt, { branch: 'kage/p', base: 'main', baseCommit: null, repo: dir }, exec);
+    const page = await diffPage({ worktree: wt, base: 'main', branch: 'kage/p', repo: dir }, 0, {
+      exec,
+      stream,
+    });
+    expect(page.files.map((f) => f.path)).toEqual(['a.txt']);
+    // Every call in the worktree carried the pin; only the common-dir lookup ran in the repo.
+    const inWorktree = seen.filter((s) => s.cwd === wt);
+    const inRepo = seen.filter((s) => s.cwd === dir);
+    expect(inWorktree.length).toBeGreaterThan(5);
+    for (const s of inWorktree) expect(s.pin, s.args).toEqual(pin);
+    expect(new Set(inRepo.map((s) => s.args))).toEqual(new Set(['rev-parse --git-common-dir']));
+    for (const s of inRepo) expect(s.pin).toBeUndefined();
+    expect(streamed).toEqual([pin]);
+  });
+
+  it('without a repository (an external window) git runs as before, with no pin', async () => {
+    const dir = await repo('external');
+    await writeFile(join(dir, 'a.txt'), 'changed\n');
+    const pins: (GitPin | undefined)[] = [];
+    const exec: GitExec = (args, opts) => {
+      pins.push(opts?.pin);
+      return gitExec(args, opts);
+    };
+    const r = await changedFiles(dir, null, exec, { repo: null });
+    expect(r.total).toBe(1);
+    expect(r).not.toHaveProperty('note');
+    expect(pins.every((p) => p === undefined)).toBe(true);
   });
 });

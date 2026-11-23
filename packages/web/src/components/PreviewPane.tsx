@@ -48,14 +48,20 @@ function PortCard({ port: p }: { port: Port }) {
  * Files changed (spec §5.7): at most LIMITS.files rows, whatever the server sent (B28), then
  * "and N more". No files: a line and no View diff. An external window has no branch of Kage's:
  * its list is the folder's work against HEAD, and when that is empty (or no repository) one line
- * says why in place of the section.
+ * says why in place of the section. A note from the server (Kage won't run git there: security
+ * M4) takes the place of the list.
  */
 function FilesSection({ session }: { session: Session }) {
-  if (session.external && session.filesTotal === 0) {
+  const note =
+    session.filesNote ??
+    (session.external && session.filesTotal === 0
+      ? "Kage didn't start this window, so there's no branch to compare."
+      : null);
+  if (note) {
     return (
       <div class="k-sec">
         <h4>Files changed</h4>
-        <div class="k-none">Kage didn't start this window, so there's no branch to compare.</div>
+        <div class="k-none">{note}</div>
       </div>
     );
   }

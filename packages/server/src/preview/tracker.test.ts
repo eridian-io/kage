@@ -1,7 +1,14 @@
-import type { FileChange, Port } from '@kage/shared';
+import type { Port } from '@kage/shared';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UNPINNED } from '../git/exec.ts';
 import type { Listener, Proc } from './ports.ts';
-import { type PreviewPatch, type PreviewTarget, PreviewTracker, worktreeGone } from './tracker.ts';
+import {
+  type FilesResult,
+  type PreviewPatch,
+  type PreviewTarget,
+  PreviewTracker,
+  worktreeGone,
+} from './tracker.ts';
 
 interface Published {
   id: string;
@@ -23,6 +30,7 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     all.set(id, {
       id,
       worktree: `/w/${id}`,
+      repo: null,
       base: 'main',
       branch: null,
       baseCommit: null,
@@ -37,12 +45,13 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
   /** While set, scans and file runs wait for it. */
   let gate: Promise<void> | null = null;
   const fileRuns: string[] = [];
-  let fileResult: { files: FileChange[]; total: number } = { files: [], total: 0 };
+  let fileResult: FilesResult = { files: [], total: 0 };
+  const fileRepos: (string | null)[] = [];
   let scanError: Error | null = null;
   let filesError: Error | null = null;
   const branchRuns: {
     worktree: string;
-    o: { branch: string; base: string | null; baseCommit: string | null };
+    o: { branch: string; base: string | null; baseCommit: string | null; repo: string | null };
   }[] = [];
   let counts = { unpushed: 0, uncommitted: 0, ignored: 0 };
   let countsError: Error | null = null;
@@ -57,8 +66,9 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
       if (scanError) throw scanError;
       return { listeners, procs: TREE };
     },
-    files: async (worktree) => {
+    files: async (worktree, _base, repo) => {
       fileRuns.push(worktree);
+      fileRepos.push(repo);
       if (gate) await gate;
       if (filesError) throw filesError;
       return fileResult;
@@ -78,6 +88,7 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     published,
     scans: () => scans,
     fileRuns,
+    fileRepos,
     branchRuns,
     setCounts: (c: { unpushed: number; uncommitted: number; ignored: number }) => {
       counts = c;
@@ -88,7 +99,7 @@ function setup(targets: Record<string, Partial<PreviewTarget>> = {}) {
     setListeners: (l: Listener[]) => {
       listeners = l;
     },
-    setFiles: (r: { files: FileChange[]; total: number }) => {
+    setFiles: (r: FilesResult) => {
       fileResult = r;
     },
     failScan: (e: Error | null) => {
@@ -197,6 +208,7 @@ describe('PreviewTracker: idle cost', () => {
       target: (id) => ({
         id,
         worktree: '/w',
+        repo: null,
         base: null,
         branch: null,
         baseCommit: null,
@@ -295,6 +307,7 @@ describe('PreviewTracker: files', () => {
       target: (id) => ({
         id,
         worktree: '/gone',
+        repo: null,
         base: null,
         branch: null,
         baseCommit: null,
@@ -526,7 +539,7 @@ describe('PreviewTracker: branch counts (phase 4 Task 3)', () => {
     t.tracker.setViewed(new Set(['a']));
     await vi.advanceTimersByTimeAsync(0);
     expect(t.branchRuns).toEqual([
-      { worktree: '/w/a', o: { branch: 'kage/a', base: 'main', baseCommit: SHA } },
+      { worktree: '/w/a', o: { branch: 'kage/a', base: 'main', baseCommit: SHA, repo: null } },
     ]);
     expect(countsOf(t.published, 'a')).toEqual([{ unpushed: 2, uncommitted: 1, ignored: 0 }]);
     // An edit with the same counts publishes no new counts; a turn end with new ones does.
@@ -550,6 +563,25 @@ describe('PreviewTracker: branch counts (phase 4 Task 3)', () => {
     t.tracker.refresh('a');
     await vi.advanceTimersByTimeAsync(0);
     expect(t.branchRuns).toHaveLength(5);
+  });
+
+  it("a record's repo goes to the files and branch runs; a refusal's note is published with the empty list (M4)", async () => {
+    const t = setup({ a: { branch: 'kage/a', baseCommit: SHA, repo: '/p/shop' } });
+    t.setFiles({ files: [], total: 0, note: UNPINNED });
+    t.tracker.setViewed(new Set(['a']));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(t.fileRepos).toEqual(['/p/shop']);
+    expect(t.branchRuns.map((r) => r.o.repo)).toEqual(['/p/shop']);
+    const files = t.published.filter((p) => p.patch.files !== undefined);
+    expect(files.map((p) => p.patch)).toEqual([{ files: [], filesTotal: 0, filesNote: UNPINNED }]);
+    // The .git is put back: the next list goes out without the note.
+    t.setFiles({ files: [{ path: 'a.ts', added: 1, removed: 0 }], total: 1 });
+    t.tracker.touch('a', 'edit');
+    await vi.advanceTimersByTimeAsync(600);
+    expect(t.published.filter((p) => p.patch.files !== undefined).at(-1)?.patch).toEqual({
+      files: [{ path: 'a.ts', added: 1, removed: 0 }],
+      filesTotal: 1,
+    });
   });
 
   it('external targets never call branch', async () => {

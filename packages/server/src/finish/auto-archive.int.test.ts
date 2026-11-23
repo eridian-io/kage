@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { branchState } from '../git/branch.ts';
-import { AutoArchiver, type AutoCandidate, gitCommonDir } from './auto-archive.ts';
+import { gitCommonDir } from '../git/exec.ts';
+import { AutoArchiver, type AutoCandidate } from './auto-archive.ts';
 
 /**
  * Auto-archive against a temp repo: real git, the real branch state and the default fs.watch.

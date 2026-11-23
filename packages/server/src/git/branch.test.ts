@@ -13,7 +13,7 @@ import {
   unpushedCount,
   worktreeCounts,
 } from './branch.ts';
-import type { GitExec } from './exec.ts';
+import { type GitExec, gitExec, UNPINNED } from './exec.ts';
 
 /** Temp-repo tests run many git commands; on a loaded Windows machine that can pass 5 s. */
 const REPO_TESTS = { timeout: 30_000 };
@@ -654,5 +654,31 @@ describe('branchState', () => {
       return { stdout: '0\n', stderr: '' };
     };
     await expect(branchCounts('/w', 'kage/x', exec)).rejects.toThrow('timed out');
+  });
+});
+
+describe('the pin (security M4)', REPO_TESTS, () => {
+  it('a redirected .git: branchCounts and branchState reject UNPINNED and run no git in the worktree', async () => {
+    const dir = join(root, 'pin-refused');
+    await mkdir(dir);
+    git(dir, 'init', '-q', '-b', 'main');
+    await writeFile(join(dir, 'a.txt'), 'a\n');
+    git(dir, 'add', '.');
+    git(dir, 'commit', '-q', '-m', 'init');
+    const wt = join(dir, '.worktrees', 'r');
+    git(dir, 'worktree', 'add', '-q', '-b', 'kage/r', wt, 'main');
+    await mkdir(join(wt, 'evil'));
+    // git hides the .git file on Windows, where writing over a hidden file is refused.
+    await rm(join(wt, '.git'));
+    await writeFile(join(wt, '.git'), `gitdir: ${join(wt, 'evil')}\n`);
+    const cwds: (string | undefined)[] = [];
+    const exec: GitExec = (args, opts) => {
+      cwds.push(opts?.cwd);
+      return gitExec(args, opts);
+    };
+    await expect(branchCounts(wt, 'kage/r', exec, dir)).rejects.toThrow(UNPINNED);
+    const o = { branch: 'kage/r', base: 'main', baseCommit: null, repo: dir };
+    await expect(branchState(wt, o, exec)).rejects.toThrow(UNPINNED);
+    expect(cwds.filter((c) => c === wt)).toEqual([]);
   });
 });

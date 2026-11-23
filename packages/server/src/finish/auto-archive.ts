@@ -1,7 +1,6 @@
 import { watch as fsWatch } from 'node:fs';
-import { resolve } from 'node:path';
 import type { BranchState } from '../git/branch.ts';
-import { firstLine, type GitExec, gitExec } from '../git/exec.ts';
+import { firstLine } from '../git/exec.ts';
 
 /** A record session auto-archive may archive: done or ended, not pinned, not archived (§5.8). */
 export interface AutoCandidate {
@@ -62,14 +61,6 @@ const WATCH_NAMES = new Set(['FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', 'HEAD']);
 /** Logged once per directory when fs.watch throws. */
 export const watchFailed = (dir: string): string =>
   `Auto-archive can't watch ${dir}; merges there are seen at the next turn end or restart.`;
-
-/** The git common directory of `repo`, absolute. */
-export async function gitCommonDir(repo: string, exec: GitExec = gitExec): Promise<string> {
-  const { stdout } = await exec(['rev-parse', '--git-common-dir'], { cwd: repo });
-  const out = stdout.replace(/\r?\n$/, '');
-  if (out === '') throw new Error(`git gave no common dir for ${repo}`);
-  return resolve(repo, out);
-}
 
 const defaultWatch = (
   dir: string,
