@@ -4107,7 +4107,7 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     await flush();
     source.resumed('k-1', 's-1');
     // new-window has run: the claim's own listing still shows the window, claude exiting in it.
-    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7' })];
     source.claim('k-1', '@7', '%7');
     // The SessionEnd lands while that listing runs: no session has %7 yet, so it waits on a
     // re-list (#unknown).
@@ -4121,6 +4121,105 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended' });
     expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-1');
     expect(logs.filter((l) => l.includes("wasn't resumed"))).toHaveLength(1);
+  });
+
+  it('R152: a failed resume whose SessionEnd landed on ext-@7 before the tag, then the claim, then the window gone, ends with the R63 line', async () => {
+    const { source, hooks, tmux, watcher, updates } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    // A listing sees the new window before its @kage_id lands: an external session.
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(source.get('ext-@7')).toBeDefined();
+    hooks.fire(otherEnd()); // applied to ext-@7
+    await flush();
+    tmux.windows = [];
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('ext-@7')).toBeUndefined();
+    expect(source.lines('k-1')).toContainEqual(failedLine);
+    expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended' });
+    expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-1');
+  });
+
+  it('R152: hooks on an ext- window older than 5 s are not kept for a claim', async () => {
+    const { source, hooks, tmux, watcher } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(6_000);
+    source.resumed('k-1', 's-1');
+    hooks.fire(otherEnd()); // applied to ext-@7, a window seen 6 s ago
+    await flush();
+    tmux.windows = [];
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).not.toContainEqual(failedLine);
+  });
+
+  /** The resumed window listed and attached, then gone before any hook: ended, no line yet. */
+  async function resumeThenWindowGone() {
+    const logs: string[] = [];
+    const s = setup({ records: [ended()], log: (line) => logs.push(line) });
+    await s.source.start();
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [kageWin({ windowId: '@7', paneId: '%7' })];
+    s.source.claim('k-1', '@7', '%7');
+    await flush();
+    expect(s.source.finishTarget('k-1')?.windowId).toBe('@7');
+    s.tmux.windows = [];
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.lines('k-1')).not.toContainEqual(failedLine);
+    return { ...s, logs };
+  }
+
+  it("a failed resume's SessionEnd that comes just after its window was found gone still gives the R63 line (Task 0)", async () => {
+    const { source, hooks, updates, logs } = await resumeThenWindowGone();
+    const statusSince = updates('k-1').at(-1)?.statusSince;
+    hooks.fire(otherEnd());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.lines('k-1').at(-1)).toEqual(failedLine);
+    expect(updates('k-1').at(-1)).toMatchObject({ status: 'ended', statusSince });
+    expect(source.finishTarget('k-1')?.record?.sessionId).toBe('s-1');
+    expect(logs.filter((l) => l.includes("wasn't resumed"))).toHaveLength(1);
+  });
+
+  it('…but not after 5 s, nor for a SessionEnd naming the resumed session', async () => {
+    const late = await resumeThenWindowGone();
+    await vi.advanceTimersByTimeAsync(6_000);
+    late.hooks.fire(otherEnd());
+    await vi.advanceTimersByTimeAsync(200);
+    expect(late.source.lines('k-1')).not.toContainEqual(failedLine);
+
+    const same = await resumeThenWindowGone();
+    same.hooks.fire(hook('SessionEnd', '%7', { sessionId: 's-1' }));
+    await vi.advanceTimersByTimeAsync(200);
+    expect(same.source.lines('k-1')).not.toContainEqual(failedLine);
+  });
+
+  it('a queued hook from a pane the next listing shows in another window stays that window’s (Task 0)', async () => {
+    const { source, hooks, tmux } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7' })];
+    source.claim('k-1', '@7', '%7');
+    hooks.fire(otherEnd());
+    await flush();
+    expect(source.finishTarget('k-1')?.windowId).toBe('@7');
+    // The pane was moved into a window of its own (break-pane): @8, untagged.
+    tmux.windows = [kageWin({ windowId: '@8', paneId: '%7', kageId: null })];
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.lines('k-1')).not.toContainEqual(failedLine);
+    expect(source.get('ext-@8')).toBeDefined();
   });
 
   it('B34: a set-aside hook from another pane, or older than 5 s, is not replayed', async () => {

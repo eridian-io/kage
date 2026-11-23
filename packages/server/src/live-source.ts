@@ -362,6 +362,12 @@ export class LiveSource implements SessionSource {
    * `gen` is the server generation they were set aside in (M3).
    */
   #setAside: { e: HookEvent; at: number; gen: number }[] = [];
+  /**
+   * Task 0: a resuming session ended because its window went before any hook said why, by pane:
+   * the session, the id passed to `--resume`, when (monotonic ms) and the server generation.
+   * A SessionEnd from that pane within UNKNOWN_PANE_MS is the failed resume's (R63).
+   */
+  #lateResumes = new Map<string, { id: string; want: string; at: number; gen: number }>();
   /** When each hook reached #onHook (monotonic ms): a set-aside entry's `at` is its arrival. */
   readonly #arrivedAt = new WeakMap<HookEvent, number>();
   /** M3: bumped at each `down`: a new tmux server numbers its panes and windows afresh. */
@@ -543,9 +549,11 @@ export class LiveSource implements SessionSource {
    * The window `windowId` is this record's, even while a listing doesn't show its `@kage_id`
    * yet (hooks can arrive first: review focus 6). An `ext-<windowId>` session that a listing
    * made of it meanwhile goes (session.removed); then the windows are listed again.
-   * Hooks already applied to that `ext-<windowId>` session are not replayed: every hook names
-   * its Claude session and transcript, so the record's session re-learns them (link, tail,
-   * status) from the next hook its pane sends.
+   * R152: hooks applied to that `ext-<windowId>` session while its window was younger than
+   * UNKNOWN_PANE_MS were set aside too, so they go to the record's session like any set-aside
+   * hook below (a failed resume's SessionEnd that landed before the tag). Older ones are not
+   * replayed: every hook names its Claude session and transcript, so the record's session
+   * re-learns them (link, tail, status) from the next hook its pane sends.
    * B34: `paneId` is the pane new-window printed. A window that dies before any listing shows
    * it (a failed `--resume` exits at once) still has its hooks matched: those queued for the
    * pane, and those set aside as unknown in the last 5 s, go to the record's session.
@@ -996,6 +1004,7 @@ export class LiveSource implements SessionSource {
     this.#unknown = [];
     this.#early = [];
     this.#setAside = [];
+    this.#lateResumes.clear();
     for (const st of this.#sessions.values()) {
       this.#clearTimers(st);
       this.#stopTail(st);
@@ -1127,6 +1136,7 @@ export class LiveSource implements SessionSource {
     // would drop it too early.
     for (const w of windows) if (w.kageId) this.#dropClaim(w.windowId);
     const listed = new Set(windows.map((w) => w.windowId));
+    const listedPanes = new Set(windows.map((w) => w.paneId));
     /** Records whose claimed window died before any listing showed it → the claimed pane. */
     const lost = new Map<string, string | undefined>();
     for (const [w, at] of this.#claimSeq) {
@@ -1185,8 +1195,11 @@ export class LiveSource implements SessionSource {
       if (!st.record) this.#removeSession(st);
       else if (st.window) {
         // Task 0: hooks that waited on this listing came from the window now gone (a failed
-        // resume's SessionEnd, queued while an earlier listing still showed the window).
-        this.#takeQueued(st, st.window.paneId);
+        // resume's SessionEnd, queued while an earlier listing still showed the window). Not
+        // when this listing shows the pane in another window: they are that window's.
+        const pane = st.window.paneId;
+        if (!listedPanes.has(pane)) this.#takeQueued(st, pane);
+        this.#rememberResume(st, pane);
         this.#detach(st);
       }
       // R138: an archived record keeps no session without a window.
@@ -1202,6 +1215,7 @@ export class LiveSource implements SessionSource {
       this.#takeQueued(st, pane);
       // TS keeps the narrowing from above; #applyHook may have ended it (resumeFailed).
       if ((st.status as SessionStatus) === 'ended') continue;
+      this.#rememberResume(st, pane);
       this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
       st.mode = 'hooks';
       this.#clearPending(st);
@@ -1381,6 +1395,7 @@ export class LiveSource implements SessionSource {
         // anything set aside from now on carries the new generation.
         this.#serverGen++;
         this.#setAside = [];
+        this.#lateResumes.clear();
         this.#unknown = [];
         this.#ignoredPanes.clear();
         if (this.#unknownTimer) clearTimeout(this.#unknownTimer);
@@ -1523,7 +1538,7 @@ export class LiveSource implements SessionSource {
     if (!st) {
       // A hooks-enabled Claude outside the kage session: one re-list per 5 s, not per burst.
       if (this.#ignoredPanes.has(e.pane)) {
-        this.#setAsideHook(e);
+        if (!this.#lateResumeFailed(e)) this.#setAsideHook(e);
         return;
       }
     }
@@ -1549,11 +1564,44 @@ export class LiveSource implements SessionSource {
       if (e.pane === null || !this.#running) continue;
       const st = this.#byPane(e.pane);
       if (st) this.#applyHook(st, e);
-      else {
+      else if (!this.#lateResumeFailed(e)) {
         this.#ignoredPanes.set(e.pane, this.#clock() + UNKNOWN_PANE_MS);
         this.#setAsideHook(e);
       }
     }
+  }
+
+  /**
+   * Task 0: the resume's window went (the session ended with no line), and then its SessionEnd
+   * came, naming another session than the one resumed: Claude found no conversation (R63).
+   * True when it was applied so. Entries past UNKNOWN_PANE_MS, or from an earlier tmux server, go.
+   */
+  #lateResumeFailed(e: HookEvent): boolean {
+    const now = this.#clock();
+    for (const [p, r] of this.#lateResumes) {
+      if (now - r.at > UNKNOWN_PANE_MS || r.gen !== this.#serverGen) this.#lateResumes.delete(p);
+    }
+    if (e.pane === null || e.event !== 'SessionEnd') return false;
+    const late = this.#lateResumes.get(e.pane);
+    if (!late) return false;
+    this.#lateResumes.delete(e.pane);
+    const st = this.#sessions.get(late.id);
+    if (e.sessionId === late.want || !st?.record || st.window || st.status !== 'ended')
+      return false;
+    this.#resumeFailed(st, late.want);
+    return true;
+  }
+
+  /** Task 0: a resuming session about to end with its window gone, before any hook said why. */
+  #rememberResume(st: Live, paneId: string | undefined): void {
+    const want = st.resuming?.sessionId;
+    if (paneId === undefined || want == null) return;
+    this.#lateResumes.set(paneId, {
+      id: st.id,
+      want,
+      at: this.#clock(),
+      gen: this.#serverGen,
+    });
   }
 
   /** B34: keeps a dropped hook for a claim that may name its pane soon (the newest 32). */
@@ -1620,6 +1668,12 @@ export class LiveSource implements SessionSource {
   }
 
   #applyHook(st: Live, e: HookEvent): void {
+    // R152: a listing can show Kage's new window before its tag lands, as `ext-<windowId>`. Its
+    // hooks are kept for a claim too while the window is young: claim() moves them to #unknown,
+    // so the record's session gets them (a failed resume's SessionEnd above all).
+    if (!st.record && e.pane !== null && this.#now() - st.firstSeen < UNKNOWN_PANE_MS) {
+      this.#setAsideHook(e);
+    }
     if (st.resuming) {
       const want = st.resuming.sessionId;
       st.resuming = null;
