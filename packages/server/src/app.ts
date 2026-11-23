@@ -69,8 +69,7 @@ export interface AppDeps {
  */
 export const DEMO =
   'This is the demo, so nothing here is saved. Set up Kage to run your own sessions.';
-const TOO_MANY_BOARDS =
-  'Too many open boards from this address. Close a board tab and try again.';
+const TOO_MANY_BOARDS = 'Too many open boards from this address. Close a board tab and try again.';
 /** `from` of a diff page: a whole number, no sign, no exponent; at most 9 digits. */
 const WHOLE = /^\d{1,9}$/;
 
