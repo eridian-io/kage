@@ -441,6 +441,81 @@ describe('TmuxClient.windowKageId and killOwnedWindow', () => {
   });
 });
 
+describe('TmuxClient.ensureSession: the server in a scope of its own (R122)', () => {
+  const SCOPE = ['systemd-run', '--user', '--scope', '--quiet', '--unit=kage-tmux-1'];
+  function scoped(has: string, created: (cmd: string, args: string[]) => Promise<void> | void) {
+    const calls: { cmd: string; args: string[] }[] = [];
+    const warnings: string[] = [];
+    const c = new TmuxClient({
+      session: 'kage',
+      socket: 'sock',
+      launchCheckMs: 0,
+      serverScope: () => SCOPE,
+      warn: (m) => warnings.push(m),
+      exec: async (cmd, args) => {
+        calls.push({ cmd, args });
+        if (args.includes('has-session')) throw fail(has);
+        if (args.includes('new-session')) await created(cmd, args);
+        return { stdout: args.includes('new-session') ? '@0\n' : '', stderr: '' };
+      },
+    });
+    return { c, calls, warnings };
+  }
+
+  it('no server: new-session runs through the scope command, then the tag through tmux', async () => {
+    const { c, calls, warnings } = scoped('no server running on /tmp/tmux-1000/sock', () => {});
+    await c.ensureSession();
+    expect(calls[1]).toEqual({
+      cmd: 'systemd-run',
+      args: [
+        ...SCOPE.slice(1),
+        'tmux',
+        '-u',
+        '-L',
+        'sock',
+        'new-session',
+        '-d',
+        '-s',
+        'kage',
+        '-P',
+        '-F',
+        '#{window_id}',
+      ],
+    });
+    expect(calls[2]?.cmd).toBe('tmux');
+    expect(calls[2]?.args).toContain('@kage_placeholder');
+    expect(warnings).toEqual([]);
+  });
+
+  it('a server that runs (only the session is missing): plain tmux, no scope', async () => {
+    const { c, calls } = scoped("can't find session: kage", () => {});
+    await c.ensureSession();
+    expect(calls[1]?.cmd).toBe('tmux');
+    expect(calls.some((x) => x.cmd === 'systemd-run')).toBe(false);
+  });
+
+  it('a scope that fails: one warning, then the plain way', async () => {
+    const { c, calls, warnings } = scoped('error connecting to /tmp/tmux-1000/sock', (cmd) => {
+      if (cmd === 'systemd-run') throw fail('Failed to connect to bus: No such file or directory');
+    });
+    await c.ensureSession();
+    expect(calls.map((x) => x.cmd)).toEqual(['tmux', 'systemd-run', 'tmux', 'tmux']);
+    expect(calls[2]?.args.slice(0, 4)).toEqual(['-u', '-L', 'sock', 'new-session']);
+    expect(warnings).toEqual([
+      "kage: couldn't start tmux in a scope of its own (Failed to connect to bus: No such file or directory), so a restart of the service will close its windows.",
+    ]);
+  });
+
+  it('"duplicate session" through the scope: another caller won, nothing more', async () => {
+    const { c, calls, warnings } = scoped('no server running on x', (cmd) => {
+      if (cmd === 'systemd-run') throw fail('duplicate session: kage');
+    });
+    await c.ensureSession();
+    expect(calls.map((x) => x.cmd)).toEqual(['tmux', 'systemd-run']);
+    expect(warnings).toEqual([]);
+  });
+});
+
 describe('TmuxClient.ensureSession', () => {
   it('treats "duplicate session" from new-session as success', async () => {
     const c = client(async (_cmd, args) => {

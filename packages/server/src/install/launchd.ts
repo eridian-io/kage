@@ -82,6 +82,11 @@ export function renderPlist(spec: ServiceSpec, logPath: string): string {
     '  </dict>',
     '  <key>ThrottleInterval</key>',
     '  <integer>10</integer>',
+    // R122: when the job stops, launchd kills what is left in its process group
+    // (launchd.plist(5)); this keeps it from taking the tmux server, and Claude, along. tmux
+    // daemonises into a group of its own anyway; this makes sure. Documented, not observed (§7.5).
+    '  <key>AbandonProcessGroup</key>',
+    '  <true/>',
     '  <key>StandardOutPath</key>',
     str('  ', logPath),
     '  <key>StandardErrorPath</key>',

@@ -13,6 +13,7 @@ import {
   serviceArgv,
   serviceCleanEnv,
   serviceEnv,
+  tmuxServerScope,
 } from './runtime.ts';
 
 const MAIN = fileURLToPath(new URL('../main.ts', import.meta.url));
@@ -210,5 +211,25 @@ describe('installedExe (R110-5: the stable path, not the symlink target)', () =>
     expect(installedExe('kage', bin, real, self + 4242)).toBe(
       self === 0 ? join(bin, 'kage') : real,
     );
+  });
+});
+
+describe('tmuxServerScope (R122)', () => {
+  it('under the service on Linux: systemd-run --user --scope, a new unit name each call', () => {
+    const scope = tmuxServerScope(true, 'linux', 42);
+    expect(scope?.()).toEqual([
+      'systemd-run',
+      '--user',
+      '--scope',
+      '--quiet',
+      '--collect',
+      '--unit=kage-tmux-42-1',
+    ]);
+    expect(scope?.().at(-1)).toBe('--unit=kage-tmux-42-2');
+  });
+
+  it('from a terminal, or under launchd (AbandonProcessGroup instead): none', () => {
+    expect(tmuxServerScope(false, 'linux')).toBeUndefined();
+    expect(tmuxServerScope(true, 'darwin')).toBeUndefined();
   });
 });

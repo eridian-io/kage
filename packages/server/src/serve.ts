@@ -19,7 +19,7 @@ import { gitExec } from './git/exec.ts';
 import { listProjects, ProjectsCache } from './git/projects.ts';
 import { socketPath } from './hooks/cli.ts';
 import { HookServer } from './hooks/server.ts';
-import { KAGE_VERSION, runMode, serviceCleanEnv } from './install/runtime.ts';
+import { KAGE_VERSION, runMode, serviceCleanEnv, tmuxServerScope } from './install/runtime.ts';
 import {
   defaultTailscaleIp,
   displayHost,
@@ -153,6 +153,8 @@ async function startLive(
   cleanups: Cleanup[],
   /** The ping links' host, when pings are on (an ntfyTopic is set); else null. */
   pingHost: string | null,
+  /** R122: how a new tmux server starts in a scope of its own (under the systemd service). */
+  serverScope: (() => string[]) | undefined,
 ): Promise<LiveParts> {
   const target = {
     session: cfg.tmuxSession,
@@ -168,6 +170,7 @@ async function startLive(
     env: { KAGE_SOCKET: hookSocket },
     warn: (message) => io.err(message),
     ...(io.tmuxExec ? { exec: io.tmuxExec } : {}),
+    ...(serverScope ? { serverScope } : {}),
   });
   const ensureSession = async () => {
     await tmux.ensureSession();
@@ -351,6 +354,8 @@ export async function serveCommand(
   cli: CliParts,
 ): Promise<number | Running> {
   // R105, F7: under the service, R91's tuning is Kage's own; tmux and Claude must not inherit it.
+  // R122: whether this is the service is read first, since the cleanup removes KAGE_SERVICE.
+  const underService = process.env.KAGE_SERVICE === '1' || io.env.KAGE_SERVICE === '1';
   serviceCleanEnv(process.env);
   if (io.env !== process.env) serviceCleanEnv(io.env);
   let values: { demo?: boolean; 'unsafe-listen-all'?: boolean; port?: string };
@@ -391,7 +396,7 @@ export async function serveCommand(
 
   const cleanups: Cleanup[] = [];
   try {
-    return await startServer(cfg, values, io, cli, cleanups);
+    return await startServer(cfg, values, io, cli, cleanups, underService);
   } catch (err) {
     await unwind(cleanups);
     if (err instanceof Stopped) {
@@ -410,6 +415,8 @@ async function startServer(
   io: Io,
   cli: CliParts,
   cleanups: Cleanup[],
+  /** Started by the service (KAGE_SERVICE=1, read before serveCommand cleaned it). */
+  underService: boolean,
 ): Promise<number | Running> {
   checkSignal(io);
   const demo = values.demo === true;
@@ -475,7 +482,14 @@ async function startServer(
     demoReset = () => d.reset();
   } else {
     const pingHost = cfg.ntfyTopic !== '' ? linkHost(cfg, listen, hostname()) : null;
-    const live = await startLive(cfg, io, cli, cleanups, pingHost);
+    const live = await startLive(
+      cfg,
+      io,
+      cli,
+      cleanups,
+      pingHost,
+      tmuxServerScope(underService, io.platform ?? process.platform),
+    );
     liveParts = live;
     source = live.source;
     const cache = new ProjectsCache(async () => ({

@@ -154,3 +154,30 @@ export function serviceCleanEnv(env: NodeJS.ProcessEnv): void {
   delete env.NODE_OPTIONS;
   delete env.KAGE_SERVICE;
 }
+
+/**
+ * R122: under the systemd service (`KAGE_SERVICE=1` on Linux), the command that starts a new tmux
+ * server in a user scope of its own, so stopping or restarting kage.service (update, setup again,
+ * uninstall) never takes the tmux server or Claude with it. The unit keeps systemd's default
+ * KillMode=control-group for Kage itself. Each call names a new scope. Undefined elsewhere:
+ * launchd's plist sets AbandonProcessGroup instead, and a `kage serve` from a terminal needs none.
+ */
+export function tmuxServerScope(
+  underService: boolean,
+  platform: NodeJS.Platform,
+  pid: number = process.pid,
+): (() => string[]) | undefined {
+  if (!underService || platform !== 'linux') return undefined;
+  let n = 0;
+  return () => {
+    n += 1;
+    return [
+      'systemd-run',
+      '--user',
+      '--scope',
+      '--quiet',
+      '--collect',
+      `--unit=kage-tmux-${pid}-${n}`,
+    ];
+  };
+}

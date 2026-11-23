@@ -66,7 +66,12 @@ export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
 }
 
 const MISSING_RE = /no server running|error connecting to|can't find session/i;
+/** has-session's words when no tmux server runs at all (not just no such session). */
+const NO_SERVER_RE = /no server running|error connecting to/i;
 const stderrOf = (e: unknown): string => String((e as { stderr?: unknown }).stderr ?? '');
+/** The first line of a failure: its stderr, else its message. */
+const why = (e: unknown): string =>
+  (stderrOf(e).trim() || String((e as Error).message ?? e)).split(/\r?\n/)[0] ?? '';
 
 /** The only keys Kage sends (K8: no C-u, no C-c; Escape at most once per call). */
 export type Key =
@@ -154,6 +159,7 @@ export class TmuxClient {
   readonly #env: Record<string, string>;
   readonly #warn: (message: string) => void;
   readonly #launchCheckMs: number;
+  readonly #serverScope: (() => string[]) | undefined;
   #warnedPlaceholder = false;
 
   constructor(opts: {
@@ -167,6 +173,11 @@ export class TmuxClient {
     warn?: (message: string) => void;
     /** K4: the wait before newWindow checks the window is still there (tests pass 0). */
     launchCheckMs?: number;
+    /**
+     * R122: the command that starts a new tmux server in a scope of its own (its argv before
+     * `tmux …`), asked each time a server is started; serve sets it under the systemd service.
+     */
+    serverScope?: () => string[];
   }) {
     this.#session = opts.session;
     this.#target = { socket: opts.socket, configFile: opts.configFile };
@@ -174,6 +185,7 @@ export class TmuxClient {
     this.#env = opts.env ?? {};
     this.#warn = opts.warn ?? (() => {});
     this.#launchCheckMs = opts.launchCheckMs ?? LAUNCH_CHECK_MS;
+    this.#serverScope = opts.serverScope;
   }
 
   #run(args: string[]): Promise<{ stdout: string; stderr: string }> {
@@ -186,41 +198,58 @@ export class TmuxClient {
    * shell. It gets the client's `env` (KAGE_SOCKET), which `set-environment` would only give
    * windows created later. The tag is best-effort: a failure is reported once and the session
    * stands (the placeholder then shows on the board as a shell window).
+   *
+   * R122: when no tmux server runs and `serverScope` is set (under the systemd service), the
+   * server is started through that command (systemd-run --user --scope …), so it lives in a
+   * scope of its own and a stop or restart of kage.service doesn't take it, or Claude, along.
+   * If that fails, the server starts the plain way, with a warning.
    */
   async ensureSession(): Promise<void> {
+    let noServer = false;
     try {
       await this.#run(['has-session', '-t', `=${this.#session}`]);
-    } catch {
-      let windowId: string;
+      return;
+    } catch (e) {
+      noServer = NO_SERVER_RE.test(stderrOf(e));
+    }
+    let windowId: string;
+    const env = Object.entries(this.#env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+    const create = ['new-session', '-d', '-s', this.#session, ...env, '-P', '-F', '#{window_id}'];
+    try {
+      windowId = (await this.#newSession(create, noServer)).stdout.trim();
+    } catch (e) {
+      // A concurrent caller created it between our has-session and new-session.
+      if (!/duplicate session/i.test(stderrOf(e))) throw e;
+      return;
+    }
+    if (/^@\d+$/.test(windowId)) {
       try {
-        const env = Object.entries(this.#env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
-        const { stdout } = await this.#run([
-          'new-session',
-          '-d',
-          '-s',
-          this.#session,
-          ...env,
-          '-P',
-          '-F',
-          '#{window_id}',
-        ]);
-        windowId = stdout.trim();
+        await this.#run(['set-option', '-w', '-t', windowId, '@kage_placeholder', '1']);
       } catch (e) {
-        // A concurrent caller created it between our has-session and new-session.
-        if (!/duplicate session/i.test(stderrOf(e))) throw e;
-        return;
-      }
-      if (/^@\d+$/.test(windowId)) {
-        try {
-          await this.#run(['set-option', '-w', '-t', windowId, '@kage_placeholder', '1']);
-        } catch (e) {
-          if (!this.#warnedPlaceholder) {
-            this.#warnedPlaceholder = true;
-            const why = (stderrOf(e).trim() || String((e as Error).message ?? e)).split(/\r?\n/)[0];
-            this.#warn(`kage: couldn't tag tmux window ${windowId} as @kage_placeholder: ${why}`);
-          }
+        if (!this.#warnedPlaceholder) {
+          this.#warnedPlaceholder = true;
+          this.#warn(`kage: couldn't tag tmux window ${windowId} as @kage_placeholder: ${why(e)}`);
         }
       }
+    }
+  }
+
+  /** new-session, through serverScope when it starts the server (R122). */
+  async #newSession(
+    args: string[],
+    noServer: boolean,
+  ): Promise<{ stdout: string; stderr: string }> {
+    const scope = noServer ? this.#serverScope?.() : undefined;
+    if (!scope || scope.length === 0) return this.#run(args);
+    const [cmd, ...pre] = scope as [string, ...string[]];
+    try {
+      return await this.#exec(cmd, [...pre, 'tmux', ...tmuxArgs(this.#target, args)]);
+    } catch (e) {
+      if (/duplicate session/i.test(stderrOf(e))) throw e;
+      this.#warn(
+        `kage: couldn't start tmux in a scope of its own (${why(e)}), so a restart of the service will close its windows.`,
+      );
+      return this.#run(args);
     }
   }
 

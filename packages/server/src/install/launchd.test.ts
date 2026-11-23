@@ -106,6 +106,9 @@ describe('renderPlist', () => {
         '  </dict>',
         '  <key>ThrottleInterval</key>',
         '  <integer>10</integer>',
+        // R122: a stop never takes the tmux server's process group along.
+        '  <key>AbandonProcessGroup</key>',
+        '  <true/>',
         '  <key>StandardOutPath</key>',
         '  <string>/Users/u/Library/Logs/kage.log</string>',
         '  <key>StandardErrorPath</key>',

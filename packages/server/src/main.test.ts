@@ -852,4 +852,49 @@ describe('kage serve: the service environment (R105, F7)', () => {
       expect(s.io[k]).toBeUndefined();
     }
   });
+
+  /** serve's tmux calls up to the second (has-session, then whatever creates the session). */
+  async function firstCalls(
+    extra: Record<string, string>,
+    platform: NodeJS.Platform,
+  ): Promise<{ cmd: string; args: string[] }[]> {
+    const e = env({ KAGE_HOST: '127.0.0.1', KAGE_PORT: String(port()), ...extra });
+    const ac = new AbortController();
+    const calls: { cmd: string; args: string[] }[] = [];
+    const tmuxExec: ExecFn = async (cmd, args) => {
+      calls.push({ cmd, args });
+      if (calls.length === 1) {
+        throw Object.assign(new Error('failed'), { stderr: 'no server running on /tmp/x' });
+      }
+      ac.abort();
+      return { stdout: '@0\n', stderr: '' };
+    };
+    const r = await main(
+      ['serve'],
+      io(e, { dist: makeDist(), signal: ac.signal, tmuxExec, platform }),
+    );
+    expect(r).toBe(130);
+    return calls.slice(0, 2);
+  }
+
+  it('R122: under the systemd service, a new tmux server starts in a user scope of its own', async () => {
+    const [has, create] = await firstCalls({ KAGE_SERVICE: '1' }, 'linux');
+    expect(has?.args).toContain('has-session');
+    expect(create?.cmd).toBe('systemd-run');
+    const args = create?.args ?? [];
+    expect(args.slice(0, 4)).toEqual(['--user', '--scope', '--quiet', '--collect']);
+    expect(args[4]).toMatch(/^--unit=kage-tmux-\d+-1$/);
+    expect(args.slice(5, 8)).toEqual(['tmux', '-u', 'new-session']);
+  });
+
+  it('R122: kage serve from a terminal, or under launchd, starts tmux the plain way', async () => {
+    for (const [extra, platform] of [
+      [{}, 'linux'],
+      [{ KAGE_SERVICE: '1' }, 'darwin'],
+    ] as const) {
+      const [, create] = await firstCalls(extra, platform);
+      expect(create?.cmd).toBe('tmux');
+      expect(create?.args.slice(0, 2)).toEqual(['-u', 'new-session']);
+    }
+  });
 });
