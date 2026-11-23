@@ -68,10 +68,12 @@ describe.runIf(hasTmux && process.platform !== 'win32' && hasScript())(
   'TmuxWatcher (real tmux, private socket)',
   () => {
     it('tmux attach -d leaves the watcher up while has-session succeeds', async () => {
-      // A window whose command reads as claude (a `claude` link to sleep), tagged as Kage's.
+      // A window whose command reads as claude, tagged as Kage's: a `claude` link to the real sh
+      // binary, which runs `sleep 600`. Not a link to sleep itself: uutils coreutils (Ubuntu 26.04)
+      // is one multicall binary that refuses to run under another name, so that window died at once.
       const fakeClaude = join(tmp, 'claude');
       symlinkSync(
-        execFileSync('sh', ['-c', 'command -v sleep'], { encoding: 'utf8' }).trim(),
+        execFileSync('sh', ['-c', 'readlink -f "$(command -v sh)"'], { encoding: 'utf8' }).trim(),
         fakeClaude,
       );
       tmux('new-session', '-d', '-s', 'kage', '-x', '120', '-y', '30');
@@ -84,7 +86,8 @@ describe.runIf(hasTmux && process.platform !== 'win32' && hasScript())(
         '-F',
         '#{window_id} #{pane_id}',
         fakeClaude,
-        '600',
+        '-c',
+        'sleep 600',
       ).split(' ') as [string, string];
       tmux('set-option', '-w', '-t', windowId, '@kage_id', 'k-1');
 
