@@ -910,6 +910,8 @@ describe('kage setup without Tailscale (usability U14)', () => {
     expect(readCfg().host).toBe('127.0.0.1');
     expect(h.fm.installs).toHaveLength(1);
     expect(h.out.at(-1)).toBe(CLAUDE_LINE);
+    // Tailscale isn't asked again for the host (R145).
+    expect(h.calls.filter((c) => c === 'tailscale status --json')).toHaveLength(1);
 
     // ::1 and localhost count as loopback too.
     for (const host of ['::1', 'localhost']) {
@@ -931,9 +933,14 @@ describe('kage setup without Tailscale (usability U14)', () => {
       LOOPBACK_Q,
       'Projects folder [~/projects]:',
       'Port [8080]:',
-      'Set an access token? Anyone on your tailnet can reach Kage. [Y/n]',
+      // On loopback the token question doesn't speak of the tailnet (R145).
+      'Set an access token? Anyone using this machine can reach Kage. [Y/n]',
       'Send pings to your phone through ntfy? [y/N]',
     ]);
+    expect(h.out[h.out.indexOf('') + 1]).toBe(
+      'When Tailscale is up, run kage setup again to open Kage from your phone.',
+    );
+    expect(h.calls.filter((c) => c === 'tailscale status --json')).toHaveLength(1);
     const cfg = readCfg();
     expect(cfg.host).toBe('127.0.0.1');
     // R127/I3: loopback still gets a token.
@@ -975,10 +982,13 @@ describe('kage setup without Tailscale (usability U14)', () => {
 describe('kage setup: phone pings (usability U7)', () => {
   const NTFY_Q = 'Send pings to your phone through ntfy? [y/N]';
   const SUBSCRIBE = 'Subscribe to this topic in the ntfy app, then press Enter:';
+  const SUBSCRIBE_LATER = 'Subscribe to this topic in the ntfy app:';
   const SECRET =
     "Keep the topic secret: anyone who knows it can read your pings, and each ping carries the task's text.";
   const ARRIVED = 'Sent a test ping. Did it arrive? [Y/n]';
   const RETRY = 'Check the topic in the ntfy app, then run kage ping to try again.';
+  const ALREADY = 'Phone pings are already set up. Run kage ping to test them.';
+  const stopped = () => new DOMException('Setup stopped.', 'AbortError');
 
   it('ntfy yes: a 25-character topic is saved, the hint and the topic print, the test ping goes after the service answers, and n prints the kage ping line', async () => {
     mkdirSync(join(home, 'projects'));
@@ -1003,6 +1013,7 @@ describe('kage setup: phone pings (usability U7)', () => {
       state: async () => 'missing',
     });
     const pings: KageConfig[] = [];
+    let topicAtEnter: unknown = null;
     const h = harness({
       prompt: p,
       isTty: true,
@@ -1017,6 +1028,11 @@ describe('kage setup: phone pings (usability U7)', () => {
         return { ok: true, host: 'ntfy.example.invalid' };
       },
     });
+    const pause = p.pause;
+    p.pause = async () => {
+      topicAtEnter = readCfg().ntfyTopic;
+      await pause?.();
+    };
     expect(await setupCommand([], h.io, h.deps)).toBe(0);
     expect(s.asked).toEqual([
       'Projects folder [~/projects]:',
@@ -1031,29 +1047,34 @@ describe('kage setup: phone pings (usability U7)', () => {
     const topic = cfg.ntfyTopic as string;
     expect(topic).toMatch(/^kage-[A-Za-z0-9_-]{20}$/);
     expect(topic).toHaveLength(25);
-    // The hint, then the topic on its own line, indented two spaces; and only there.
+    // R145: the topic shows only once it is saved and Kage answers, after the claude line:
+    // the secret line, the hint, then the topic on its own line, indented two spaces.
+    expect(topicAtEnter).toBe(topic);
+    expect(h.out.at(-1)).toBe(RETRY);
     const at = h.out.indexOf(SUBSCRIBE);
-    expect(at).toBeGreaterThan(-1);
-    expect(h.out[at - 1]).toBe(SECRET);
-    expect(h.out[at + 1]).toBe(`  ${topic}`);
+    expect(h.out.slice(at - 3, at + 3)).toEqual([
+      'Kage is running at http://box.tail1234.ts.net:8080',
+      CLAUDE_LINE,
+      SECRET,
+      SUBSCRIBE,
+      `  ${topic}`,
+      RETRY,
+    ]);
     expect([...h.out, ...h.err].filter((l) => l.includes(topic))).toEqual([`  ${topic}`]);
     expect(h.out).toContain('Saved your settings in ~/.config/kage/config.json.');
-    // Enter is waited for among the questions; the ping goes once Kage answers.
-    expect(events.indexOf('enter')).toBeLessThan(events.indexOf('close'));
+    // The questions close before the install; Enter, the ping and its question come once Kage
+    // answers, and the prompter is closed during the ping and after.
     expect(events.indexOf('close')).toBeLessThan(events.indexOf('install'));
-    expect(events.indexOf('status')).toBeLessThan(events.indexOf('ping'));
-    expect(events.slice(events.indexOf('ping'))).toEqual([
+    expect(events.slice(events.indexOf('status'))).toEqual([
+      'status',
+      'enter',
+      'close',
       'ping',
       `confirm ${ARRIVED.replace(' [Y/n]', '')}`,
       'close',
     ]);
     expect(pings).toHaveLength(1);
     expect(pings[0]?.ntfyTopic).toBe(topic);
-    expect(h.out.slice(-3)).toEqual([
-      'Kage is running at http://box.tail1234.ts.net:8080',
-      RETRY,
-      CLAUDE_LINE,
-    ]);
 
     // Yes to "Did it arrive?" says nothing more.
     rmSync(cfgFile, { force: true });
@@ -1061,7 +1082,7 @@ describe('kage setup: phone pings (usability U7)', () => {
     const g = harness({ prompt: y.p, isTty: true });
     expect(await setupCommand([], g.io, g.deps)).toBe(0);
     expect(g.out).not.toContain(RETRY);
-    expect(g.out.at(-1)).toBe(CLAUDE_LINE);
+    expect(g.out.at(-1)).toMatch(/^ {2}kage-/);
 
     // A ping that can't be sent: the reason, and kage ping to try again; nothing asked.
     rmSync(cfgFile, { force: true });
@@ -1073,7 +1094,86 @@ describe('kage setup: phone pings (usability U7)', () => {
     });
     expect(await setupCommand([], e.io, e.deps)).toBe(0);
     expect(f.asked).not.toContain(ARRIVED);
-    expect(e.out).toContain("Couldn't send the test ping (HTTP 403). Run kage ping to try again.");
+    expect(e.out.at(-1)).toBe(
+      "Couldn't send the test ping (HTTP 403). Run kage ping to try again.",
+    );
+  });
+
+  it('Ctrl+C at "Did it arrive?" or at the Enter wait: setup has succeeded, so it exits 0 quietly', async () => {
+    mkdirSync(join(home, 'projects'));
+    const s = scripted(['', '', '', true, true, '']);
+    const p: Prompter = {
+      ...s.p,
+      confirm: async (q, d) => {
+        if (q === 'Sent a test ping. Did it arrive?') throw stopped();
+        return s.p.confirm(q, d);
+      },
+    };
+    const h = harness({ prompt: p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(0);
+    expect(h.err).toEqual([]);
+    expect(h.out).not.toContain('Setup stopped.');
+    expect(h.out).toContain(CLAUDE_LINE);
+    expect(h.out).not.toContain(RETRY);
+    expect(h.pings).toHaveLength(1);
+    expect(readCfg().ntfyTopic).toMatch(/^kage-/);
+    expect(h.fm.installs).toHaveLength(1);
+
+    // The Enter wait: the same, and no ping.
+    rmSync(cfgFile, { force: true });
+    const t = scripted(['', '', '', true, true]);
+    const q: Prompter = {
+      ...t.p,
+      pause: async () => {
+        throw stopped();
+      },
+    };
+    const g = harness({ prompt: q, isTty: true });
+    expect(await setupCommand([], g.io, g.deps)).toBe(0);
+    expect(g.err).toEqual([]);
+    expect(g.out).toContain(CLAUDE_LINE);
+    expect(g.pings).toEqual([]);
+    expect(readCfg().ntfyTopic).toMatch(/^kage-/);
+    expect(g.fm.installs).toHaveLength(1);
+  });
+
+  it('Ctrl+C at the ntfy question stops setup with nothing written, and no topic made', async () => {
+    mkdirSync(join(home, 'projects'));
+    const s = scripted(['', '', '', true]);
+    const p: Prompter = {
+      ...s.p,
+      confirm: async (q, d) => {
+        if (q === 'Send pings to your phone through ntfy?') throw stopped();
+        return s.p.confirm(q, d);
+      },
+    };
+    const h = harness({ prompt: p, isTty: true });
+    expect(await setupCommand([], h.io, h.deps)).toBe(130);
+    expect(h.err).toEqual(['Setup stopped.']);
+    expect(existsSync(cfgFile)).toBe(false);
+    expect(h.out.join('\n')).not.toContain('kage-');
+  });
+
+  it('a saved topic shows even when setup can not finish, and only once it is saved', async () => {
+    // R145: never a topic that wasn't written. A config error stops before it shows...
+    mkdirSync(join(home, '.config', 'kage'), { recursive: true });
+    writeFileSync(cfgFile, JSON.stringify({ worktreeDir: '../out' }));
+    const h = harness();
+    expect(await setupCommand(['--yes', '--ntfy'], h.io, h.deps)).toBe(1);
+    expect(h.out.join('\n')).not.toContain('kage-');
+    expect(h.pings).toEqual([]);
+
+    // ...and a service that doesn't answer still shows the saved topic, without a ping.
+    rmSync(cfgFile, { force: true });
+    const poll = slowServer();
+    const g = harness({ waitMs: 1000, status: poll.status });
+    const done = setupCommand(['--yes', '--ntfy'], g.io, g.deps);
+    await poll.started;
+    await vi.advanceTimersByTimeAsync(1500);
+    expect(await done).toBe(1);
+    const topic = readCfg().ntfyTopic as string;
+    expect(g.out.slice(-3)).toEqual([SECRET, SUBSCRIBE_LATER, `  ${topic}`]);
+    expect(g.pings).toEqual([]);
   });
 
   it('--yes asks nothing about ntfy and leaves ntfyTopic unset', async () => {
@@ -1110,13 +1210,15 @@ describe('kage setup: phone pings (usability U7)', () => {
     expect(s.asked).not.toContain(NTFY_Q);
     expect(readCfg().ntfyTopic).toBe(seeded.ntfyTopic);
     expect(h.pings).toEqual([]);
+    expect(h.out).not.toContain(ALREADY);
     expect([...h.out, ...h.err].join('\n')).not.toContain(seeded.ntfyTopic);
 
-    // --ntfy doesn't replace it either.
+    // --ntfy doesn't replace it either, and says so.
     const g = harness();
     expect(await setupCommand(['--yes', '--ntfy'], g.io, g.deps)).toBe(0);
     expect(readCfg().ntfyTopic).toBe(seeded.ntfyTopic);
     expect(g.pings).toEqual([]);
+    expect(g.out).toContain(ALREADY);
   });
 
   it('the test ping goes only to the injected sender', async () => {
@@ -1129,37 +1231,22 @@ describe('kage setup: phone pings (usability U7)', () => {
     expect(h.pings.map((c) => c.ntfyTopic)).toEqual([topic]);
     expect(h.urls).toEqual(['http://box.tail1234.ts.net:8080/']);
     // Nobody to press Enter or answer: the topic, then what was sent.
-    expect(h.out).toContain('Subscribe to this topic in the ntfy app:');
-    expect(h.out).not.toContain(SUBSCRIBE);
-    expect(h.out).toContain('Sent a test ping to ntfy.example.invalid.');
+    expect(h.out.slice(-5)).toEqual([
+      CLAUDE_LINE,
+      SECRET,
+      SUBSCRIBE_LATER,
+      `  ${topic}`,
+      'Sent a test ping to ntfy.example.invalid.',
+    ]);
     expect([...h.out, ...h.err].filter((l) => l.includes(topic))).toEqual([`  ${topic}`]);
   });
 
-  it('without a service the test ping still goes, before the kage serve line', async () => {
+  it('without a service the test ping still goes, after the kage serve line', async () => {
     const h = harness();
     expect(await setupCommand(['--yes', '--ntfy', '--no-service'], h.io, h.deps)).toBe(0);
     expect(h.pings).toHaveLength(1);
-    expect(h.out.slice(-3)).toEqual([
-      'Sent a test ping to ntfy.example.invalid.',
-      'Start Kage with: kage serve',
-      CLAUDE_LINE,
-    ]);
-  });
-
-  it('Ctrl+C at the Enter wait stops setup with nothing written', async () => {
-    mkdirSync(join(home, 'projects'));
-    const s = scripted(['', '', '', true, true]);
-    const p: Prompter = {
-      ...s.p,
-      pause: async () => {
-        throw new DOMException('Setup stopped.', 'AbortError');
-      },
-    };
-    const h = harness({ prompt: p, isTty: true });
-    expect(await setupCommand([], h.io, h.deps)).toBe(130);
-    expect(h.err).toEqual(['Setup stopped.']);
-    expect(existsSync(cfgFile)).toBe(false);
-    expect(h.pings).toEqual([]);
+    expect(h.out.slice(-6, -3)).toEqual(['Start Kage with: kage serve', CLAUDE_LINE, SECRET]);
+    expect(h.out.at(-1)).toBe('Sent a test ping to ntfy.example.invalid.');
   });
 });
 

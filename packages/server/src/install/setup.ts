@@ -49,6 +49,8 @@ export const NEEDS_TTY =
 export const CLAUDE_LINE =
   'To start Claude yourself with Kage watching: claude --settings "$(kage hooks-path)" --permission-mode default';
 const TOKEN_QUESTION = 'Set an access token? Anyone on your tailnet can reach Kage.';
+/** The token question on a loopback host (U14): only this machine reaches Kage there. */
+const TOKEN_QUESTION_LOOPBACK = 'Set an access token? Anyone using this machine can reach Kage.';
 const LINGER_QUESTION = "Keep Kage running when you're logged out?";
 export const LINGER_ON =
   "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger";
@@ -56,15 +58,17 @@ export const LINGER_ON =
 const LOOPBACK_NOTE = "Tailscale isn't up, so only this machine can open Kage.";
 const LOOPBACK_QUESTION =
   "Tailscale isn't up, so only this machine can open Kage. Continue on 127.0.0.1?";
+const LOOPBACK_LATER = 'When Tailscale is up, run kage setup again to open Kage from your phone.';
 /** U7: phone pings. The topic is a secret: printed once, when it is made, and never again. */
 const NTFY_QUESTION = 'Send pings to your phone through ntfy?';
 const NTFY_SECRET =
   "Keep the topic secret: anyone who knows it can read your pings, and each ping carries the task's text.";
 const NTFY_SUBSCRIBE = 'Subscribe to this topic in the ntfy app, then press Enter:';
-/** With --yes there is nobody to press Enter. */
+/** With --yes there is nobody to press Enter; nor when setup couldn't finish. */
 const NTFY_SUBSCRIBE_LATER = 'Subscribe to this topic in the ntfy app:';
 const PING_ARRIVED = 'Sent a test ping. Did it arrive?';
 const PING_RETRY = 'Check the topic in the ntfy app, then run kage ping to try again.';
+const PINGS_ALREADY = 'Phone pings are already set up. Run kage ping to test them.';
 const DEFAULT_PATH = '/usr/local/bin:/usr/bin:/bin';
 const POLL_MS = 250;
 const SERVER_TIMEOUT_MS = 3000;
@@ -365,6 +369,7 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
     }
     // The host question has its answer: the one address Kage can listen on here.
     f.host = '127.0.0.1';
+    io.out(LOOPBACK_LATER);
   }
 
   const cfgFile = configPath(deps.env);
@@ -383,29 +388,31 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
 
   const projects = await askProjects(io, deps, f, current, ask, confirm);
   if (projects === null) return 1;
-  const host = await askHost(io, deps, f, current, ask, shown);
+  // On loopback Tailscale isn't up: askHost needn't ask it again.
+  const host = await askHost(io, deps, f, current, ask, shown, loopback === 'no');
   if (host === undefined) return 1;
   const port = await askPort(io, f, current, ask);
   if (port === null) return 1;
 
   const curToken = typeof current?.token === 'string' ? current.token : null;
+  const tokenQuestion =
+    host.value !== null && isLoopbackHost(host.value) ? TOKEN_QUESTION_LOOPBACK : TOKEN_QUESTION;
   const wantToken =
-    f.token ?? (await confirm(TOKEN_QUESTION, curToken === null ? true : curToken !== ''));
+    f.token ?? (await confirm(tokenQuestion, curToken === null ? true : curToken !== ''));
   const keepToken = curToken !== null && curToken.length >= 16;
   const token = wantToken ? (keepToken ? curToken : generateToken()) : '';
   const generated = wantToken && !keepToken;
 
   // U7: phone pings, after the token. A topic already set stays, and nothing is asked. The
-  // default is No (R127), so --yes sets up no pings. The new topic is shown once, here.
+  // default is No (R127), so --yes sets up no pings. A new topic is shown only once it is
+  // written (phonePings), like the token.
   const curTopic =
     typeof current?.ntfyTopic === 'string' && current.ntfyTopic !== '' ? current.ntfyTopic : null;
   let topic: string | null = null;
-  if (curTopic === null && (f.ntfy ?? (await confirm(NTFY_QUESTION, false)))) {
+  if (curTopic !== null) {
+    if (f.ntfy === true) io.out(PINGS_ALREADY);
+  } else if (f.ntfy ?? (await confirm(NTFY_QUESTION, false))) {
     topic = generateTopic();
-    io.out(NTFY_SECRET);
-    io.out(prompt ? NTFY_SUBSCRIBE : NTFY_SUBSCRIBE_LATER);
-    io.out(`  ${topic}`);
-    if (prompt) await (prompt.pause ? prompt.pause() : prompt.ask('', ''));
   }
 
   // The service's plan, and its one question (linger), before anything changes.
@@ -480,47 +487,56 @@ async function setup(args: string[], io: Io, deps: SetupDeps): Promise<number> {
   if (generated) {
     io.out(`Your token: ${token}. Kage asks for it once per browser. It's saved in ${shown}.`);
   }
-  try {
-    await deps.writeSettings(deps.env);
-  } catch (err) {
-    io.err(`Couldn't write the Claude settings file: ${firstLine(err)}`);
-    return 1;
-  }
+  const rest = async (): Promise<number> => {
+    try {
+      await deps.writeSettings(deps.env);
+    } catch (err) {
+      io.err(`Couldn't write the Claude settings file: ${firstLine(err)}`);
+      return 1;
+    }
 
-  // 4. The service.
-  if (skipped !== null) io.out(skipped);
-  if (argv === null || m === null) {
-    // The ping goes straight to ntfy, so it needs no service to test the phone.
-    if (topic !== null) await testPing(io, deps, prompt, merged);
-    io.out('Start Kage with: kage serve');
+    // 4. The service.
+    if (skipped !== null) io.out(skipped);
+    if (argv === null || m === null) {
+      io.out('Start Kage with: kage serve');
+      io.out(CLAUDE_LINE);
+      return 0;
+    }
+    let existed = false;
+    try {
+      existed = (await m.state()) !== 'missing';
+    } catch {
+      // install says what's wrong, if anything is
+    }
+    try {
+      await m.install({
+        argv,
+        env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode), deps.env),
+      });
+    } catch (err) {
+      io.err(`Couldn't install the ${m.name}: ${firstLine(err)}`);
+      io.err('Fix that, then run kage setup again.');
+      return 1;
+    }
+    io.out(existed ? `Updated and restarted the ${m.name}.` : `Installed the ${m.name}.`);
+    if (linger) await turnOnLinger(io, deps, m);
+
+    // 5. Does it answer?
+    const code = await checkAnswers(io, deps, m, { host: host.value, at: host.at, port });
+    if (code !== 0) return code;
     io.out(CLAUDE_LINE);
     return 0;
+  };
+  const code = await rest();
+  if (topic === null) return code;
+  // The topic is saved: show it whatever happened since. Setup is done when code is 0, so the
+  // Enter wait, the test ping and its question come last (with no service too: the ping goes
+  // straight to ntfy).
+  if (code !== 0) {
+    showTopic(io, topic, false);
+    return code;
   }
-  let existed = false;
-  try {
-    existed = (await m.state()) !== 'missing';
-  } catch {
-    // install says what's wrong, if anything is
-  }
-  try {
-    await m.install({
-      argv,
-      env: serviceEnv(deps.mode, servicePath(deps.env, deps.mode), deps.env),
-    });
-  } catch (err) {
-    io.err(`Couldn't install the ${m.name}: ${firstLine(err)}`);
-    io.err('Fix that, then run kage setup again.');
-    return 1;
-  }
-  io.out(existed ? `Updated and restarted the ${m.name}.` : `Installed the ${m.name}.`);
-  if (linger) await turnOnLinger(io, deps, m);
-
-  // 5. Does it answer?
-  const code = await checkAnswers(io, deps, m, { host: host.value, at: host.at, port });
-  if (code !== 0) return code;
-  if (topic !== null) await testPing(io, deps, prompt, merged);
-  io.out(CLAUDE_LINE);
-  return 0;
+  return phonePings(io, deps, prompt, merged, topic);
 }
 
 /** 127.0.0.1, ::1 or localhost: a host only this machine can reach (U14). */
@@ -529,29 +545,48 @@ function isLoopbackHost(host: string): boolean {
   return h === '127.0.0.1' || h === '::1' || h === 'localhost';
 }
 
+/** The new topic, the only time it is printed (U7): the secret line, the subscribe line, the topic. */
+function showTopic(io: Io, topic: string, wait: boolean): void {
+  io.out(NTFY_SECRET);
+  io.out(wait ? NTFY_SUBSCRIBE : NTFY_SUBSCRIBE_LATER);
+  io.out(`  ${topic}`);
+}
+
 /**
- * U7: the test ping with the settings just saved, then (with a terminal) whether it arrived.
- * The question comes after the prompter was closed for the install, so it opens it again and
- * closes it after. Only the server's host and a redacted reason are printed, never the topic.
+ * U7, once setup has succeeded (R145): the topic, Enter, the test ping with the settings just
+ * saved, then (with a terminal) whether it arrived. The prompter was closed for the install, so
+ * each question opens it again, and it is closed during the ping. Ctrl+C at either question
+ * ends setup quietly with 0: the config and the service are already in place. Only the
+ * server's host and a redacted reason are printed, never the topic again.
  */
-async function testPing(
+async function phonePings(
   io: Io,
   deps: SetupDeps,
   prompt: Prompter | null,
   cfg: KageConfig,
-): Promise<void> {
-  const res = await (deps.ping ?? sendTestPing)(cfg);
-  if (!res.ok) {
-    io.out(`Couldn't send the test ping (${res.reason}). Run kage ping to try again.`);
-    return;
+  topic: string,
+): Promise<number> {
+  showTopic(io, topic, prompt !== null);
+  try {
+    if (prompt) {
+      await (prompt.pause ? prompt.pause() : prompt.ask('', ''));
+      prompt.close?.();
+    }
+    const res = await (deps.ping ?? sendTestPing)(cfg);
+    if (!res.ok) {
+      io.out(`Couldn't send the test ping (${res.reason}). Run kage ping to try again.`);
+    } else if (prompt === null) {
+      io.out(`Sent a test ping to ${res.host}.`);
+    } else if (!(await prompt.confirm(PING_ARRIVED, true))) {
+      io.out(PING_RETRY);
+    }
+  } catch (err) {
+    if (!isStopped(err)) throw err;
+    // Ctrl+C: nothing left to undo.
+  } finally {
+    prompt?.close?.();
   }
-  if (prompt === null) {
-    io.out(`Sent a test ping to ${res.host}.`);
-    return;
-  }
-  const arrived = await prompt.confirm(PING_ARRIVED, true);
-  prompt.close?.();
-  if (!arrived) io.out(PING_RETRY);
+  return 0;
 }
 
 type Ask = (question: string, def: string) => Promise<string>;
@@ -614,15 +649,18 @@ async function askHost(
   current: Record<string, unknown> | null,
   ask: Ask,
   shown: string,
+  tailscale: boolean,
 ): Promise<{ value: string | null; change: boolean; at: string | null } | undefined> {
   const cur = typeof current?.host === 'string' && current.host.trim() !== '' ? current.host : null;
   let statusJson = '';
-  const dns = await tailscaleDnsName(async (cmd, cmdArgs) => {
-    const r = await deps.run(cmd, cmdArgs, { timeoutMs: 5000 });
-    if (r.code !== 0) throw new Error(r.stderr);
-    statusJson = r.stdout;
-    return r.stdout;
-  });
+  const dns = !tailscale
+    ? null
+    : await tailscaleDnsName(async (cmd, cmdArgs) => {
+        const r = await deps.run(cmd, cmdArgs, { timeoutMs: 5000 });
+        if (r.code !== 0) throw new Error(r.stderr);
+        statusJson = r.stdout;
+        return r.stdout;
+      });
   const own = ownTailscaleIps(statusJson);
   const short = dns?.split('.')[0] ?? null;
   const def = cur ?? dns ?? 'the Tailscale address';
