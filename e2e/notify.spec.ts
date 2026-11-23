@@ -78,7 +78,10 @@ test('a session that needs you sends one ping: title, task, priority and link on
     message: WAIT_TASK,
     priority: 4,
     click: link(waitId),
+    // R139: the ping's random sequence id, the same as its X-Sequence-ID header.
+    sequence_id: got?.headers['x-sequence-id'],
   });
+  expect(got?.headers['x-sequence-id']).toMatch(/^[A-Za-z0-9_-]{22}$/);
   // N1: the topic travels in the body, never the URL; no token is set, so no Authorization.
   expect(got?.path).toBe('/');
   expect(got?.headers.authorization).toBeUndefined();
@@ -155,6 +158,7 @@ test('with ntfyOnDone, a long turn that finishes pings done', async ({ page }) =
     message: FLOOD_TASK,
     priority: 3,
     click: link(id),
+    sequence_id: ntfy.received.at(-1)?.headers['x-sequence-id'],
   });
   expect(h.serveOut).not.toContain(TOPIC);
 });

@@ -176,7 +176,9 @@ describe('NtfyClient.send', () => {
       'Content-Type': 'application/json',
       'X-Sequence-ID': expect.stringMatching(SEQ),
     });
-    expect(call.init.body).toBe(publishBody(CFG, NEEDS));
+    expect(call.init.body).toBe(publishBody(CFG, NEEDS, seqOf(call.init)));
+    // The same id in the body's sequence_id (ntfy's JSON form) as in the header.
+    expect(JSON.parse(call.init.body as string).sequence_id).toBe(seqOf(call.init));
     expect(call.init.signal).toBeInstanceOf(AbortSignal);
     expect(lines).toEqual([]);
   });
@@ -313,8 +315,11 @@ describe('NtfyClient.send', () => {
     for (const id of ids) expect(id).toMatch(SEQ);
     expect(new Set(ids.slice(0, 3)).size).toBe(1);
     expect(ids[3]).not.toBe(ids[0]);
-    // Header only: the JSON body is unchanged, and the id is nothing of the topic or the token.
-    expect(f.calls[0]?.init.body).toBe(publishBody(CFG, NEEDS));
+    // The body carries the same id as sequence_id on every try; it is nothing of the topic.
+    for (const x of f.calls) {
+      expect(JSON.parse(x.init.body as string).sequence_id).toBe(seqOf(x.init));
+    }
+    expect(f.calls[0]?.init.body).toBe(publishBody(CFG, NEEDS, ids[0]));
     expect(ids[0]).not.toContain(CFG.topic);
   });
 

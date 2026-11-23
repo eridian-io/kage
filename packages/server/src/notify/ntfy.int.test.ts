@@ -51,6 +51,7 @@ describe('NtfyClient against the fake ntfy server', () => {
       title: 'demo needs you',
       message: 'Fix the login form',
       priority: 4,
+      sequence_id: got?.headers['x-sequence-id'],
     });
     expect(got?.headers['content-type']).toBe('application/json');
     expect(got?.headers.authorization).toBe('Bearer tk_int_abcdefghijklmnop');
@@ -120,6 +121,9 @@ describe('NtfyClient against the fake ntfy server', () => {
     const ids = f.received.map((r) => r.headers['x-sequence-id']);
     expect(ids[0]).toMatch(/^[A-Za-z0-9_-]{22}$/);
     expect(new Set(ids).size).toBe(1);
+    // The body's sequence_id is the same id on every try.
+    for (const r of f.received)
+      expect((r.body as { sequence_id?: string }).sequence_id).toBe(ids[0]);
     expect(lines).toEqual(["ntfy: couldn't send a ping (timeout)."]);
   });
 });

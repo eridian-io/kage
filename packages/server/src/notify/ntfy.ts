@@ -77,8 +77,8 @@ export function serverAllowed(server: string): boolean {
   );
 }
 
-/** {"topic","title","message","priority","click"?}: the topic is only ever here. */
-export function publishBody(cfg: NtfyConfig, p: Ping): string {
+/** {"topic","title","message","priority","click"?,"sequence_id"?}: the topic is only ever here. */
+export function publishBody(cfg: NtfyConfig, p: Ping, sequenceId?: string): string {
   const body: Record<string, string | number> = {
     topic: cfg.topic,
     title: pingText(p.title),
@@ -86,6 +86,8 @@ export function publishBody(cfg: NtfyConfig, p: Ping): string {
     priority: p.priority,
   };
   if (p.click !== null && /^https?:\/\//.test(p.click)) body.click = p.click;
+  // R139: ntfy's JSON form of the sequence id, the same value as the X-Sequence-ID header.
+  if (sequenceId !== undefined) body.sequence_id = sequenceId;
   return JSON.stringify(body);
 }
 
@@ -190,12 +192,12 @@ export class NtfyClient {
       );
       return false;
     }
-    const body = publishBody(this.#config, p);
-    // M8, R139: every try of this ping carries one random sequence id, so a retry after a try
-    // that timed out but was delivered replaces that notification instead of adding a copy
-    // (ntfy 2.16.0+; older servers ignore the header). Random: nothing of the session, the
-    // topic or the token.
+    // M8, R139: every try of this ping carries one random sequence id, in the X-Sequence-ID
+    // header and the JSON field sequence_id, so a retry after a try that timed out but was
+    // delivered replaces that notification instead of adding a copy (ntfy 2.16.0+; older
+    // servers ignore both). Random: nothing of the session, the topic or the token.
     const sequenceId = randomBytes(16).toString('base64url');
+    const body = publishBody(this.#config, p, sequenceId);
     let last: unknown;
     let retryAfter: number | null = null;
     for (let i = 0; i <= NTFY.backoffMs.length; i++) {

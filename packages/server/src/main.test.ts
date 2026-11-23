@@ -667,6 +667,7 @@ describe('kage ping (against the fake ntfy, R85)', () => {
       title: 'Kage test ping',
       message: 'ntfy is set up for box.',
       priority: 3,
+      sequence_id: fake.received[0]?.headers['x-sequence-id'],
     });
     expect(fake.received[0]?.headers.authorization).toBe(`Bearer ${TOKEN}`);
     const printed = [...out, ...err].join('\n');
