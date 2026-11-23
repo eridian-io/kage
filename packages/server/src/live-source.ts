@@ -26,13 +26,13 @@ import {
   viewChange,
 } from './live/session-view.ts';
 import {
+  type FirstPromptScreen,
   holdsFirstPrompt,
   type Observation,
   permissionCounts,
   resumeFails,
   type StatusFacts,
   step,
-  UNNAMED_TOOL,
 } from './live/status.ts';
 import {
   numberedPromptKind,
@@ -743,8 +743,8 @@ export class LiveSource implements SessionSource {
     if (text === null || !this.#running || st.gen !== gen || st.status !== 'running') return;
     if (!showsPrompt(text) && showsDenialLast(text)) {
       this.#clearTimers(st, ['idle']);
-      this.#setStatus(st, 'done');
-      this.#clearPending(st);
+      // Running (checked above): done, no tool pending.
+      this.#apply(st, { kind: 'answer-denied' });
       this.#emitNow(st);
       return;
     }
@@ -1479,8 +1479,9 @@ export class LiveSource implements SessionSource {
     // R138: an idle tail (the session isn't running) takes one size check: a turn the hooks
     // haven't announced yet doesn't wait on fs.watch alone.
     if (st.status !== 'running') st.tail?.poke();
+    // F12: the poke above reads the status before this move.
     if (st.mode === 'activity' && !st.startup) {
-      this.#setStatus(st, 'running');
+      this.#apply(st, { kind: 'activity' });
       this.#scheduleIdle(st);
       this.#emitThrottled(st);
     }
@@ -1542,9 +1543,8 @@ export class LiveSource implements SessionSource {
       if (this.#clock() - st.lastActivity < ACTIVE_MS) this.#scheduleIdle(st);
       else if (this.#stillStarting(st)) void this.#startingCheck(st);
       else {
-        // R104: the looks are over, so is the resume: its replayed question no longer hides a new one.
-        st.resuming = null;
-        this.#setStatus(st, 'done');
+        // Done; R104: the looks are over, so is the resume (`step` ends it).
+        this.#apply(st, { kind: 'idle', at: this.#now() });
         this.#emitNow(st);
       }
     }, wait);
@@ -1820,25 +1820,25 @@ export class LiveSource implements SessionSource {
       }, FIRST_PROMPT_RETRY_MS);
       return;
     }
-    this.#endFirstPromptWait(st);
     const screen = text === null ? null : parseStartupScreen(text);
     const prompt = text === null || screen ? null : parsePermissionPrompt(text);
+    let seen: FirstPromptScreen;
+    if (text === null) seen = 'failed';
+    else if (screen) seen = 'startup';
+    else if (prompt) seen = 'prompt';
+    else seen = BUSY_FOOTER.test(text) ? 'busy' : 'idle';
+    if (seen !== 'busy') this.#clearTimers(st, seen === 'startup' ? ['idle', 'startup'] : ['idle']);
+    // Ends the wait (#apply runs its clean-up); a startup screen or a prompt is needs-you (with
+    // an unnamed tool pending for the prompt), a busy footer stays running, anything else done.
+    // A SessionStart's timer armed it: live, also while an attach catches up (F3).
+    this.#apply(st, { kind: 'first-prompt-check', screen: seen, at: this.#now() });
     if (screen) {
-      this.#clearTimers(st, ['idle', 'startup']);
-      this.#setStatus(st, 'needs-you');
-      st.startup = true;
       st.question = { text: screen.text, options: screen.options, startup: true };
       st.promptKind = screen.screen;
     } else if (prompt && text !== null) {
-      this.#clearTimers(st, ['idle']);
-      this.#setStatus(st, 'needs-you');
       st.question = prompt;
       st.promptKind = numberedPromptKind(text) ?? 'permission';
       st.promptSeen = true;
-      st.pending.add(UNNAMED_TOOL);
-    } else if (text === null || !BUSY_FOOTER.test(text)) {
-      this.#clearTimers(st, ['idle']);
-      this.#setStatus(st, 'done');
     }
     this.#emitNow(st);
   }
@@ -1939,8 +1939,7 @@ export class LiveSource implements SessionSource {
     st.turnEndCause = armedBy;
     st.timers.turnEnd = setTimeout(() => {
       delete st.timers.turnEnd;
-      st.turnEndCause = null;
-      void this.#turnEndCheck(st, gen, hooks, armedBy);
+      void this.#turnEndCheck(st, gen, hooks);
     }, TURN_END_CHECK_MS);
   }
 
@@ -1949,7 +1948,7 @@ export class LiveSource implements SessionSource {
    * agrees: no busy footer ("esc to interrupt": a tool or a turn still runs) and no prompt or
    * startup screen. A failed capture, a status change or a hook meanwhile leaves it as it is.
    */
-  async #turnEndCheck(st: Live, gen: number, hooks: number, armedBy: Cause): Promise<void> {
+  async #turnEndCheck(st: Live, gen: number, hooks: number): Promise<void> {
     const still = () =>
       this.#running &&
       this.#sessions.get(st.id) === st &&
@@ -1962,6 +1961,11 @@ export class LiveSource implements SessionSource {
     if (!still()) return;
     const text = await this.#capture(st);
     if (!still() || text === null || BUSY_FOOTER.test(text) || showsPrompt(text)) return;
+    // The latest arming's cause (F19). Whatever clears it (a hook, the stop, the drop) also
+    // fails still(); null here is only a guard.
+    const armedBy = st.turnEndCause;
+    if (armedBy === null) return;
+    st.turnEndCause = null;
     this.#clearTimers(st, ['idle']);
     // Running in hooks mode (still()): done with the arming's cause, no tool pending.
     this.#apply(st, { kind: 'turn-ended', armedBy });
@@ -2200,8 +2204,7 @@ export class LiveSource implements SessionSource {
       const screen = parseStartupScreen(text);
       if (screen) {
         this.#clearTimers(st, ['startup']);
-        this.#setStatus(st, 'needs-you');
-        st.startup = true;
+        this.#apply(st, { kind: 'startup-shown' });
         st.question = { text: screen.text, options: screen.options, startup: true };
         st.promptKind = screen.screen;
         this.#emitNow(st);
@@ -2212,10 +2215,10 @@ export class LiveSource implements SessionSource {
         this.#clearTimers(st, ['startup']);
       }
       if (st.startup) {
-        st.startup = false;
         // A screen answered: the wait for the next one is a fresh one (its own 60 s of looks).
         st.startingSince = null;
-        this.#setStatus(st, this.#activityStatus(st));
+        const active = this.#activityStatus(st) === 'running';
+        this.#apply(st, { kind: 'startup-gone', active });
         st.question = null;
         this.#scheduleIdle(st);
         this.#emitNow(st);
@@ -2233,13 +2236,9 @@ export class LiveSource implements SessionSource {
         // R11 fallback: the prompt went away without a hook. No or Esc leaves Claude's denial
         // line and ends the turn. Otherwise it was a Yes: the tool runs, and no hook fires until
         // its PostToolUse, which may be minutes away for a long command.
-        if (showsDenial(text)) {
-          this.#setStatus(st, 'done');
-          this.#clearPending(st);
-        } else {
-          this.#setStatus(st, 'running');
-          this.#scheduleIdle(st);
-        }
+        const denial = showsDenial(text);
+        this.#apply(st, { kind: 'prompt-gone', denial });
+        if (!denial) this.#scheduleIdle(st);
         this.#emitNow(st);
       }
       return;
@@ -2247,11 +2246,11 @@ export class LiveSource implements SessionSource {
     // A prompt already on screen at start, or in a window without hooks.
     if (prompt && (initial || st.mode === 'activity')) {
       this.#clearTimers(st, ['idle']);
-      this.#setStatus(st, 'needs-you');
+      // Needs-you, with an unnamed tool pending for the prompt.
+      this.#apply(st, { kind: 'prompt-shown' });
       st.question = prompt;
       st.promptKind = numberedPromptKind(text);
       st.promptSeen = true;
-      st.pending.add(UNNAMED_TOOL);
       this.#emitNow(st);
     }
   }
@@ -2322,7 +2321,8 @@ export class LiveSource implements SessionSource {
    * The one door for status (ADR 0001): the only writer of `st.status`. The status module's
    * facts are written back on every step, move or not (F4); then the side effects follow from
    * what changed: the first-prompt wait's end, and on a move statusSince, gen, the tail's idle
-   * poll, the needs-you clean-up and #onTransition.
+   * poll, the needs-you clean-up and #onTransition. A timed observation's `at` is the
+   * transition's.
    */
   #apply(st: Live, obs: Observation): Transition | null {
     const before = this.#factsOf(st);
@@ -2343,7 +2343,7 @@ export class LiveSource implements SessionSource {
       this.#firstPromptWaitEnded(st);
     }
     if (!move) return null;
-    const t: Transition = { id: st.id, ...move, at: this.#now() };
+    const t: Transition = { id: st.id, ...move, at: 'at' in obs ? obs.at : this.#now() };
     st.statusSince = t.at;
     st.gen++;
     // P7: only a running session's tail polls; a hook, activity or the watcher wakes the others.

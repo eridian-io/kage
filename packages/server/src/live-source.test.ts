@@ -5457,3 +5457,88 @@ describe('LiveSource: the transcript through the status module (Task 3)', () => 
     await s.source.stop();
   });
 });
+
+describe('LiveSource: the screen and activity through the status module (Task 4)', () => {
+  const IDLE = ['', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+  const transitions = (events: SourceEvent[], id?: string): Transition[] =>
+    events.flatMap((e) =>
+      e.type === 'session.transition' && (!id || e.transition.id === id) ? [e.transition] : [],
+    );
+
+  it('an attach at start whose pane shows a permission prompt is needs-you with cause reconcile', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    s.tmux.setCapture('%2', pane('permission-bash'));
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    const moves = transitions(s.events, 'k-1');
+    expect(moves.at(-1)).toMatchObject({ to: 'needs-you', cause: 'reconcile' });
+    expect(moves.every((t) => t.cause === 'reconcile')).toBe(true);
+    await s.source.stop();
+  });
+
+  it('activity in activity mode is running, and 5 s of quiet is done, both live, at the time each happened', async () => {
+    const s = setup({ windows: [win()] });
+    await s.source.start();
+    await flush();
+    s.events.length = 0;
+    s.watcher.emit({ type: 'activity', paneId: '%1' });
+    await flush();
+    const ran = Date.now();
+    await vi.advanceTimersByTimeAsync(5_100);
+    await flush();
+    expect(transitions(s.events, 'ext-@1').map((t) => [t.from, t.to, t.cause])).toEqual([
+      ['done', 'running', 'live'],
+      ['running', 'done', 'live'],
+    ]);
+    const [running, done] = transitions(s.events, 'ext-@1');
+    expect(running?.at).toBe(ran);
+    expect(done?.at).toBeGreaterThanOrEqual(ran + 5_000);
+    expect(done?.at).toBeLessThanOrEqual(Date.now());
+    await s.source.stop();
+  });
+
+  it("a launch's first-prompt fallback that finds a prompt on screen is needs-you, live, with the prompt's question (P3F1)", async () => {
+    const s = setup();
+    await s.source.start();
+    await s.source.adopt(
+      rec({
+        kageId: 'k-9',
+        windowId: null,
+        task: 'Add a dark mode',
+        branch: 'kage/add-a-dark-mode',
+        worktree: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+        createdAt: T0,
+      }),
+    );
+    s.tmux.windows = [
+      win({
+        windowId: '@7',
+        paneId: '%7',
+        kageId: null,
+        command: 'claude',
+        cwd: `${ROOT}/shop/.worktrees/add-a-dark-mode`,
+        name: 'add-a-dark-mode',
+        activity: Math.floor(T0 / 1000),
+      }),
+    ];
+    s.tmux.setCapture('%7', IDLE);
+    s.source.claim('k-9', '@7', '%7');
+    await flush();
+    s.hooks.fire(hook('SessionStart', '%7', { source: 'startup' }));
+    await flush();
+    s.tmux.setCapture('%7', pane('permission-bash'));
+    s.events.length = 0;
+    await vi.advanceTimersByTimeAsync(10_100);
+    await flush();
+    expect(s.source.get('k-9')).toMatchObject({ status: 'needs-you' });
+    expect(s.source.get('k-9')?.question).not.toBeNull();
+    expect(s.source.target('k-9')?.promptKind).not.toBeNull();
+    expect(transitions(s.events, 'k-9').map((t) => [t.from, t.to, t.cause])).toEqual([
+      ['running', 'needs-you', 'live'],
+    ]);
+    // "Starting Claude…" went with the wait.
+    expect(s.source.get('k-9')?.now).not.toBe('Starting Claude…');
+    await s.source.stop();
+  });
+});

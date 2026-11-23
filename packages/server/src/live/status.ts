@@ -63,7 +63,29 @@ export type Observation =
   /** "[Request interrupted…" or a user-rejected tool result: No or Esc fires no hook (R11). */
   | { kind: 'transcript-interrupt' }
   /** I2: the turn-end check's capture confirms the turn ended; the cause is the arming's. */
-  | { kind: 'turn-ended'; armedBy: Cause };
+  | { kind: 'turn-ended'; armedBy: Cause }
+  /** Pane output. */
+  | { kind: 'activity' }
+  /** The 5 s rule found the pane quiet and not still starting; `at` is when it decided. */
+  | { kind: 'idle'; at: number }
+  /** The check after an answer shows the denial line (the answer was No). */
+  | { kind: 'answer-denied' }
+  /**
+   * P3F1's fallback, R57, R58: what the pane showed when no first prompt came; `at` as idle's.
+   * Always live: a hook (SessionStart) armed it (F3).
+   */
+  | { kind: 'first-prompt-check'; screen: FirstPromptScreen; at: number }
+  /** R9: a startup screen on the pane. */
+  | { kind: 'startup-shown' }
+  /** A startup screen was answered; `active`: the pane drew within the last 5 s. */
+  | { kind: 'startup-gone'; active: boolean }
+  /** A prompt on screen at start, or in activity mode. */
+  | { kind: 'prompt-shown' }
+  /** R11's pane fallback: the prompt went away with no hook; `denial`: the denial line shows. */
+  | { kind: 'prompt-gone'; denial: boolean };
+
+/** What the first-prompt fallback's capture showed; `failed`: no capture, twice. */
+export type FirstPromptScreen = 'startup' | 'prompt' | 'busy' | 'idle' | 'failed';
 
 /** R63: resuming with an id, and a SessionEnd naming another. */
 export function resumeFails(facts: StatusFacts, e: HookEvent): boolean {
@@ -99,6 +121,8 @@ export function causeOf(facts: StatusFacts, obs: Observation): Cause {
       return 'reconcile';
     case 'hook':
     case 'resume-failed':
+    // F3: a SessionStart's timer armed it, so a hook triggers it indirectly: live too.
+    case 'first-prompt-check':
       return 'live';
     case 'turn-ended':
       return obs.armedBy;
@@ -147,7 +171,51 @@ function target(facts: StatusFacts, obs: Observation): SessionStatus | null {
       return onBoard(facts) && !facts.replying ? 'done' : facts.status;
     case 'turn-ended':
       return endsTurn(facts) ? 'done' : facts.status;
+    // The screen and activity (group 3). Off the board (null) they place nothing either.
+    case 'activity':
+      return facts.status !== null && facts.mode === 'activity' && !facts.startup
+        ? 'running'
+        : facts.status;
+    case 'idle':
+      return goesIdle(facts) ? 'done' : facts.status;
+    case 'answer-denied':
+      return facts.status === 'running' ? 'done' : facts.status;
+    case 'first-prompt-check':
+      if (facts.status !== 'running') return facts.status;
+      switch (obs.screen) {
+        case 'startup':
+        case 'prompt':
+          return 'needs-you';
+        case 'busy':
+          return 'running';
+        default:
+          return 'done';
+      }
+    case 'startup-shown':
+    case 'prompt-shown':
+      return facts.status === null ? null : 'needs-you';
+    case 'startup-gone':
+      if (facts.status === null) return null;
+      return obs.active ? 'running' : 'done';
+    case 'prompt-gone':
+      if (!promptGoes(facts)) return facts.status;
+      return obs.denial ? 'done' : 'running';
   }
+}
+
+/** Activity mode's 5 s rule applies to a running session with no startup screen. */
+function goesIdle(facts: StatusFacts): boolean {
+  return facts.mode === 'activity' && facts.status === 'running' && !facts.startup;
+}
+
+/** R11's pane fallback moves a needs-you session, outside Kage's reply window (B26). */
+function promptGoes(facts: StatusFacts): boolean {
+  return facts.status === 'needs-you' && !facts.replying;
+}
+
+/** A pending tool for the prompt on screen (it names none). */
+function withUnnamed(facts: StatusFacts): Pick<StatusFacts, 'pending'> {
+  return { pending: new Set(facts.pending).add(UNNAMED_TOOL) };
 }
 
 /** Placed and not ended. */
@@ -166,7 +234,34 @@ function observe(facts: StatusFacts, obs: Observation): StatusFacts {
     case 'set':
     case 'loaded':
     case 'transcript-question':
+    case 'activity':
       return { ...facts };
+    case 'idle':
+      // R104: the quiet ends the resume too: its replayed question no longer hides a new one.
+      return goesIdle(facts)
+        ? { ...facts, record: facts.record && { ...facts.record, resuming: null } }
+        : { ...facts };
+    case 'answer-denied':
+      return facts.status === 'running' ? { ...facts, ...noTools() } : { ...facts };
+    case 'first-prompt-check': {
+      // The check always ends the wait (and the resume); only a running session takes the screen.
+      const next: StatusFacts = {
+        ...facts,
+        record: facts.record && { firstPromptPending: false, resuming: null },
+      };
+      if (facts.status !== 'running') return next;
+      if (obs.screen === 'startup') return { ...next, startup: true };
+      if (obs.screen === 'prompt') return { ...next, ...withUnnamed(facts) };
+      return next;
+    }
+    case 'startup-shown':
+      return facts.status === null ? { ...facts } : { ...facts, startup: true };
+    case 'startup-gone':
+      return { ...facts, startup: false };
+    case 'prompt-shown':
+      return facts.status === null ? { ...facts } : { ...facts, ...withUnnamed(facts) };
+    case 'prompt-gone':
+      return promptGoes(facts) && obs.denial ? { ...facts, ...noTools() } : { ...facts };
     case 'transcript-interrupt':
       // R11: No or Esc ends the tool, whatever the status; Kage's own Escape leaves it.
       return facts.replying ? { ...facts } : { ...facts, ...noTools() };

@@ -483,3 +483,269 @@ describe('step: the transcript (group 2)', () => {
     expect([...before.toolsDone]).toEqual(['toolu_0']);
   });
 });
+
+describe('step: the screen and activity (group 3)', () => {
+  const STATUSES = [null, 'running', 'needs-you', 'done', 'ended'] as const;
+  const busy = () => ({ pending: new Set(['toolu_1']), toolsDone: new Set(['toolu_0']) });
+  const AT = 1_700_000_000_000;
+  const causeFor = (catchingUp: boolean) => (catchingUp ? 'reconcile' : 'live');
+
+  it('activity makes an activity-mode session running unless it shows a startup screen', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const s = step(facts({ status, mode: 'activity', catchingUp }), { kind: 'activity' });
+        // Off the board (null) activity places nothing: placing is the attach's.
+        const to = status === null ? null : 'running';
+        expect(s.facts.status).toBe(to);
+        expect(s.move).toEqual(
+          to === status ? null : { from: status, to, cause: causeFor(catchingUp) },
+        );
+      }
+    }
+    for (const over of [
+      { mode: 'activity', startup: true, status: 'needs-you' },
+      { mode: 'hooks', status: 'done' },
+    ] as const) {
+      const s = step(facts(over), { kind: 'activity' });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(over.status);
+    }
+  });
+
+  it('idle: a quiet activity-mode running session is done and its resume is over (R104)', () => {
+    for (const catchingUp of [false, true]) {
+      const f = facts({
+        status: 'running',
+        mode: 'activity',
+        catchingUp,
+        record: { firstPromptPending: false, resuming: { sessionId: 's-1' } },
+      });
+      const s = step(f, { kind: 'idle', at: AT });
+      expect(s.move).toEqual({ from: 'running', to: 'done', cause: causeFor(catchingUp) });
+      expect(s.facts.record?.resuming).toBeNull();
+    }
+    // Hooks mode, a startup screen, or anything not running: no move, the resume kept.
+    const resuming = { firstPromptPending: false, resuming: { sessionId: 's-1' } };
+    const cases: Partial<StatusFacts>[] = [
+      { status: 'running', mode: 'hooks' },
+      { status: 'running', mode: 'activity', startup: true },
+      ...STATUSES.filter((x) => x !== 'running').map((status) => ({
+        status,
+        mode: 'activity' as const,
+      })),
+    ];
+    for (const over of cases) {
+      const s = step(facts({ ...over, record: resuming }), { kind: 'idle', at: AT });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe(over.status);
+      expect(s.facts.record?.resuming).toEqual({ sessionId: 's-1' });
+    }
+  });
+
+  it('answer-denied: the denial line after an answer makes a running session done with no tool pending', () => {
+    for (const catchingUp of [false, true]) {
+      const s = step(facts({ status: 'running', catchingUp, ...busy() }), {
+        kind: 'answer-denied',
+      });
+      expect(s.move).toEqual({ from: 'running', to: 'done', cause: causeFor(catchingUp) });
+      expect(s.facts.pending.size).toBe(0);
+      expect(s.facts.toolsDone.size).toBe(0);
+    }
+    for (const status of STATUSES.filter((x) => x !== 'running')) {
+      const s = step(facts({ status, ...busy() }), { kind: 'answer-denied' });
+      expect(s.move).toBeNull();
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+  });
+
+  it('first-prompt-check: a startup screen is needs-you with startup; a prompt is needs-you with an unnamed tool pending (P3F1, R57)', () => {
+    const waiting = { firstPromptPending: true, resuming: { sessionId: 's-1' } };
+    const screen = step(facts({ status: 'running', record: waiting }), {
+      kind: 'first-prompt-check',
+      screen: 'startup',
+      at: AT,
+    });
+    expect(screen.move).toEqual({ from: 'running', to: 'needs-you', cause: 'live' });
+    expect(screen.facts.startup).toBe(true);
+    expect(screen.facts.pending.size).toBe(0);
+    expect(screen.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+
+    const prompt = step(facts({ status: 'running', record: waiting, ...busy() }), {
+      kind: 'first-prompt-check',
+      screen: 'prompt',
+      at: AT,
+    });
+    expect(prompt.move).toEqual({ from: 'running', to: 'needs-you', cause: 'live' });
+    expect(prompt.facts.startup).toBe(false);
+    expect([...prompt.facts.pending].sort()).toEqual([UNNAMED_TOOL, 'toolu_1'].sort());
+    expect(prompt.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+  });
+
+  it('first-prompt-check is live also while an attach catches up: a SessionStart armed it (F3)', () => {
+    const f = facts({
+      status: 'running',
+      catchingUp: true,
+      record: { firstPromptPending: true, resuming: null },
+    });
+    const obs: Observation = { kind: 'first-prompt-check', screen: 'prompt', at: AT };
+    expect(causeOf(f, obs)).toBe('live');
+    expect(step(f, obs).move).toEqual({ from: 'running', to: 'needs-you', cause: 'live' });
+  });
+
+  it('first-prompt-check: a busy footer keeps it running; a failed capture is done (R58)', () => {
+    const waiting = { firstPromptPending: true, resuming: null };
+    const kept = step(facts({ status: 'running', record: waiting }), {
+      kind: 'first-prompt-check',
+      screen: 'busy',
+      at: AT,
+    });
+    expect(kept.move).toBeNull();
+    expect(kept.facts.status).toBe('running');
+    expect(kept.facts.record?.firstPromptPending).toBe(false);
+    for (const screen of ['idle', 'failed'] as const) {
+      const s = step(facts({ status: 'running', record: waiting }), {
+        kind: 'first-prompt-check',
+        screen,
+        at: AT,
+      });
+      expect(s.move).toEqual({ from: 'running', to: 'done', cause: 'live' });
+      expect(s.facts.record?.firstPromptPending).toBe(false);
+    }
+  });
+
+  it('first-prompt-check always ends the wait, and moves only a running session', () => {
+    for (const status of STATUSES.filter((x) => x !== 'running')) {
+      for (const screen of ['startup', 'prompt', 'busy', 'idle', 'failed'] as const) {
+        const s = step(
+          facts({ status, record: { firstPromptPending: true, resuming: { sessionId: 's' } } }),
+          { kind: 'first-prompt-check', screen, at: AT },
+        );
+        expect(s.move).toBeNull();
+        expect(s.facts.status).toBe(status);
+        expect(s.facts.startup).toBe(false);
+        expect(s.facts.pending.size).toBe(0);
+        expect(s.facts.record).toEqual({ firstPromptPending: false, resuming: null });
+      }
+    }
+  });
+
+  it('startup-shown: a startup screen makes a placed session needs-you with startup (R9)', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const s = step(facts({ status, catchingUp }), { kind: 'startup-shown' });
+        const to = status === null ? null : 'needs-you';
+        expect(s.facts.status).toBe(to);
+        expect(s.facts.startup).toBe(status !== null);
+        expect(s.move).toEqual(
+          to === status ? null : { from: status, to, cause: causeFor(catchingUp) },
+        );
+      }
+    }
+  });
+
+  it('startup-gone: an answered startup screen goes running when active, else done', () => {
+    for (const catchingUp of [false, true]) {
+      for (const active of [true, false]) {
+        const s = step(facts({ status: 'needs-you', startup: true, catchingUp }), {
+          kind: 'startup-gone',
+          active,
+        });
+        const to = active ? 'running' : 'done';
+        expect(s.move).toEqual({ from: 'needs-you', to, cause: causeFor(catchingUp) });
+        expect(s.facts.startup).toBe(false);
+      }
+    }
+    // Already where it would go: startup clears, no move.
+    const same = step(facts({ status: 'running', startup: true }), {
+      kind: 'startup-gone',
+      active: true,
+    });
+    expect(same.move).toBeNull();
+    expect(same.facts.startup).toBe(false);
+  });
+
+  it('prompt-shown: a prompt on screen makes a placed session needs-you with an unnamed tool pending', () => {
+    for (const catchingUp of [false, true]) {
+      for (const status of STATUSES) {
+        const s = step(facts({ status, catchingUp }), { kind: 'prompt-shown' });
+        const to = status === null ? null : 'needs-you';
+        expect(s.facts.status).toBe(to);
+        expect(s.facts.pending.has(UNNAMED_TOOL)).toBe(status !== null);
+        expect(s.move).toEqual(
+          to === status ? null : { from: status, to, cause: causeFor(catchingUp) },
+        );
+      }
+    }
+  });
+
+  it("prompt-gone: the denial line is done with no tool pending; else running, the tool kept (R11's pane fallback)", () => {
+    for (const catchingUp of [false, true]) {
+      const no = step(facts({ status: 'needs-you', catchingUp, ...busy() }), {
+        kind: 'prompt-gone',
+        denial: true,
+      });
+      expect(no.move).toEqual({ from: 'needs-you', to: 'done', cause: causeFor(catchingUp) });
+      expect(no.facts.pending.size).toBe(0);
+      expect(no.facts.toolsDone.size).toBe(0);
+      const yes = step(facts({ status: 'needs-you', catchingUp, ...busy() }), {
+        kind: 'prompt-gone',
+        denial: false,
+      });
+      expect(yes.move).toEqual({ from: 'needs-you', to: 'running', cause: causeFor(catchingUp) });
+      expect([...yes.facts.pending]).toEqual(['toolu_1']);
+    }
+    for (const status of STATUSES.filter((x) => x !== 'needs-you')) {
+      const s = step(facts({ status, ...busy() }), { kind: 'prompt-gone', denial: true });
+      expect(s.move).toBeNull();
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+    }
+  });
+
+  it('prompt-gone inside the reply window moves nothing', () => {
+    for (const denial of [true, false]) {
+      const s = step(facts({ status: 'needs-you', replying: true, ...busy() }), {
+        kind: 'prompt-gone',
+        denial,
+      });
+      expect(s.move).toBeNull();
+      expect(s.facts.status).toBe('needs-you');
+      expect([...s.facts.pending]).toEqual(['toolu_1']);
+      expect([...s.facts.toolsDone]).toEqual(['toolu_0']);
+    }
+  });
+
+  it('an attach capture that shows a prompt is needs-you with cause reconcile', () => {
+    for (const status of ['running', 'done'] as const) {
+      const s = step(facts({ status, catchingUp: true }), { kind: 'prompt-shown' });
+      expect(s.move).toEqual({ from: status, to: 'needs-you', cause: 'reconcile' });
+    }
+  });
+
+  it('screen and activity steps never mutate the facts they are given', () => {
+    const before = deepFreeze(
+      facts({
+        status: 'needs-you',
+        mode: 'activity',
+        startup: true,
+        record: { firstPromptPending: true, resuming: { sessionId: 's-1' } },
+        ...busy(),
+      }),
+    );
+    const observations: Observation[] = [
+      { kind: 'activity' },
+      { kind: 'idle', at: AT },
+      { kind: 'answer-denied' },
+      { kind: 'first-prompt-check', screen: 'prompt', at: AT },
+      { kind: 'startup-shown' },
+      { kind: 'startup-gone', active: true },
+      { kind: 'prompt-shown' },
+      { kind: 'prompt-gone', denial: true },
+    ];
+    for (const obs of observations) expect(step(before, obs).facts).not.toBe(before);
+    expect(before.status).toBe('needs-you');
+    expect(before.startup).toBe(true);
+    expect([...before.pending]).toEqual(['toolu_1']);
+    expect([...before.toolsDone]).toEqual(['toolu_0']);
+    expect(before.record).toEqual({ firstPromptPending: true, resuming: { sessionId: 's-1' } });
+  });
+});
