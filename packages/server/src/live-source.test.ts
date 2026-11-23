@@ -22,6 +22,7 @@ import {
 import { NOTIFY_DEFAULTS, Notifier } from './notify/notifier.ts';
 import type { SourceEvent } from './source.ts';
 import type { SessionRecord } from './state/store.ts';
+import { SessionMissing } from './tmux/client.ts';
 import { pickPanes, type TmuxPane, type TmuxWindow } from './tmux/format.ts';
 import type { WatchEvent } from './tmux/watcher.ts';
 import { TranscriptTail } from './transcript/tail.ts';
@@ -67,9 +68,21 @@ class FakeTmux implements TmuxClientLike {
   panes: TmuxPane[] | null = null;
   /** The hook panes each listWindows call was given. */
   hookPanesSeen: string[][] = [];
-  async listWindows(hookPanes: ReadonlySet<string> = new Set()): Promise<TmuxWindow[]> {
+  /** M4: tmux says "can't find session" (renamed): strict listings throw SessionMissing. */
+  missing = false;
+  /** The strict flag of each listWindows call. */
+  strictSeen: boolean[] = [];
+  async listWindows(
+    hookPanes: ReadonlySet<string> = new Set(),
+    o: { strict?: boolean } = {},
+  ): Promise<TmuxWindow[]> {
     this.listCalls++;
     this.hookPanesSeen.push([...hookPanes]);
+    this.strictSeen.push(o.strict === true);
+    if (this.missing) {
+      if (o.strict) throw new SessionMissing('kage');
+      return [];
+    }
     if (this.panes)
       return pickPanes(
         this.panes.map((p) => ({ ...p })),
@@ -343,6 +356,7 @@ const hook = (event: HookEventName, paneId: string, over: Partial<HookEvent> = {
       ? 'Bash'
       : null,
   toolInput: null,
+  toolUseId: null,
   source: null,
   at: Date.now(),
   ...over,
@@ -371,6 +385,8 @@ function setup(
     onLoaded?: () => void;
     /** Every FakeTail's start() waits while its `wait` is set. */
     tailGate?: TailGate;
+    /** Kage's log lines. */
+    log?: (line: string) => void;
   } = {},
 ) {
   const preview = new FakePreview();
@@ -406,6 +422,7 @@ function setup(
     },
     isTerminalOpen: (id) => terminals.has(id),
     ...(opts.onLoaded ? { onLoaded: opts.onLoaded } : {}),
+    ...(opts.log ? { log: opts.log } : {}),
   });
   const events: SourceEvent[] = [];
   source.subscribe((e) => events.push(e));
@@ -1401,13 +1418,13 @@ describe('LiveSource: fix round 1', () => {
       watcher.emit({ type: 'activity', paneId: '%2' });
       await vi.advanceTimersByTimeAsync(250);
     }
-    // Coalesced: at most one re-list per second.
+    // Coalesced: at most one re-list per 5 s while it runs (M9, hardening Task 10).
     expect(tmux.listCalls - lists).toBeGreaterThanOrEqual(1);
-    expect(tmux.listCalls - lists).toBeLessThanOrEqual(3);
+    expect(tmux.listCalls - lists).toBeLessThanOrEqual(2);
     expect(source.get('k-1')?.status).toBe('running');
     (tmux.windows[0] as TmuxWindow).command = 'bash';
     watcher.emit({ type: 'activity', paneId: '%2' });
-    await vi.advanceTimersByTimeAsync(1000);
+    await vi.advanceTimersByTimeAsync(5000);
     await flush();
     expect(source.get('k-1')?.status).toBe('ended');
     await vi.advanceTimersByTimeAsync(2500);
@@ -4616,5 +4633,260 @@ describe('LiveSource: history at start and done tails (hardening Task 9: I4, P7)
     await vi.advanceTimersByTimeAsync(3000);
     expect(t.stopped).toBe(true);
     await source.stop();
+  });
+});
+
+describe('LiveSource: tmux edges (hardening Task 10: reliability M3, M4, M9, M11)', () => {
+  const FAILED = "Claude couldn't find this conversation, so the session wasn't resumed.";
+  const MISSING_LOG =
+    'kage: the tmux session "kage" isn\'t there by that name any more, so Kage keeps the last state.';
+
+  it("a hook from a dead server's %1 isn't claimed by the new server's %1", async () => {
+    // M3, the review's steps 1–4: a kage window %1, then the tmux server dies.
+    const s = setup({
+      windows: [kageWin({ windowId: '@1', paneId: '%1' })],
+      records: [rec({ windowId: '@1' })],
+    });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    s.watcher.emit({ type: 'down' });
+    s.tmux.windows = [];
+    // The dying Claude's SessionEnd lands after the down; the re-list shows no %1.
+    s.hooks.fire(hook('SessionEnd', '%1', { sessionId: 'old' }));
+    await vi.advanceTimersByTimeAsync(60);
+    // A fresh launch on the new server, whose panes start over: new-window prints %1.
+    await s.source.adopt(
+      rec({ kageId: 'k-2', windowId: '@1', branch: 'kage/add-a-coupon', task: 'Add a coupon' }),
+    );
+    s.tmux.windows = [kageWin({ windowId: '@1', paneId: '%1', kageId: 'k-2' })];
+    s.source.claim('k-2', '@1', '%1');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(s.source.get('k-2')?.status).not.toBe('ended');
+    await vi.advanceTimersByTimeAsync(600);
+    const saved = s.store.saves.at(-1)?.find((r) => r.kageId === 'k-2');
+    expect(saved?.sessionId).not.toBe('old');
+    await s.source.stop();
+  });
+
+  it("a dead server's SessionEnd doesn't fail the resume opened in its pane number", async () => {
+    const s = setup({
+      windows: [kageWin({ windowId: '@1', paneId: '%1' })],
+      records: [rec({ windowId: '@1', sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+    });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    s.watcher.emit({ type: 'down' });
+    s.tmux.windows = [];
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    s.hooks.fire(hook('SessionEnd', '%1', { sessionId: 'old' }));
+    await vi.advanceTimersByTimeAsync(60);
+    // Resume at once: the new server's first window is %1 again.
+    s.source.resumed('k-1', 's-1');
+    s.tmux.windows = [kageWin({ windowId: '@1', paneId: '%1' })];
+    s.source.claim('k-1', '@1', '%1');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(s.source.lines('k-1').some((l) => l.text === FAILED)).toBe(false);
+    await s.source.stop();
+  });
+
+  it('a hook set aside after the launch began is still claimed (B34 stays)', async () => {
+    const s = setup({ records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })] });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    s.source.resumed('k-1', 's-1');
+    // The resume's window dies before any listing shows it: its SessionEnd is set aside.
+    s.hooks.fire(hook('SessionEnd', '%4', { sessionId: 'random' }));
+    await vi.advanceTimersByTimeAsync(60);
+    s.source.claim('k-1', '@4', '%4');
+    await vi.advanceTimersByTimeAsync(60);
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.lines('k-1').some((l) => l.text === FAILED)).toBe(true);
+    await s.source.stop();
+  });
+
+  it('the session missing while the watcher is attached keeps every state and logs once', async () => {
+    const logs: string[] = [];
+    const s = setup({
+      windows: [win({ windowId: '@1', paneId: '%1' }), kageWin()],
+      records: [rec()],
+      log: (l) => logs.push(l),
+    });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    s.events.length = 0;
+    // `tmux rename-session -t kage work`: the watcher stays attached.
+    s.tmux.missing = true;
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    s.watcher.emit({ type: 'activity', paneId: '%1' });
+    await vi.advanceTimersByTimeAsync(2000);
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.tmux.strictSeen.at(-1)).toBe(true);
+    expect(s.source.get('k-1')?.status).toBe('running');
+    expect(s.source.get('ext-@1')).toBeDefined();
+    expect(s.source.hasWindow('k-1')).toBe(true);
+    expect(s.source.terminalTarget('k-1')?.windowId).toBe('@2');
+    expect(s.events.some((e) => e.type === 'session.removed')).toBe(false);
+    expect(s.updates().some((u) => u.status === 'ended')).toBe(false);
+    expect(logs).toEqual([MISSING_LOG]);
+    // The name comes back: the episode ends, and a later one logs again.
+    s.tmux.missing = false;
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    s.tmux.missing = true;
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(logs).toEqual([MISSING_LOG, MISSING_LOG]);
+    await s.source.stop();
+  });
+
+  it('the session missing with no watcher attached reads as no windows, as before', async () => {
+    const logs: string[] = [];
+    const s = setup({ windows: [kageWin()], records: [rec()], log: (l) => logs.push(l) });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    await flush();
+    s.watcher.emit({ type: 'down' });
+    await flush();
+    s.tmux.missing = true;
+    s.watcher.emit({ type: 'windows-changed' });
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    expect(s.source.hasWindow('k-1')).toBe(false);
+    expect(logs).toEqual([]);
+    await s.source.stop();
+  });
+
+  it('a running hooks-mode session under constant activity re-lists about once per 5 s', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.watcher.emit({ type: 'up' });
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s.source.get('k-1')?.status).toBe('running');
+    const before = s.tmux.listCalls;
+    // Claude's spinner: activity every 250 ms for 10 s.
+    for (let i = 0; i < 40; i++) {
+      s.watcher.emit({ type: 'activity', paneId: '%2' });
+      await vi.advanceTimersByTimeAsync(250);
+    }
+    expect(s.tmux.listCalls - before).toBeGreaterThanOrEqual(1);
+    expect(s.tmux.listCalls - before).toBeLessThanOrEqual(3);
+    // A Stop still re-lists at once (300 ms), whatever the activity throttle says.
+    const atStop = s.tmux.listCalls;
+    s.hooks.fire(hook('Stop', '%2'));
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(s.tmux.listCalls).toBeGreaterThan(atStop);
+    await s.source.stop();
+  });
+
+  it('activity in a shell-ended session still re-lists at once', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    // Claude exits to the shell.
+    s.tmux.windows = [kageWin({ command: 'bash' })];
+    s.watcher.emit({ type: 'windows-changed' });
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(s.source.get('k-1')?.status).toBe('ended');
+    // fg: claude is in front again; its output re-lists within a second.
+    s.tmux.windows = [kageWin()];
+    const before = s.tmux.listCalls;
+    s.watcher.emit({ type: 'activity', paneId: '%2' });
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(s.tmux.listCalls).toBeGreaterThan(before);
+    await s.source.stop();
+  });
+
+  it('a PostToolUse arriving before its PreToolUse leaves no tool pending', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    // Parallel tools: t1's hooks arrive reversed.
+    s.hooks.fire(hook('PostToolUse', '%2', { toolUseId: 't1' }));
+    s.hooks.fire(hook('PreToolUse', '%2', { toolUseId: 't1' }));
+    await flush();
+    // No tool pending, so a late permission Notification doesn't count (R12).
+    s.hooks.fire(permissionNote('%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await s.source.stop();
+  });
+
+  it("one parallel tool's PostToolUse leaves the other pending", async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    s.hooks.fire(hook('PreToolUse', '%2', { toolUseId: 't1' }));
+    s.hooks.fire(hook('PreToolUse', '%2', { toolUseId: 't2' }));
+    s.hooks.fire(hook('PostToolUse', '%2', { toolUseId: 't1' }));
+    await flush();
+    s.hooks.fire(permissionNote('%2'));
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('needs-you');
+    await s.source.stop();
+  });
+
+  it('expired ignored panes are pruned', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    // A hooks-enabled Claude outside the kage session: its pane is ignored for 5 s.
+    s.hooks.fire(hook('UserPromptSubmit', '%7'));
+    await vi.advanceTimersByTimeAsync(60);
+    expect(s.source.ignoredPaneCount()).toBe(1);
+    await vi.advanceTimersByTimeAsync(6000);
+    // Any later hook prunes the entries past their expiry, though %7 never sends again.
+    s.hooks.fire(hook('PreToolUse', '%2'));
+    expect(s.source.ignoredPaneCount()).toBe(0);
+    await s.source.stop();
+  });
+});
+
+describe('LiveSource: turn-end check, carried minors (hardening Task 10, from Task 7)', () => {
+  const IDLE = ['● Fixed the total.', '', RULE, '❯ ', RULE, '  ? for shortcuts', ''].join('\n');
+
+  it('a restart within 5 s of a lost Stop: running from the rebuild, then done once the pane is idle', async () => {
+    const s = setup({
+      // Claude drew within the last 5 s, and the transcript's turn ended (now is null).
+      windows: [kageWin({ activity: Math.floor(T0 / 1000) - 1 })],
+      records: [rec({ sessionId: 's-1', transcriptPath: TRANSCRIPT })],
+      tails: { [TRANSCRIPT]: { now: null } },
+    });
+    s.tmux.setCapture('%2', IDLE);
+    await s.source.start();
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('done');
+    await s.source.stop();
+  });
+
+  it('a new turn in the transcript during the check keeps it running', async () => {
+    const s = setup({ windows: [kageWin()], records: [rec()] });
+    await s.source.start();
+    s.hooks.fire(hook('SessionStart', '%2'));
+    s.hooks.fire(hook('UserPromptSubmit', '%2'));
+    await flush();
+    s.tmux.setCapture('%2', IDLE);
+    const t = s.tails[0] as FakeTail;
+    t.turnEnd();
+    await vi.advanceTimersByTimeAsync(1000);
+    // The next turn starts with its hooks lost: the transcript says Claude is at work again.
+    t.push([{ kind: 'tool', text: 'Read src/cart.ts' }], { now: 'Reading src/cart.ts' });
+    await vi.advanceTimersByTimeAsync(2000);
+    await flush();
+    expect(s.source.get('k-1')?.status).toBe('running');
+    await s.source.stop();
   });
 });

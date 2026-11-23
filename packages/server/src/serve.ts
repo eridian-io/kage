@@ -311,8 +311,13 @@ async function startLive(
         state: (c) => branchState(c.worktree, c, gitExec),
         archive: (id) => finish.archive(id, true, { auto: true }),
         // I1: right before archiving, a fresh listing must agree with the window the source holds.
+        // Strict (F13, Task 10): a renamed or missing session throws, so nothing is archived.
         confirm: (id) =>
-          listingAgrees(() => tmux.listWindows(), id, source.terminalTarget(id)?.windowId ?? null),
+          listingAgrees(
+            () => tmux.listWindows(undefined, { strict: true }),
+            id,
+            source.terminalTarget(id)?.windowId ?? null,
+          ),
         gitDir: (repo) => gitCommonDir(repo, gitExec),
         log: (line) => io.err(line),
       }),

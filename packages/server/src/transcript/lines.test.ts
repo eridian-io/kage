@@ -372,6 +372,16 @@ describe('endsTurn', () => {
     expect(endsTurn({ type: 'system', subtype: 'informational' })).toBe(false);
     expect(endsTurn(null)).toBe(false);
   });
+  it("a subagent's (isSidechain) end of turn is not the session's (Task 10)", () => {
+    expect(
+      endsTurn({
+        type: 'assistant',
+        isSidechain: true,
+        message: { stop_reason: 'end_turn', content: [{ type: 'text', text: 'Found 3 uses.' }] },
+      }),
+    ).toBe(false);
+    expect(endsTurn({ type: 'system', subtype: 'turn_duration', isSidechain: true })).toBe(false);
+  });
 });
 
 describe('real-short-turn.jsonl (2.1.330, R23)', () => {

@@ -86,6 +86,7 @@ describe('HookServer', () => {
         message: null,
         toolName: 'Edit',
         toolInput: payload('pre-tool-use.json').tool_input,
+        toolUseId: 'toolu_00000000000000000000000003',
         source: null,
         at: 42,
       },
@@ -447,6 +448,7 @@ describe('parseHookEvent', () => {
         message: null,
         toolName: null,
         toolInput: null,
+        toolUseId: null,
         source: null,
         at: 1,
       });
@@ -466,6 +468,14 @@ describe('parseHookEvent', () => {
       null,
     );
     expect(ok({ event: 'SessionStart', payload: { session_id: 's', source: 7 } })).toBeNull();
+  });
+
+  it('keeps tool_use_id, and an odd one is null without dropping the event (M11)', () => {
+    const p = payload('post-tool-use.json');
+    expect(ok({ event: 'PostToolUse', pane: '%1', payload: p })?.toolUseId).toBe(p.tool_use_id);
+    expect(
+      ok({ event: 'PostToolUse', payload: { session_id: 's', tool_use_id: 7 } })?.toolUseId,
+    ).toBeNull();
   });
 
   it('keeps tool_input for AskUserQuestion', () => {

@@ -259,9 +259,10 @@ export function answeredIds(record: unknown): string[] {
  * True for a record that closes the turn: system/turn_duration, system/stop_hook_summary (written
  * when Stop hooks ran, just before turn_duration), or the assistant reply that ends it
  * (`message.stop_reason` "end_turn"). Recorded on 2.1.330 (fixture real-short-turn.jsonl).
+ * A subagent's records (`isSidechain: true`) end the subagent's turn, not the session's.
  */
 export function endsTurn(record: unknown): boolean {
-  if (!isObj(record)) return false;
+  if (!isObj(record) || record.isSidechain === true) return false;
   if (record.type === 'system') {
     return record.subtype === 'turn_duration' || record.subtype === 'stop_hook_summary';
   }

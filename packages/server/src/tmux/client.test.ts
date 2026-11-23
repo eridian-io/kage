@@ -5,6 +5,7 @@ import {
   type Key,
   parseTmuxVersion,
   SEND_TEXT_MAX_BYTES,
+  SessionMissing,
   TmuxClient,
   tmuxArgs,
 } from './client.ts';
@@ -43,6 +44,36 @@ describe('TmuxClient.listWindows', () => {
       throw new Error('spawn tmux ENOENT');
     });
     await expect(c.listWindows()).rejects.toThrow('ENOENT');
+  });
+
+  it('strict: a missing session throws SessionMissing, naming the session (reliability M4)', async () => {
+    const c = client(async () => {
+      throw fail("can't find session: kage");
+    });
+    const err = await c.listWindows(undefined, { strict: true }).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(SessionMissing);
+    expect((err as SessionMissing).session).toBe('kage');
+    // Not strict: [] as before.
+    expect(await c.listWindows()).toEqual([]);
+  });
+
+  it.each([
+    'no server running on /tmp/tmux-1000/sock',
+    'error connecting to /tmp/tmux-1000/sock (No such file or directory)',
+  ])('strict: no server ("%s") is still []', async (stderr) => {
+    const c = client(async () => {
+      throw fail(stderr);
+    });
+    expect(await c.listWindows(new Set(), { strict: true })).toEqual([]);
+  });
+
+  it('strict: any other failure throws as before', async () => {
+    const c = client(async () => {
+      throw fail('server exited unexpectedly');
+    });
+    const err = await c.listWindows(undefined, { strict: true }).catch((e: unknown) => e);
+    expect(err).not.toBeInstanceOf(SessionMissing);
+    expect((err as Error).message).toBe('failed');
   });
 });
 

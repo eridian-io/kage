@@ -18,7 +18,7 @@ class FakeProc extends EventEmitter {
 
 function setup(
   throttleMs?: number,
-  extra: { beforeLaunch?: () => Promise<void>; alive?: () => Promise<boolean> } = {},
+  extra: { beforeLaunch?: () => Promise<void>; serverPid?: () => Promise<string | null> } = {},
 ) {
   const procs: FakeProc[] = [];
   const calls: { cmd: string; args: string[] }[] = [];
@@ -34,7 +34,7 @@ function setup(
     socket: null,
     spawn,
     throttleMs,
-    alive: async () => false,
+    serverPid: async () => null,
     ...extra,
   });
   const events: WatchEvent[] = [];
@@ -133,7 +133,7 @@ describe('TmuxWatcher', () => {
     w.stop();
   });
 
-  it('resets the backoff after a successful start', async () => {
+  it('resets the backoff after a client stayed attached for 1 s', async () => {
     const { w, procs } = setup();
     w.start();
     procs[0]?.emit('exit', 1);
@@ -142,7 +142,7 @@ describe('TmuxWatcher', () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(procs).toHaveLength(3);
     procs[2]?.say('%window-add @1\n');
-    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
     procs[2]?.emit('exit', 1);
     await vi.advanceTimersByTimeAsync(1000);
     expect(procs).toHaveLength(4);
@@ -192,7 +192,7 @@ describe('TmuxWatcher', () => {
       session: 'kage',
       socket: null,
       spawn,
-      alive: async () => false,
+      serverPid: async () => null,
       beforeLaunch: async () => {
         order.push('before');
       },
@@ -270,23 +270,25 @@ describe('TmuxWatcher', () => {
   });
 
   describe('a client that exits (reliability I1)', () => {
-    it('a client that exits while has-session succeeds re-attaches at once and emits no down', async () => {
+    it('a client that exits while the same server lives re-attaches at once and emits no down', async () => {
       let asked = 0;
       const { w, procs, events } = setup(undefined, {
-        alive: async () => {
+        serverPid: async () => {
           asked++;
-          return true;
+          return '4242';
         },
       });
       w.start();
       procs[0]?.say('%begin 1 2 0\n');
       await flush();
       expect(events).toEqual([{ type: 'up' }]);
+      // The first line also notes the server's pid.
+      expect(asked).toBe(1);
       // `tmux attach -d` at the PC: tmux detaches Kage's client (%exit) and the server lives.
       procs[0]?.say('%exit\n');
       procs[0]?.emit('exit', 0);
       await flush();
-      expect(asked).toBe(1);
+      expect(asked).toBe(2);
       expect(procs).toHaveLength(2);
       expect(events).toEqual([{ type: 'up' }]);
       // The new client's first line is the resync.
@@ -298,7 +300,7 @@ describe('TmuxWatcher', () => {
     });
 
     it('a client that exits with the server gone emits down and backs off', async () => {
-      const { w, procs, events } = setup(undefined, { alive: async () => false });
+      const { w, procs, events } = setup(undefined, { serverPid: async () => null });
       w.start();
       procs[0]?.say('%begin 1 2 0\n');
       await flush();
@@ -321,7 +323,7 @@ describe('TmuxWatcher', () => {
 
     it('a has-session that fails or throws counts as the server gone', async () => {
       const { w, procs, events } = setup(undefined, {
-        alive: async () => {
+        serverPid: async () => {
           throw new Error('spawn tmux ENOENT');
         },
       });
@@ -333,15 +335,39 @@ describe('TmuxWatcher', () => {
       w.stop();
     });
 
+    it('a new server under the same name (another pid) counts as down', async () => {
+      let pid = '4242';
+      const { w, procs, events } = setup(undefined, { serverPid: async () => pid });
+      w.start();
+      procs[0]?.say('%begin 1 2 0\n');
+      await flush();
+      // kill-server, and something starts a new server with the session at once.
+      pid = '5151';
+      procs[0]?.emit('exit', 1);
+      await flush();
+      expect(events).toEqual([{ type: 'up' }, { type: 'down' }]);
+      expect(procs).toHaveLength(1);
+      // The backoff's client attaches to the new server and notes its pid.
+      await vi.advanceTimersByTimeAsync(1000);
+      procs[1]?.say('%begin 1 2 0\n');
+      await flush();
+      procs[1]?.emit('exit', 0);
+      await flush();
+      // Same server now: a plain re-attach.
+      expect(procs).toHaveLength(3);
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(1);
+      w.stop();
+    });
+
     it('three re-attaches in 10 s without a line emit down', async () => {
-      const { w, procs, events } = setup(undefined, { alive: async () => true });
+      const { w, procs, events } = setup(undefined, { serverPid: async () => '4242' });
       w.start();
       procs[0]?.say('%begin 1 2 0\n');
       await flush();
       // tmux keeps refusing the client: each one exits before it prints a line.
       for (let i = 0; i < 3; i++) {
         procs[i]?.emit('exit', 1);
-        await vi.advanceTimersByTimeAsync(1000);
+        await vi.advanceTimersByTimeAsync(500);
         expect(procs).toHaveLength(i + 2);
       }
       expect(events.filter((e) => e.type === 'down')).toHaveLength(0);
@@ -357,12 +383,26 @@ describe('TmuxWatcher', () => {
       w.stop();
     });
 
-    it('a line between re-attaches starts the count over, and so do 10 s', async () => {
-      const { w, procs, events } = setup(undefined, { alive: async () => true });
+    it('clients refused after a few lines (%begin, %exit) count toward the cap too', async () => {
+      const { w, procs, events } = setup(undefined, { serverPid: async () => '4242' });
+      w.start();
+      for (let i = 0; i < 4; i++) {
+        procs[i]?.say('%begin 1 2 0\n%end 1 2 0\n%exit\n');
+        await flush();
+        procs[i]?.emit('exit', 0);
+        await flush();
+      }
+      expect(events.filter((e) => e.type === 'down')).toHaveLength(1);
+      expect(procs).toHaveLength(4);
+      w.stop();
+    });
+
+    it('a client attached for 1 s starts the count over, and so do 10 s', async () => {
+      const { w, procs, events } = setup(undefined, { serverPid: async () => '4242' });
       w.start();
       for (let i = 0; i < 6; i++) {
         procs[i]?.say('%begin 1 2 0\n');
-        await flush();
+        await vi.advanceTimersByTimeAsync(1000);
         procs[i]?.emit('exit', 0);
         await flush();
       }
@@ -377,16 +417,33 @@ describe('TmuxWatcher', () => {
       w.stop();
     });
 
+    it('stop() and start() start the re-attach count over', async () => {
+      const { w, procs, events } = setup(undefined, { serverPid: async () => '4242' });
+      w.start();
+      for (let i = 0; i < 3; i++) {
+        procs[i]?.emit('exit', 1);
+        await flush();
+      }
+      expect(procs).toHaveLength(4);
+      w.stop();
+      w.start();
+      procs[4]?.emit('exit', 1);
+      await flush();
+      expect(procs).toHaveLength(6);
+      expect(events.some((e) => e.type === 'down')).toBe(false);
+      w.stop();
+    });
+
     it('stop() while has-session is asked spawns nothing and emits nothing', async () => {
-      let answer: (v: boolean) => void = () => {};
+      let answer: (v: string | null) => void = () => {};
       const { w, procs, events } = setup(undefined, {
-        alive: () => new Promise<boolean>((r) => (answer = r)),
+        serverPid: () => new Promise<string | null>((r) => (answer = r)),
       });
       w.start();
       procs[0]?.emit('exit', 1);
       await flush();
       w.stop();
-      answer(false);
+      answer(null);
       await vi.advanceTimersByTimeAsync(60_000);
       expect(procs).toHaveLength(1);
       expect(events).toEqual([]);

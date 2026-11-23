@@ -30,15 +30,28 @@ const BACKOFF_MAX_MS = 30_000;
 const REATTACH_MAX = 3;
 /** …this long count as the server down, so a client tmux keeps refusing can't spin (I1). */
 const REATTACH_WINDOW_MS = 10_000;
+/**
+ * A client that stayed attached this long was really attached: the re-attach count and the
+ * backoff start over when it ends. A client tmux refuses can print a few lines (`%begin`,
+ * `%exit`) first, so lines alone don't prove it (Task 10, from Task 6's review).
+ */
+const ATTACHED_MS = 1000;
+const PID = /^\d+$/;
 
-/** `tmux has-session -t =<session>` succeeds (within EXEC_OPTIONS' 5 s). */
-export function hasSession(target: TmuxTarget, session: string): Promise<boolean> {
+/**
+ * The pid of the tmux server that holds `=<session>` (`display-message -p '#{pid}'`, within
+ * EXEC_OPTIONS' 5 s), or null when there is no such server or session.
+ */
+export function serverPid(target: TmuxTarget, session: string): Promise<string | null> {
   return new Promise((resolve) => {
     execFile(
       'tmux',
-      tmuxArgs(target, ['has-session', '-t', `=${session}`]),
+      tmuxArgs(target, ['display-message', '-p', '-t', `=${session}`, '#{pid}']),
       { timeout: EXEC_OPTIONS.timeout },
-      (err) => resolve(!err),
+      (err, stdout) => {
+        const pid = err ? '' : String(stdout).trim();
+        resolve(PID.test(pid) ? pid : null);
+      },
     );
   });
 }
@@ -49,16 +62,20 @@ export function hasSession(target: TmuxTarget, session: string): Promise<boolean
  *
  * A client can end while the server lives: `tmux attach -d` or `detach-client -a` at the PC, or
  * tmux dropping a client that fell behind (reliability I1). So an ended client first asks
- * `alive()`: with the session still there it re-attaches at once and says nothing until the new
- * client's first line, which emits `up` (a resync). `down` means the server or the session is
- * gone (or tmux refused REATTACH_MAX re-attaches in a row), and the next try backs off.
+ * `serverPid()`: with the session still held by the same server (the pid noted at the client's
+ * first line) it re-attaches at once and says nothing until the new client's first line, which
+ * emits `up` (a resync). `down` means the server or the session is gone, a new server holds the
+ * name (another pid: its pane and window ids start over), or tmux refused REATTACH_MAX
+ * re-attaches in a row; the next try backs off.
  */
 export class TmuxWatcher {
   readonly #session: string;
   readonly #target: TmuxTarget;
   readonly #beforeLaunch: (() => Promise<void>) | undefined;
-  readonly #alive: () => Promise<boolean>;
-  /** Monotonic times of the re-attaches since the last control-mode line. */
+  readonly #serverPid: () => Promise<string | null>;
+  /** The server pid noted at the current client's first line; null when not known. */
+  #pid: string | null = null;
+  /** Monotonic times of the re-attaches since a client last stayed attached ATTACHED_MS. */
   #reattaches: number[] = [];
   #gen = 0;
   readonly #spawn: SpawnFn;
@@ -75,15 +92,15 @@ export class TmuxWatcher {
     socket: string | null;
     configFile?: string;
     beforeLaunch?: () => Promise<void>;
-    /** Whether the server and session live after a client ended (default: `has-session`). */
-    alive?: () => Promise<boolean>;
+    /** The pid of the server holding the session, or null (default: serverPid()). */
+    serverPid?: () => Promise<string | null>;
     spawn?: SpawnFn;
     throttleMs?: number;
   }) {
     this.#session = opts.session;
     this.#target = { socket: opts.socket, configFile: opts.configFile };
     this.#beforeLaunch = opts.beforeLaunch;
-    this.#alive = opts.alive ?? (() => hasSession(this.#target, this.#session));
+    this.#serverPid = opts.serverPid ?? (() => serverPid(this.#target, this.#session));
     this.#spawn = opts.spawn ?? defaultSpawn;
     this.#throttleMs = opts.throttleMs ?? 250;
   }
@@ -98,12 +115,15 @@ export class TmuxWatcher {
   start(): void {
     if (this.#running) return;
     this.#running = true;
+    this.#reattaches = [];
     this.#launch();
   }
 
   stop(): void {
     this.#running = false;
     this.#gen++;
+    this.#reattaches = [];
+    this.#pid = null;
     if (this.#timer) clearTimeout(this.#timer);
     this.#timer = null;
     const p = this.#proc;
@@ -145,6 +165,8 @@ export class TmuxWatcher {
 
   #spawnClient(): void {
     let first = true;
+    const since = performance.now();
+    const gen = this.#gen;
     const args = tmuxArgs(this.#target, ['-C', 'attach', '-t', `=${this.#session}`]);
     const proc = this.#spawn('tmux', args);
     this.#proc = proc;
@@ -160,6 +182,7 @@ export class TmuxWatcher {
       while (nl >= 0) {
         if (first) {
           first = false;
+          this.#notePid(gen);
           this.#emit({ type: 'up' });
         }
         this.#line(buf.slice(0, nl).replace(/\r$/, ''));
@@ -172,34 +195,51 @@ export class TmuxWatcher {
       if (ended || this.#proc !== proc) return;
       ended = true;
       this.#proc = null;
-      if (this.#running) this.#ended();
+      if (!this.#running) return;
+      if (performance.now() - since >= ATTACHED_MS) {
+        // It was attached: the next failure starts the count and the backoff over.
+        this.#reattaches = [];
+        this.#backoff = BACKOFF_START_MS;
+      }
+      this.#ended();
     };
     proc.on('exit', onEnd);
     proc.on('error', onEnd);
   }
 
-  /** A client ended while running: re-attach to a live server, else report it down. */
+  /** The attached server's pid, asked once per client (at its first line). */
+  #notePid(gen: number): void {
+    this.#serverPid().then(
+      (pid) => {
+        if (this.#running && gen === this.#gen && pid !== null) this.#pid = pid;
+      },
+      () => {},
+    );
+  }
+
+  /** A client ended while running: re-attach to the same live server, else report it down. */
   #ended(): void {
     const gen = this.#gen;
-    const decide = (alive: boolean) => {
+    const decide = (pid: string | null) => {
       if (!this.#running || gen !== this.#gen) return;
       const now = performance.now();
       this.#reattaches = this.#reattaches.filter((t) => now - t < REATTACH_WINDOW_MS);
-      if (alive && this.#reattaches.length < REATTACH_MAX) {
+      // Another pid is a new server under the same name: its ids start over, so it is a down.
+      const same = pid !== null && (this.#pid === null || pid === this.#pid);
+      if (same && this.#reattaches.length < REATTACH_MAX) {
         this.#reattaches.push(now);
+        this.#pid = pid;
         this.#spawnClient();
         return;
       }
+      this.#pid = null;
       this.#emit({ type: 'down' });
       this.#retryLater();
     };
-    this.#alive().then(decide, () => decide(false));
+    this.#serverPid().then(decide, () => decide(null));
   }
 
   #line(line: string): void {
-    // Any control-mode line proves the attach worked: the next failure starts the backoff over.
-    this.#backoff = BACKOFF_START_MS;
-    this.#reattaches = [];
     const sp = line.indexOf(' ');
     const kind = sp < 0 ? line : line.slice(0, sp);
     if (WINDOW_EVENTS.has(kind)) {

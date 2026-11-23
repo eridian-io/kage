@@ -27,6 +27,11 @@ export interface HookEvent {
   /** `tool_input` as Claude sent it (an object), e.g. AskUserQuestion's questions. */
   toolInput: unknown | null;
   /**
+   * `tool_use_id` (PreToolUse, PostToolUse, PostToolUseFailure): pairs a tool's hooks, which
+   * parallel tools can send out of order (reliability M11). PermissionRequest has none.
+   */
+  toolUseId: string | null;
+  /**
    * SessionStart only: why the session started (`startup`, `resume`, `clear`, `compact`);
    * null for other events.
    */
@@ -90,6 +95,8 @@ export function parseHookEvent(body: unknown, at: number): HookEvent | null {
       message: str(p, 'message'),
       toolName: str(p, 'tool_name'),
       toolInput,
+      // Only pairs tool hooks: an odd value loses the pairing, never the event.
+      toolUseId: typeof p.tool_use_id === 'string' ? p.tool_use_id : null,
       source,
       at,
     };

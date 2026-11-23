@@ -69,9 +69,10 @@ const WATCH_NAMES = new Set(['FETCH_HEAD', 'ORIG_HEAD', 'packed-refs', 'HEAD']);
  * window the source holds for the session (`known`, null when it reads the window as gone). A
  * window tagged with the session's `@kage_id` that the source doesn't hold means the session
  * read ended while its Claude may still work: false. A done session whose own window is listed
- * is archived as before (the archive closes its idle Claude). An empty listing means tmux says
- * the server or the session is missing, which proves nothing, so it answers false too; a failed
- * listing throws, and the archiver skips and logs it.
+ * is archived as before (the archive closes its idle Claude); two windows tagged with the id
+ * answer false. Serve lists strictly (Task 10, F13): a renamed or missing session throws
+ * SessionMissing, and any failed listing throws, so the archiver skips and logs it. An empty
+ * listing means no tmux server runs, which proves nothing, so it answers false too.
  */
 export async function listingAgrees(
   listWindows: () => Promise<readonly { windowId: string; kageId: string | null }[]>,
@@ -80,8 +81,10 @@ export async function listingAgrees(
 ): Promise<boolean> {
   const windows = await listWindows();
   if (windows.length === 0) return false;
-  const tagged = windows.find((w) => w.kageId === id);
-  return tagged === undefined || tagged.windowId === known;
+  const tagged = windows.filter((w) => w.kageId === id);
+  // An archive closes only the window the source holds: a second tagged window (a duplicate
+  // tag) would keep its Claude running, so every tagged window must be that one.
+  return tagged.length === 0 || (tagged.length === 1 && tagged[0]?.windowId === known);
 }
 
 /** Logged once per directory when fs.watch throws. */

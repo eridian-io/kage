@@ -66,6 +66,8 @@ export function tmuxArgs(t: TmuxTarget, args: string[]): string[] {
 }
 
 const MISSING_RE = /no server running|error connecting to|can't find session/i;
+/** list-panes' words when the server runs but has no session by that name (renamed, killed). */
+const NO_SESSION_RE = /can't find session/i;
 /** has-session's words when no tmux server runs at all (not just no such session). */
 const NO_SERVER_RE = /no server running|error connecting to/i;
 const stderrOf = (e: unknown): string => String((e as { stderr?: unknown }).stderr ?? '');
@@ -150,6 +152,19 @@ function utf8Chunks(text: string, max: number): string[] {
   }
   if (chunk !== '') chunks.push(chunk);
   return chunks;
+}
+
+/**
+ * A strict listing's answer when the server runs but tmux finds no session by Kage's name: the
+ * session was renamed or killed (reliability M4). It names the session Kage asked for.
+ */
+export class SessionMissing extends Error {
+  readonly session: string;
+  constructor(session: string) {
+    super(`tmux has no session named ${session}`);
+    this.name = 'SessionMissing';
+    this.session = session;
+  }
 }
 
 export class TmuxClient {
@@ -271,8 +286,13 @@ export class TmuxClient {
   /**
    * The session's windows, one pane each (B14: a pane in `hookPanes`, else one running claude,
    * else the active pane); [] only when tmux says the server or session is missing, else throws.
+   * `strict` (reliability M4): a missing session while the server runs throws SessionMissing
+   * instead of [], so the caller can tell "renamed" from "no windows"; no server is still [].
    */
-  async listWindows(hookPanes: ReadonlySet<string> = new Set()): Promise<TmuxWindow[]> {
+  async listWindows(
+    hookPanes: ReadonlySet<string> = new Set(),
+    o: { strict?: boolean } = {},
+  ): Promise<TmuxWindow[]> {
     try {
       const { stdout } = await this.#run([
         'list-panes',
@@ -284,7 +304,9 @@ export class TmuxClient {
       ]);
       return pickPanes(parsePanes(stdout), hookPanes);
     } catch (e) {
-      if (MISSING_RE.test(stderrOf(e))) return [];
+      const stderr = stderrOf(e);
+      if (o.strict && NO_SESSION_RE.test(stderr)) throw new SessionMissing(this.#session);
+      if (MISSING_RE.test(stderr)) return [];
       throw e;
     }
   }

@@ -142,6 +142,13 @@ describe("listingAgrees (serve's confirm)", () => {
     expect(await listingAgrees(async () => [...list, w('@9', 'k-1')], 'k-1', '@5')).toBe(false);
   });
 
+  it('two windows tagged with the id: false unless the source holds every one (Task 10)', async () => {
+    const both = async () => [...list, w('@5', 'k-1'), w('@9', 'k-1')];
+    expect(await listingAgrees(both, 'k-1', '@5')).toBe(false);
+    expect(await listingAgrees(both, 'k-1', '@9')).toBe(false);
+    expect(await listingAgrees(both, 'k-1', null)).toBe(false);
+  });
+
   it('an empty listing (session or server missing) is not proof: false', async () => {
     expect(await listingAgrees(async () => [], 'k-1', null)).toBe(false);
   });

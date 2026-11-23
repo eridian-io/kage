@@ -37,7 +37,7 @@ import {
 import type { PreviewPatch, PreviewTarget, PreviewTracker } from './preview/tracker.ts';
 import { NotImplementedError, type SessionSource, type SourceEvent } from './source.ts';
 import type { SessionRecord, StateStore } from './state/store.ts';
-import type { TmuxClient } from './tmux/client.ts';
+import { SessionMissing, type TmuxClient } from './tmux/client.ts';
 import { isClaude, type TmuxWindow } from './tmux/format.ts';
 import type { TmuxWatcher, WatchEvent } from './tmux/watcher.ts';
 import type { TranscriptTail } from './transcript/tail.ts';
@@ -176,6 +176,16 @@ const BUSY_FOOTER = /esc to interrupt/i;
  * has its pane looked at this much later: no busy footer and no prompt there means done.
  */
 const TURN_END_CHECK_MS = 2000;
+/**
+ * M9: pane activity from a running hooks-mode session (Claude's spinner) re-lists at most this
+ * often, for the R17 exit check. A Stop or SessionEnd re-lists at once, as do activity-mode and
+ * shell-ended sessions.
+ */
+const ACTIVITY_RELIST_MS = 5000;
+/** M11: a pending tool whose hook had no `tool_use_id` (a PermissionRequest, a prompt on screen). */
+const UNNAMED_TOOL = '';
+/** M11: `tool_use_id`s whose PostToolUse came before their PreToolUse, kept at most this many. */
+const TOOLS_DONE_MAX = 64;
 
 /** R17: a pane whose command is one of these (or `-<shell>`, a login shell) is back at a shell. */
 const SHELLS = new Set([
@@ -259,8 +269,19 @@ interface Live extends SessionView {
   askMulti: Map<string, boolean>;
   /** The pane has shown the prompt for this needs-you (gates the R11 pane fallback). */
   promptSeen: boolean;
-  /** R12: a PreToolUse or PermissionRequest without its PostToolUse, failure, Stop or end yet. */
-  pending: boolean;
+  /**
+   * R12: tools with a PreToolUse or PermissionRequest and no PostToolUse, failure, Stop or end
+   * yet, by `tool_use_id` (M11: parallel tools' hooks can arrive reversed); UNNAMED_TOOL for one
+   * without an id. A permission Notification counts only while this isn't empty.
+   */
+  pending: Set<string>;
+  /** M11: ids whose PostToolUse arrived before their PreToolUse: that PreToolUse adds nothing. */
+  toolsDone: Set<string>;
+  /**
+   * M3: when Kage began launching or resuming this record (monotonic ms; adopt or resumed, both
+   * before new-window): hooks set aside before then can't be from its new window.
+   */
+  launchedAt: number;
   sessionId: string | null;
   transcriptPath: string | null;
   /** The window's pane has been seen running `claude`. */
@@ -321,8 +342,20 @@ export class LiveSource implements SessionSource {
   readonly #claimSeq = new Map<string, number>();
   /** B34: window id → the pane id new-window printed, so a claim matches hooks with no listing. */
   readonly #claimPanes = new Map<string, string>();
-  /** B34: hooks dropped as from an unknown pane, newest last, for a claim that names the pane. */
-  #setAside: { e: HookEvent; at: number }[] = [];
+  /**
+   * B34: hooks dropped as from an unknown pane, newest last, for a claim that names the pane;
+   * `gen` is the server generation they were set aside in (M3).
+   */
+  #setAside: { e: HookEvent; at: number; gen: number }[] = [];
+  /** M3: bumped at each `down`: a new tmux server numbers its panes and windows afresh. */
+  #serverGen = 0;
+  /** M4: the watcher saw `up` and no `down` since: its control client is attached. */
+  #attached = false;
+  /** M4: the "session isn't there by that name" line was logged in this episode. */
+  #missingLogged = false;
+  /** M9: when the last activity-driven re-list of a running hooks-mode session was asked. */
+  #activityRelistAt = Number.NEGATIVE_INFINITY;
+  #activityTimer: ReturnType<typeof setTimeout> | null = null;
   /** Listings started so far. */
   #listSeq = 0;
   #running = false;
@@ -483,6 +516,7 @@ export class LiveSource implements SessionSource {
     st.firstPromptPending = true;
     st.startingSince = null;
     st.lastActivity = this.#clock();
+    st.launchedAt = this.#clock();
     this.#sessions.set(r.kageId, st);
     this.#emitNow(st);
     this.#auto?.sync();
@@ -498,6 +532,8 @@ export class LiveSource implements SessionSource {
    * B34: `paneId` is the pane new-window printed. A window that dies before any listing shows
    * it (a failed `--resume` exits at once) still has its hooks matched: those queued for the
    * pane, and those set aside as unknown in the last 5 s, go to the record's session.
+   * M3: only those set aside since the launch began (adopt or resumed, both before new-window)
+   * and on the current tmux server: a dead server's pane numbers come back on the new one.
    */
   claim(kageId: string, windowId: string, paneId: string): void {
     if (!this.#records.has(kageId)) return;
@@ -508,8 +544,11 @@ export class LiveSource implements SessionSource {
     if (ext) this.#removeSession(ext);
     if (!this.#running) return;
     this.#ignoredPanes.delete(paneId);
-    const since = this.#clock() - UNKNOWN_PANE_MS;
-    const mine = this.#setAside.filter((x) => x.e.pane === paneId && x.at >= since);
+    const launched = this.#sessions.get(kageId)?.launchedAt ?? Number.NEGATIVE_INFINITY;
+    const since = Math.max(this.#clock() - UNKNOWN_PANE_MS, launched);
+    const mine = this.#setAside.filter(
+      (x) => x.e.pane === paneId && x.at >= since && x.gen === this.#serverGen,
+    );
     this.#setAside = this.#setAside.filter((x) => x.e.pane !== paneId);
     if (mine.length > 0) {
       this.#unknown.push(...mine.map((x) => x.e));
@@ -539,8 +578,9 @@ export class LiveSource implements SessionSource {
     st.claudeExited = true;
     st.hookSeen = false;
     st.idleSeen = false;
-    st.pending = false;
+    this.#clearPending(st);
     st.lastActivity = this.#clock();
+    st.launchedAt = this.#clock();
     this.#setStatus(st, 'running');
     st.now = STARTING;
     if (st.transcriptPath) void this.#ensureTail(st);
@@ -652,7 +692,7 @@ export class LiveSource implements SessionSource {
     if (!showsPrompt(text) && showsDenialLast(text)) {
       this.#clearTimers(st, ['idle']);
       this.#setStatus(st, 'done');
-      st.pending = false;
+      this.#clearPending(st);
       this.#emitNow(st);
       return;
     }
@@ -683,7 +723,7 @@ export class LiveSource implements SessionSource {
     const st = this.#sessions.get(id);
     if (!st || st.status === 'ended') return;
     this.#clearTimers(st, ['retry', 'answered']);
-    st.pending = false;
+    this.#clearPending(st);
     this.#setStatus(st, 'running');
     st.lastActivity = this.#clock();
     this.#scheduleIdle(st);
@@ -829,6 +869,11 @@ export class LiveSource implements SessionSource {
     return out;
   }
 
+  /** Hook panes ignored for now (M11: expired ones are pruned at each hook); for tests. */
+  ignoredPaneCount(): number {
+    return this.#ignoredPanes.size;
+  }
+
   /** Archived sessions, newest first, at most LIMITS.archived. */
   archivedList(): ArchivedSession[] {
     return [...this.#records.values()]
@@ -857,7 +902,7 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
     st.mode = 'hooks';
     this.#setStatus(st, 'ended');
-    st.pending = false;
+    this.#clearPending(st);
     this.#retireTailSoon(st);
     this.#emitNow(st);
     this.#recheckSoon(STOP_RECHECK_MS);
@@ -922,6 +967,10 @@ export class LiveSource implements SessionSource {
     this.#unknownTimer = null;
     if (this.#recheckTimer) clearTimeout(this.#recheckTimer);
     this.#recheckTimer = null;
+    if (this.#activityTimer) clearTimeout(this.#activityTimer);
+    this.#activityTimer = null;
+    this.#attached = false;
+    this.#missingLogged = false;
     this.#unknown = [];
     this.#early = [];
     this.#setAside = [];
@@ -957,7 +1006,9 @@ export class LiveSource implements SessionSource {
       resuming: null,
       askMulti: new Map(),
       promptSeen: false,
-      pending: false,
+      pending: new Set(),
+      toolsDone: new Set(),
+      launchedAt: Number.NEGATIVE_INFINITY,
       sessionId: record?.sessionId ?? null,
       transcriptPath: record?.transcriptPath ?? null,
       sawClaude: false,
@@ -989,7 +1040,8 @@ export class LiveSource implements SessionSource {
   async #listWindows(): Promise<{ windows: TmuxWindow[]; seq: number }> {
     const seq = ++this.#listSeq;
     const asked = new Set(this.#hookPanes);
-    const windows = await this.#d.tmux.listWindows(asked);
+    // M4: strict, so a renamed session (SessionMissing) isn't read as "no windows".
+    const windows = await this.#d.tmux.listWindows(asked, { strict: true });
     const listed = new Set(windows.map((w) => w.paneId));
     for (const p of asked) if (!listed.has(p)) this.#hookPanes.delete(p);
     return { windows, seq };
@@ -1008,10 +1060,18 @@ export class LiveSource implements SessionSource {
           let listing: { windows: TmuxWindow[]; seq: number };
           try {
             listing = await this.#listWindows();
-          } catch {
-            continue; // a failed listing changes nothing; the watcher reports a dead server
+          } catch (e) {
+            if (!(e instanceof SessionMissing)) continue; // the watcher reports a dead server
+            if (this.#attached) {
+              // M4: the watcher is still attached, so the session lives under another name
+              // (rename-session): every state stays, and Resume still finds the window.
+              this.#sessionMissing(e);
+              continue;
+            }
+            listing = { windows: [], seq: this.#listSeq };
           }
           if (!this.#running) return;
+          this.#missingLogged = false;
           await this.#reconcile(listing.windows, listing.seq);
         } while (this.#listAgain && this.#running);
       } finally {
@@ -1019,6 +1079,15 @@ export class LiveSource implements SessionSource {
       }
     })();
     return this.#listing;
+  }
+
+  /** M4: logged once per episode; a listing that works, or a `down`, ends the episode. */
+  #sessionMissing(e: SessionMissing): void {
+    if (this.#missingLogged) return;
+    this.#missingLogged = true;
+    this.#d.log?.(
+      `kage: the tmux session "${e.session}" isn't there by that name any more, so Kage keeps the last state.`,
+    );
   }
 
   /** A listed window's last activity (epoch seconds) on the monotonic clock. */
@@ -1110,7 +1179,7 @@ export class LiveSource implements SessionSource {
       }
       this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
       st.mode = 'hooks';
-      st.pending = false;
+      this.#clearPending(st);
       this.#setStatus(st, 'ended');
       this.#retireTailSoon(st);
       this.#emitNow(st);
@@ -1129,7 +1198,7 @@ export class LiveSource implements SessionSource {
       this.#saveSoon();
     }
     st.mode = 'activity';
-    st.pending = false;
+    this.#clearPending(st);
     if (this.#claudeGone(st, w)) {
       this.#endInWindow(st);
       if (!st.tail && st.transcriptPath) await this.#readOnce(st);
@@ -1188,7 +1257,7 @@ export class LiveSource implements SessionSource {
     st.mode = 'hooks';
     this.#setStatus(st, 'ended');
     st.shellEnded = true;
-    st.pending = false;
+    this.#clearPending(st);
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -1222,7 +1291,7 @@ export class LiveSource implements SessionSource {
     this.#clearTimers(st, ['emit', 'retire']);
     this.#setStatus(st, 'ended');
     st.gen++;
-    st.pending = false;
+    this.#clearPending(st);
     st.question = null;
     this.#retireTailSoon(st);
     this.#emitNow(st);
@@ -1247,18 +1316,30 @@ export class LiveSource implements SessionSource {
   #onWatch(e: WatchEvent): void {
     if (!this.#running || !this.#ready) return;
     switch (e.type) {
-      case 'windows-changed':
       case 'up':
+        this.#attached = true;
+        void this.#relist();
+        break;
+      case 'windows-changed':
         void this.#relist();
         break;
       case 'down':
+        this.#attached = false;
+        this.#missingLogged = false;
         // A new server numbers its panes afresh: old hook panes would mislead the next listing.
         this.#hookPanes.clear();
         // …and its windows afresh: a claimed id could name someone else's window.
         this.#claims.clear();
         this.#claimSeq.clear();
         this.#claimPanes.clear();
+        // M3: hooks waiting on a listing, ignored panes and set-aside hooks are the old server's;
+        // anything set aside from now on carries the new generation.
+        this.#serverGen++;
         this.#setAside = [];
+        this.#unknown = [];
+        this.#ignoredPanes.clear();
+        if (this.#unknownTimer) clearTimeout(this.#unknownTimer);
+        this.#unknownTimer = null;
         for (const st of [...this.#sessions.values()]) {
           if (!st.record) this.#removeSession(st);
           else if (st.window) this.#detach(st);
@@ -1285,13 +1366,36 @@ export class LiveSource implements SessionSource {
     }
     // Re-list to see claude exit, or come back after Ctrl+Z (a shell-ended session revives), or
     // a shell window start claude (pane_current_command changes fire no tmux event).
-    if (
+    if (st.mode === 'hooks' && st.status === 'running') {
+      // M9: Claude's spinner draws all turn long; its Stop or SessionEnd re-lists at once.
+      this.#activityRelist();
+    } else if (
       (st.mode === 'hooks' && (st.status !== 'ended' || st.shellEnded)) ||
       (st.mode === 'activity' && st.window !== null && atShell(st.window.command))
     ) {
       this.#recheckSoon(0);
     }
     this.#requestCapture(st);
+  }
+
+  /**
+   * M9: a re-list for a running hooks-mode session's activity, at most once per
+   * ACTIVITY_RELIST_MS; activity inside that wait arms one trailing re-list at its end, so a
+   * Claude that dies without its SessionEnd is still seen.
+   */
+  #activityRelist(): void {
+    if (!this.#running || this.#activityTimer) return;
+    const wait = this.#activityRelistAt + ACTIVITY_RELIST_MS - this.#clock();
+    if (wait <= 0) {
+      this.#activityRelistAt = this.#clock();
+      this.#recheckSoon(0);
+      return;
+    }
+    this.#activityTimer = setTimeout(() => {
+      this.#activityTimer = null;
+      this.#activityRelistAt = this.#clock();
+      this.#recheckSoon(0);
+    }, wait);
   }
 
   #activityStatus(st: Live): SessionStatus {
@@ -1362,15 +1466,16 @@ export class LiveSource implements SessionSource {
     }
     if (e.pane === null) return;
     this.#hookPanes.add(e.pane);
+    // M11: entries past their expiry go, also for panes that never send again.
+    const now = this.#clock();
+    for (const [p, until] of this.#ignoredPanes) if (now >= until) this.#ignoredPanes.delete(p);
     const st = this.#byPane(e.pane);
     if (!st) {
       // A hooks-enabled Claude outside the kage session: one re-list per 5 s, not per burst.
-      const until = this.#ignoredPanes.get(e.pane);
-      if (until !== undefined && this.#clock() < until) {
+      if (this.#ignoredPanes.has(e.pane)) {
         this.#setAsideHook(e);
         return;
       }
-      this.#ignoredPanes.delete(e.pane);
     }
     // Keep a pane's events in order while an earlier one waits for the re-list.
     if (!st || this.#unknown.some((u) => u.pane === e.pane)) {
@@ -1384,7 +1489,10 @@ export class LiveSource implements SessionSource {
   /** Re-lists once for hooks from unknown panes; those still unknown are dropped. */
   async #resolveUnknown(): Promise<void> {
     this.#unknownTimer = null;
+    const gen = this.#serverGen;
     await this.#relist();
+    // M3: a `down` meanwhile cleared the queue; what came after it waits for its own re-list.
+    if (gen !== this.#serverGen) return;
     const queued = this.#unknown;
     this.#unknown = [];
     for (const e of queued) {
@@ -1400,8 +1508,56 @@ export class LiveSource implements SessionSource {
 
   /** B34: keeps a dropped hook for a claim that may name its pane soon (the newest 32). */
   #setAsideHook(e: HookEvent): void {
-    this.#setAside.push({ e, at: this.#clock() });
+    this.#setAside.push({ e, at: this.#clock(), gen: this.#serverGen });
     if (this.#setAside.length > SET_ASIDE_MAX) this.#setAside.shift();
+  }
+
+  /**
+   * R12 with M11: which tools are pending, by `tool_use_id`. A PostToolUse that arrives before its
+   * PreToolUse (parallel tools, separate `kage hook` processes) leaves a note, and that PreToolUse
+   * then adds nothing. A turn's end (Stop, SessionEnd, a new session) clears them.
+   */
+  #trackTools(st: Live, e: HookEvent, compact: boolean): void {
+    const id = e.toolUseId;
+    switch (e.event) {
+      case 'PreToolUse':
+        if (id === null) st.pending.add(UNNAMED_TOOL);
+        else if (!st.toolsDone.delete(id)) st.pending.add(id);
+        break;
+      case 'PermissionRequest':
+        // It carries no tool_use_id; its tool's PreToolUse has usually added it already.
+        if (st.pending.size === 0) st.pending.add(UNNAMED_TOOL);
+        break;
+      case 'PostToolUse':
+      case 'PostToolUseFailure':
+        if (id === null) {
+          this.#clearPending(st);
+          break;
+        }
+        st.pending.delete(UNNAMED_TOOL);
+        if (!st.pending.delete(id)) {
+          st.toolsDone.add(id);
+          if (st.toolsDone.size > TOOLS_DONE_MAX) {
+            st.toolsDone.delete(st.toolsDone.values().next().value as string);
+          }
+        }
+        break;
+      case 'Stop':
+      case 'SessionEnd':
+        this.#clearPending(st);
+        break;
+      case 'SessionStart':
+        if (!compact) this.#clearPending(st);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /** No tool is pending (an answer, a denial, an end): the early-PostToolUse notes go too. */
+  #clearPending(st: Live): void {
+    st.pending.clear();
+    st.toolsDone.clear();
   }
 
   /** A claim ends: its window, listing number and pane go together. */
@@ -1421,7 +1577,11 @@ export class LiveSource implements SessionSource {
       }
     }
     // R12: a permission Notification counts only while a tool is pending.
-    const counts = !(e.event === 'Notification' && e.notification === 'permission' && !st.pending);
+    const counts = !(
+      e.event === 'Notification' &&
+      e.notification === 'permission' &&
+      st.pending.size === 0
+    );
     // Every hook names its session and transcript: link on any of them, so a pane whose
     // SessionStart Kage missed (a restart, a hook lost) still gets its tail.
     this.#link(st, e);
@@ -1432,16 +1592,7 @@ export class LiveSource implements SessionSource {
     const compact = e.event === 'SessionStart' && e.source === 'compact';
     // I2: a hook says what Claude is doing; a turn-end check armed before it is moot.
     this.#clearTimers(st, ['startup', 'turnEnd']);
-    if (e.event === 'PreToolUse' || e.event === 'PermissionRequest') st.pending = true;
-    if (
-      e.event === 'PostToolUse' ||
-      e.event === 'PostToolUseFailure' ||
-      e.event === 'Stop' ||
-      e.event === 'SessionEnd' ||
-      (e.event === 'SessionStart' && !compact)
-    ) {
-      st.pending = false;
-    }
+    this.#trackTools(st, e, compact);
     st.mode = 'hooks';
     st.startup = false;
     this.#clearTimers(st, ['idle']);
@@ -1497,7 +1648,7 @@ export class LiveSource implements SessionSource {
     this.#endFirstPromptWait(st);
     this.#clearTimers(st, ['idle', 'capture', 'retry', 'startup', 'answered']);
     st.mode = 'hooks';
-    st.pending = false;
+    this.#clearPending(st);
     this.#setStatus(st, 'ended');
     const line: DisplayLine = { kind: 'out', text: RESUME_FAILED };
     st.lines = [...(st.tail ? st.tail.lines() : st.lines), line].slice(-MAX_LINES);
@@ -1564,7 +1715,7 @@ export class LiveSource implements SessionSource {
       st.question = prompt;
       st.promptKind = numberedPromptKind(text) ?? 'permission';
       st.promptSeen = true;
-      st.pending = true;
+      st.pending.add(UNNAMED_TOOL);
     } else if (text === null || !BUSY_FOOTER.test(text)) {
       this.#clearTimers(st, ['idle']);
       this.#setStatus(st, 'done');
@@ -1633,7 +1784,7 @@ export class LiveSource implements SessionSource {
         // R11: No or Esc fires no hook; the transcript shows it.
         if (st.status !== 'ended') this.#setStatus(st, 'done');
         st.question = null;
-        st.pending = false;
+        this.#clearPending(st);
         st.now = tail.now();
         this.#emitNow(st);
       }),
@@ -1677,12 +1828,14 @@ export class LiveSource implements SessionSource {
       st.gen === gen &&
       st.hookCount === hooks &&
       st.mode === 'hooks' &&
-      st.status === 'running';
+      st.status === 'running' &&
+      // A turn the transcript shows going on again (its hooks lost too) isn't done.
+      (st.tail?.now() ?? null) === null;
     if (!still()) return;
     const text = await this.#capture(st);
     if (!still() || text === null || BUSY_FOOTER.test(text) || showsPrompt(text)) return;
     this.#clearTimers(st, ['idle']);
-    st.pending = false;
+    this.#clearPending(st);
     this.#setStatus(st, 'done');
     st.now = st.tail?.now() ?? null;
     this.#emitNow(st);
@@ -1725,6 +1878,9 @@ export class LiveSource implements SessionSource {
       st.question = q;
       st.promptKind = 'ask';
     } else this.#setStatus(st, st.now !== null ? 'running' : this.#activityStatus(st));
+    // A restart within 5 s of a lost Stop: running from recent activity, but the transcript's
+    // turn has ended, so the pane decides as after a turn end (I2).
+    if (st.status === 'running' && tail.now() === null) this.#armTurnEndCheck(st);
   }
 
   /** An ended session from the state file: read its transcript once for its last lines. */
@@ -1949,7 +2105,7 @@ export class LiveSource implements SessionSource {
         // its PostToolUse, which may be minutes away for a long command.
         if (showsDenial(text)) {
           this.#setStatus(st, 'done');
-          st.pending = false;
+          this.#clearPending(st);
         } else {
           this.#setStatus(st, 'running');
           this.#scheduleIdle(st);
@@ -1965,7 +2121,7 @@ export class LiveSource implements SessionSource {
       st.question = prompt;
       st.promptKind = numberedPromptKind(text);
       st.promptSeen = true;
-      st.pending = true;
+      st.pending.add(UNNAMED_TOOL);
       this.#emitNow(st);
     }
   }
