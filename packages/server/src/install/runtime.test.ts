@@ -199,6 +199,19 @@ describe('serviceEnv', () => {
     });
   });
 
+  it('serviceEnv carries an absolute KAGE_SOCKET', () => {
+    const m = { kind: 'sea', exe: '/b/kage' } as const;
+    expect(serviceEnv(m, '/usr/bin', { KAGE_SOCKET: '/home/u/run/kage.sock' })).toEqual({
+      PATH: '/usr/bin',
+      MALLOC_ARENA_MAX: '2',
+      KAGE_SERVICE: '1',
+      KAGE_SOCKET: '/home/u/run/kage.sock',
+    });
+    for (const v of ['', 'kage.sock', 'run/kage.sock']) {
+      expect(serviceEnv(m, '/usr/bin', { KAGE_SOCKET: v })).not.toHaveProperty('KAGE_SOCKET');
+    }
+  });
+
   it('leaves out unset, empty and relative values (a name on PATH, a relative folder)', () => {
     const env: NodeJS.ProcessEnv = {
       KAGE_CLAUDE_BIN: 'claude',

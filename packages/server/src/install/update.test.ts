@@ -32,6 +32,7 @@ import {
   compareVersions,
   downloadVerified,
   parseSums,
+  pinRelease,
   RELEASE_BASE,
   ReleaseError,
   releaseBase,
@@ -314,6 +315,120 @@ describe('downloadVerified', UNDER_LOAD, () => {
   });
 });
 
+describe('pinRelease (R125)', UNDER_LOAD, () => {
+  const origin = () => `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const latestBase = () => new URL(`${origin()}/o/r/releases/latest/download/`);
+  const LATEST = '/o/r/releases/latest/download/VERSION';
+  const redirect =
+    (location: string): Handler =>
+    (_req, res) => {
+      res.writeHead(302, { location, 'content-length': 0 });
+      res.end();
+    };
+  const pinError = async (p: Promise<unknown>) => {
+    const err = await p.then(
+      () => null,
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(ReleaseError);
+    return (err as Error).message;
+  };
+
+  it('a hop to the same origin and /releases/download/v<semver>/VERSION pins that release', async () => {
+    routes.set(LATEST, redirect('/o/r/releases/download/v9.0.0/VERSION'));
+    routes.set('/o/r/releases/download/v9.0.0/VERSION', send('9.0.0\n'));
+    const r = await pinRelease(fetch, latestBase());
+    expect(r.base.href).toBe(`${origin()}/o/r/releases/download/v9.0.0/`);
+    expect(r.version).toBe('9.0.0\n');
+    expect(hits).toEqual([LATEST, '/o/r/releases/download/v9.0.0/VERSION']);
+  });
+
+  it("a hop to another origin isn't pinned", async () => {
+    // Another port is another origin, though the path names a release folder.
+    const other = createServer((req, res) => {
+      hits.push(`other:${new URL(req.url ?? '/', 'http://x').pathname}`);
+      res.writeHead(200, { 'content-length': 6 });
+      res.end('9.1.0\n');
+    });
+    await new Promise<void>((r) => other.listen(0, '127.0.0.1', r));
+    try {
+      const otherOrigin = `http://127.0.0.1:${(other.address() as AddressInfo).port}`;
+      routes.set(LATEST, redirect(`${otherOrigin}/o/r/releases/download/v9.1.0/VERSION`));
+      const r = await pinRelease(fetch, latestBase());
+      // VERSION is followed there; every other file still resolves against the base.
+      expect(r.base.href).toBe(latestBase().href);
+      expect(r.version).toBe('9.1.0\n');
+      expect(hits).toEqual([LATEST, LATEST, 'other:/o/r/releases/download/v9.1.0/VERSION']);
+    } finally {
+      other.closeAllConnections();
+      await new Promise<void>((r) => other.close(() => r()));
+    }
+  });
+
+  it("a pinned release whose VERSION isn't its tag fails", async () => {
+    routes.set(LATEST, redirect('/o/r/releases/download/v9.1.0/VERSION'));
+    routes.set('/o/r/releases/download/v9.1.0/VERSION', send('9.0.0\n'));
+    expect(await pinError(pinRelease(fetch, latestBase()))).toBe(
+      "the release's VERSION doesn't match its tag",
+    );
+  });
+
+  it("a traversal or an encoded slash in the hop's path isn't pinned", async () => {
+    routes.set('/o/r/VERSION', send('9.0.0\n'));
+    routes.set('/evil/releases/download/v9.0.0/VERSION', send('9.0.0\n'));
+    routes.set('/o/r/releases/download/v9.0.0/..%2F..%2F/VERSION', send('9.0.0\n'));
+    for (const location of [
+      // Resolves to /evil/releases/download/v9.0.0/VERSION: another repository's release.
+      '/o/r/releases/download/v9.0.0/../../../../../evil/releases/download/v9.0.0/VERSION',
+      // Resolves to /o/r/VERSION, outside any release folder.
+      '/o/r/releases/download/v9.0.0/../../../VERSION',
+      // %2F isn't a folder separator, so the tag segment isn't v<semver>.
+      '/o/r/releases/download/v9.0.0/..%2F..%2F/VERSION',
+    ]) {
+      routes.set(LATEST, redirect(location));
+      const r = await pinRelease(fetch, latestBase());
+      expect(r.base.href, location).toBe(latestBase().href);
+      expect(r.version, location).toBe('9.0.0\n');
+    }
+  });
+
+  it('a pre-release tag pins when its VERSION matches it (R118), and fails when it does not', async () => {
+    routes.set(LATEST, redirect('/o/r/releases/download/v9.1.0-rc.1/VERSION'));
+    routes.set('/o/r/releases/download/v9.1.0-rc.1/VERSION', send('9.1.0-rc.1\n'));
+    const r = await pinRelease(fetch, latestBase());
+    expect(r.base.href).toBe(`${origin()}/o/r/releases/download/v9.1.0-rc.1/`);
+    expect(r.version.trim()).toBe('9.1.0-rc.1');
+
+    routes.set('/o/r/releases/download/v9.1.0-rc.1/VERSION', send('9.1.0\n'));
+    expect(await pinError(pinRelease(fetch, latestBase()))).toBe(
+      "the release's VERSION doesn't match its tag",
+    );
+  });
+
+  it('a same-origin hop to a folder that is not a tag is followed, not pinned', async () => {
+    for (const location of [
+      '/rel/VERSION',
+      '/o/r/releases/download/vv9.0.0/VERSION',
+      '/o/r/releases/download/9.0.0/VERSION',
+      '/o/r/releases/download/v9.0/VERSION',
+    ]) {
+      routes.set(location, send('9.0.0\n'));
+      routes.set(LATEST, redirect(location));
+      const r = await pinRelease(fetch, latestBase());
+      expect(r.base.href, location).toBe(latestBase().href);
+      expect(r.version, location).toBe('9.0.0\n');
+    }
+  });
+
+  it("KAGE_RELEASE_BASE at a tag's download folder: no hop, the base as it is", async () => {
+    routes.set('/o/r/releases/download/v9.0.0/VERSION', send('9.0.0\n'));
+    const tagBase = releaseBase({ KAGE_RELEASE_BASE: `${origin()}/o/r/releases/download/v9.0.0` });
+    const r = await pinRelease(fetch, tagBase);
+    expect(r.base.href).toBe(`${origin()}/o/r/releases/download/v9.0.0/`);
+    expect(r.version).toBe('9.0.0\n');
+  });
+});
+
 describe('replaceBinary', () => {
   it('writes the new program over the target, mode 0755', async () => {
     await replaceBinary(exe, gzipSync(NEW));
@@ -385,61 +500,93 @@ describe('kage update', UNDER_LOAD, () => {
     const latest =
       (name: string, tag: string): Handler =>
       (_req, res) => {
-        res.writeHead(302, { location: `/download/${tag}/${name}`, 'content-length': 0 });
+        res.writeHead(302, { location: `/releases/download/${tag}/${name}`, 'content-length': 0 });
         res.end();
       };
     const gz = gzipSync(NEW);
     const later = gzipSync(Buffer.from('#!/bin/sh\necho newer\n'));
-    routes.set('/latest/download/VERSION', latest('VERSION', 'v9.0.0'));
-    routes.set('/latest/download/SHA256SUMS', latest('SHA256SUMS', 'v9.1.0'));
-    routes.set(`/latest/download/${ASSET}`, latest(ASSET, 'v9.1.0'));
-    routes.set('/download/v9.0.0/VERSION', send('9.0.0\n'));
-    routes.set('/download/v9.0.0/SHA256SUMS', send(`${sha(gz)}  ${ASSET}\n`));
-    routes.set(`/download/v9.0.0/${ASSET}`, send(gz));
-    routes.set('/download/v9.1.0/SHA256SUMS', send(`${sha(later)}  ${ASSET}\n`));
-    routes.set(`/download/v9.1.0/${ASSET}`, send(later));
+    routes.set('/releases/latest/download/VERSION', latest('VERSION', 'v9.0.0'));
+    routes.set('/releases/latest/download/SHA256SUMS', latest('SHA256SUMS', 'v9.1.0'));
+    routes.set(`/releases/latest/download/${ASSET}`, latest(ASSET, 'v9.1.0'));
+    routes.set('/releases/download/v9.0.0/VERSION', send('9.0.0\n'));
+    routes.set('/releases/download/v9.0.0/SHA256SUMS', send(`${sha(gz)}  ${ASSET}\n`));
+    routes.set(`/releases/download/v9.0.0/${ASSET}`, send(gz));
+    routes.set('/releases/download/v9.1.0/SHA256SUMS', send(`${sha(later)}  ${ASSET}\n`));
+    routes.set(`/releases/download/v9.1.0/${ASSET}`, send(later));
     const port = (server.address() as AddressInfo).port;
-    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/releases/latest/download` });
     expect(await updateCommand([], o.io, deps({ programVersion: async () => '9.0.0' }))).toBe(0);
     expect(o.err).toEqual([]);
     expect(readFileSync(exe).equals(NEW)).toBe(true);
     expect(hits).toEqual([
-      '/latest/download/VERSION',
-      '/download/v9.0.0/VERSION',
-      '/download/v9.0.0/SHA256SUMS',
-      `/download/v9.0.0/${ASSET}`,
+      '/releases/latest/download/VERSION',
+      '/releases/download/v9.0.0/VERSION',
+      '/releases/download/v9.0.0/SHA256SUMS',
+      `/releases/download/v9.0.0/${ASSET}`,
     ]);
   });
 
   it('a first redirect to another name (a CDN) pins nothing; one off https is refused', async () => {
     release();
-    routes.set('/latest/download/VERSION', (_req, res) => {
+    routes.set('/releases/latest/download/VERSION', (_req, res) => {
       res.writeHead(302, { location: '/rel/VERSION?sig=abc', 'content-length': 0 });
       res.end();
     });
     const port = (server.address() as AddressInfo).port;
-    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/releases/latest/download` });
     // VERSION follows the redirect (to /rel/VERSION); the other names resolve against the base.
     expect(await updateCommand([], o.io, deps())).toBe(1);
     expect(hits).toEqual([
-      '/latest/download/VERSION',
-      '/latest/download/VERSION',
+      '/releases/latest/download/VERSION',
+      '/releases/latest/download/VERSION',
       '/rel/VERSION',
-      '/latest/download/SHA256SUMS',
+      '/releases/latest/download/SHA256SUMS',
     ]);
     expect(o.err).toEqual(['Update failed: HTTP 404. Nothing was changed.']);
     expectUntouched();
 
     hits.length = 0;
-    routes.set('/latest/download/VERSION', (_req, res) => {
+    routes.set('/releases/latest/download/VERSION', (_req, res) => {
       res.writeHead(302, { location: 'http://example.com/VERSION', 'content-length': 0 });
       res.end();
     });
-    const p = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/latest/download` });
+    const p = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/releases/latest/download` });
     expect(await updateCommand([], p.io, deps())).toBe(1);
     expect(p.err).toEqual(['Update failed: a redirect away from HTTPS. Nothing was changed.']);
-    expect(hits).toEqual(['/latest/download/VERSION']);
+    expect(hits).toEqual(['/releases/latest/download/VERSION']);
     expectUntouched();
+  });
+
+  it("R125: a pinned release whose VERSION isn't its tag stops the update, nothing changed", async () => {
+    release();
+    routes.set('/releases/latest/download/VERSION', (_req, res) => {
+      res.writeHead(302, { location: '/releases/download/v9.1.0/VERSION', 'content-length': 0 });
+      res.end();
+    });
+    routes.set('/releases/download/v9.1.0/VERSION', send('9.0.0\n'));
+    const port = (server.address() as AddressInfo).port;
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/releases/latest/download` });
+    expect(await updateCommand([], o.io, deps())).toBe(1);
+    expect(o.err).toEqual([
+      "Update failed: the release's VERSION doesn't match its tag. Nothing was changed.",
+    ]);
+    expect(hits).toEqual([
+      '/releases/latest/download/VERSION',
+      '/releases/download/v9.1.0/VERSION',
+    ]);
+    expectUntouched();
+  });
+
+  it("R125: KAGE_RELEASE_BASE at a tag's download folder updates from that release", async () => {
+    const gz = gzipSync(NEW);
+    routes.set('/releases/download/v9.0.0/VERSION', send('9.0.0\n'));
+    routes.set('/releases/download/v9.0.0/SHA256SUMS', send(`${sha(gz)}  ${ASSET}\n`));
+    routes.set(`/releases/download/v9.0.0/${ASSET}`, send(gz));
+    const port = (server.address() as AddressInfo).port;
+    const o = io({ KAGE_RELEASE_BASE: `http://127.0.0.1:${port}/releases/download/v9.0.0` });
+    expect(await updateCommand([], o.io, deps({ programVersion: async () => '9.0.0' }))).toBe(0);
+    expect(o.err).toEqual([]);
+    expect(readFileSync(exe).equals(NEW)).toBe(true);
   });
 
   it('no service installed: says to restart Kage', async () => {

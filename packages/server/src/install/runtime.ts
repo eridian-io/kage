@@ -187,8 +187,9 @@ const CARRIED_FOLDERS = ['CLAUDE_CONFIG_DIR', 'XDG_CONFIG_HOME', 'XDG_STATE_HOME
  * What the service adds to the user manager's environment: the PATH captured at setup, R91's
  * arena limit, KAGE_SERVICE so serve can take the tuning back off before tmux starts Claude
  * (R105), and from setup's environment (`env`) an absolute KAGE_CLAUDE_BIN, CLAUDE_CONFIG_DIR,
- * XDG_CONFIG_HOME, XDG_STATE_HOME and KAGE_TMUX_SOCKET when set (R124), so the service reads
- * the same config and state, and runs the same claude and tmux server, as setup and doctor did.
+ * XDG_CONFIG_HOME, XDG_STATE_HOME and KAGE_SOCKET, and KAGE_TMUX_SOCKET, when set (R124, R125),
+ * so the service reads the same config and state, listens on the same hook socket, and runs the
+ * same claude and tmux server, as setup and doctor did.
  * Nothing else, and never a secret: the token and ntfy keys stay in the config, and an
  * ANTHROPIC_API_KEY set only in the shell stays there (doctor says so). The SEA's pool size is
  * in its execArgv, so NODE_OPTIONS isn't needed (host-integration §7.1). The unit and the plist
@@ -207,6 +208,9 @@ export function serviceEnv(
     if (posix.isAbsolute(v)) out[key] = v;
   }
   if (env.KAGE_TMUX_SOCKET) out.KAGE_TMUX_SOCKET = env.KAGE_TMUX_SOCKET;
+  // The hook socket (R125): an absolute one only, so the service and setup's hooks agree.
+  const socket = env.KAGE_SOCKET ?? '';
+  if (posix.isAbsolute(socket)) out.KAGE_SOCKET = socket;
   return out;
 }
 

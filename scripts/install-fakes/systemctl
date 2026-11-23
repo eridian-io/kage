@@ -7,7 +7,8 @@
 # Every call is logged, so the check can see a restart.
 set -u
 state=${XDG_RUNTIME_DIR:-/tmp}/fake-systemd
-units=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user
+# The manager's own unit folder: a user manager has no XDG_CONFIG_HOME, whatever the caller's (R125).
+units=$HOME/.config/systemd/user
 mkdir -p "$state"
 echo "systemctl $*" >>"$state/calls"
 
@@ -87,8 +88,13 @@ stop() {
 wants=$units/default.target.wants
 case $cmd in
   daemon-reload) exit 0 ;;
-  # A user manager's own environment: no XDG_CONFIG_HOME, so units live in ~/.config/systemd/user.
-  show-environment) printf 'HOME=%s\nXDG_RUNTIME_DIR=%s\n' "$HOME" "${XDG_RUNTIME_DIR:-}"; exit 0 ;;
+  # Only `show -p UnitPath --value`: the manager's search path, in systemd 255's order, so the
+  # first user entry outside /etc, /run, /usr and /lib is $units (R125).
+  show)
+    [ "$*" = '-p UnitPath --value' ] || { echo "fake systemctl: no show $*" >&2; exit 1; }
+    rt=${XDG_RUNTIME_DIR:-/run/user/$(id -u)}
+    echo "$units.control $rt/systemd/user.control $rt/systemd/transient $rt/systemd/generator.early $units /etc/systemd/user $rt/systemd/user /run/systemd/user $HOME/.local/share/systemd/user /usr/local/share/systemd/user /usr/share/systemd/user /usr/local/lib/systemd/user /usr/lib/systemd/user $rt/systemd/generator.late"
+    exit 0 ;;
   is-active)
     if running; then echo active; exit 0; fi
     echo inactive; exit 3 ;;

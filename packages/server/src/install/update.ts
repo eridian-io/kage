@@ -125,8 +125,10 @@ export function parseSums(text: string): Map<string, string> {
   return sums;
 }
 
-const SEMVER =
-  /^v?(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z.-]+)?$/;
+/** A semver version without the `v`: major, minor, patch, then pre-release parts (groups 1 to 4). */
+const SEMVER_CORE =
+  '(\\d+)\\.(\\d+)\\.(\\d+)(?:-([0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*))?(?:\\+[0-9A-Za-z.-]+)?';
+const SEMVER = new RegExp(`^v?${SEMVER_CORE}$`);
 
 /** True for a version compareVersions understands. */
 export function isVersion(v: string): boolean {
@@ -297,11 +299,30 @@ async function request(
 }
 
 /**
- * The release folder this update reads every file from, and its VERSION (R124). GitHub answers
- * `…/releases/latest/download/VERSION` with a redirect to `…/releases/download/<tag>/VERSION`:
+ * A release folder's path: `<repo>/releases/download/v<semver>/VERSION`, the tag one segment.
+ * `URL` has already resolved `.` and `..`, and keeps `%2F` encoded, so neither can reach in.
+ */
+const RELEASE_VERSION_PATH = new RegExp(
+  `^(.*)/releases/download/(v${SEMVER_CORE})/${VERSION_FILE}$`,
+);
+
+/** The repository part of a base's path, before its `/releases/`; null when it has none. */
+function repoOf(base: URL): string | null {
+  const i = base.pathname.lastIndexOf('/releases/');
+  return i < 0 ? null : base.pathname.slice(0, i);
+}
+
+/**
+ * The release folder this update reads every file from, and its VERSION (R124, R125). GitHub
+ * answers `…/releases/latest/download/VERSION` with a redirect to `…/releases/download/<tag>/VERSION`:
  * that tag's folder is then the base for SHA256SUMS and the asset too, so a release published
- * mid-update can't mix the files of two. Without such a redirect (a fixed KAGE_RELEASE_BASE, a
- * test server) the base stays as it is, and VERSION's bytes are the first answer's.
+ * mid-update can't mix the files of two. Only such a first hop is pinned: to the base's own
+ * origin, the same repository when the base names one (the path before `/releases/`), a path
+ * ending in `/releases/download/v<semver>/VERSION` and no query. That release's VERSION must
+ * then be its tag without the `v`, or the update stops. Any other hop (a CDN's signed URL) is
+ * followed for VERSION only, and the other names resolve against the base. Without a redirect
+ * (KAGE_RELEASE_BASE at a tag's folder, a test server) the base stays as it is, and VERSION's
+ * bytes are the first answer's.
  */
 export async function pinRelease(
   doFetch: typeof fetch,
@@ -310,12 +331,21 @@ export async function pinRelease(
 ): Promise<{ base: URL; version: string }> {
   const first = await request(doFetch, new URL(VERSION_FILE, base), MAX_TEXT, o, true);
   if (!(first instanceof URL)) return { base, version: new TextDecoder().decode(first) };
-  // Only a hop to a file of the same name names a release folder; anything else (a CDN's
-  // signed URL) is followed for VERSION, and the other names resolve against the base.
-  const folder = first.pathname.endsWith(`/${VERSION_FILE}`) && first.search === '';
-  const pinned = folder ? new URL('.', first) : base;
-  const body = await get(doFetch, folder ? first : new URL(VERSION_FILE, base), MAX_TEXT, o);
-  return { base: pinned, version: new TextDecoder().decode(body) };
+  const m =
+    first.origin === base.origin && first.search === ''
+      ? RELEASE_VERSION_PATH.exec(first.pathname)
+      : null;
+  const repo = repoOf(base);
+  const tag = m !== null && (repo === null || m[1] === repo) ? (m[2] ?? null) : null;
+  if (tag === null) {
+    const body = await get(doFetch, new URL(VERSION_FILE, base), MAX_TEXT, o);
+    return { base, version: new TextDecoder().decode(body) };
+  }
+  const version = new TextDecoder().decode(await get(doFetch, first, MAX_TEXT, o));
+  if (version.trim() !== tag.slice(1)) {
+    throw new ReleaseError("the release's VERSION doesn't match its tag");
+  }
+  return { base: new URL('.', first), version };
 }
 
 /**

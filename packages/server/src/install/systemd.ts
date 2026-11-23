@@ -128,14 +128,18 @@ function inWsl(env: NodeJS.ProcessEnv): boolean {
 /** is-active's exits from a user manager that answered: 0 active, 3 not active, 4 no such unit. */
 const ANSWERED = new Set([0, 3, 4]);
 
+/** System folders: a user unit isn't written under them (and a user can't, without root). */
+const SYSTEM_DIRS = ['/etc/', '/run/', '/usr/', '/lib/'];
+
 /**
- * The folder the user manager reads user units from: `$XDG_CONFIG_HOME/systemd/user` in the
- * manager's own environment, not the shell's. A shell that sets XDG_CONFIG_HOME (in .bashrc,
- * say) doesn't change the manager's, so a unit written there would never load. So it is:
- * - the XDG_CONFIG_HOME that `systemctl --user show-environment` prints, when it prints an
- *   absolute one (a value systemd had to escape, `$'…'`, doesn't count);
- * - else `~/.config/systemd/user`: the manager's default, also when it doesn't answer (setup
- *   then installs nothing, and doctor and uninstall look where a unit would be).
+ * The folder the user manager reads user units from, as the manager itself says (R125):
+ * `systemctl --user show -p UnitPath --value` lists its search path, space-separated, and the
+ * first entry that ends in `/systemd/user` and isn't under /etc, /run, /usr or /lib is its own
+ * config folder (`$XDG_CONFIG_HOME/systemd/user` in the manager's environment, not the shell's).
+ * A shell that sets XDG_CONFIG_HOME (in .bashrc, say) doesn't change the manager's, so a unit
+ * written there would never load. Without such an entry, `~/.config/systemd/user`: the
+ * manager's default, also when it doesn't answer (setup then installs nothing, and doctor and
+ * uninstall look where a unit would be).
  */
 export async function systemdUnitDir(
   run: ServiceDeps['run'],
@@ -143,12 +147,15 @@ export async function systemdUnitDir(
   env: NodeJS.ProcessEnv,
 ): Promise<string> {
   const fallback = join(home, '.config', 'systemd', 'user');
-  const r = await run('systemctl', ['--user', 'show-environment'], { env, timeoutMs: 5000 });
+  const r = await run('systemctl', ['--user', 'show', '-p', 'UnitPath', '--value'], {
+    env,
+    timeoutMs: 5000,
+  });
   if (r.missing || r.code !== 0) return fallback;
-  for (const line of r.stdout.split(/\r?\n/)) {
-    if (!line.startsWith('XDG_CONFIG_HOME=')) continue;
-    const value = line.slice('XDG_CONFIG_HOME='.length);
-    return value.startsWith('/') ? join(value, 'systemd', 'user') : fallback;
+  for (const entry of r.stdout.trim().split(/\s+/)) {
+    if (!entry.startsWith('/') || !entry.endsWith('/systemd/user')) continue;
+    if (SYSTEM_DIRS.some((d) => entry.startsWith(d))) continue;
+    return entry;
   }
   return fallback;
 }

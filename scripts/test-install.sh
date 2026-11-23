@@ -23,6 +23,12 @@ in_container() {
   stage 'release:local (linux-x64)'
   corepack pnpm release:local
   [ -f dist/release/kage-linux-x64.gz ] || { echo 'FAILED: release:local made no kage-linux-x64.gz' >&2; exit 1; }
+  # F8: the hook entry ships in the npm package: its files list names it, and the tarball holds it.
+  node -e 'const p = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); process.exit(Array.isArray(p.files) && p.files.includes("kage-hook.mjs") ? 0 : 1)' \
+    dist/release/npm/package.json || { echo "FAILED: the npm package's files list has no kage-hook.mjs" >&2; exit 1; }
+  tar -tzf dist/release/eridian-io-kage-*.tgz | grep -x package/kage-hook.mjs >/dev/null ||
+    { echo 'FAILED: the npm tarball has no kage-hook.mjs' >&2; exit 1; }
+  echo 'npm package: files lists kage-hook.mjs, and the tarball holds it'
   # dev rebuilds the release in stage 6, so the tree becomes dev's.
   chown -R dev:dev /work
   install -d /opt/fakes
@@ -108,6 +114,9 @@ as_dev() {
   has "$out" "Turned on linger, so Kage keeps running when you're logged out. To undo it: loginctl disable-linger" ||
     fail 'setup did not say it turned linger on'
   grep -qx 'loginctl enable-linger' "$fakes/calls" || fail 'setup did not run loginctl enable-linger'
+  # R125: the unit goes in the folder the manager names in its UnitPath.
+  grep -qx 'systemctl --user show -p UnitPath --value' "$fakes/calls" ||
+    fail 'setup did not ask the manager for its UnitPath'
   # As a new terminal would have it.
   export PATH="$bin:$PATH"
 

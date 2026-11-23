@@ -341,6 +341,32 @@ describe('requirementChecks', () => {
     expect(readFileSync(unit, 'utf8')).toBe('# Written by kage setup\n');
   });
 
+  it('an API key with a credentials file is signed in', async () => {
+    const unit = join(home, '.config', 'systemd', 'user', 'kage.service');
+    mkdirSync(dirname(unit), { recursive: true });
+    writeFileSync(unit, '# Written by kage setup\n');
+    const manager = fakeManager('active', '/usr/bin', { file: unit });
+    const d = deps(tableRun(GOOD).run, { manager });
+    d.env.ANTHROPIC_API_KEY = 'sk-ant-invented-key';
+    // Without the file the warning stays (the test above); with it, Claude is signed in for the
+    // service too, so there is nothing to warn about.
+    mkdirSync(join(home, '.claude'), { recursive: true });
+    writeFileSync(join(home, '.claude', '.credentials.json'), '');
+    expect(one(await requirementChecks(d), 'claude-login')).toEqual({
+      id: 'claude-login',
+      level: 'ok',
+      label: 'Claude Code is signed in.',
+      fix: null,
+    });
+    // CLAUDE_CONFIG_DIR, when set, is where the file counts.
+    const other = join(dir, 'claude-config');
+    mkdirSync(other, { recursive: true });
+    d.env.CLAUDE_CONFIG_DIR = other;
+    expect(one(await requirementChecks(d), 'claude-login').level).toBe('warn');
+    writeFileSync(join(other, '.credentials.json'), '');
+    expect(one(await requirementChecks(d), 'claude-login').level).toBe('ok');
+  });
+
   it('claude-login: CLAUDE_CONFIG_DIR, when set, is the only folder looked at', async () => {
     mkdirSync(join(home, '.claude'), { recursive: true });
     writeFileSync(join(home, '.claude', '.credentials.json'), '');

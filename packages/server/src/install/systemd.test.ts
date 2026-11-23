@@ -562,24 +562,19 @@ describe('serviceManager', () => {
     expect((await serviceManager('darwin', deps(fakeRun().run)))?.enableLinger).toBeUndefined();
   });
 
-  it("on linux the unit goes where the user manager reads units (its XDG_CONFIG_HOME, not the shell's)", async () => {
-    const xdg = '/srv/manager-config';
+  it("on linux the unit goes where the user manager reads units (its UnitPath, not the shell's XDG_CONFIG_HOME)", async () => {
+    const conf = '/srv/manager-config/systemd/user';
     const { run, calls } = fakeRun((_cmd, args) =>
-      args[1] === 'show-environment'
-        ? {
-            stdout: `HOME=${join(dir, 'home')}
-XDG_CONFIG_HOME=${xdg}
-LANG=C.UTF-8
-`,
-          }
+      args[1] === 'show'
+        ? { stdout: `${conf}.control /run/user/1000/systemd/transient ${conf} /etc/systemd/user\n` }
         : {},
     );
     const m = await serviceManager(
       'linux',
       deps(run, { env: { XDG_CONFIG_HOME: join(dir, 'shell-config') } }),
     );
-    expect(m?.file).toBe(join(xdg, 'systemd', 'user', SYSTEMD_UNIT));
-    expect(calls).toEqual(['systemctl --user show-environment']);
+    expect(m?.file).toBe(join(conf, SYSTEMD_UNIT));
+    expect(calls).toEqual(['systemctl --user show -p UnitPath --value']);
   });
 });
 
@@ -588,31 +583,53 @@ describe('systemdUnitDir', () => {
   const fallback = join(home, '.config', 'systemd', 'user');
   const answer = (r: Partial<RunResult>) => fakeRun(() => r);
 
-  it("the manager's own XDG_CONFIG_HOME, when it prints an absolute one", async () => {
-    const { run, opts } = answer({ stdout: 'HOME=/home/u\nXDG_CONFIG_HOME=/srv/u/conf\n' });
+  it("the unit folder is UnitPath's user entry", async () => {
+    // The shape of WSL's systemd 255 answer (pre-flight): the first user entry outside the
+    // system folders is the manager's own config folder.
+    const unitPath = [
+      '/home/u/.config/systemd/user.control',
+      '/run/user/1000/systemd/user.control',
+      '/run/user/1000/systemd/transient',
+      '/run/user/1000/systemd/generator.early',
+      '/srv/u/conf/systemd/user',
+      '/etc/systemd/user',
+      '/run/user/1000/systemd/user',
+      '/run/systemd/user',
+      '/home/u/.local/share/systemd/user',
+      '/usr/local/share/systemd/user',
+      '/usr/share/systemd/user',
+      '/lib/systemd/user',
+    ].join(' ');
+    const { run, calls, opts } = answer({ stdout: `${unitPath}\n` });
     expect(await systemdUnitDir(run, home, { XDG_CONFIG_HOME: '/shell/conf' })).toBe(
-      join('/srv/u/conf', 'systemd', 'user'),
+      '/srv/u/conf/systemd/user',
     );
+    expect(calls).toEqual(['systemctl --user show -p UnitPath --value']);
     expect(opts[0]?.timeoutMs).toBe(5000);
   });
 
-  it('~/.config/systemd/user when the manager has none, even if the shell sets one', async () => {
-    const { run } = answer({ stdout: 'HOME=/home/u\nPATH=/usr/bin\n' });
-    expect(await systemdUnitDir(run, home, { XDG_CONFIG_HOME: '/shell/conf' })).toBe(fallback);
+  it('skips user entries under /etc, /run, /usr and /lib, and relative ones', async () => {
+    const { run } = answer({
+      stdout:
+        '/etc/systemd/user /run/user/1000/systemd/user /usr/lib/systemd/user /lib/systemd/user conf/systemd/user /home/u/.local/share/systemd/user\n',
+    });
+    expect(await systemdUnitDir(run, home, {})).toBe('/home/u/.local/share/systemd/user');
   });
 
-  it('~/.config/systemd/user when the manager does not answer, or systemctl is missing', async () => {
+  it('no answer falls back to ~/.config/systemd/user', async () => {
     const env = { XDG_CONFIG_HOME: '/shell/conf' };
     const noBus = answer({ code: 1, stderr: 'Failed to connect to bus: No medium found' });
     expect(await systemdUnitDir(noBus.run, home, env)).toBe(fallback);
     const missing = answer({ code: -1, missing: true });
     expect(await systemdUnitDir(missing.run, home, env)).toBe(fallback);
+    const empty = answer({ stdout: '\n' });
+    expect(await systemdUnitDir(empty.run, home, env)).toBe(fallback);
   });
 
-  it('a relative or escaped value does not count', async () => {
-    for (const v of ['conf', "$'/a\\nb'"]) {
-      const { run } = answer({ stdout: `XDG_CONFIG_HOME=${v}\n` });
-      expect(await systemdUnitDir(run, home, {})).toBe(fallback);
-    }
+  it('~/.config/systemd/user when UnitPath has no user entry outside the system folders', async () => {
+    const { run } = answer({
+      stdout: '/run/user/1000/systemd/transient /etc/systemd/user /usr/share/systemd/user\n',
+    });
+    expect(await systemdUnitDir(run, home, { XDG_CONFIG_HOME: '/shell/conf' })).toBe(fallback);
   });
 });
