@@ -104,13 +104,14 @@ class FakeSource {
     this.#flags(id, { pinned });
   }
   /**
-   * Runs `close` first, as LiveSource does; a throw aborts with nothing logged. The log keeps
-   * its pre-Task 9 shape: `stopped` for a close that killed the window (the real source also
-   * ends a session whose window was gone already: live-source.test.ts covers that).
+   * Runs `close` first, as LiveSource does; a throw aborts with nothing logged. Then, as
+   * LiveSource.archive does (F14), `stopped` for a session not ended yet, whether the close
+   * killed the window or answered false because it was gone already; then the flags.
    */
   async archive(id: string, close: Close | null): Promise<void> {
     this.calls.push(`archive ${id} ${close ? 'close' : 'null'}`);
-    if (close && (await close())) this.#stopped(id);
+    if (close) await close();
+    if (this.targets.get(id)?.status !== 'ended') this.#stopped(id);
     this.#flags(id, { archived: true });
   }
   async restore(id: string): Promise<void> {
@@ -222,12 +223,14 @@ describe('FinishActions.archive', () => {
     expect(source.log).toEqual([]);
   });
 
-  it('killOwnedWindow false because the window is gone: archived anyway', async () => {
+  it('killOwnedWindow false because the window is gone: still the stop move (F14), then archived', async () => {
     const { finish, source, tmux } = setup();
     tmux.held.clear();
     await finish.archive('k-1', true);
     expect(tmux.log).toEqual(['kill @2 k-1', 'read @2']);
-    expect(source.log).toEqual(['flags k-1 {"archived":true}']);
+    // F14: a close that answers false (the window was gone already) still ends a session that
+    // isn't ended: at most one act transition, as LiveSource.archive does.
+    expect(source.log).toEqual(['stopped k-1', 'flags k-1 {"archived":true}']);
   });
 
   it('an ended session with no window: archived with no tmux call', async () => {
@@ -396,13 +399,13 @@ describe('FinishActions.archive: the live re-check right before the kill (Task 4
     expect(tmux.log).toEqual(['kill @2 k-1']);
   });
 
-  it('the pane is gone at the capture: the kill finds it gone, archived anyway', async () => {
+  it('the pane is gone at the capture: the kill finds it gone, the stop move (F14), archived anyway', async () => {
     const { finish, tmux, source } = setup();
     tmux.captureError = execError("can't find pane: %2");
     tmux.held.clear();
     await finish.archive('k-1', true);
     expect(tmux.log).toEqual(['kill @2 k-1', 'read @2']);
-    expect(source.log).toEqual(['flags k-1 {"archived":true}']);
+    expect(source.log).toEqual(['stopped k-1', 'flags k-1 {"archived":true}']);
   });
 
   it("another capture failure → 422 with tmux's first line, no kill", async () => {

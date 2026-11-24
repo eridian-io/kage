@@ -1342,7 +1342,11 @@ export class LiveSource implements SessionSource {
     // first-prompt wait), unless another listed window carries its id.
     for (const [id, pane] of lost) {
       const st = this.#sessions.get(id);
-      // F10: the operation's own `stopped` ends a finishing session.
+      // F10: the operation's own `stopped` ends a finishing session. If that operation's close
+      // threw instead, nothing would end it: its claim is dropped above and no later listing
+      // reports it lost. Unreachable today (R157): a lost session has no window, and with no
+      // window no caller passes a close that can throw (archive's close is null and stop
+      // answers 409 before the operation; restore's close is always null).
       if (!st?.record || st.window || st.status === 'ended' || this.#finishing.has(id)) continue;
       // B34: the pane's hooks waiting on this listing are its own (a failed resume's SessionEnd).
       this.#takeQueued(st, pane);

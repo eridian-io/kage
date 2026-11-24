@@ -6105,6 +6105,20 @@ describe('LiveSource: whole operations (Task 9)', () => {
     await s.source.stop();
   });
 
+  it('R157, F14: an archive whose close answers false (the window was gone already) sends one act transition, then one session.removed', async () => {
+    const s = await onBoard('done');
+    await s.source.archive('k-1', async () => {
+      s.tmux.windows = [];
+      return false;
+    });
+    expect(story(s.events)).toEqual(['done → ended act', 'removed', 'archive 1']);
+    expect(s.source.get('k-1')).toMatchObject({ archived: true, status: 'ended' });
+    s.events.length = 0;
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(story(s.events)).toEqual([]);
+    await s.source.stop();
+  });
+
   it('archive of an ended session sends no transition and one session.removed', async () => {
     const s = setup({ records: [rec()] });
     await s.source.start();
