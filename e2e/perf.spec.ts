@@ -29,8 +29,9 @@ import {
  * - sizes, read from packages/web/dist with the limits build.test.ts uses (packages/web/sizes.ts);
  * - time to a usable board: the `kage:board` mark, fresh context, tailnet LAN emulation, median
  *   of 5 against live mode with 10 sessions;
- * - hook to screen: the test's clock before the hook's socket write to a MutationObserver's
- *   clock at the row's change, p95 of 40 (F8); `kage hook`'s own wall time from the bundle's
+ * - hook to screen: from the arm, just before the hook's socket write, to a MutationObserver
+ *   seeing the row's change, both on the page's monotonic clock, p95 of 40 (F8; transitions final
+ *   review: a wall clock step can't land in a sample); `kage hook`'s own wall time from the bundle's
  *   hook entry (kage-hook.mjs, hardening Task 13), median of 10, at most 60 ms (R142: about 31 ms
  *   on an idle host, 43 to 48 ms under load);
  * - idle server: 10 done sessions, no page or stream, 10 s settle, 30 s measured (Linux /proc), on
@@ -201,20 +202,23 @@ async function installProbe(page: Page): Promise<void> {
     w.statusInPage = status;
     let want: { id: string; status: string } | null = null;
     /**
-     * t1 is read on the page's monotonic clock (performance.timeOrigin + performance.now()),
-     * which drifts from the wall clock the test's t0 uses whenever the system clock is stepped
-     * (Docker Desktop's VM resyncs it: a run once showed a constant 490 ms jump between two
-     * samples). Re-based onto the wall clock at each arm, so a step can't land in a sample.
+     * Each sample is a monotonic elapsed time on the page's clock, from the arm (the test posts
+     * the hook as soon as the arm returns) to the row's change: Docker Desktop's VM steps the
+     * wall clock (a run once showed a 490 ms jump, and one sample read 11,677 ms in a 3.1 s
+     * test), and a step between two wall-clock reads in two processes made a fake outlier.
+     * kageHitWall, the wall clock at the hit, is kept only to flag such steps beside it.
      */
-    let skew = 0;
+    let armedAt = 0;
     w.kageArm = (id: string, s: string) => {
       want = { id, status: s };
       w.kageHit = null;
-      skew = performance.timeOrigin + performance.now() - Date.now();
+      w.kageHitWall = null;
+      armedAt = performance.now();
     };
     new MutationObserver(() => {
       if (want && status(want.id) === want.status) {
-        w.kageHit = performance.timeOrigin + performance.now() - skew;
+        w.kageHit = performance.now() - armedAt;
+        w.kageHitWall = Date.now();
         want = null;
       }
     }).observe(document.body, {
@@ -577,6 +581,8 @@ test.describe('live budgets', () => {
       await expect.poll(() => rowStatus(page, id), { timeout: STATUS_MS }).toBe('running');
 
       const samples: number[] = [];
+      /** Samples whose wall-clock reading disagrees with the monotonic one by over 100 ms. */
+      const stepped: string[] = [];
       for (let i = 0; i < 40; i++) {
         // Alternating: PermissionRequest to needs you, PostToolUse back to running (R7).
         const [event, want] =
@@ -592,14 +598,27 @@ test.describe('live budgets', () => {
         const t0 = Date.now();
         await postHook(event as string, body(event as string, tool), pane);
         const hit = await page.waitForFunction(
-          () => (window as unknown as { kageHit: number | null }).kageHit,
+          () => {
+            const v = (window as unknown as { kageHit: number | null }).kageHit;
+            return v === null ? null : { v };
+          },
           null,
           { timeout: STATUS_MS },
         );
-        samples.push(((await hit.jsonValue()) as number) - t0);
+        const elapsed = ((await hit.jsonValue()) as { v: number }).v;
+        samples.push(elapsed);
+        const wall =
+          ((await page.evaluate(
+            () => (window as unknown as { kageHitWall: number | null }).kageHitWall,
+          )) ?? t0) - t0;
+        if (Math.abs(wall - elapsed) > 100) {
+          stepped.push(`#${i}: ${elapsed.toFixed(0)} ms monotonic, ${wall.toFixed(0)} ms wall`);
+        }
         await sleep(50);
       }
       console.log(`hook to screen: ${samples.map((t) => t.toFixed(0)).join(', ')} ms`);
+      if (stepped.length > 0)
+        console.log(`hook to screen: wall clock stepped: ${stepped.join('; ')}`);
       recordBudget({
         name: 'Hook to screen (p95 of 40)',
         value: percentile(samples, 95),
