@@ -102,6 +102,7 @@ Deferred from the phase 6 plan and reviews. None blocks the first release.
 - **B17** (done, phase 3) A live e2e for No and Esc on a prompt (R11): today the transcript and pane fallbacks are covered by unit tests and one manual run.
 - **B18** Pin the Playwright base image in `Dockerfile.test` by digest, not only by tag, and pin the apt packages it installs (tmux, git, iproute2 and procps are unpinned), so `pnpm test:linux` is reproducible.
 - **B19** Split `live-source.ts`: it carries tmux events, hooks, transcripts and pane checks. Pull the pane-capture decision out as a pure function first.
+- **B93** (the owner's request, 2026-11-24) Connect to several servers that run Claude sessions, for example a home PC and a work box, from one board. Today one browser tab talks to one Kage on one machine. To settle first: whether the board merges every server's sessions or switches between servers; how each server signs you in, since a token and a session cookie belong to one origin (B82); and how pings and browser notifications name the server. Each server keeps its own Kage, tmux and hooks, so B45 stays per server.
 
 ## Found in hardening
 
