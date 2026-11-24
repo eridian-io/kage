@@ -639,7 +639,7 @@ describe('SessionControls.reply', () => {
 });
 
 describe('SessionControls.stop', () => {
-  it('re-reads @kage_id, kills the owned window, then markStopped', async () => {
+  it('re-reads @kage_id, kills the owned window, then stopSession', async () => {
     const t = target({ status: 'running', question: null, promptKind: null });
     const { tmux, source, controls } = setup(t);
     await controls.stop('k-1');

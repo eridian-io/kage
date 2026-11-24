@@ -189,7 +189,7 @@ describe('FinishActions.pin', () => {
 });
 
 describe('FinishActions.archive', () => {
-  it('a done session with a live window: kills it with the record kage id, markStopped, then archives', async () => {
+  it('a done session with a live window: kills it with the record kage id, the stop move, then archives', async () => {
     const { finish, source, tmux } = setup();
     await finish.archive('k-1', true);
     expect(tmux.log).toEqual(['kill @2 k-1']);
@@ -222,7 +222,7 @@ describe('FinishActions.archive', () => {
     expect(source.log).toEqual([]);
   });
 
-  it('killOwnedWindow false because the window is gone: archived anyway, no markStopped', async () => {
+  it('killOwnedWindow false because the window is gone: archived anyway', async () => {
     const { finish, source, tmux } = setup();
     tmux.held.clear();
     await finish.archive('k-1', true);
@@ -246,7 +246,7 @@ describe('FinishActions.archive', () => {
     expect(source.log).toEqual([]);
   });
 
-  it('restore: setFlags({archived: false}); restoring one that is not archived is a no-op', async () => {
+  it('restore: the source restore; restoring one that is not archived is a no-op', async () => {
     const a = setup(
       target({ status: 'ended', windowId: null, record: rec({ archived: true, archivedAt: 5 }) }),
     );

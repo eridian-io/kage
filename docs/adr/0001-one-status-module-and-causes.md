@@ -8,3 +8,6 @@ A session's status used to be set from many places, and the notifier, auto-archi
 - A window that first appears while Kage is running is live; only start-up and a tmux reattach are reconcile.
 - Don't "simplify" consumers back to diffing snapshots: the cause is the information a snapshot can't carry.
 - Kage's own No to a prompt (answer-denied) is act, so it never pings; Claude's next prompt found by the same check stays live. A Yes followed by the tool being blocked another way within the check's window is also marked act — rare, accepted.
+- A turn that is running across a Kage restart or a tmux reattach gets no done ping when it finishes, because its stretch was never started (Q17). That is the visible price of never pinging on a reconcile.
+- A No at the board can no longer be followed by an "is done" ping, and Kage's own Escape that ends a turn (act) doesn't ping.
+- A status rule that has no target (`null`) means no move: the session is still off the board.

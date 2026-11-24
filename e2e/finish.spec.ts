@@ -160,7 +160,7 @@ async function resume(page: Page): Promise<void> {
     }
     await page.waitForTimeout(100);
   }
-  throw new Error('U was refused for 20 s: Kage still lists the window');
+  throw new Error('U was refused 20 times: Kage still lists the window');
 }
 
 /** The fake's session id for `task`, once its argv file is there. */

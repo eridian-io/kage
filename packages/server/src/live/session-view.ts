@@ -14,7 +14,7 @@ export interface SessionView {
   id: string;
   record: SessionRecord | null;
   window: TmuxWindow | null;
-  /** Epoch ms when Kage first saw an external window. */
+  /** Epoch ms (wall clock, from `now`; not monotonic) when Kage first saw an external window. */
   firstSeen: number;
   status: SessionStatus;
   statusSince: number;

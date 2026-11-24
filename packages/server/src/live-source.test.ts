@@ -2718,7 +2718,7 @@ describe('LiveSource: controls (phase 3 Task 7)', () => {
     expect(source.get('k-1')?.status).toBe('running');
   });
 
-  it('markStopped → ended now, question cleared; a later listing without the window keeps it ended', async () => {
+  it('stopSession → ended now, question cleared; a later listing without the window keeps it ended', async () => {
     const { source, tmux, watcher, updates } = await permission();
     await source.stopSession('k-1', async () => true);
     expect(source.get('k-1')).toMatchObject({ status: 'ended' });

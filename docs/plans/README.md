@@ -11,5 +11,6 @@ The design is in [`../specs/2026-11-21-kage-design.md`](../specs/2026-11-21-kage
 | 5. Polish: notifications (ntfy and the browser), command palette, performance budgets | [2026-11-22-phase-5-polish.md](2026-11-22-phase-5-polish.md) | Merged into main |
 | 6. Install and release: `kage setup`, the services, `install.sh`, SEA builds. Starts with a SEA spike on Linux and macOS | [2026-11-22-phase-6-install-and-release.md](2026-11-22-phase-6-install-and-release.md) | Merged into main |
 | Hardening: what four reviews of the whole product found (security, reliability, performance, usability), within ruling R126, and phase 6's parked items. Release signing, the phone layout and the contrast tokens are left to the owner (backlog B72, B51, B73) | [2026-11-23-hardening.md](2026-11-23-hardening.md) | Merged into main |
+| Transitions: one module for status transitions, then archive as one operation | [2026-11-23-transitions.md](2026-11-23-transitions.md) | Built, not merged (branch `transitions`) |
 
 Before the first release: the one-line install fetches `install.sh` from `main`, so phase 6 must be merged into `main` before the first `v*` tag is pushed.
