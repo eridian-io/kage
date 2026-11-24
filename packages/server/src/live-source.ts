@@ -2459,7 +2459,9 @@ export class LiveSource implements SessionSource {
    * facts are written back on every step, move or not (F4); then the side effects follow from
    * what changed: the first-prompt wait's end, and on a move statusSince, gen, the tail's idle
    * poll, the needs-you clean-up and #onTransition. A timed observation's `at` is the
-   * transition's.
+   * transition's. The caller's own follow-up writes (resumed's now line, #resumeFailed's line,
+   * #stopped's timers and tail) land after `session.transition` has gone out, so a transition
+   * handler reads only stable fields synchronously (spec §5.3).
    */
   #apply(st: Live, obs: Observation): Transition | null {
     const before = this.#factsOf(st);
