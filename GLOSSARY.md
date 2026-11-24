@@ -50,7 +50,7 @@ A session's move from one status to another, with its cause.
 _Avoid_: status change, state change
 
 **Cause**:
-Why a transition happened: live (Claude just did something), reconcile (Kage catching up after a restart, a reattach or a relist), or act (the owner or Kage itself did something on purpose).
+Why a transition happened: live (Claude just did something), reconcile (Kage catching up after a restart or a tmux reattach; a window first listed while Kage is running is live), or act (the owner or Kage itself did something on purpose).
 _Avoid_: reason, source
 
 ## Finishing

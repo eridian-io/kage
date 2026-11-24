@@ -1,6 +1,6 @@
 # Status is decided in one place, and every transition carries a cause
 
-A session's status used to be set from many places, and the notifier, auto-archive and the board each worked out what changed by comparing snapshots. That let Kage catching up after a restart look like a finished turn and ping the owner (R141). So one pure status module now turns each observation into the next status, and every transition says why it happened: live (Claude just did something), reconcile (Kage catching up after a restart, a reattach or a relist) or act (the owner or Kage did something on purpose).
+A session's status used to be set from many places, and the notifier, auto-archive and the board each worked out what changed by comparing snapshots. That let Kage catching up after a restart look like a finished turn and ping the owner (R141). So one pure status module now turns each observation into the next status, and every transition says why it happened: live (Claude just did something), reconcile (Kage catching up after a restart or a tmux reattach) or act (the owner or Kage did something on purpose).
 
 ## Consequences
 

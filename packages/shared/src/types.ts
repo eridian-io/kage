@@ -1,7 +1,9 @@
 export type SessionStatus = 'needs-you' | 'running' | 'done' | 'ended';
 /**
  * Why a transition happened: live (Claude just did something), reconcile (Kage catching up after
- * a restart, a reattach or a relist), or act (the owner or Kage itself did something on purpose).
+ * a restart or a tmux reattach), or act (the owner or Kage itself did something on purpose). A
+ * window first listed while Kage watches is live: only the start's listing and the one after the
+ * watcher's `up` are reconcile.
  */
 export type Cause = 'live' | 'reconcile' | 'act';
 /** `from` is null when the session wasn't on the board: a launch, a first listing, the start, a restore. `at` is epoch ms. */
