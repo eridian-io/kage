@@ -4273,6 +4273,43 @@ describe('LiveSource: resume fix round 2 (a window that dies unseen)', () => {
     expect(source.lines('k-1')).not.toContainEqual(failedLine);
   });
 
+  it('R152 on the monotonic clock: a wall clock stepped forward an hour still keeps a young ext- window’s hooks for the claim', async () => {
+    const { source, hooks, tmux, watcher } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    source.resumed('k-1', 's-1');
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    vi.setSystemTime(Date.now() + 3_600_000); // the VM's clock resyncs
+    hooks.fire(otherEnd()); // applied to ext-@7, first seen a moment ago
+    await flush();
+    tmux.windows = [];
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.lines('k-1')).toContainEqual(failedLine);
+    expect(source.get('k-1')?.status).toBe('ended');
+  });
+
+  it('R152 on the monotonic clock: a wall clock stepped back an hour does not make an old ext- window young', async () => {
+    const { source, hooks, tmux, watcher } = setup({ records: [ended()] });
+    await source.start();
+    await flush();
+    tmux.windows = [kageWin({ windowId: '@7', paneId: '%7', kageId: null })];
+    watcher.emit({ type: 'windows-changed' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(6_000);
+    vi.setSystemTime(Date.now() - 3_600_000);
+    source.resumed('k-1', 's-1');
+    hooks.fire(otherEnd()); // applied to ext-@7, a window seen 6 s ago
+    await flush();
+    tmux.windows = [];
+    source.claim('k-1', '@7', '%7');
+    await vi.advanceTimersByTimeAsync(200);
+    expect(source.get('k-1')?.status).toBe('ended');
+    expect(source.lines('k-1')).not.toContainEqual(failedLine);
+  });
+
   /** The resumed window listed and attached, then gone before any hook: ended, no line yet. */
   async function resumeThenWindowGone() {
     const logs: string[] = [];

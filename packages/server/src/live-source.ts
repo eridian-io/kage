@@ -316,6 +316,12 @@ interface Live extends SessionView {
    * before new-window): hooks set aside before then can't be from its new window.
    */
   launchedAt: number;
+  /**
+   * When Kage first saw this session (monotonic ms; `firstSeen` is the wall-clock time shown as
+   * an external session's start). R152's young-window check reads this one, so a wall clock
+   * that steps neither reopens the loss path nor sets an old window's hooks aside.
+   */
+  firstSeenAt: number;
   sessionId: string | null;
   transcriptPath: string | null;
   /** The window's pane has been seen running `claude`. */
@@ -1167,6 +1173,7 @@ export class LiveSource implements SessionSource {
       pending: new Set(),
       toolsDone: new Set(),
       launchedAt: Number.NEGATIVE_INFINITY,
+      firstSeenAt: this.#clock(),
       sessionId: record?.sessionId ?? null,
       transcriptPath: record?.transcriptPath ?? null,
       sawClaude: false,
@@ -1790,7 +1797,7 @@ export class LiveSource implements SessionSource {
     // R152: a listing can show Kage's new window before its tag lands, as `ext-<windowId>`. Its
     // hooks are kept for a claim too while the window is young: claim() moves them to #unknown,
     // so the record's session gets them (a failed resume's SessionEnd above all).
-    if (!st.record && e.pane !== null && this.#now() - st.firstSeen < UNKNOWN_PANE_MS) {
+    if (!st.record && e.pane !== null && this.#clock() - st.firstSeenAt < UNKNOWN_PANE_MS) {
       this.#setAsideHook(e);
     }
     const facts = this.#factsOf(st);
