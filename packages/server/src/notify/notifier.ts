@@ -7,7 +7,8 @@
  * is No or Esc at the board: both are the user's own act, R84). The stretch begins at a live or
  * act move from off the board, done or ended into running or needs-you, so a prompt inside it
  * counts; a reconcile move never begins one, so a restart or a reattach pings nothing (R141,
- * Q17). At most `maxPerWindow` pings go in any `windowMs`.
+ * Q17). A needs-you whose hold a reconcile move cut short (tmux going down) is held again when a
+ * reconcile move brings it back (R156). At most `maxPerWindow` pings go in any `windowMs`.
  *
  * Event driven: no polling. Its only timers are one per session (the hold, or the wait for the
  * quiet period's end of a deferred needs-you, R94) and, while the window is full, one for the
@@ -87,6 +88,13 @@ interface Tracked {
   activeFrom: number | null;
   lastPingAt: number | null;
   hold: ReturnType<typeof setTimeout> | null;
+  /**
+   * R156: a reconcile move cancelled a live needs-you hold (or its R94 deferral) that hadn't
+   * pinged yet, as tmux going down does. It lasts through the reconcile moves of the reattach
+   * (ended → done → needs-you): a reconcile move back into needs-you holds it again, and a live
+   * or act move clears it.
+   */
+  heldNeedsYou: boolean;
 }
 
 const isActive = (s: SessionStatus | null) => s === 'running' || s === 'needs-you';
@@ -159,7 +167,8 @@ export class Notifier {
   }
 
   /**
-   * Every transition is a new episode (a pending hold is dropped); only a live one may hold.
+   * Every transition is a new episode (a pending hold is dropped); only a live one may hold, or a
+   * reconcile return to needs-you whose earlier hold a reconcile move dropped (R156).
    * It reads nothing but the transition and, for a done, whether the session is external (a
    * stable field); the ping text is read when the hold ends.
    */
@@ -167,19 +176,37 @@ export class Notifier {
     const now = this.#clock();
     let t = this.#sessions.get(id);
     if (t === undefined) {
-      t = { status: to, episode: 0, activeFrom: null, lastPingAt: null, hold: null };
+      t = {
+        status: to,
+        episode: 0,
+        activeFrom: null,
+        lastPingAt: null,
+        hold: null,
+        heldNeedsYou: false,
+      };
       this.#sessions.set(id, t);
     } else {
+      // A pending hold always belongs to the status being left (every move drops it).
+      const pendingNeedsYou = t.hold !== null && t.status === 'needs-you';
       t.status = to;
       t.episode += 1;
       if (t.hold) {
         clearTimeout(t.hold);
         t.hold = null;
       }
+      if (cause !== 'reconcile') t.heldNeedsYou = false;
+      else if (pendingNeedsYou) t.heldNeedsYou = true;
     }
     const activeFor = t.activeFrom === null ? null : now - t.activeFrom;
     if (!isActive(to)) t.activeFrom = null;
     else if (!isActive(from)) t.activeFrom = cause === 'reconcile' ? null : now;
+    if (cause === 'reconcile' && to === 'needs-you' && t.heldNeedsYou) {
+      // R156: the prompt whose hold tmux's down cut short is back; a needs-you first seen by a
+      // reconcile move still never pings.
+      t.heldNeedsYou = false;
+      this.#hold(id, t, 'needs-you');
+      return;
+    }
     if (cause !== 'live') return;
     if (to === 'needs-you') {
       this.#hold(id, t, 'needs-you');

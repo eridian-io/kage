@@ -3529,6 +3529,42 @@ describe('LiveSource: auto-archive (phase 4 Task 5)', () => {
     await ctx.source.stop();
   });
 
+  it('R156: tmux down and up inside the 3 s hold: the ping is not lost, and goes once', async () => {
+    const ctx = setup({ windows: [kageWin()], records: [rec()] });
+    ctx.tmux.setCapture('%2', pane('permission-bash'));
+    const pings: string[] = [];
+    const notifier = new Notifier({
+      source: ctx.source,
+      send: async (p) => {
+        pings.push(p.title);
+        return true;
+      },
+      link: () => null,
+      hostName: 'box',
+      options: { ...NOTIFY_DEFAULTS, quietMs: 0 },
+      log: () => {},
+    });
+    notifier.start();
+    await ctx.source.start();
+    ctx.hooks.fire(hook('SessionStart', '%2'));
+    ctx.hooks.fire(hook('PreToolUse', '%2'));
+    ctx.hooks.fire(hook('PermissionRequest', '%2'));
+    await flush();
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(pings).toEqual([]);
+    ctx.watcher.emit({ type: 'down' });
+    expect(ctx.source.get('k-1')?.status).toBe('ended');
+    ctx.watcher.emit({ type: 'up' });
+    await flush();
+    await vi.advanceTimersByTimeAsync(100);
+    await flush();
+    expect(ctx.source.get('k-1')?.status).toBe('needs-you');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(pings).toEqual(['shop needs you']);
+    notifier.stop();
+    await ctx.source.stop();
+  });
+
   it('no touch or sync while start() reconciles (only start, once it is ready)', async () => {
     const { source, auto } = setup({
       windows: [kageWin({ command: 'bash' })],

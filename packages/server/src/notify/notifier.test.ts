@@ -536,6 +536,67 @@ describe('Notifier: causes and the stretch (ADR 0001)', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
+  it('R156: tmux down and up inside the hold: the needs-you back by reconcile is held again and pings once', () => {
+    start({ quietMs: 0 });
+    source.set('s1', 'needs-you');
+    at(1000);
+    source.set('s1', 'ended', {}, 'reconcile'); // tmux down: the hold is cancelled
+    // tmux up: LiveSource's re-attach passes through done (the down's doneAt), then its capture
+    // finds the same prompt.
+    source.set('s1', 'done', {}, 'reconcile');
+    source.set('s1', 'needs-you', {}, 'reconcile');
+    at(2999);
+    expect(sent).toHaveLength(0);
+    at(1);
+    expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
+    expect(sent[0]?.stillWanted()).toBe(true);
+    expect(vi.getTimerCount()).toBe(0);
+    at(600_000);
+    expect(sent).toHaveLength(1);
+  });
+
+  it('R156: tmux down and up inside the R94 deferral: the deferred ping still goes at the quiet period’s end', () => {
+    start();
+    source.set('s1', 'needs-you');
+    at(3000); // ping at 3 s
+    source.set('s1', 'running');
+    source.set('s1', 'needs-you'); // re-asked: deferred to 123 s
+    at(3000);
+    source.set('s1', 'ended', {}, 'reconcile');
+    source.set('s1', 'running', {}, 'reconcile');
+    source.set('s1', 'needs-you', {}, 'reconcile');
+    at(3000);
+    expect(sent).toHaveLength(1);
+    expect(vi.getTimerCount()).toBe(1); // the deferred check again
+    at(123_000 - 9000 - 1);
+    expect(sent).toHaveLength(1);
+    at(1);
+    expect(sent).toHaveLength(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('R156: only a pending hold is held again: one already pinged, first seen by reconcile, or moved by an act in between stays quiet', () => {
+    start({ quietMs: 0 });
+    // Already pinged before the down: no second ping.
+    source.set('p', 'needs-you');
+    at(3000);
+    source.set('p', 'ended', {}, 'reconcile');
+    source.set('p', 'needs-you', {}, 'reconcile');
+    // First seen by reconcile, then down and up: never pings.
+    source.set('r', 'needs-you', {}, 'reconcile');
+    source.set('r', 'ended', {}, 'reconcile');
+    source.set('r', 'needs-you', {}, 'reconcile');
+    // An act move between the down and the return ends the episode for good.
+    source.set('a', 'needs-you');
+    at(1000);
+    source.set('a', 'ended', {}, 'reconcile');
+    source.set('a', 'running', {}, 'act');
+    source.set('a', 'needs-you', {}, 'reconcile');
+    at(10_000);
+    expect(sent.map((s) => s.ping.click)).toEqual(['http://box.tail1.ts.net:8080/#s=p']);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
   it('an act done never pings; a live needs-you right after it does', () => {
     start({ onDone: true, quietMs: 0 });
     source.set('s1', 'running');
@@ -546,8 +607,11 @@ describe('Notifier: causes and the stretch (ADR 0001)', () => {
     source.set('s1', 'needs-you');
     at(3000);
     expect(sent.map((s) => s.ping.title)).toEqual(['demo needs you']);
-    // Kage's own No (answer-denied, act): needs-you → done pings nothing, as before; Claude's
-    // next prompt found by the same check is live and pings.
+    // Kage's own No (answer-denied, act) pings nothing. Before transitions it could: the board's
+    // markAnswered moved the session to running first, so the denied check's done looked like
+    // running → done and could ping "is done" after a long stretch (the first half of this test).
+    // The cause rule now prevents that. Claude's next prompt found by the same check is live and
+    // pings.
     source.set('s1', 'done', {}, 'act');
     at(10_000);
     source.set('s1', 'needs-you');
