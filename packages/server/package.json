@@ -22,7 +22,7 @@
   "dependencies": {
     "@hono/node-server": "^2.1.11",
     "@kage/shared": "workspace:*",
-    "hono": "^4.13.19",
+    "hono": "^4.13.22",
     "ws": "8.23.0"
   },
   "devDependencies": {
